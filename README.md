@@ -6,9 +6,36 @@
 
 ## Current status / 当前状态
 
-The project is under active construction. Upstream sources have been pinned; requirements, architecture, capability truth and the implementation roadmap are tracked in [`docs/`](docs/README.md).
+The core foundation is runnable: packaged Alembic migrations, SQLite repositories, durable leases, account/subscription CLI commands, a deterministic seven-platform-capable test adapter contract, and an idempotent sync pipeline are implemented. The MediaCrawler bridge, real downloads, Emby export, scheduler/API, and user-authorized live qualification remain under active construction. Requirements, capability truth, progress, and exact verification evidence are tracked in [`docs/`](docs/README.md).
 
-项目正在持续实现中。上游源码已经锁定，需求、架构、真实能力矩阵以及分阶段目标、计划、进展和验证记录均保存在 [`docs/`](docs/README.md)。
+核心基线已可运行：已实现随包发布的 Alembic 迁移、SQLite 仓储、持久租约、账户/订阅 CLI、覆盖七个平台标识的确定性测试适配协议，以及幂等同步链路。MediaCrawler 桥接、真实下载、Emby 导出、调度/API 和用户授权的线上验收仍在持续实现。需求、真实能力、进展及准确验证证据均保存在 [`docs/`](docs/README.md)。
+
+## Foundation quickstart / 基线快速开始
+
+The commands below are network-free and use the deterministic Fake adapter. They do not log in to a real platform or prove live platform compatibility.
+
+以下命令无需网络并使用确定性 Fake 适配器；它们不会登录真实平台，也不能作为线上平台兼容性证明。
+
+```powershell
+uv sync --all-groups --locked
+uv run media-sync db init
+uv run media-sync account add --platform bili --display-name local-demo --login-method cookie --json
+uv run media-sync account list --json
+```
+
+Use the account UUID returned above to create and run the fixture subscription:
+
+使用上一步返回的账户 UUID 创建并运行测试订阅：
+
+```powershell
+uv run media-sync subscription add --account-id <ACCOUNT_UUID> --platform bili --creator-remote-id creator-001 --display-name "Fixture Creator" --max-items 30 --json
+uv run media-sync subscription list --json
+uv run media-sync sync run --subscription-id <SUBSCRIPTION_UUID> --json
+```
+
+Only opaque secret references such as `env:MEDIA_SYNC_BILI_COOKIE` or `keyring:media-sync/bili-demo` may be passed to `--credential-ref`; raw Cookie/password values are rejected. Run the complete offline quality gate with `uv run pytest` and see [`docs/executions/0003-core-foundation/verification.md`](docs/executions/0003-core-foundation/verification.md) for the recorded environment and results.
+
+`--credential-ref` 只接受 `env:MEDIA_SYNC_BILI_COOKIE`、`keyring:media-sync/bili-demo` 等不透明引用；原始 Cookie/密码会被拒绝。可用 `uv run pytest` 运行完整离线质量门禁；执行环境与结果记录在 [`docs/executions/0003-core-foundation/verification.md`](docs/executions/0003-core-foundation/verification.md)。
 
 ## Scope / 范围
 

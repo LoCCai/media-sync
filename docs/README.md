@@ -22,6 +22,7 @@ This directory is the durable audit trail for the project. Every execution miles
 | --- | --- | --- | --- |
 | 0001 | Bootstrap and pin upstreams / 初始化并锁定上游 | Complete / 已完成 | Baseline commit / 基线提交 |
 | 0002 | Upstream analysis and architecture / 上游分析与架构 | Complete / 已完成 | Research commit / 调研提交 |
+| 0003 | Core domain, persistence and offline CLI / 核心领域、持久化与离线 CLI | Complete / 已完成 | Core foundation commit / 核心基线提交 |
 
 ## Documentation rule / 文档规则
 

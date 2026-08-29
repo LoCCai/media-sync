@@ -7,7 +7,6 @@ import sys
 from pathlib import Path
 from urllib.parse import unquote
 
-
 LINK_RE = re.compile(r"(?<!!)\[[^\]]*\]\(([^)]+)\)")
 REMOTE_PREFIXES = ("http://", "https://", "mailto:")
 

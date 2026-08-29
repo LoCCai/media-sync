@@ -86,9 +86,17 @@ Asset: discovered -> queued -> downloading -> downloaded -> verified -> exported
                          +-----------+------------> failed_retryable / failed_terminal
 ```
 
-Claims use a lease timestamp and worker ID. A crashed worker makes the run claimable only after lease expiry. State changes and counters are transactional; file writes use `.part` files followed by same-filesystem atomic replacement.
+Claims use a lease timestamp, worker ID and a fresh fencing token for every attempt. A crashed worker makes the job claimable only after lease expiry; a stale worker cannot complete work by borrowing a later lease held by the same worker ID. State changes use compare-and-swap updates, event sequences are allocated atomically, and counters are transactional. File writes use `.part` files followed by same-filesystem atomic replacement.
 
-任务领取使用租约时间与 worker ID。工作器崩溃后，只有租约过期的任务才能被重新领取。状态与计数在事务内变更；文件先写入 `.part`，再在同一文件系统原子替换。
+任务领取使用租约时间、worker ID 和每次尝试新生成的 fencing token。工作器崩溃后，只有租约过期的任务才能被重新领取；旧执行不能借用同一 worker ID 后续领取的新租约完成任务。状态变更使用 compare-and-swap，事件序号原子分配，计数在事务内更新；文件先写入 `.part`，再在同一文件系统原子替换。
+
+The foundation Fake workflow uses one caller-owned transaction with per-item savepoints. A classified crawler failure may commit its failed run plus items that were already normalized successfully; a database failure or explicit transaction-owner rejection rolls the complete attempt back. Live crawler work must not hold a SQLite write transaction across browser/network waits: the bridge milestone will commit bounded ingestion batches and publish the durable checkpoint only after each batch succeeds.
+
+基础 Fake 工作流使用调用方拥有的外层事务，并为单条内容使用保存点。分类后的爬虫失败可以提交失败运行记录及此前已成功归一化的内容；数据库失败或事务拥有者显式拒绝时会回滚整次尝试。真实爬虫不得在浏览器/网络等待期间长期占用 SQLite 写事务；桥接里程碑将按有界批次提交导入，并仅在每批成功后发布持久检查点。
+
+An adapter continuation cursor is not by itself an incremental high-water mark. Subscriptions therefore keep a publish timestamp plus every known remote ID at that timestamp, while backfill continuation is tracked separately. The bridge/native adapter must begin from the newest page, scan an overlap window, accept previously unseen IDs at the watermark boundary, and stop only under its qualified ordering contract.
+
+适配器分页 cursor 本身不能充当可靠的增量高水位。因此订阅会同时保存发布时间及该时间点全部已知远端 ID，回填分页位置则单独跟踪。桥接/原生适配器必须从最新页开始、扫描重叠窗口、接收水位边界上的新 ID，并且只在其排序契约已验收时停止。
 
 ## 6. Platform adapter contract / 平台适配协议
 

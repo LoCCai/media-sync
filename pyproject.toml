@@ -1,0 +1,71 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "media-sync"
+version = "0.1.0"
+description = "Local-first creator subscription, media archive, and Emby/Jellyfin exporter"
+readme = "README.md"
+requires-python = ">=3.11,<3.14"
+authors = [
+    { name = "LoCCai" },
+]
+dependencies = [
+    "alembic>=1.14,<2",
+    "fastapi>=0.115,<1",
+    "httpx>=0.28,<1",
+    "pydantic>=2.10,<3",
+    "pydantic-settings>=2.7,<3",
+    "sqlalchemy>=2.0.36,<3",
+    "typer>=0.15,<1",
+    "uvicorn>=0.34,<1",
+]
+
+[project.scripts]
+media-sync = "media_sync.interfaces.cli:app"
+
+[dependency-groups]
+dev = [
+    "mypy>=1.14,<2",
+    "pytest>=8.3,<9",
+    "pytest-cov>=6,<8",
+    "pytest-asyncio>=0.25,<2",
+    "ruff>=0.9,<1",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/media_sync"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"src/media_sync/infrastructure/db/migrations/script.py.mako" = "media_sync/infrastructure/db/migrations/script.py.mako"
+
+[tool.pytest.ini_options]
+addopts = "-ra --strict-config --strict-markers"
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+src = ["src", "tests", "scripts"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["S101"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+packages = ["media_sync"]
+exclude = ["^src/media_sync/infrastructure/db/migrations/"]
+
+[tool.coverage.run]
+branch = true
+source = ["media_sync"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
