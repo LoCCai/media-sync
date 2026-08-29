@@ -1,0 +1,32 @@
+# Local upstream checkouts are reproducible from upstreams.lock.json.
+.upstream/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.venv/
+dist/
+build/
+*.egg-info/
+
+# Runtime data and secrets
+.env
+*.db
+*.sqlite
+*.sqlite3
+data/
+downloads/
+library/
+browser_data/
+cookies.json
+
+# Editors and operating systems
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

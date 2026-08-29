@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "resolved_at": "2026-08-30T03:20:00+08:00",
+  "upstreams": [
+    {
+      "name": "MediaCrawler",
+      "repository": "https://github.com/NanmiCoder/MediaCrawler.git",
+      "branch": "main",
+      "commit": "d6f7c5bb906b6dac40ddf343ef9e26438a3de092",
+      "license": "NON-COMMERCIAL LEARNING LICENSE 1.1",
+      "local_path": ".upstream/MediaCrawler"
+    },
+    {
+      "name": "bili-sync-up",
+      "repository": "https://github.com/NeeYoonc/bili-sync-up.git",
+      "branch": "main",
+      "commit": "dcb5bb73b56ac45b2525da14b389e185b0ea6dbd",
+      "license": "MIT",
+      "local_path": ".upstream/bili-sync-up"
+    }
+  ]
+}
