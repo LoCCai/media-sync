@@ -6,9 +6,9 @@
 
 ## Current status / 当前状态
 
-The project is under active construction. Upstream sources have been pinned and the implementation roadmap is tracked in [`docs/`](docs/README.md).
+The project is under active construction. Upstream sources have been pinned; requirements, architecture, capability truth and the implementation roadmap are tracked in [`docs/`](docs/README.md).
 
-项目正在持续实现中。上游源码已经锁定，分阶段目标、计划、进展和验证记录均保存在 [`docs/`](docs/README.md)。
+项目正在持续实现中。上游源码已经锁定，需求、架构、真实能力矩阵以及分阶段目标、计划、进展和验证记录均保存在 [`docs/`](docs/README.md)。
 
 ## Scope / 范围
 

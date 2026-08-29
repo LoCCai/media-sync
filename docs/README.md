@@ -7,7 +7,11 @@ This directory is the durable audit trail for the project. Every execution miles
 ## Navigation / 导航
 
 - [`roadmap.md`](roadmap.md): overall delivery phases and acceptance criteria / 总体阶段与验收标准。
+- [`requirements.md`](requirements.md): functional, safety and quality contract / 功能、安全与质量契约。
+- [`architecture.md`](architecture.md): component boundaries, data model and workflow / 组件边界、数据模型与工作流。
+- [`platform-capabilities.md`](platform-capabilities.md): source-backed platform truth matrix / 基于源码证据的平台真实能力矩阵。
 - [`upstreams.md`](upstreams.md): pinned source repositories and capability baseline / 上游锁定与能力基线。
+- [`research/`](research/): detailed source research / 详细源码调研。
 - [`decisions/`](decisions/): architecture decision records / 架构决策记录。
 - [`executions/`](executions/): per-milestone goal, plan, progress and verification evidence / 每个里程碑的四件套记录。
 - [`templates/`](templates/): templates for all future executions / 后续执行模板。
@@ -17,6 +21,7 @@ This directory is the durable audit trail for the project. Every execution miles
 | ID | Milestone / 里程碑 | Status / 状态 | Commit / 提交 |
 | --- | --- | --- | --- |
 | 0001 | Bootstrap and pin upstreams / 初始化并锁定上游 | Complete / 已完成 | Baseline commit / 基线提交 |
+| 0002 | Upstream analysis and architecture / 上游分析与架构 | Complete / 已完成 | Research commit / 调研提交 |
 
 ## Documentation rule / 文档规则
 

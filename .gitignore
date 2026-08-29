@@ -22,8 +22,17 @@ build/
 data/
 downloads/
 library/
+archive/
+exports/
+logs/
+jobs/
+secrets/
+browser-profiles/
+.media-sync/
 browser_data/
 cookies.json
+*.part
+*.log
 
 # Editors and operating systems
 .idea/
