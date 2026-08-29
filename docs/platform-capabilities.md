@@ -33,9 +33,9 @@ MediaCrawler 桥接器只开放二维码、Cookie 和已保存的账户级浏览
 | `bili` | UID or space URL / UID 或空间 URL | Creator videos / 投稿视频 | ❌ full history, 30 per page / 30 条每页全历史 | ❌ |
 | `wb` | numeric user ID / 数字 ID | Weibo notes / 微博内容 | ❌ full mobile-container pagination / 全量分页 | ❌ |
 | `tieba` | home URL; CLI also accepts portrait ID / 主页 URL；CLI 可接收 portrait ID | Author threads / 作者主题 | ✅ checks configured maximum / 检查配置上限 | ❌ |
-| `zhihu` | `/people/<url_token>` | Answers only by default; article/video calls disabled / 默认只抓回答，文章和视频被关闭 | ⚠ incomplete / 不完整 | ✅ |
+| `zhihu` | `/people/<url_token>` | Answers only by default; article/video calls disabled / 默认只抓回答，文章和视频被关闭 | ❌ ignores cap and traverses answers until end / 忽略上限并遍历全部回答 | ❌ |
 
-Creator-mode dispatch exists for all seven platforms (`media_platform/*/core.py:120-142`). The CLI routes `--creator_id` into six platform lists but omits Zhihu (`cmd_arg/arg.py:388-402`). Most creator stores are deliberately no-ops and content uses an anonymized creator hash (`tools/user_hash.py:11-36`; `store/{xhs,douyin,kuaishou,bilibili,weibo,tieba}/__init__.py`).
+Creator-mode dispatch exists for all seven platforms (`media_platform/*/core.py:120-142`). The CLI routes `--creator_id` into six platform lists but omits Zhihu (`cmd_arg/arg.py:388-402`). Most creator stores are deliberately no-ops and content uses an anonymized creator hash (`tools/user_hash.py:11-36`; `store/{xhs,douyin,kuaishou,bilibili,weibo,tieba}/__init__.py`). Zhihu's creator core does not call a creator store, and its JSONL `store_creator` is also a no-op, so no platform in this bridge provides a trustworthy creator profile row.
 
 ### Bridge policy / 桥接策略
 

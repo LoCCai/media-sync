@@ -99,6 +99,7 @@ def test_content_snapshot_normalizes_time_to_utc_and_freezes_metrics() -> None:
     )
 
     assert content.published_at == source_time
+    assert content.remote_type == "content"
     with pytest.raises(TypeError):
         content.metrics["likes"] = 4  # type: ignore[index]
 

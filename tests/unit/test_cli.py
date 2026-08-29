@@ -1,6 +1,8 @@
+import hashlib
 import json
 from collections.abc import Iterator
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import func, inspect, select, text
@@ -9,8 +11,9 @@ from typer.testing import CliRunner
 import media_sync.interfaces.cli as cli_module
 from media_sync import __version__
 from media_sync.config import Settings, get_settings
-from media_sync.domain import DomainError
-from media_sync.infrastructure.db import Account, Database, LoginSession
+from media_sync.domain import DomainError, Platform
+from media_sync.infrastructure.db import Account, Database, LoginSession, Subscription
+from media_sync.integrations.mediacrawler.policies import normalize_creator_reference
 from media_sync.interfaces.cli import app, collect_doctor_report
 
 runner = CliRunner()
@@ -86,6 +89,144 @@ def test_doctor_report_is_read_only(tmp_path: Path) -> None:
     assert list(tmp_path.iterdir()) == []
 
 
+def test_mediacrawler_doctor_requires_explicit_license_without_writes(tmp_path: Path) -> None:
+    settings = Settings(
+        state_dir=tmp_path / "state",
+        mediacrawler_lock_path=tmp_path / "missing-lock.json",
+        _env_file=None,
+    )
+
+    report = cli_module.collect_mediacrawler_doctor_report(
+        settings,
+        license_acknowledged=False,
+    )
+
+    assert report["ok"] is False
+    assert report["code"] == "license_acknowledgement_required"
+    assert report["live_qualification"] == "NOT_RUN"
+    assert not tmp_path.exists() or list(tmp_path.iterdir()) == []
+
+
+def test_mediacrawler_doctor_ready_report_is_fixed_and_path_free(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sentinel_path = tmp_path / "sentinel-private" / "python.exe"
+    settings = Settings(
+        mediacrawler_lock_path=tmp_path / "sentinel-lock.json",
+        mediacrawler_python_executable=sentinel_path,
+        _env_file=None,
+    )
+    monkeypatch.setattr(
+        cli_module,
+        "verify_mediacrawler_checkout",
+        lambda lock_path, *, license_acknowledged: SimpleNamespace(commit="a" * 40),
+    )
+    monkeypatch.setattr(
+        cli_module,
+        "verify_mediacrawler_python",
+        lambda python_executable: SimpleNamespace(executable=python_executable),
+    )
+    monkeypatch.setattr(cli_module, "get_settings", lambda: settings)
+
+    result = runner.invoke(app, ["mediacrawler", "doctor", "--accept-license", "--json"])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["ok"] is True
+    assert payload["code"] == "ready"
+    assert payload["upstream_sha"] == "a" * 40
+    assert payload["runtime_ready"] is True
+    assert payload["live_qualification"] == "NOT_RUN"
+    assert "sentinel-private" not in result.output
+    assert "sentinel-lock" not in result.output
+
+
+@pytest.mark.parametrize("platform", ["xhs", "dy", "ks", "bili", "wb", "tieba", "zhihu"])
+def test_mediacrawler_dry_run_wires_all_platforms_without_spawn_or_secret_output(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    platform: str,
+) -> None:
+    settings = Settings(
+        mediacrawler_lock_path=tmp_path / "lock.json",
+        mediacrawler_python_executable=tmp_path / "python.exe",
+        _env_file=None,
+    )
+    captured: list[object] = []
+    temporary_roots: list[Path] = []
+
+    class _FakeBridge:
+        def prepare(self, request: object) -> object:
+            captured.append(request)
+            temporary_roots.append(request.integration_root)  # type: ignore[attr-defined]
+            return SimpleNamespace(manifest=SimpleNamespace(upstream_sha="b" * 40))
+
+    monkeypatch.setattr(cli_module, "get_settings", lambda: settings)
+    monkeypatch.setattr(cli_module, "MediaCrawlerBridge", _FakeBridge)
+
+    result = runner.invoke(
+        app,
+        [
+            "mediacrawler",
+            "dry-run",
+            "--platform",
+            platform,
+            "--creator-id",
+            f"stable-{platform}-creator",
+            "--accept-license",
+            "--allow-full-history",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["platform"] == platform
+    assert payload["spawned"] is False
+    assert payload["command_shape"] == [
+        "<verified-python>",
+        "-I",
+        "-u",
+        "-B",
+        "<isolated-runner>",
+        "--manifest",
+        "<unique-job-manifest>",
+    ]
+    assert payload["live_qualification"] == "NOT_RUN"
+    assert captured
+    assert all(not root.exists() for root in temporary_roots)
+    assert f"stable-{platform}-creator" not in result.output
+
+
+def test_mediacrawler_dry_run_rejects_signed_creator_url_without_echoing_token(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sentinel = "sentinel-xsec-token"
+    settings = Settings(
+        mediacrawler_python_executable=tmp_path / "python.exe",
+        _env_file=None,
+    )
+    monkeypatch.setattr(cli_module, "get_settings", lambda: settings)
+
+    result = runner.invoke(
+        app,
+        [
+            "mediacrawler",
+            "dry-run",
+            "--platform",
+            "xhs",
+            "--creator-id",
+            f"https://example.test/creator?xsec_token={sentinel}",
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert "stable non-secret ID" in result.output
+    assert sentinel not in result.output
+
+
 def test_db_init_runs_packaged_migrations_idempotently(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     database_path = tmp_path / "state" / "cli.sqlite3"
     monkeypatch.setenv("MEDIA_SYNC_STATE_DIR", str(tmp_path / "state"))
@@ -106,7 +247,7 @@ def test_db_init_runs_packaged_migrations_idempotently(tmp_path: Path, monkeypat
         try:
             assert "alembic_version" in inspect(database.engine).get_table_names()
             with database.engine.connect() as connection:
-                assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0001_core"
+                assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0002_checkpoint"
         finally:
             database.dispose()
     finally:
@@ -155,8 +296,8 @@ def test_db_status_reports_current_complete_schema_without_exposing_target(
         "ok": True,
         "database_driver": "sqlite+pysqlite",
         "reachable": True,
-        "revision": "0001_core",
-        "expected_revision": "0001_core",
+        "revision": "0002_checkpoint",
+        "expected_revision": "0002_checkpoint",
         "revision_current": True,
         "required_table_count": 10,
         "present_table_count": 10,
@@ -165,7 +306,7 @@ def test_db_status_reports_current_complete_schema_without_exposing_target(
     }
     assert text_result.exit_code == 0
     assert "Database ready:" in text_result.output
-    assert "revision=0001_core" in text_result.output
+    assert "revision=0002_checkpoint" in text_result.output
     assert "tables=10/10" in text_result.output
     for output in (json_result.output, text_result.output):
         assert initialized_cli_database not in output
@@ -304,6 +445,80 @@ def test_account_add_rejects_login_method_not_supported_by_fake_adapter(
 
 
 @pytest.mark.parametrize(
+    ("login_method", "credential_arguments"),
+    [
+        ("qr", []),
+        ("saved_session", []),
+        ("cookie", ["--credential-ref", "env:MEDIA_SYNC_TEST_COOKIE"]),
+    ],
+)
+def test_account_add_accepts_only_qualified_mediacrawler_login_configuration(
+    initialized_cli_database: str,
+    login_method: str,
+    credential_arguments: list[str],
+) -> None:
+    result = runner.invoke(
+        app,
+        [
+            "account",
+            "add",
+            "--platform",
+            "xhs",
+            "--display-name",
+            f"MediaCrawler {login_method}",
+            "--adapter",
+            "mediacrawler",
+            "--login-method",
+            login_method,
+            *credential_arguments,
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["adapter"] == "mediacrawler"
+    assert "MEDIA_SYNC_TEST_COOKIE" not in result.output
+
+
+@pytest.mark.parametrize(
+    ("login_method", "credential_arguments", "message"),
+    [
+        ("phone", [], "support only QR"),
+        ("cookie", [], "requires credential_ref"),
+        ("qr", ["--credential-ref", "env:MEDIA_SYNC_TEST_COOKIE"], "allowed only"),
+    ],
+)
+def test_account_add_rejects_unsafe_mediacrawler_login_configuration_before_insert(
+    initialized_cli_database: str,
+    login_method: str,
+    credential_arguments: list[str],
+    message: str,
+) -> None:
+    result = runner.invoke(
+        app,
+        [
+            "account",
+            "add",
+            "--platform",
+            "xhs",
+            "--display-name",
+            "Rejected MediaCrawler",
+            "--adapter",
+            "mediacrawler",
+            "--login-method",
+            login_method,
+            *credential_arguments,
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert message in result.output
+    assert "MEDIA_SYNC_TEST_COOKIE" not in result.output
+    assert _row_count(initialized_cli_database, Account) == 0
+
+
+@pytest.mark.parametrize(
     "credential_ref",
     [
         "env:MEDIA_SYNC_COOKIE",
@@ -393,3 +608,155 @@ def test_account_add_redacts_domain_error_message(
     assert "sentinel-secret" not in result.output
     assert "Traceback" not in result.output
     assert _row_count(initialized_cli_database, Account) == 0
+
+
+def test_mediacrawler_subscription_stores_only_secret_creator_reference_locator(
+    initialized_cli_database: str,
+) -> None:
+    account_result = runner.invoke(
+        app,
+        [
+            "account",
+            "add",
+            "--platform",
+            "xhs",
+            "--display-name",
+            "MediaCrawler subscription account",
+            "--adapter",
+            "mediacrawler",
+            "--login-method",
+            "qr",
+            "--json",
+        ],
+    )
+    assert account_result.exit_code == 0, account_result.output
+    account_id = json.loads(account_result.output)["id"]
+
+    subscription_result = runner.invoke(
+        app,
+        [
+            "subscription",
+            "add",
+            "--account-id",
+            account_id,
+            "--platform",
+            "xhs",
+            "--creator-remote-id",
+            "stable-author-001",
+            "--display-name",
+            "Fixture Author",
+            "--creator-reference-ref",
+            "env:MEDIA_SYNC_XHS_CREATOR_URL",
+            "--json",
+        ],
+    )
+
+    assert subscription_result.exit_code == 0, subscription_result.output
+    assert "MEDIA_SYNC_XHS_CREATOR_URL" not in subscription_result.output
+    database = Database(initialized_cli_database)
+    try:
+        with database.session() as session:
+            subscription = session.scalar(select(Subscription))
+            assert subscription is not None
+            assert subscription.policy == {
+                "mediacrawler": {"creator_input": {"secret_ref": "env:MEDIA_SYNC_XHS_CREATOR_URL"}}
+            }
+    finally:
+        database.dispose()
+
+
+@pytest.mark.parametrize(
+    ("platform", "remote_id"),
+    [
+        (Platform.BILI, "stable-author-001"),
+        (Platform.TIEBA, "stable-tieba-author"),
+        (Platform.ZHIHU, "stable-zhihu-author"),
+    ],
+)
+def test_mediacrawler_creator_fingerprint_is_derived_from_stable_author_id(
+    tmp_path: Path,
+    platform: Platform,
+    remote_id: str,
+) -> None:
+    settings = Settings(secret_file_dir=tmp_path / "secrets", _env_file=None)
+
+    fingerprint = cli_module._expected_mediacrawler_creator_fingerprint(
+        settings,
+        platform=platform,
+        creator_remote_id=remote_id,
+        policy={},
+    )
+
+    expected_reference = normalize_creator_reference(platform, remote_id)
+    assert fingerprint == hashlib.sha256(expected_reference.encode("utf-8")).hexdigest()
+
+
+def test_mediacrawler_creator_fingerprint_resolves_secret_reference_only_in_memory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secret_reference = "https://www.xiaohongshu.com/user/profile/author?xsec_token=sentinel-secret"
+    monkeypatch.setenv("MEDIA_SYNC_TEST_CREATOR_REFERENCE", secret_reference)
+    settings = Settings(secret_file_dir=tmp_path / "secrets", _env_file=None)
+
+    fingerprint = cli_module._expected_mediacrawler_creator_fingerprint(
+        settings,
+        platform=Platform.XHS,
+        creator_remote_id="stable-author-001",
+        policy={
+            "mediacrawler": {
+                "creator_input": {"secret_ref": "env:MEDIA_SYNC_TEST_CREATOR_REFERENCE"},
+            }
+        },
+    )
+
+    assert fingerprint == hashlib.sha256(secret_reference.encode("utf-8")).hexdigest()
+
+
+def test_mediacrawler_subscription_rejects_signed_url_as_persisted_creator_id(
+    initialized_cli_database: str,
+) -> None:
+    account_result = runner.invoke(
+        app,
+        [
+            "account",
+            "add",
+            "--platform",
+            "xhs",
+            "--display-name",
+            "Signed URL rejection account",
+            "--adapter",
+            "mediacrawler",
+            "--login-method",
+            "qr",
+            "--json",
+        ],
+    )
+    account_id = json.loads(account_result.output)["id"]
+    sentinel = "sentinel-xsec-token"
+
+    result = runner.invoke(
+        app,
+        [
+            "subscription",
+            "add",
+            "--account-id",
+            account_id,
+            "--platform",
+            "xhs",
+            "--creator-remote-id",
+            f"https://www.xiaohongshu.com/user/profile/author?xsec_token={sentinel}",
+            "--display-name",
+            "Rejected",
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert "must be a stable ID" in result.output
+    assert sentinel not in result.output
+    database = Database(initialized_cli_database)
+    try:
+        with database.session() as session:
+            assert session.scalar(select(Subscription)) is None
+    finally:
+        database.dispose()

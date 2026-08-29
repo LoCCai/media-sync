@@ -50,7 +50,7 @@ def test_cli_database_account_subscription_and_repeatable_sync_workflow(
             "--login-method",
             "cookie",
             "--credential-ref",
-            "keyring:sentinel-credential",
+            "keyring:media-sync/sentinel-credential",
             "--json",
         ]
         account_output = _invoke(account_arguments)

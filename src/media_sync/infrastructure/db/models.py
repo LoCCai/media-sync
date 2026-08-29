@@ -194,6 +194,7 @@ class Subscription(TimestampMixin, Base):
         UniqueConstraint("account_id", "author_id"),
         CheckConstraint("interval_seconds >= 60", name="interval_seconds_minimum"),
         CheckConstraint("max_items >= 1", name="max_items_positive"),
+        CheckConstraint("checkpoint_revision >= 0", name="checkpoint_revision_nonnegative"),
         CheckConstraint("consecutive_failures >= 0", name="consecutive_failures_nonnegative"),
         Index("ix_subscriptions_due", "enabled", "next_run_at"),
     )
@@ -215,6 +216,7 @@ class Subscription(TimestampMixin, Base):
     cursor: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     cursor_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
     backfill_cursor: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    checkpoint_revision: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     policy: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict, server_default=text("'{}'"))
     next_run_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     last_run_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
@@ -335,6 +337,14 @@ class SyncRun(TimestampMixin, Base):
         CheckConstraint("updated_count >= 0", name="updated_count_nonnegative"),
         CheckConstraint("asset_count >= 0", name="asset_count_nonnegative"),
         CheckConstraint("event_sequence >= 0", name="event_sequence_nonnegative"),
+        CheckConstraint(
+            "checkpoint_revision_before IS NULL OR checkpoint_revision_before >= 0",
+            name="checkpoint_revision_before_nonnegative",
+        ),
+        CheckConstraint(
+            "checkpoint_revision_after IS NULL OR checkpoint_revision_after >= 0",
+            name="checkpoint_revision_after_nonnegative",
+        ),
         Index("ix_sync_runs_subscription_status", "subscription_id", "status"),
         Index("ix_sync_runs_created_at", "created_at"),
     )
@@ -349,6 +359,8 @@ class SyncRun(TimestampMixin, Base):
     attempt: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     cursor_before: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     cursor_after: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    checkpoint_revision_before: Mapped[int | None] = mapped_column(Integer)
+    checkpoint_revision_after: Mapped[int | None] = mapped_column(Integer)
     manifest: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict, server_default=text("'{}'"))
     discovered_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     updated_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")

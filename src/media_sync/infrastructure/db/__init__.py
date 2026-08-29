@@ -6,6 +6,11 @@ outer transaction so callers can combine multiple repository operations.
 
 from .base import Base, UTCDateTime, new_uuid, utc_now
 from .database import Database, create_database_engine
+from .mediacrawler_ingestion import (
+    IngestionMode,
+    MediaCrawlerIngestionResult,
+    MediaCrawlerIngestionService,
+)
 from .migration import upgrade_database
 from .models import (
     Account,
@@ -32,6 +37,7 @@ from .repositories import (
     LoginSessionRepository,
     NotFoundError,
     RepositoryError,
+    StaleCheckpointError,
     SubscriptionRepository,
     SyncRunRepository,
 )
@@ -52,15 +58,19 @@ __all__ = [
     "Database",
     "ExportRecord",
     "ExportRecordRepository",
+    "IngestionMode",
     "Job",
     "JobRepository",
     "LeaseLostError",
     "LoginSession",
     "LoginSessionRepository",
+    "MediaCrawlerIngestionResult",
+    "MediaCrawlerIngestionService",
     "NotFoundError",
     "RepositoryError",
     "RunEvent",
     "SQLAlchemySyncRepository",
+    "StaleCheckpointError",
     "Subscription",
     "SubscriptionRepository",
     "SyncRun",

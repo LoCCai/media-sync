@@ -24,6 +24,10 @@ class Settings(BaseSettings):
     archive_dir: Path = Path("archive")
     export_dir: Path = Path("exports")
     job_dir: Path = Path("jobs")
+    secret_file_dir: Path | None = None
+    mediacrawler_lock_path: Path = Path("upstreams.lock.json")
+    mediacrawler_python_executable: Path | None = None
+    mediacrawler_runtime_dir: Path | None = None
     database_url: str | None = None
     api_host: str = "127.0.0.1"
     api_port: int = Field(default=8632, ge=1, le=65535)
@@ -47,6 +51,18 @@ class Settings(BaseSettings):
             return self.database_url
         database_path = (self.state_dir / "media-sync.sqlite3").resolve()
         return f"sqlite+pysqlite:///{database_path.as_posix()}"
+
+    @property
+    def resolved_secret_file_dir(self) -> Path:
+        """Return the root allowed for relative ``file:`` secret references."""
+
+        return (self.secret_file_dir or self.state_dir / "secrets").expanduser().resolve()
+
+    @property
+    def resolved_mediacrawler_runtime_dir(self) -> Path:
+        """Return the root for isolated bridge profiles, manifests, and output."""
+
+        return (self.mediacrawler_runtime_dir or self.state_dir / "mediacrawler").expanduser().resolve()
 
     def ensure_directories(self) -> None:
         """Create runtime roots without creating or exposing credential files."""

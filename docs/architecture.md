@@ -90,9 +90,9 @@ Claims use a lease timestamp, worker ID and a fresh fencing token for every atte
 
 任务领取使用租约时间、worker ID 和每次尝试新生成的 fencing token。工作器崩溃后，只有租约过期的任务才能被重新领取；旧执行不能借用同一 worker ID 后续领取的新租约完成任务。状态变更使用 compare-and-swap，事件序号原子分配，计数在事务内更新；文件先写入 `.part`，再在同一文件系统原子替换。
 
-The foundation Fake workflow uses one caller-owned transaction with per-item savepoints. A classified crawler failure may commit its failed run plus items that were already normalized successfully; a database failure or explicit transaction-owner rejection rolls the complete attempt back. Live crawler work must not hold a SQLite write transaction across browser/network waits: the bridge milestone will commit bounded ingestion batches and publish the durable checkpoint only after each batch succeeds.
+The foundation Fake workflow uses one caller-owned transaction with per-item savepoints. A classified crawler failure may commit its failed run plus items that were already normalized successfully; a database failure or explicit transaction-owner rejection rolls the complete attempt back. MediaCrawler work holds no SQLite transaction across browser/network waits. A parent-authenticated completion receipt seals an immutable output snapshot; ingestion then commits bounded oldest-first batches and atomically publishes each batch's content, run counters and fenced checkpoint.
 
-基础 Fake 工作流使用调用方拥有的外层事务，并为单条内容使用保存点。分类后的爬虫失败可以提交失败运行记录及此前已成功归一化的内容；数据库失败或事务拥有者显式拒绝时会回滚整次尝试。真实爬虫不得在浏览器/网络等待期间长期占用 SQLite 写事务；桥接里程碑将按有界批次提交导入，并仅在每批成功后发布持久检查点。
+基础 Fake 工作流使用调用方拥有的外层事务，并为单条内容使用保存点。分类后的爬虫失败可以提交失败运行记录及此前已成功归一化的内容；数据库失败或事务拥有者显式拒绝时会回滚整次尝试。MediaCrawler 在浏览器/网络等待期间不持有 SQLite 事务；父进程认证的完成回执会密封不可变输出快照，随后导入按旧到新的有界批次提交，并原子发布该批内容、run 计数与带 fencing 的 checkpoint。
 
 An adapter continuation cursor is not by itself an incremental high-water mark. Subscriptions therefore keep a publish timestamp plus every known remote ID at that timestamp, while backfill continuation is tracked separately. The bridge/native adapter must begin from the newest page, scan an overlap window, accept previously unseen IDs at the watermark boundary, and stop only under its qualified ordering contract.
 
@@ -118,13 +118,19 @@ Capabilities include login methods, creator reference forms, content kinds, nati
 
 ## 7. MediaCrawler bridge / MediaCrawler 桥接
 
-The bridge is optional and explicitly license-gated. It launches the pinned checkout as a child process in an isolated job directory, with one crawler at a time per account. Safe non-secret arguments include platform, `creator`, creator reference, JSONL output path, item cap, comment flags and headless setting.
+The bridge is optional and explicitly license-gated. It launches the pinned checkout as a child process with a unique output root and one crawler at a time per account. The public argument vector contains only the verified Python/runner entry point and a confined non-secret specification path; platform options are applied inside the independent runner.
 
-Cookie values are injected through a private environment variable read by a small independent runner, then removed from its environment before upstream execution. This avoids the upstream WebUI pattern that adds cookies to both the command line and its logged command (`api/services/crawler_manager.py:113-128, 205-239`). The runner also supplies isolated account profile paths, enables media when requested, and works around the missing Zhihu creator CLI assignment without editing upstream files.
+Cookie values and secret-bearing creator-reference components are injected through private environment channels read by a small independent runner, then removed before any upstream import or descendant process starts. Resolved secret creator inputs retain typed `SecretValue` provenance; ambiguous plain query/fragment URLs fail closed. This avoids the upstream WebUI pattern that adds cookies to both the command line and its logged command (`api/services/crawler_manager.py:113-128, 205-239`). The runner also supplies isolated account profile paths and works around the missing Zhihu creator CLI assignment without editing upstream files. Upstream binary downloads stay disabled; media-sync will own resumable downloads in the following phase.
 
-桥接器是可选且需要明确接受许可证的组件。Cookie 通过私有环境变量交给独立运行器，读取后立即从环境移除；不会沿用上游 WebUI 把 Cookie 放入命令行并记录完整命令的方式。运行器还负责账户级浏览器目录、媒体开关和知乎创作者参数兼容，全程不修改上游文件。
+桥接器是可选且需要明确接受许可证的组件。Cookie 通过私有环境变量交给独立运行器，读取后立即从环境移除；解析后的机密作者输入保留类型化 `SecretValue` 来源，含义不明的普通 query/fragment URL 默认拒绝。桥接不会沿用上游 WebUI 把 Cookie 放入命令行并记录完整命令的方式。运行器还负责账户级浏览器目录和知乎创作者参数兼容，全程不修改上游文件；上游二进制下载保持关闭。
 
-Output is read only from the run's new JSONL files. Because MediaCrawler names files by day and appends (`tools/async_file_writer.py:37-60`), each run receives a unique `SAVE_DATA_PATH`; no shared daily file is tailed. Raw lines are wrapped with adapter name, adapter version, upstream SHA and ingestion time.
+Because MediaCrawler names files by day and appends (`tools/async_file_writer.py:37-60`), each run receives a unique `SAVE_DATA_PATH`; no shared daily file is tailed. After child exit and descendant cleanup, the parent rejects any exact known Cookie/signed-reference echo, then seals the exact directory/file set, sizes and SHA-256 values in a manifest-bound completion receipt. Ingestion validates path/link invariants and reads each file once into immutable bytes before normalization, eliminating inspect-then-reopen races. Raw lines are wrapped with adapter name, adapter version, upstream SHA and ingestion time.
+
+MediaCrawler manifest schema v2 binds account, subscription, job, crawl-start checkpoint revision, intended forward/backfill mode, login method, maximum items and creator fingerprints. Recovery may replay an older sealed crawl against the current revision only to fill missing records; it cannot supply a continuation or regress the current cursor/watermark.
+
+由于 MediaCrawler 按日期命名并追加文件，每个任务使用唯一 `SAVE_DATA_PATH`，不会跟踪共享的每日文件。子进程退出并清理后代后，父进程先拒绝任何已知 Cookie/签名引用的精确回显，再把精确目录/文件集合、大小和 SHA-256 密封到与 manifest 绑定的完成回执。导入验证路径/链接不变量，并在归一化前只读取一次为不可变字节，从而消除“检查后重新打开”竞态。
+
+MediaCrawler manifest v2 绑定账户、订阅、任务、爬取起始 checkpoint revision、前向/回填模式、登录方式、数量上限及作者指纹。旧密封爬取只能针对当前 revision 补齐缺失记录，不能携带 continuation，也不能回退现有游标或水位。
 
 ## 8. Emby layout / Emby 目录映射
 

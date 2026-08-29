@@ -117,6 +117,8 @@ async def test_fake_sync_twice_persists_normalized_incremental_state(database: D
         subscription = session.get(Subscription, str(subscription_id))
         assert subscription is not None
         assert subscription.cursor is None
+        assert subscription.cursor_version == 1
+        assert subscription.checkpoint_revision == 2
         assert subscription.watermarked_at == first.watermark == second.watermark
         assert subscription.watermark_remote_ids == [
             "item-001",
@@ -132,8 +134,12 @@ async def test_fake_sync_twice_persists_normalized_incremental_state(database: D
         expected_cursor = {"value": first.final_cursor.value}
         assert first_run.cursor_before is None
         assert first_run.cursor_after == expected_cursor
+        assert first_run.checkpoint_revision_before == 0
+        assert first_run.checkpoint_revision_after == 1
         assert second_run.cursor_before == expected_cursor
         assert second_run.cursor_after is None
+        assert second_run.checkpoint_revision_before == 1
+        assert second_run.checkpoint_revision_after == 2
         assert first_run.status == second_run.status == RunStatus.SUCCEEDED.value
         assert first_run.discovered_count == first.processed_count == 3
         assert first_run.updated_count == 0
@@ -213,5 +219,6 @@ async def test_failed_second_write_can_roll_back_the_complete_outer_transaction(
         subscription = session.get(Subscription, str(subscription_id))
         assert subscription is not None
         assert subscription.cursor is None
+        assert subscription.checkpoint_revision == 0
         assert subscription.watermarked_at is None
         assert subscription.watermark_remote_ids == []

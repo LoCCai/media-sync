@@ -22,6 +22,11 @@ dependencies = [
     "uvicorn>=0.34,<1",
 ]
 
+[project.optional-dependencies]
+keyring = [
+    "keyring>=25,<26",
+]
+
 [project.scripts]
 media-sync = "media_sync.interfaces.cli:app"
 

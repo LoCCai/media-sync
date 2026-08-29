@@ -236,6 +236,7 @@ class ContentSnapshot:
     remote_id: str
     author_remote_id: str
     kind: ContentKind
+    remote_type: str = "content"
     title: str | None = None
     body: str | None = field(default=None, repr=False)
     canonical_url: str | None = field(default=None, repr=False)
@@ -250,6 +251,7 @@ class ContentSnapshot:
             "author_remote_id",
             _required_text(self.author_remote_id, "author_remote_id"),
         )
+        object.__setattr__(self, "remote_type", _required_text(self.remote_type, "remote_type"))
         object.__setattr__(self, "title", _optional_text(self.title, "title"))
         object.__setattr__(self, "body", _optional_text(self.body, "body"))
         object.__setattr__(self, "canonical_url", _validate_http_url(self.canonical_url, "canonical_url"))

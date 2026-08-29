@@ -72,6 +72,7 @@ def _content_upsert(snapshot: ContentSnapshot) -> ContentUpsert:
     return ContentUpsert(
         remote_id=snapshot.remote_id,
         kind=snapshot.kind.value,
+        remote_type=snapshot.remote_type,
         title=snapshot.title,
         body=snapshot.body,
         canonical_url=snapshot.canonical_url,
@@ -112,9 +113,10 @@ class SQLAlchemySyncRepository:
         self.session = session
         self._active_run_id: UUID | None = None
         self._active_subscription_id: UUID | None = None
+        self._expected_checkpoint_revision: int | None = None
         self._boundary_at: datetime | None = None
         self._boundary_remote_ids: set[str] = set()
-        self._processed_content_keys: set[tuple[str, str]] = set()
+        self._processed_content_keys: set[tuple[str, str, str]] = set()
         self._processed_asset_count = 0
 
     def upsert_author(self, snapshot: AuthorSnapshot) -> UUID:
@@ -158,7 +160,7 @@ class SQLAlchemySyncRepository:
             self.session.flush()
 
         self._observe_watermark_boundary(snapshot)
-        content_key = (snapshot.platform.value, snapshot.remote_id)
+        content_key = (snapshot.platform.value, snapshot.remote_type, snapshot.remote_id)
         if content_key not in self._processed_content_keys:
             self._processed_content_keys.add(content_key)
             self._processed_asset_count += len(assets)
@@ -177,11 +179,13 @@ class SQLAlchemySyncRepository:
         run = SyncRunRepository(self.session).create(
             subscription_id=database_subscription_id,
             cursor_before=subscription.cursor,
+            checkpoint_revision_before=subscription.checkpoint_revision,
             manifest=manifest,
         )
         run_id = _domain_id(run.id, entity="sync run")
         self._active_run_id = run_id
         self._active_subscription_id = subscription_id
+        self._expected_checkpoint_revision = subscription.checkpoint_revision
         self._boundary_at = None
         self._boundary_remote_ids.clear()
         self._processed_content_keys.clear()
@@ -230,19 +234,31 @@ class SQLAlchemySyncRepository:
             boundary_ids = tuple(sorted(self._boundary_remote_ids))
 
         payload = _cursor_payload(cursor)
-        SubscriptionRepository(self.session).update_cursor(
+        if self._expected_checkpoint_revision is None:
+            raise RepositoryError("cursor advancement requires an active synchronization run")
+        expected_revision = self._expected_checkpoint_revision
+        published = SubscriptionRepository(self.session).publish_checkpoint(
             _database_id(subscription_id),
-            payload,
+            expected_revision=expected_revision,
+            cursor=payload,
             cursor_version=1,
             succeeded_at=utc_now(),
             watermarked_at=normalized_watermark,
             watermark_remote_ids=boundary_ids,
         )
+        self._expected_checkpoint_revision = published.checkpoint_revision
 
         if self._active_run_id is not None:
-            run = SyncRunRepository(self.session).require(_database_id(self._active_run_id))
+            run_repository = SyncRunRepository(self.session)
+            run = run_repository.require(_database_id(self._active_run_id))
             if run.subscription_id != _database_id(subscription_id):
                 raise RepositoryError("active synchronization run belongs to a different subscription")
+            run_repository.record_checkpoint_publication(
+                run.id,
+                expected_revision=expected_revision,
+                published_revision=published.checkpoint_revision,
+                expected_status=RunStatus.INGESTING.value,
+            )
             run.cursor_after = payload
             run.discovered_count = len(self._processed_content_keys)
             # The current port does not provide an old/new metadata comparison,

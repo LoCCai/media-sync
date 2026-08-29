@@ -20,10 +20,10 @@ This directory is the durable audit trail for the project. Every execution miles
 
 | ID | Milestone / 里程碑 | Status / 状态 | Commit / 提交 |
 | --- | --- | --- | --- |
-| 0001 | Bootstrap and pin upstreams / 初始化并锁定上游 | Complete / 已完成 | Baseline commit / 基线提交 |
-| 0002 | Upstream analysis and architecture / 上游分析与架构 | Complete / 已完成 | Research commit / 调研提交 |
-| 0003 | Core domain, persistence and offline CLI / 核心领域、持久化与离线 CLI | Complete / 已完成 | Core foundation commit / 核心基线提交 |
-| 0004 | Credential-safe MediaCrawler bridge / 安全凭据与 MediaCrawler 桥接 | In progress / 进行中 | Planning commit / 计划提交 |
+| 0001 | Bootstrap and pin upstreams / 初始化并锁定上游 | Complete / 已完成 | `59da120` |
+| 0002 | Upstream analysis and architecture / 上游分析与架构 | Complete / 已完成 | `af813bd`, `201fbbf` |
+| 0003 | Core domain, persistence and offline CLI / 核心领域、持久化与离线 CLI | Complete / 已完成 | `564cdb8` |
+| 0004 | Credential-safe MediaCrawler bridge / 安全凭据与 MediaCrawler 桥接 | Complete / 已完成 | Plan / 计划 `0c27ad6`; this implementation / 本实现提交 |
 
 ## Documentation rule / 文档规则
 

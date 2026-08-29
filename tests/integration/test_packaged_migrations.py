@@ -33,7 +33,7 @@ def test_programmatic_upgrade_uses_packaged_resources_and_handles_percent_path(t
     try:
         assert "accounts" in inspect(engine).get_table_names()
         with engine.connect() as connection:
-            assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0001_core"
+            assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0002_checkpoint"
     finally:
         engine.dispose()
 
@@ -87,7 +87,7 @@ try:
     if "accounts" not in inspect(engine).get_table_names():
         raise AssertionError("packaged migration did not create accounts")
     with engine.connect() as connection:
-        if connection.scalar(text("SELECT version_num FROM alembic_version")) != "0001_core":
+        if connection.scalar(text("SELECT version_num FROM alembic_version")) != "0002_checkpoint":
             raise AssertionError("unexpected migration revision")
 finally:
     engine.dispose()

@@ -6,9 +6,9 @@
 
 ## Current status / 当前状态
 
-The core foundation is runnable: packaged Alembic migrations, SQLite repositories, durable leases, account/subscription CLI commands, a deterministic seven-platform-capable test adapter contract, and an idempotent sync pipeline are implemented. The MediaCrawler bridge, real downloads, Emby export, scheduler/API, and user-authorized live qualification remain under active construction. Requirements, capability truth, progress, and exact verification evidence are tracked in [`docs/`](docs/README.md).
+The core foundation and credential-safe MediaCrawler bridge are runnable. The bridge verifies the exact pinned checkout, isolates accounts/jobs, keeps secrets out of arguments, manifests, receipts, operator output and SQLite, normalizes fixtures for all seven platform identifiers, and ingests sealed output with restart-safe checkpoint fencing. Real downloads, Emby export, scheduler/API, and user-authorized live qualification remain under construction. Requirements, capability truth, progress, and exact verification evidence are tracked in [`docs/`](docs/README.md).
 
-核心基线已可运行：已实现随包发布的 Alembic 迁移、SQLite 仓储、持久租约、账户/订阅 CLI、覆盖七个平台标识的确定性测试适配协议，以及幂等同步链路。MediaCrawler 桥接、真实下载、Emby 导出、调度/API 和用户授权的线上验收仍在持续实现。需求、真实能力、进展及准确验证证据均保存在 [`docs/`](docs/README.md)。
+核心基线与安全凭据的 MediaCrawler 桥接已可运行。桥接会验证精确锁定检出、隔离账户/任务、阻止密钥进入持久落点、归一化七个平台标识的夹具，并通过密封输出和可恢复 checkpoint fencing 导入。真实下载、Emby 导出、调度/API 和用户授权线上验收仍在持续实现。需求、真实能力、进展及准确验证证据均保存在 [`docs/`](docs/README.md)。
 
 ## Foundation quickstart / 基线快速开始
 
@@ -33,14 +33,18 @@ uv run media-sync subscription list --json
 uv run media-sync sync run --subscription-id <SUBSCRIPTION_UUID> --json
 ```
 
-Only opaque secret references such as `env:MEDIA_SYNC_BILI_COOKIE` or `keyring:media-sync/bili-demo` may be passed to `--credential-ref`; raw Cookie/password values are rejected. Run the complete offline quality gate with `uv run pytest` and see [`docs/executions/0003-core-foundation/verification.md`](docs/executions/0003-core-foundation/verification.md) for the recorded environment and results.
+Only opaque secret references such as `env:MEDIA_SYNC_BILI_COOKIE` or `keyring:media-sync/bili-demo` may be passed to `--credential-ref`; raw Cookie/password values are rejected. Run the complete offline quality gate with `uv run pytest` and see [`docs/executions/0004-mediacrawler-bridge/verification.md`](docs/executions/0004-mediacrawler-bridge/verification.md) for the recorded environment and results.
 
-`--credential-ref` 只接受 `env:MEDIA_SYNC_BILI_COOKIE`、`keyring:media-sync/bili-demo` 等不透明引用；原始 Cookie/密码会被拒绝。可用 `uv run pytest` 运行完整离线质量门禁；执行环境与结果记录在 [`docs/executions/0003-core-foundation/verification.md`](docs/executions/0003-core-foundation/verification.md)。
+OS-keyring lookup is optional; install it with `uv sync --extra keyring` before using a `keyring:` reference. Confined `file:<relative-path>` references resolve below `MEDIA_SYNC_SECRET_FILE_DIR` (or the private state-directory default).
+
+`--credential-ref` 只接受 `env:MEDIA_SYNC_BILI_COOKIE`、`keyring:media-sync/bili-demo` 等不透明引用；原始 Cookie/密码会被拒绝。可用 `uv run pytest` 运行完整离线质量门禁；执行环境与结果记录在 [`docs/executions/0004-mediacrawler-bridge/verification.md`](docs/executions/0004-mediacrawler-bridge/verification.md)。
+
+系统钥匙串是可选能力；使用 `keyring:` 引用前请运行 `uv sync --extra keyring`。`file:<relative-path>` 只会在 `MEDIA_SYNC_SECRET_FILE_DIR` 下解析；未配置时使用私有状态目录中的默认位置。
 
 ## Scope / 范围
 
 - Platforms / 平台：小红书、抖音、快手、哔哩哔哩、微博、百度贴吧、知乎。
-- Authentication / 登录：按平台能力支持二维码、手机号与 Cookie/已保存浏览器会话。
+- Authentication / 登录：当前桥接按锁定源码的可达路径支持二维码、Cookie 与已保存浏览器会话；不宣称手机号登录可用。
 - Subscription / 订阅：保存作者身份、定时增量扫描、去重与失败重试。
 - Content / 内容：归一化图文、视频、图片及相关元数据。
 - Media library / 媒体库：输出稳定目录、媒体文件、海报/封面和 Emby/Jellyfin NFO。

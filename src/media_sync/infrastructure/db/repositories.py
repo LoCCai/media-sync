@@ -13,13 +13,14 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
-from sqlalchemy import and_, case, func, select, update
+from sqlalchemy import and_, case, func, or_, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.orm import Session, joinedload
 
 from media_sync.domain.enums import AuthStatus, RunStatus
 from media_sync.domain.transitions import transition_auth, transition_run
+from media_sync.security import SecretReference, redact_mapping, redact_text
 
 from .base import new_uuid, utc_now
 from .models import (
@@ -52,6 +53,19 @@ class LeaseLostError(RepositoryError):
     """A worker attempted to mutate a job without its current lease."""
 
 
+class StaleCheckpointError(RepositoryError):
+    """A synchronization run attempted to publish an obsolete checkpoint."""
+
+    def __init__(self, subscription_id: str, expected_revision: int, actual_revision: int) -> None:
+        self.subscription_id = subscription_id
+        self.expected_revision = expected_revision
+        self.actual_revision = actual_revision
+        super().__init__(
+            f"subscription {subscription_id} checkpoint is stale: "
+            f"expected revision {expected_revision}, current revision {actual_revision}"
+        )
+
+
 class _UnsetType:
     __slots__ = ()
 
@@ -77,10 +91,14 @@ def _thaw_json(value: Any) -> Any:
 
 
 def _json(value: Mapping[str, Any] | None) -> dict[str, Any]:
-    thawed = _thaw_json(value or {})
+    thawed = _thaw_json(redact_mapping(value or {}))
     if not isinstance(thawed, dict):  # pragma: no cover - Mapping always becomes dict
         raise TypeError("JSON object conversion did not produce a dictionary")
     return thawed
+
+
+def _safe_text(value: str | None) -> str | None:
+    return redact_text(value) if value is not None else None
 
 
 def _require_status(value: str, allowed: frozenset[str], kind: str) -> None:
@@ -150,12 +168,13 @@ class AccountRepository:
         profile_path: str | None = None,
         auth_status: str = "unknown",
     ) -> Account:
+        safe_credential_ref = SecretReference.parse(credential_ref).serialize() if credential_ref is not None else None
         account = Account(
             platform=platform,
             adapter=adapter,
             display_name=display_name,
             login_method=login_method,
-            credential_ref=credential_ref,
+            credential_ref=safe_credential_ref,
             profile_path=profile_path,
             auth_status=auth_status,
         )
@@ -249,8 +268,8 @@ class AuthorRepository:
                     remote_id=value.remote_id,
                     display_name=value.display_name,
                     handle=value.handle,
-                    profile_url=value.profile_url,
-                    avatar_url=value.avatar_url,
+                    profile_url=_safe_text(value.profile_url),
+                    avatar_url=_safe_text(value.avatar_url),
                     raw=_json(value.raw),
                     first_seen_at=now,
                     last_seen_at=now,
@@ -262,8 +281,8 @@ class AuthorRepository:
                     set_={
                         "display_name": value.display_name,
                         "handle": value.handle,
-                        "profile_url": value.profile_url,
-                        "avatar_url": value.avatar_url,
+                        "profile_url": _safe_text(value.profile_url),
+                        "avatar_url": _safe_text(value.avatar_url),
                         "raw": _json(value.raw),
                         "last_seen_at": now,
                         "updated_at": now,
@@ -281,8 +300,8 @@ class AuthorRepository:
                 remote_id=value.remote_id,
                 display_name=value.display_name,
                 handle=value.handle,
-                profile_url=value.profile_url,
-                avatar_url=value.avatar_url,
+                profile_url=_safe_text(value.profile_url),
+                avatar_url=_safe_text(value.avatar_url),
                 raw=_json(value.raw),
                 first_seen_at=now,
                 last_seen_at=now,
@@ -291,8 +310,8 @@ class AuthorRepository:
         else:
             author.display_name = value.display_name
             author.handle = value.handle
-            author.profile_url = value.profile_url
-            author.avatar_url = value.avatar_url
+            author.profile_url = _safe_text(value.profile_url)
+            author.avatar_url = _safe_text(value.avatar_url)
             author.raw = _json(value.raw)
             author.last_seen_at = now
         self.session.flush()
@@ -342,8 +361,8 @@ class AuthorRepository:
                     remote_id=value.remote_id,
                     kind=value.kind,
                     title=value.title,
-                    body=value.body,
-                    canonical_url=value.canonical_url,
+                    body=_safe_text(value.body),
+                    canonical_url=_safe_text(value.canonical_url),
                     published_at=value.published_at,
                     remote_updated_at=value.remote_updated_at,
                     metrics=_json(value.metrics),
@@ -360,8 +379,8 @@ class AuthorRepository:
                         "author_id": author.id,
                         "kind": value.kind,
                         "title": value.title,
-                        "body": value.body,
-                        "canonical_url": value.canonical_url,
+                        "body": _safe_text(value.body),
+                        "canonical_url": _safe_text(value.canonical_url),
                         "published_at": value.published_at,
                         "remote_updated_at": value.remote_updated_at,
                         "metrics": _json(value.metrics),
@@ -392,8 +411,8 @@ class AuthorRepository:
                 remote_id=value.remote_id,
                 kind=value.kind,
                 title=value.title,
-                body=value.body,
-                canonical_url=value.canonical_url,
+                body=_safe_text(value.body),
+                canonical_url=_safe_text(value.canonical_url),
                 published_at=value.published_at,
                 remote_updated_at=value.remote_updated_at,
                 metrics=_json(value.metrics),
@@ -407,8 +426,8 @@ class AuthorRepository:
             content.author_id = author.id
             content.kind = value.kind
             content.title = value.title
-            content.body = value.body
-            content.canonical_url = value.canonical_url
+            content.body = _safe_text(value.body)
+            content.canonical_url = _safe_text(value.canonical_url)
             content.published_at = value.published_at
             content.remote_updated_at = value.remote_updated_at
             content.metrics = _json(value.metrics)
@@ -429,11 +448,15 @@ class AssetRepository:
 
     def upsert_for_content(self, content_id: str, value: AssetUpsert) -> Asset:
         now = utc_now()
+        safe_source_url = _safe_text(value.source_url)
+        locator = _json(value.locator)
+        if value.source_url is not None and safe_source_url != value.source_url:
+            locator["refresh_required"] = True
         values: dict[str, Any] = {
             "platform": value.platform,
             "remote_id": value.remote_id,
-            "source_url": value.source_url,
-            "locator": _json(value.locator),
+            "source_url": safe_source_url,
+            "locator": locator,
             "mime_type": value.mime_type,
             "size_bytes": value.size_bytes,
             "checksum_sha256": value.checksum_sha256,
@@ -498,6 +521,7 @@ class SubscriptionRepository:
         max_items: int = 30,
         cursor: Mapping[str, Any] | None = None,
         cursor_version: int = 1,
+        backfill_cursor: Mapping[str, Any] | None = None,
         policy: Mapping[str, Any] | None = None,
         next_run_at: datetime | None = None,
     ) -> Subscription:
@@ -518,6 +542,7 @@ class SubscriptionRepository:
             max_items=max_items,
             cursor=_json(cursor) if cursor is not None else None,
             cursor_version=cursor_version,
+            backfill_cursor=_json(backfill_cursor) if backfill_cursor is not None else None,
             policy=_json(policy),
             next_run_at=next_run_at,
         )
@@ -555,41 +580,119 @@ class SubscriptionRepository:
         cursor: Mapping[str, Any] | None,
         *,
         cursor_version: int | None = None,
+        backfill_cursor: Mapping[str, Any] | _UnsetType | None = _UNSET,
         next_run_at: datetime | _UnsetType | None = _UNSET,
         succeeded_at: datetime | None = None,
         watermarked_at: datetime | None = None,
         watermark_remote_ids: Sequence[str] | None = None,
     ) -> Subscription:
+        """Publish against the latest revision for legacy single-writer callers.
+
+        Long-running or concurrent workers must use :meth:`publish_checkpoint`
+        with the revision read before their external work begins.
+        """
+
+        revision = self.session.scalar(
+            select(Subscription.checkpoint_revision).where(Subscription.id == subscription_id)
+        )
+        if revision is None:
+            raise NotFoundError(f"subscription not found: {subscription_id}")
+        return self.publish_checkpoint(
+            subscription_id,
+            expected_revision=revision,
+            cursor=cursor,
+            cursor_version=cursor_version,
+            backfill_cursor=backfill_cursor,
+            next_run_at=next_run_at,
+            succeeded_at=succeeded_at,
+            watermarked_at=watermarked_at,
+            watermark_remote_ids=watermark_remote_ids,
+        )
+
+    def publish_checkpoint(
+        self,
+        subscription_id: str,
+        *,
+        expected_revision: int,
+        cursor: Mapping[str, Any] | _UnsetType | None = _UNSET,
+        cursor_version: int | None = None,
+        backfill_cursor: Mapping[str, Any] | _UnsetType | None = _UNSET,
+        next_run_at: datetime | _UnsetType | None = _UNSET,
+        succeeded_at: datetime | None = None,
+        watermarked_at: datetime | None = None,
+        watermark_remote_ids: Sequence[str] | None = None,
+    ) -> Subscription:
+        """Atomically publish forward/backfill state using optimistic fencing.
+
+        The first update only claims ``expected_revision`` and acquires the
+        database writer lock.  Every checkpoint field is then changed in the
+        same caller-owned transaction.  A stale revision therefore changes
+        neither checkpoint data nor scheduling state.  Omitting
+        ``backfill_cursor`` or ``next_run_at`` preserves it; passing ``None``
+        clears that individual field.
+        """
+
+        if expected_revision < 0:
+            raise ValueError("expected_revision must be nonnegative")
+        if watermark_remote_ids and watermarked_at is None:
+            raise ValueError("watermark_remote_ids require watermarked_at")
+
+        safe_cursor: dict[str, Any] | _UnsetType | None = (
+            cursor if isinstance(cursor, _UnsetType) or cursor is None else _json(cursor)
+        )
+        safe_backfill_cursor: dict[str, Any] | _UnsetType | None = (
+            backfill_cursor
+            if isinstance(backfill_cursor, _UnsetType) or backfill_cursor is None
+            else _json(backfill_cursor)
+        )
+        normalized_next_run_at = (
+            next_run_at if isinstance(next_run_at, _UnsetType) or next_run_at is None else _aware_utc(next_run_at)
+        )
+        normalized_succeeded_at = _aware_utc(succeeded_at) if succeeded_at is not None else None
+        normalized_watermark = _aware_utc(watermarked_at) if watermarked_at is not None else None
+        incoming_remote_ids = sorted(set(watermark_remote_ids or ()))
         now = utc_now()
+
         subscription = self.session.scalars(
             update(Subscription)
-            .where(Subscription.id == subscription_id)
-            .values(updated_at=now)
+            .where(
+                Subscription.id == subscription_id,
+                Subscription.checkpoint_revision == expected_revision,
+            )
+            .values(
+                checkpoint_revision=Subscription.checkpoint_revision + 1,
+                updated_at=now,
+            )
             .returning(Subscription)
             .execution_options(synchronize_session="fetch", populate_existing=True)
         ).one_or_none()
         if subscription is None:
-            raise NotFoundError(f"subscription not found: {subscription_id}")
-        subscription.cursor = _json(cursor) if cursor is not None else None
+            actual_revision = self.session.scalar(
+                select(Subscription.checkpoint_revision).where(Subscription.id == subscription_id)
+            )
+            if actual_revision is None:
+                raise NotFoundError(f"subscription not found: {subscription_id}")
+            raise StaleCheckpointError(subscription_id, expected_revision, actual_revision)
+
+        if not isinstance(safe_cursor, _UnsetType):
+            subscription.cursor = safe_cursor
         if cursor_version is not None:
             subscription.cursor_version = cursor_version
-        subscription.last_run_at = _aware_utc(succeeded_at) if succeeded_at is not None else now
-        if not isinstance(next_run_at, _UnsetType):
-            subscription.next_run_at = next_run_at
-        if watermarked_at is not None:
-            incoming_watermark = _aware_utc(watermarked_at)
-            incoming_remote_ids = sorted(set(watermark_remote_ids or ()))
-            if subscription.watermarked_at is None or incoming_watermark > subscription.watermarked_at:
-                subscription.watermarked_at = incoming_watermark
+        if not isinstance(safe_backfill_cursor, _UnsetType):
+            subscription.backfill_cursor = safe_backfill_cursor
+        subscription.last_run_at = normalized_succeeded_at or now
+        if not isinstance(normalized_next_run_at, _UnsetType):
+            subscription.next_run_at = normalized_next_run_at
+        if normalized_watermark is not None:
+            if subscription.watermarked_at is None or normalized_watermark > subscription.watermarked_at:
+                subscription.watermarked_at = normalized_watermark
                 subscription.watermark_remote_ids = incoming_remote_ids
-            elif incoming_watermark == subscription.watermarked_at:
+            elif normalized_watermark == subscription.watermarked_at:
                 subscription.watermark_remote_ids = sorted(
                     set(subscription.watermark_remote_ids).union(incoming_remote_ids)
                 )
-        elif watermark_remote_ids:
-            raise ValueError("watermark_remote_ids require watermarked_at")
-        if succeeded_at is not None:
-            subscription.last_success_at = _aware_utc(succeeded_at)
+        if normalized_succeeded_at is not None:
+            subscription.last_success_at = normalized_succeeded_at
             subscription.consecutive_failures = 0
         self.session.flush()
         return subscription
@@ -605,13 +708,23 @@ class SyncRunRepository:
         subscription_id: str,
         status: str = "queued",
         cursor_before: Mapping[str, Any] | None = None,
+        checkpoint_revision_before: int | None = None,
         manifest: Mapping[str, Any] | None = None,
     ) -> SyncRun:
         _require_status(status, RUN_STATUSES, "run")
+        if checkpoint_revision_before is None:
+            checkpoint_revision_before = self.session.scalar(
+                select(Subscription.checkpoint_revision).where(Subscription.id == subscription_id)
+            )
+            if checkpoint_revision_before is None:
+                raise NotFoundError(f"subscription not found: {subscription_id}")
+        if checkpoint_revision_before < 0:
+            raise ValueError("checkpoint_revision_before must be nonnegative")
         run = SyncRun(
             subscription_id=subscription_id,
             status=status,
             cursor_before=_json(cursor_before) if cursor_before is not None else None,
+            checkpoint_revision_before=checkpoint_revision_before,
             manifest=_json(manifest),
         )
         self.session.add(run)
@@ -626,6 +739,49 @@ class SyncRunRepository:
         run = self.get(run_id)
         if run is None:
             raise NotFoundError(f"sync run not found: {run_id}")
+        return run
+
+    def record_checkpoint_publication(
+        self,
+        run_id: str,
+        *,
+        expected_revision: int,
+        published_revision: int,
+        expected_status: str | None = None,
+    ) -> SyncRun:
+        """Record one successful checkpoint publication on its owning run."""
+
+        if expected_revision < 0:
+            raise ValueError("expected_revision must be nonnegative")
+        if published_revision != expected_revision + 1:
+            raise ValueError("published_revision must immediately follow expected_revision")
+        if expected_status is not None:
+            _require_status(expected_status, RUN_STATUSES, "run")
+        now = utc_now()
+        conditions: list[Any] = [
+            SyncRun.id == run_id,
+            or_(
+                and_(
+                    SyncRun.checkpoint_revision_before == expected_revision,
+                    SyncRun.checkpoint_revision_after.is_(None),
+                ),
+                SyncRun.checkpoint_revision_after == expected_revision,
+            ),
+        ]
+        if expected_status is not None:
+            conditions.append(SyncRun.status == expected_status)
+        run = self.session.scalars(
+            update(SyncRun)
+            .where(*conditions)
+            .values(checkpoint_revision_after=published_revision, updated_at=now)
+            .returning(SyncRun)
+            .execution_options(synchronize_session="fetch", populate_existing=True)
+        ).one_or_none()
+        if run is None:
+            if self.session.scalar(select(SyncRun.id).where(SyncRun.id == run_id)) is None:
+                raise NotFoundError(f"sync run not found: {run_id}")
+            raise RepositoryError("sync run cannot publish the requested checkpoint")
+        self.session.flush()
         return run
 
     def set_status(
@@ -646,7 +802,7 @@ class SyncRunRepository:
         values: dict[str, Any] = {
             "status": status,
             "error_code": error_code,
-            "error_message": error_message,
+            "error_message": _safe_text(error_message),
             "updated_at": now,
         }
         if status in {"claimed", "running"}:
@@ -668,7 +824,7 @@ class SyncRunRepository:
             "status_changed",
             from_status=expected_status,
             to_status=status,
-            message=message,
+            message=_safe_text(message),
             created_at=now,
         )
         self.session.flush()
@@ -700,7 +856,7 @@ class SyncRunRepository:
             event_type=event_type,
             from_status=from_status,
             to_status=to_status,
-            message=message,
+            message=_safe_text(message),
             payload=_json(payload),
             created_at=now,
         )
@@ -972,7 +1128,7 @@ class JobRepository:
             "lease_token": None,
             "lease_expires_at": None,
             "last_error_code": error_code,
-            "last_error_message": error_message,
+            "last_error_message": _safe_text(error_message),
             "updated_at": current,
             "available_at": available_at,
             "finished_at": finished_at,
