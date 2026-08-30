@@ -38,6 +38,11 @@ from media_sync.scheduler.handlers import (
     SubscriptionHandlerResult,
     SubscriptionJobContext,
 )
+from media_sync.scheduler.pipeline import (
+    PIPELINE_PAYLOAD_SCHEMA_VERSION,
+    PIPELINE_SUBSCRIPTION_JOB_TYPE,
+    pipeline_subscription_natural_key,
+)
 from media_sync.scheduler.policy import RetryPolicy
 from media_sync.scheduler.repository import SchedulerClaim, SchedulerRepository
 from media_sync.scheduler.service import DurableSchedulerService, SubscriptionWorker
@@ -275,7 +280,8 @@ async def test_worker_commits_start_before_fake_handler_and_finalizes_fixed_dela
     with database.session() as session:
         subscription = session.get(Subscription, subscription_id)
         sync_job = session.scalar(select(Job).where(Job.job_type == "sync.subscription"))
-        assert subscription is not None and sync_job is not None
+        pipeline_job = session.scalar(select(Job).where(Job.job_type == PIPELINE_SUBSCRIPTION_JOB_TYPE))
+        assert subscription is not None and sync_job is not None and pipeline_job is not None
         assert subscription.schedule_revision == 1
         assert subscription.checkpoint_revision == 1
         assert subscription.next_run_at == NOW + timedelta(seconds=60)
@@ -285,7 +291,17 @@ async def test_worker_commits_start_before_fake_handler_and_finalizes_fixed_dela
         assert session.scalar(select(func.count()).select_from(SyncRun)) == 1
         assert session.scalar(select(func.count()).select_from(Content)) == 1
         assert session.scalar(select(func.count()).select_from(SchedulerLane)) == 2
-        assert {job.job_type for job in session.scalars(select(Job)).all()} == {"sync.subscription"}
+        assert pipeline_job.natural_key == pipeline_subscription_natural_key(sync_job.id)
+        assert pipeline_job.payload == {
+            "schema_version": PIPELINE_PAYLOAD_SCHEMA_VERSION,
+            "sync_job_id": sync_job.id,
+            "subscription_id": subscription_id,
+            "run_id": result.run_id,
+        }
+        assert {job.job_type for job in session.scalars(select(Job)).all()} == {
+            "sync.subscription",
+            PIPELINE_SUBSCRIPTION_JOB_TYPE,
+        }
 
 
 @pytest.mark.asyncio

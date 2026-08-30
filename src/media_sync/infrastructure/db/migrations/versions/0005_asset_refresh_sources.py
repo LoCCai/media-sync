@@ -113,11 +113,7 @@ def _stable_asset_key(
 
 
 def _is_sha256(value: object) -> bool:
-    return (
-        isinstance(value, str)
-        and len(value) == 64
-        and all(character in "0123456789abcdef" for character in value)
-    )
+    return isinstance(value, str) and len(value) == 64 and all(character in "0123456789abcdef" for character in value)
 
 
 def _legacy_rows(connection: sa.engine.Connection) -> list[dict[str, object]]:
@@ -237,9 +233,7 @@ def _legacy_rows(connection: sa.engine.Connection) -> list[dict[str, object]]:
         candidates = list(
             connection.execute(
                 sa.select(subscriptions.c.id)
-                .select_from(
-                    subscriptions.join(accounts, accounts.c.id == subscriptions.c.account_id)
-                )
+                .select_from(subscriptions.join(accounts, accounts.c.id == subscriptions.c.account_id))
                 .where(
                     subscriptions.c.author_id == row["author_id"],
                     accounts.c.platform == asset_platform,

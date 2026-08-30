@@ -214,6 +214,7 @@ def test_0005_roundtrip_conservatively_backfills_only_unique_mediacrawler_source
     seeded = Database(database_url)
     try:
         with seeded.session() as session:
+
             def seed_asset(
                 suffix: str,
                 *,
@@ -307,8 +308,7 @@ def test_0005_roundtrip_conservatively_backfills_only_unique_mediacrawler_source
             }
             with engine.connect() as connection:
                 assert (
-                    connection.scalar(text("SELECT version_num FROM alembic_version"))
-                    == "0005_asset_refresh_sources"
+                    connection.scalar(text("SELECT version_num FROM alembic_version")) == "0005_asset_refresh_sources"
                 )
                 rows = connection.execute(
                     text(
@@ -328,16 +328,19 @@ def test_0005_roundtrip_conservatively_backfills_only_unique_mediacrawler_source
                         locator_fingerprint,
                     )
                 ]
-                assert connection.scalar(
-                    text(
-                        "SELECT COUNT(*) FROM asset_refresh_sources "
-                        "WHERE asset_id IN (:ambiguous_asset_id, :no_candidate_asset_id)"
-                    ),
-                    {
-                        "ambiguous_asset_id": ambiguous_asset_id,
-                        "no_candidate_asset_id": no_candidate_asset_id,
-                    },
-                ) == 0
+                assert (
+                    connection.scalar(
+                        text(
+                            "SELECT COUNT(*) FROM asset_refresh_sources "
+                            "WHERE asset_id IN (:ambiguous_asset_id, :no_candidate_asset_id)"
+                        ),
+                        {
+                            "ambiguous_asset_id": ambiguous_asset_id,
+                            "no_candidate_asset_id": no_candidate_asset_id,
+                        },
+                    )
+                    == 0
+                )
                 assert connection.execute(text("PRAGMA foreign_key_check")).all() == []
         finally:
             engine.dispose()

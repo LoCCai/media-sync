@@ -430,7 +430,10 @@ async def test_scheduled_offline_pipeline_survives_restart_without_duplicate_ide
             assert asset is not None and subscription is not None
             assert asset.status == "discovered"
             assert asset.download_job_id is None
-            assert [job.job_type for job in jobs_before_downstream] == ["sync.subscription"]
+            jobs_by_type = {job.job_type: job for job in jobs_before_downstream}
+            assert set(jobs_by_type) == {"sync.subscription", "pipeline.subscription"}
+            assert jobs_by_type["sync.subscription"].status == "succeeded"
+            assert jobs_by_type["pipeline.subscription"].status == "queued"
             assert session.scalar(select(func.count()).select_from(ExportRecord)) == 0
             assert session.scalar(select(func.count()).select_from(SyncRun)) == 1
             assert subscription.schedule_revision == 1
@@ -481,10 +484,17 @@ async def test_scheduled_offline_pipeline_survives_restart_without_duplicate_ide
         first_snapshot = _snapshot(database, subscription_id)
         assert {row[0] for row in first_snapshot.jobs} == {
             "sync.subscription",
+            "pipeline.subscription",
             "asset_download",
             "export.emby",
         }
-        assert all(row[3] == "succeeded" and row[4] == 1 for row in first_snapshot.jobs)
+        first_jobs_by_type = {row[0]: row for row in first_snapshot.jobs}
+        assert first_jobs_by_type["pipeline.subscription"][3:5] == ("queued", 0)
+        assert all(
+            row[3] == "succeeded" and row[4] == 1
+            for job_type, row in first_jobs_by_type.items()
+            if job_type != "pipeline.subscription"
+        )
         assert len(first_snapshot.lanes) == 2
         assert len(first_snapshot.runs) == 1
         assert len(first_snapshot.records) == 1
@@ -552,6 +562,7 @@ async def test_scheduled_offline_pipeline_survives_restart_without_duplicate_ide
         assert {row[1] for row in second_snapshot.jobs} == {row[1] for row in first_snapshot.jobs}
         assert {row[0] for row in second_snapshot.jobs} == {
             "sync.subscription",
+            "pipeline.subscription",
             "asset_download",
             "export.emby",
         }

@@ -9,6 +9,27 @@ from .handlers import (
     SubscriptionJobContext,
 )
 from .mediacrawler_handler import MediaCrawlerScheduledHandler
+from .pipeline import (
+    PIPELINE_MAX_ATTEMPTS,
+    PIPELINE_PAYLOAD_SCHEMA_VERSION,
+    PIPELINE_SUBSCRIPTION_JOB_TYPE,
+    PipelineJobRepository,
+    PipelineJobRepositoryError,
+    PipelineSubscriptionClaim,
+    PipelineSubscriptionJob,
+    PipelineSubscriptionPayload,
+    parse_pipeline_subscription_payload,
+    pipeline_subscription_natural_key,
+)
+from .pipeline_worker import (
+    PIPELINE_RETRY_DELAY_SECONDS,
+    PipelineFailureClassification,
+    PipelineHandler,
+    PipelineHandlerResult,
+    PipelineSubscriptionWorker,
+    PipelineWorkerResult,
+    classify_pipeline_failure,
+)
 from .policy import (
     RETRY_POLICY_SCHEMA_VERSION,
     CircuitClaimDecision,
@@ -39,6 +60,7 @@ from .repository import (
     SchedulerRepositoryError,
     StaleLaneError,
     SubscriptionSchedule,
+    validate_sync_subscription_job,
 )
 from .service import (
     DurableSchedulerService,
@@ -48,6 +70,10 @@ from .service import (
 )
 
 __all__ = [
+    "PIPELINE_MAX_ATTEMPTS",
+    "PIPELINE_PAYLOAD_SCHEMA_VERSION",
+    "PIPELINE_RETRY_DELAY_SECONDS",
+    "PIPELINE_SUBSCRIPTION_JOB_TYPE",
     "RETRY_POLICY_SCHEMA_VERSION",
     "SCHEDULE_PAYLOAD_SCHEMA_VERSION",
     "SYNC_SUBSCRIPTION_JOB_TYPE",
@@ -63,6 +89,16 @@ __all__ = [
     "LaneSnapshot",
     "MaterializedCycle",
     "MediaCrawlerScheduledHandler",
+    "PipelineFailureClassification",
+    "PipelineHandler",
+    "PipelineHandlerResult",
+    "PipelineJobRepository",
+    "PipelineJobRepositoryError",
+    "PipelineSubscriptionClaim",
+    "PipelineSubscriptionJob",
+    "PipelineSubscriptionPayload",
+    "PipelineSubscriptionWorker",
+    "PipelineWorkerResult",
     "RetryAfter",
     "RetryPolicy",
     "SchedulerClaim",
@@ -83,7 +119,11 @@ __all__ = [
     "circuit_failure",
     "circuit_success",
     "classify_failure",
+    "classify_pipeline_failure",
     "decide_circuit_claim",
+    "parse_pipeline_subscription_payload",
+    "pipeline_subscription_natural_key",
     "retry_at",
     "retry_delay_seconds",
+    "validate_sync_subscription_job",
 ]

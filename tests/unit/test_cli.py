@@ -1082,6 +1082,137 @@ def test_scheduler_mediacrawler_enablement_and_license_are_explicit(
         database.dispose()
 
 
+def test_pipeline_worker_cli_wires_bounded_runtime_and_fixed_output(
+    initialized_cli_database: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    del initialized_cli_database
+    captured: dict[str, object] = {}
+
+    class _FakeConfig:
+        def __init__(self, **kwargs: object) -> None:
+            captured["config"] = kwargs
+
+    class _FakeExecutor:
+        def __init__(self, database: object, config: object) -> None:
+            captured.update(database=database, executor_config=config)
+
+        def run(self, subscription_id: UUID, *, worker_id: str) -> None:
+            captured.update(subscription_id=subscription_id, child_worker_id=worker_id)
+
+    class _FakePipelineWorker:
+        def __init__(self, database: object, handler: object, *, retry_delay_seconds: int) -> None:
+            captured.update(worker_database=database, handler=handler, retry_delay_seconds=retry_delay_seconds)
+
+        async def run_bounded(
+            self,
+            *,
+            worker_id: str,
+            max_jobs: int,
+            lease_seconds: int,
+            scan_limit: int,
+            heartbeat_interval_seconds: float | None,
+        ) -> tuple[object, ...]:
+            captured.update(
+                worker_id=worker_id,
+                max_jobs=max_jobs,
+                lease_seconds=lease_seconds,
+                scan_limit=scan_limit,
+                heartbeat_interval_seconds=heartbeat_interval_seconds,
+            )
+            return (
+                SimpleNamespace(
+                    job_id="00000000-0000-0000-0000-000000000091",
+                    subscription_id="00000000-0000-0000-0000-000000000092",
+                    status="succeeded",
+                    attempt=1,
+                    error_code=None,
+                ),
+            )
+
+    monkeypatch.setattr(cli_module, "LocalPipelineRuntimeConfig", _FakeConfig)
+    monkeypatch.setattr(cli_module, "SubscriptionPipelineExecutor", _FakeExecutor)
+    monkeypatch.setattr(cli_module, "PipelineSubscriptionWorker", _FakePipelineWorker)
+    monkeypatch.setattr(cli_module.shutil, "which", lambda _name: "C:/tools/ffprobe.exe")
+
+    result = runner.invoke(
+        app,
+        [
+            "pipeline",
+            "run",
+            "--max-jobs",
+            "3",
+            "--worker-id",
+            "pipeline-cli-test",
+            "--lease-seconds",
+            "7200",
+            "--scan-limit",
+            "17",
+            "--heartbeat-interval-seconds",
+            "120.5",
+            "--retry-delay-seconds",
+            "45",
+            "--enable-mediacrawler",
+            "--accept-mediacrawler-license",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output) == [
+        {
+            "job_id": "00000000-0000-0000-0000-000000000091",
+            "subscription_id": "00000000-0000-0000-0000-000000000092",
+            "status": "succeeded",
+            "attempt": 1,
+            "error_code": None,
+        }
+    ]
+    assert captured["worker_id"] == "pipeline-cli-test"
+    assert captured["max_jobs"] == 3
+    assert captured["lease_seconds"] == 7200
+    assert captured["scan_limit"] == 17
+    assert captured["heartbeat_interval_seconds"] == 120.5
+    assert captured["retry_delay_seconds"] == 45
+    config = captured["config"]
+    assert isinstance(config, dict)
+    assert config["enable_mediacrawler"] is True
+    assert config["accept_mediacrawler_license"] is True
+    assert config["ffprobe_executable"] == "C:/tools/ffprobe.exe"
+
+
+def test_pipeline_worker_cli_rejects_license_without_enablement(
+    initialized_cli_database: str,
+) -> None:
+    del initialized_cli_database
+
+    result = runner.invoke(app, ["pipeline", "run", "--accept-mediacrawler-license"])
+
+    assert result.exit_code == 2
+    assert "--enable-mediacrawler" in result.output
+
+
+def test_pipeline_worker_cli_rejects_heartbeat_not_shorter_than_lease(
+    initialized_cli_database: str,
+) -> None:
+    del initialized_cli_database
+
+    result = runner.invoke(
+        app,
+        [
+            "pipeline",
+            "run",
+            "--lease-seconds",
+            "10",
+            "--heartbeat-interval-seconds",
+            "10",
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert "heartbeat interval" in result.output
+
+
 def test_scheduler_lane_controls_enforce_policy_bounds_and_revision_cas(
     initialized_cli_database: str,
 ) -> None:

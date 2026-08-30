@@ -303,8 +303,7 @@ def test_multi_account_replacement_updates_only_observing_source_and_both_finger
         assert asset.semantic_fingerprint != original_semantic
         assert asset.locator_fingerprint == original_locator
         sources = {
-            source.subscription_id: source
-            for source in AssetRefreshSourceRepository(session).list_for_asset(asset.id)
+            source.subscription_id: source for source in AssetRefreshSourceRepository(session).list_for_asset(asset.id)
         }
         assert sources[first_subscription_id].last_run_id == replacement_run_id
         assert sources[first_subscription_id].observed_generation == 2

@@ -1307,9 +1307,7 @@ class AssetRefreshSourceRepository:
         """Return current exact MediaCrawler observations in deterministic order."""
 
         asset = self.session.scalar(
-            select(Asset)
-            .where(Asset.id == asset_id)
-            .options(joinedload(Asset.content).joinedload(Content.author))
+            select(Asset).where(Asset.id == asset_id).options(joinedload(Asset.content).joinedload(Content.author))
         )
         if asset is None:
             raise NotFoundError(f"asset not found: {asset_id}")
@@ -1348,9 +1346,7 @@ class AssetRefreshSourceRepository:
         subscription_id: str,
     ) -> tuple[Asset, Content, Author, Subscription, Account]:
         asset = self.session.scalar(
-            select(Asset)
-            .where(Asset.id == asset_id)
-            .options(joinedload(Asset.content).joinedload(Content.author))
+            select(Asset).where(Asset.id == asset_id).options(joinedload(Asset.content).joinedload(Content.author))
         )
         if asset is None:
             raise NotFoundError(f"asset not found: {asset_id}")
@@ -1825,13 +1821,20 @@ class JobRepository:
         natural_key: str,
         payload: Mapping[str, Any] | None = None,
         run_id: str | None = None,
+        subscription_id: str | None = None,
+        account_id: str | None = None,
+        platform: str | None = None,
         priority: int = 0,
         max_attempts: int = 5,
         available_at: datetime | None = None,
+        scheduled_for: datetime | None = None,
     ) -> Job:
         values = {
             "id": new_uuid(),
             "run_id": run_id,
+            "subscription_id": subscription_id,
+            "account_id": account_id,
+            "platform": platform,
             "job_type": job_type,
             "natural_key": natural_key,
             "payload": _json(payload),
@@ -1840,6 +1843,7 @@ class JobRepository:
             "attempts": 0,
             "max_attempts": max_attempts,
             "available_at": _aware_utc(available_at),
+            "scheduled_for": _aware_utc(scheduled_for) if scheduled_for is not None else None,
             "created_at": utc_now(),
             "updated_at": utc_now(),
         }

@@ -274,6 +274,14 @@ def _parse_payload(job: Job) -> _Payload:
     return _Payload(subscription_id, schedule_revision, retry_policy)
 
 
+def validate_sync_subscription_job(job: Job) -> None:
+    """Validate the closed durable identity of one source sync Job."""
+
+    if job.job_type != SYNC_SUBSCRIPTION_JOB_TYPE:
+        raise ValueError("source job is not sync.subscription")
+    _parse_payload(job)
+
+
 def _summary(job: Job) -> SchedulerJobSummary:
     if job.job_type != SYNC_SUBSCRIPTION_JOB_TYPE:
         raise SchedulerRepositoryError("scheduler projection rejected a foreign job type")
@@ -391,6 +399,18 @@ class SchedulerRepository:
         self.session.expire_all()
         return self._get_sync_job(job_id)
 
+    def _enqueue_pipeline_for_succeeded_run(self, job: Job, *, now: datetime) -> None:
+        """Atomically emit the one coordinator only for durable run success."""
+
+        from .pipeline import PipelineJobRepository
+
+        if job.run_id is None:
+            return
+        run = self.session.get(SyncRun, job.run_id)
+        if run is None or run.subscription_id != job.subscription_id or run.status != "succeeded":
+            return
+        PipelineJobRepository(self.session).enqueue_succeeded_sync(job.id, run_id=run.id, now=now)
+
     def _validated_result_run_id(self, job: Job, run_id: str | None) -> str | None:
         """Bind a handler run only when it belongs to the claimed subscription."""
 
@@ -483,6 +503,7 @@ class SchedulerRepository:
             return None
         self._apply_lane_success(reconciled, now=now)
         self._finalize_subscription(reconciled, now=now, outcome="success")
+        self._enqueue_pipeline_for_succeeded_run(reconciled, now=now)
         return reconciled
 
     def materialize_due(
@@ -1508,6 +1529,7 @@ class SchedulerRepository:
         )
         self._apply_lane_success(completed, now=current)
         self._finalize_subscription(completed, now=current, outcome="success")
+        self._enqueue_pipeline_for_succeeded_run(completed, now=current)
         return _summary(completed)
 
     def complete_success(
@@ -1852,4 +1874,5 @@ __all__ = [
     "SchedulerRepositoryError",
     "StaleLaneError",
     "SubscriptionSchedule",
+    "validate_sync_subscription_job",
 ]

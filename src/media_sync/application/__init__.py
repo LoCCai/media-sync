@@ -23,6 +23,21 @@ from media_sync.application.mediacrawler import (
     NormalizedMediaCrawlerOutput,
     load_normalized_output,
 )
+from media_sync.application.mediacrawler_download import LazyMediaCrawlerLocatorRefresher
+from media_sync.application.pipeline import (
+    SelectedPipelineAsset,
+    SubscriptionAssetSelection,
+    SubscriptionAssetSelector,
+    SubscriptionPipelineError,
+    SubscriptionPipelineOutcome,
+    SubscriptionPipelineRequest,
+    SubscriptionPipelineService,
+    SubscriptionSelectionPreflight,
+)
+from media_sync.application.pipeline_runtime import (
+    LocalPipelineRuntimeConfig,
+    SubscriptionPipelineExecutor,
+)
 from media_sync.application.sync import SyncRequest, SyncResult, SyncService
 
 __all__ = [
@@ -36,8 +51,19 @@ __all__ = [
     "EmbyExportOutcome",
     "EmbyExportRequest",
     "EmbyExportService",
+    "LazyMediaCrawlerLocatorRefresher",
+    "LocalPipelineRuntimeConfig",
     "MediaCrawlerOutputRejected",
     "NormalizedMediaCrawlerOutput",
+    "SelectedPipelineAsset",
+    "SubscriptionAssetSelection",
+    "SubscriptionAssetSelector",
+    "SubscriptionPipelineError",
+    "SubscriptionPipelineExecutor",
+    "SubscriptionPipelineOutcome",
+    "SubscriptionPipelineRequest",
+    "SubscriptionPipelineService",
+    "SubscriptionSelectionPreflight",
     "SyncRequest",
     "SyncResult",
     "SyncService",
