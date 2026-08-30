@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 from sqlalchemy import func, select
+from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session
 
 import media_sync.infrastructure.db.mediacrawler_ingestion as ingestion_module
@@ -35,6 +36,7 @@ from media_sync.infrastructure.db import (
 )
 from media_sync.infrastructure.db.models import Asset, Content, Subscription, SyncRun
 from media_sync.integrations.mediacrawler.normalizers import NormalizedMediaRecord
+from media_sync.media.locator import AdapterRefreshLocator, locator_fingerprint, parse_locator
 
 
 def _database_url(path: Path) -> str:
@@ -112,6 +114,7 @@ def _record(
     published_at: datetime | None,
     *,
     remote_type: str = "content",
+    asset_source_url: str | None = None,
 ) -> NormalizedMediaRecord:
     author = AuthorSnapshot(
         platform=Platform.BILI,
@@ -133,9 +136,75 @@ def _record(
         remote_id=f"{remote_type}:{remote_id}:asset",
         content_remote_id=remote_id,
         kind=asset_kind,
-        source_url=f"https://example.invalid/{remote_type}/{remote_id}",
+        source_url=asset_source_url or f"https://example.invalid/{remote_type}/{remote_id}",
     )
     return NormalizedMediaRecord(author=author, content=content, assets=(asset,))
+
+
+def test_mediacrawler_discovery_replay_preserves_verified_asset_bytes(database: Database) -> None:
+    subscription_id = _seed_subscription(database)
+    first_run_id = _create_run(database, subscription_id)
+    first_url = "https://example.invalid/content/replayed?opaque=sentinel-secret-first"
+    replay_url = "https://example.invalid/content/replayed?opaque=sentinel-secret-second"
+
+    first = MediaCrawlerIngestionService(database).ingest(
+        (_record("replayed", None, asset_source_url=first_url),),
+        subscription_id=subscription_id,
+        run_id=first_run_id,
+        expected_revision=0,
+        mode=IngestionMode.FORWARD,
+    )
+    assert first.accepted_count == 1
+
+    with database.session() as session:
+        stored = session.scalar(select(Asset))
+        assert stored is not None
+        stored.status = "verified"
+        stored.mime_type = "video/mp4"
+        stored.size_bytes = 23
+        stored.checksum_sha256 = "b" * 64
+        stored.local_path = "archive/sha256/bb/verified.mp4"
+        original_id = stored.id
+        original_generation = stored.generation
+        original_locator_fingerprint = stored.locator_fingerprint
+
+    replay_run_id = _create_run(database, subscription_id)
+    replay = MediaCrawlerIngestionService(database).ingest(
+        (_record("replayed", None, asset_source_url=replay_url),),
+        subscription_id=subscription_id,
+        run_id=replay_run_id,
+        expected_revision=1,
+        mode=IngestionMode.FORWARD,
+    )
+    assert replay.accepted_count == 1
+    assert replay.discovered_count == replay.asset_count == 0
+
+    with database.session() as session:
+        stored = session.scalar(select(Asset))
+        assert stored is not None
+        assert stored.id == original_id
+        assert stored.generation == original_generation
+        assert stored.semantic_fingerprint is not None
+        assert stored.locator_fingerprint == original_locator_fingerprint
+        locator = parse_locator(stored.locator)
+        assert isinstance(locator, AdapterRefreshLocator)
+        assert locator.adapter == "mediacrawler"
+        assert stored.locator_fingerprint == locator_fingerprint(locator)
+        assert stored.source_url == "https://example.invalid/content/replayed"
+        assert stored.status == "verified"
+        assert stored.mime_type == "video/mp4"
+        assert stored.size_bytes == 23
+        assert stored.checksum_sha256 == "b" * 64
+        assert stored.local_path == "archive/sha256/bb/verified.mp4"
+
+    database_path_value = make_url(database.url).database
+    assert database_path_value is not None
+    database.dispose()
+    database_path = Path(database_path_value)
+    for sqlite_file in database_path.parent.glob(f"{database_path.name}*"):
+        database_bytes = sqlite_file.read_bytes()
+        assert b"sentinel-secret-first" not in database_bytes
+        assert b"sentinel-secret-second" not in database_bytes
 
 
 def test_multiple_batches_use_fresh_sessions_and_replay_idempotently(database: _TrackingDatabase) -> None:

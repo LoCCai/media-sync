@@ -1,8 +1,10 @@
 import hashlib
 import json
 from collections.abc import Iterator
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
+from uuid import UUID
 
 import pytest
 from sqlalchemy import func, inspect, select, text
@@ -12,7 +14,7 @@ import media_sync.interfaces.cli as cli_module
 from media_sync import __version__
 from media_sync.config import Settings, get_settings
 from media_sync.domain import DomainError, Platform
-from media_sync.infrastructure.db import Account, Database, LoginSession, Subscription
+from media_sync.infrastructure.db import Account, Asset, Author, Content, Database, Job, LoginSession, Subscription
 from media_sync.integrations.mediacrawler.policies import normalize_creator_reference
 from media_sync.interfaces.cli import app, collect_doctor_report
 
@@ -86,7 +88,20 @@ def test_doctor_report_is_read_only(tmp_path: Path) -> None:
 
     assert report["ok"] is True
     assert report["path_exists"] == {"state": False, "archive": False, "export": False, "jobs": False}
+    assert report["requirements"]["asset_download"]["ffprobe_required_for"] == ["video", "audio"]
     assert list(tmp_path.iterdir()) == []
+
+
+def test_doctor_and_asset_download_help_state_ffprobe_requirement(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cli_module.shutil, "which", lambda _name: None)
+
+    doctor_result = runner.invoke(app, ["doctor"])
+    help_result = runner.invoke(app, ["asset", "download", "--help"])
+
+    assert doctor_result.exit_code == 0, doctor_result.output
+    assert "video/audio asset download prerequisite: ffprobe is required (NOT READY)" in doctor_result.output
+    assert help_result.exit_code == 0, help_result.output
+    assert "ffprobe is required" in help_result.output
 
 
 def test_mediacrawler_doctor_requires_explicit_license_without_writes(tmp_path: Path) -> None:
@@ -247,7 +262,7 @@ def test_db_init_runs_packaged_migrations_idempotently(tmp_path: Path, monkeypat
         try:
             assert "alembic_version" in inspect(database.engine).get_table_names()
             with database.engine.connect() as connection:
-                assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0002_checkpoint"
+                assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0003_media_download_emby"
         finally:
             database.dispose()
     finally:
@@ -296,8 +311,8 @@ def test_db_status_reports_current_complete_schema_without_exposing_target(
         "ok": True,
         "database_driver": "sqlite+pysqlite",
         "reachable": True,
-        "revision": "0002_checkpoint",
-        "expected_revision": "0002_checkpoint",
+        "revision": "0003_media_download_emby",
+        "expected_revision": "0003_media_download_emby",
         "revision_current": True,
         "required_table_count": 10,
         "present_table_count": 10,
@@ -306,7 +321,7 @@ def test_db_status_reports_current_complete_schema_without_exposing_target(
     }
     assert text_result.exit_code == 0
     assert "Database ready:" in text_result.output
-    assert "revision=0002_checkpoint" in text_result.output
+    assert "revision=0003_media_download_emby" in text_result.output
     assert "tables=10/10" in text_result.output
     for output in (json_result.output, text_result.output):
         assert initialized_cli_database not in output
@@ -760,3 +775,548 @@ def test_mediacrawler_subscription_rejects_signed_url_as_persisted_creator_id(
             assert session.scalar(select(Subscription)) is None
     finally:
         database.dispose()
+
+
+def test_asset_list_filters_by_author_and_status_with_stable_redacted_output(
+    initialized_cli_database: str,
+) -> None:
+    sentinel = "sentinel-signed-source-token"
+    first_author_id = "00000000-0000-0000-0000-000000000001"
+    second_author_id = "00000000-0000-0000-0000-000000000002"
+    first_content_id = "00000000-0000-0000-0000-000000000011"
+    second_content_id = "00000000-0000-0000-0000-000000000012"
+    video_asset_id = "00000000-0000-0000-0000-000000000021"
+    cover_asset_id = "00000000-0000-0000-0000-000000000022"
+    other_asset_id = "00000000-0000-0000-0000-000000000023"
+    database = Database(initialized_cli_database)
+    try:
+        with database.session() as session:
+            session.add_all(
+                [
+                    Author(
+                        id=first_author_id,
+                        platform="bili",
+                        remote_id="author-one",
+                        display_name="Author One",
+                    ),
+                    Author(
+                        id=second_author_id,
+                        platform="bili",
+                        remote_id="author-two",
+                        display_name="Author Two",
+                    ),
+                    Content(
+                        id=first_content_id,
+                        author_id=first_author_id,
+                        platform="bili",
+                        remote_type="video",
+                        remote_id="content-one",
+                        kind="video",
+                    ),
+                    Content(
+                        id=second_content_id,
+                        author_id=second_author_id,
+                        platform="bili",
+                        remote_type="video",
+                        remote_id="content-two",
+                        kind="video",
+                    ),
+                    Asset(
+                        id=video_asset_id,
+                        content_id=first_content_id,
+                        platform="bili",
+                        kind="video",
+                        position=0,
+                        source_url=f"https://media.invalid/video?token={sentinel}",
+                        locator={"type": "direct", "url": f"https://media.invalid/video?token={sentinel}"},
+                        semantic_fingerprint="1" * 64,
+                        locator_fingerprint="2" * 64,
+                        status="discovered",
+                        raw={"credential": sentinel},
+                        last_error_message=sentinel,
+                    ),
+                    Asset(
+                        id=cover_asset_id,
+                        content_id=first_content_id,
+                        platform="bili",
+                        kind="cover",
+                        position=0,
+                        source_url=f"https://media.invalid/cover?token={sentinel}",
+                        locator={"type": "direct", "url": f"https://media.invalid/cover?token={sentinel}"},
+                        semantic_fingerprint="3" * 64,
+                        locator_fingerprint="4" * 64,
+                        status="verified",
+                        mime_type="image/jpeg",
+                        size_bytes=42,
+                        checksum_sha256="5" * 64,
+                        local_path=f"C:/private/{sentinel}/cover.jpg",
+                        verified_at=datetime(2026, 1, 1, tzinfo=UTC),
+                    ),
+                    Asset(
+                        id=other_asset_id,
+                        content_id=second_content_id,
+                        platform="bili",
+                        kind="video",
+                        position=0,
+                        source_url=f"https://media.invalid/other?token={sentinel}",
+                        locator={"type": "direct", "url": f"https://media.invalid/other?token={sentinel}"},
+                        semantic_fingerprint="6" * 64,
+                        locator_fingerprint="7" * 64,
+                        status="discovered",
+                    ),
+                ]
+            )
+    finally:
+        database.dispose()
+
+    filtered = runner.invoke(
+        app,
+        [
+            "asset",
+            "list",
+            "--author-id",
+            first_author_id,
+            "--status",
+            "discovered",
+            "--json",
+        ],
+    )
+    unfiltered = runner.invoke(app, ["asset", "list", "--json"])
+
+    assert filtered.exit_code == 0, filtered.output
+    assert json.loads(filtered.output) == [
+        {
+            "id": video_asset_id,
+            "author_id": first_author_id,
+            "content_id": first_content_id,
+            "platform": "bili",
+            "kind": "video",
+            "position": 0,
+            "generation": 1,
+            "status": "discovered",
+            "mime_type": None,
+            "size_bytes": None,
+            "verified_at": None,
+        }
+    ]
+    assert unfiltered.exit_code == 0, unfiltered.output
+    assert [record["id"] for record in json.loads(unfiltered.output)] == [
+        cover_asset_id,
+        video_asset_id,
+        other_asset_id,
+    ]
+    for output in (filtered.output, unfiltered.output):
+        assert sentinel not in output
+        assert "source_url" not in output
+        assert "locator" not in output
+        assert "local_path" not in output
+        assert "last_error_message" not in output
+
+
+def test_asset_download_without_ffprobe_fails_before_database_or_job_work(
+    initialized_cli_database: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    asset_id = UUID("00000000-0000-0000-0000-000000000031")
+    author_id = "00000000-0000-0000-0000-000000000032"
+    content_id = "00000000-0000-0000-0000-000000000033"
+    service_calls: list[object] = []
+    database = Database(initialized_cli_database)
+    try:
+        with database.session() as session:
+            session.add_all(
+                [
+                    Author(
+                        id=author_id,
+                        platform="bili",
+                        remote_id="probe-author",
+                        display_name="Probe Author",
+                    ),
+                    Content(
+                        id=content_id,
+                        author_id=author_id,
+                        platform="bili",
+                        remote_type="video",
+                        remote_id="probe-content",
+                        kind="video",
+                    ),
+                    Asset(
+                        id=str(asset_id),
+                        content_id=content_id,
+                        platform="bili",
+                        kind="video",
+                        position=0,
+                        locator={"type": "direct", "url": "https://media.invalid/video"},
+                        semantic_fingerprint="8" * 64,
+                        locator_fingerprint="9" * 64,
+                        status="discovered",
+                    ),
+                ]
+            )
+    finally:
+        database.dispose()
+
+    def unexpected_service(*args: object, **kwargs: object) -> None:
+        service_calls.append((args, kwargs))
+        raise AssertionError("download service must not start without the required probe")
+
+    monkeypatch.setattr(cli_module.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(cli_module, "AssetDownloadService", unexpected_service)
+
+    result = runner.invoke(app, ["asset", "download", "--asset-id", str(asset_id), "--json"])
+
+    assert result.exit_code == 1
+    assert json.loads(result.output) == {
+        "asset_id": str(asset_id),
+        "status": "blocked",
+        "disposition": "not_started",
+        "persisted_status": "discovered",
+        "error_code": "media_probe_unavailable",
+        "retryable": True,
+    }
+    assert service_calls == []
+    assert "Traceback" not in result.output
+    database = Database(initialized_cli_database)
+    try:
+        with database.session() as session:
+            asset = session.get(Asset, str(asset_id))
+            assert asset is not None
+            assert asset.status == "discovered"
+            assert session.scalar(select(func.count()).select_from(Job)) == 0
+    finally:
+        database.dispose()
+
+
+def test_asset_download_without_ffprobe_allows_image_magic_validation(
+    initialized_cli_database: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    asset_id = UUID("00000000-0000-0000-0000-000000000034")
+    author_id = "00000000-0000-0000-0000-000000000035"
+    content_id = "00000000-0000-0000-0000-000000000036"
+    database = Database(initialized_cli_database)
+    try:
+        with database.session() as session:
+            session.add_all(
+                [
+                    Author(
+                        id=author_id,
+                        platform="bili",
+                        remote_id="image-author",
+                        display_name="Image Author",
+                    ),
+                    Content(
+                        id=content_id,
+                        author_id=author_id,
+                        platform="bili",
+                        remote_type="dynamic",
+                        remote_id="image-content",
+                        kind="image",
+                    ),
+                    Asset(
+                        id=str(asset_id),
+                        content_id=content_id,
+                        platform="bili",
+                        kind="image",
+                        position=0,
+                        locator={"type": "direct", "url": "https://media.invalid/image"},
+                        semantic_fingerprint="a" * 64,
+                        locator_fingerprint="b" * 64,
+                        status="discovered",
+                    ),
+                ]
+            )
+    finally:
+        database.dispose()
+
+    captured: dict[str, object] = {}
+
+    class _FakeDownloader:
+        def __init__(self, client: object, *, probe: object, limits: object) -> None:
+            captured.update(client=client, probe=probe, limits=limits)
+
+    class _FakeService:
+        def __init__(self, database: object, downloader: object) -> None:
+            captured.update(database=database, downloader=downloader)
+
+        def run(self, request: object) -> object:
+            captured["request"] = request
+            return SimpleNamespace(
+                asset_id=asset_id,
+                generation=1,
+                job_id=None,
+                status=cli_module.AssetStatus.VERIFIED,
+                disposition="downloaded",
+                archive_path=Path("archive/image.jpg"),
+                checksum_sha256="c" * 64,
+                size_bytes=42,
+                mime_type="image/jpeg",
+            )
+
+    monkeypatch.setattr(cli_module.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(cli_module, "SecureMediaDownloader", _FakeDownloader)
+    monkeypatch.setattr(cli_module, "AssetDownloadService", _FakeService)
+
+    result = runner.invoke(app, ["asset", "download", "--asset-id", str(asset_id), "--json"])
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)["status"] == "verified"
+    assert captured["probe"] is None
+
+
+def test_asset_download_adapter_refresh_preflight_has_zero_sqlite_state_change(
+    initialized_cli_database: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    asset_id = UUID("00000000-0000-0000-0000-000000000037")
+    author_id = "00000000-0000-0000-0000-000000000038"
+    content_id = "00000000-0000-0000-0000-000000000039"
+    sentinel = "sentinel-private-refresh-key"
+    service_calls: list[object] = []
+    database = Database(initialized_cli_database)
+    try:
+        with database.session() as session:
+            session.add_all(
+                [
+                    Author(
+                        id=author_id,
+                        platform="xhs",
+                        remote_id="refresh-author",
+                        display_name="Refresh Author",
+                    ),
+                    Content(
+                        id=content_id,
+                        author_id=author_id,
+                        platform="xhs",
+                        remote_type="note",
+                        remote_id="refresh-content",
+                        kind="image",
+                    ),
+                    Asset(
+                        id=str(asset_id),
+                        content_id=content_id,
+                        platform="xhs",
+                        kind="image",
+                        position=0,
+                        locator={
+                            "version": 1,
+                            "type": "adapter_refresh",
+                            "adapter": "mediacrawler",
+                            "asset_key": sentinel,
+                        },
+                        semantic_fingerprint="d" * 64,
+                        locator_fingerprint="e" * 64,
+                        status="discovered",
+                    ),
+                ]
+            )
+        with database.session() as session:
+            before = session.execute(
+                select(
+                    Asset.status,
+                    Asset.generation,
+                    Asset.download_job_id,
+                    Asset.queued_at,
+                    Asset.download_started_at,
+                    Asset.last_error_code,
+                ).where(Asset.id == str(asset_id))
+            ).one()
+    finally:
+        database.dispose()
+
+    def unexpected_service(*args: object, **kwargs: object) -> None:
+        service_calls.append((args, kwargs))
+        raise AssertionError("unsupported refresh locator must not enter download orchestration")
+
+    monkeypatch.setattr(cli_module, "AssetDownloadService", unexpected_service)
+
+    result = runner.invoke(app, ["asset", "download", "--asset-id", str(asset_id), "--json"])
+
+    assert result.exit_code == 1
+    assert json.loads(result.output) == {
+        "asset_id": str(asset_id),
+        "status": "blocked",
+        "disposition": "not_started",
+        "persisted_status": "discovered",
+        "error_code": "locator_refresh_unsupported",
+        "retryable": True,
+    }
+    assert sentinel not in result.output
+    assert service_calls == []
+    database = Database(initialized_cli_database)
+    try:
+        with database.session() as session:
+            after = session.execute(
+                select(
+                    Asset.status,
+                    Asset.generation,
+                    Asset.download_job_id,
+                    Asset.queued_at,
+                    Asset.download_started_at,
+                    Asset.last_error_code,
+                ).where(Asset.id == str(asset_id))
+            ).one()
+            assert session.scalar(select(func.count()).select_from(Job)) == 0
+    finally:
+        database.dispose()
+    assert after == before
+    assert "Traceback" not in result.output
+
+
+@pytest.mark.parametrize(
+    ("already_exported", "expected_disposition", "managed_file_count"),
+    [
+        (False, "exported", 4),
+        (True, "already_exported", 0),
+    ],
+)
+def test_emby_export_reports_success_and_idempotent_outcomes(
+    initialized_cli_database: str,
+    monkeypatch: pytest.MonkeyPatch,
+    already_exported: bool,
+    expected_disposition: str,
+    managed_file_count: int,
+) -> None:
+    del initialized_cli_database
+    author_id = UUID("00000000-0000-0000-0000-000000000041")
+    captured: dict[str, object] = {}
+
+    class _FakeExporter:
+        def __init__(self, export_root: Path, *, staging_root: Path) -> None:
+            captured["export_root"] = export_root
+            captured["staging_root"] = staging_root
+
+    class _FakeService:
+        def __init__(self, database: object, exporter: object) -> None:
+            captured["database"] = database
+            captured["exporter"] = exporter
+
+        def export_author(self, request: object) -> object:
+            captured["request"] = request
+            return SimpleNamespace(
+                job_id="00000000-0000-0000-0000-000000000042",
+                source_fingerprint="a" * 64,
+                output_path="bili/author-safe",
+                rendered_fingerprint="b" * 64,
+                managed_file_count=managed_file_count,
+                already_exported=already_exported,
+            )
+
+    monkeypatch.setattr(cli_module, "EmbyExporter", _FakeExporter)
+    monkeypatch.setattr(cli_module, "EmbyExportService", _FakeService)
+
+    result = runner.invoke(
+        app,
+        [
+            "emby",
+            "export",
+            "--author-id",
+            str(author_id),
+            "--worker-id",
+            "fixture-worker",
+            "--lease-seconds",
+            "120",
+            "--max-attempts",
+            "3",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload == {
+        "author_id": str(author_id),
+        "job_id": "00000000-0000-0000-0000-000000000042",
+        "status": "succeeded",
+        "disposition": expected_disposition,
+        "output_path": "bili/author-safe",
+        "source_fingerprint": "a" * 64,
+        "rendered_fingerprint": "b" * 64,
+        "managed_file_count": managed_file_count,
+    }
+    request = captured["request"]
+    assert request.author_id == str(author_id)  # type: ignore[attr-defined]
+    assert request.worker_id == "fixture-worker"  # type: ignore[attr-defined]
+    assert request.lease_seconds == 120  # type: ignore[attr-defined]
+    assert request.max_attempts == 3  # type: ignore[attr-defined]
+
+
+def test_emby_export_failure_uses_fixed_code_and_redacts_exception_chain(
+    initialized_cli_database: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    del initialized_cli_database
+    author_id = UUID("00000000-0000-0000-0000-000000000051")
+    sentinel = "sentinel-private-export-detail"
+
+    class _FakeExporter:
+        def __init__(self, export_root: Path, *, staging_root: Path) -> None:
+            del export_root, staging_root
+
+    class _FailingService:
+        def __init__(self, database: object, exporter: object) -> None:
+            del database, exporter
+
+        def export_author(self, request: object) -> object:
+            del request
+            try:
+                raise RuntimeError(sentinel)
+            except RuntimeError as error:
+                raise cli_module.ExportError("publish_failed") from error
+
+    monkeypatch.setattr(cli_module, "EmbyExporter", _FakeExporter)
+    monkeypatch.setattr(cli_module, "EmbyExportService", _FailingService)
+
+    result = runner.invoke(
+        app,
+        ["emby", "export", "--author-id", str(author_id), "--json"],
+    )
+
+    assert result.exit_code == 1
+    assert json.loads(result.output) == {
+        "author_id": str(author_id),
+        "status": "failed",
+        "error_code": "publish_failed",
+        "retryable": True,
+    }
+    assert sentinel not in result.output
+    assert "Traceback" not in result.output
+
+
+def test_emby_export_database_failure_has_fixed_redacted_code(
+    initialized_cli_database: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    del initialized_cli_database
+    author_id = UUID("00000000-0000-0000-0000-000000000061")
+    sentinel = "sentinel-private-database-detail"
+
+    class _FakeExporter:
+        def __init__(self, export_root: Path, *, staging_root: Path) -> None:
+            del export_root, staging_root
+
+    class _FailingService:
+        def __init__(self, database: object, exporter: object) -> None:
+            del database, exporter
+
+        def export_author(self, request: object) -> object:
+            del request
+            raise cli_module.SQLAlchemyError(sentinel)
+
+    monkeypatch.setattr(cli_module, "EmbyExporter", _FakeExporter)
+    monkeypatch.setattr(cli_module, "EmbyExportService", _FailingService)
+
+    result = runner.invoke(
+        app,
+        ["emby", "export", "--author-id", str(author_id), "--json"],
+    )
+
+    assert result.exit_code == 1
+    assert json.loads(result.output) == {
+        "author_id": str(author_id),
+        "status": "failed",
+        "error_code": "export_database_failed",
+        "retryable": True,
+    }
+    assert sentinel not in result.output
+    assert "Traceback" not in result.output

@@ -4,6 +4,7 @@ Repositories consume an explicit ``Session``.  ``Database.session()`` owns the
 outer transaction so callers can combine multiple repository operations.
 """
 
+from .asset_identity import ASSET_IDENTITY_VERSION, AssetFingerprints, asset_fingerprints
 from .base import Base, UTCDateTime, new_uuid, utc_now
 from .database import Database, create_database_engine
 from .mediacrawler_ingestion import (
@@ -26,11 +27,14 @@ from .models import (
 )
 from .repositories import (
     AccountRepository,
+    AssetConflictError,
+    AssetLeaseLostError,
     AssetRepository,
     AssetUpsert,
     AuthorRepository,
     AuthorUpsert,
     ContentUpsert,
+    ExportRecordConflictError,
     ExportRecordRepository,
     JobRepository,
     LeaseLostError,
@@ -44,9 +48,13 @@ from .repositories import (
 from .sync_repository import SQLAlchemySyncRepository
 
 __all__ = [
+    "ASSET_IDENTITY_VERSION",
     "Account",
     "AccountRepository",
     "Asset",
+    "AssetConflictError",
+    "AssetFingerprints",
+    "AssetLeaseLostError",
     "AssetRepository",
     "AssetUpsert",
     "Author",
@@ -57,6 +65,7 @@ __all__ = [
     "ContentUpsert",
     "Database",
     "ExportRecord",
+    "ExportRecordConflictError",
     "ExportRecordRepository",
     "IngestionMode",
     "Job",
@@ -76,6 +85,7 @@ __all__ = [
     "SyncRun",
     "SyncRunRepository",
     "UTCDateTime",
+    "asset_fingerprints",
     "create_database_engine",
     "new_uuid",
     "upgrade_database",

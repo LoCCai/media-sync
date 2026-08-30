@@ -29,6 +29,8 @@ from media_sync.domain.enums import (
 from media_sync.domain.errors import InvalidStateTransitionError
 from media_sync.infrastructure.db import (
     AccountRepository,
+    AssetConflictError,
+    AssetLeaseLostError,
     AssetRepository,
     AssetUpsert,
     AuthorRepository,
@@ -199,7 +201,6 @@ def test_repository_upsert_dto_repr_redacts_secret_adjacent_fields() -> None:
         position=0,
         source_url=f"https://example.invalid/video?token={sentinel}",
         locator={"header": sentinel},
-        local_path=f"private/{sentinel}.mp4",
         raw={"cookie": sentinel},
     )
 
@@ -372,6 +373,293 @@ def test_author_content_asset_and_export_upserts_are_idempotent(database: Databa
         assert valid_content_count == 0
 
 
+def test_asset_discovery_identity_and_download_lifecycle_are_fenced(database: Database) -> None:
+    observed_at = datetime(2026, 8, 30, 2, tzinfo=UTC)
+    with database.session() as session:
+        author, contents = AuthorRepository(session).upsert_with_contents(
+            AuthorUpsert(platform="bili", remote_id="asset-author", display_name="Asset Author"),
+            [ContentUpsert(remote_id="asset-content", kind="video")],
+        )
+        del author
+        repository = AssetRepository(session)
+        discovered = repository.upsert_for_content(
+            contents[0].id,
+            AssetUpsert(
+                platform="bili",
+                remote_id="remote-video-1",
+                kind="video",
+                position=0,
+                source_url="https://cdn.example.test/media/video.mp4?quality=720",
+            ),
+        )
+        queued = repository.queue(
+            discovered.id,
+            expected_generation=1,
+            expected_status="discovered",
+            at=observed_at,
+        )
+        job = JobRepository(session).enqueue(
+            job_type="asset_download",
+            natural_key=f"{queued.id}:{queued.generation}",
+            available_at=observed_at,
+        )
+        claimed = JobRepository(session).claim(job.id, worker_id="worker-a", now=observed_at)
+        assert claimed is not None
+        assert claimed.lease_token is not None
+        running_job = JobRepository(session).start(
+            claimed.id,
+            worker_id="worker-a",
+            lease_token=claimed.lease_token,
+            now=observed_at,
+        )
+        downloading = repository.start(
+            queued.id,
+            expected_generation=1,
+            expected_status="queued",
+            job_id=running_job.id,
+            worker_id="worker-a",
+            lease_token=claimed.lease_token,
+            at=observed_at,
+        )
+        verified = repository.verify(
+            downloading.id,
+            expected_generation=1,
+            expected_status="downloading",
+            job_id=running_job.id,
+            worker_id="worker-a",
+            lease_token=claimed.lease_token,
+            mime_type="video/mp4",
+            size_bytes=123,
+            checksum_sha256="c" * 64,
+            local_path="archive/sha256/cc/video.mp4",
+            etag='"strong-etag"',
+            last_modified="Sun, 30 Aug 2026 02:00:00 GMT",
+            at=observed_at,
+        )
+        assert verified.status == "verified"
+        assert verified.etag == '"strong-etag"'
+        assert verified.last_modified == "Sun, 30 Aug 2026 02:00:00 GMT"
+
+        query_rotation = repository.upsert_for_content(
+            contents[0].id,
+            AssetUpsert(
+                platform="bili",
+                remote_id="remote-video-1",
+                kind="video",
+                position=0,
+                source_url="https://cdn.example.test/media/video.mp4?quality=1080",
+            ),
+        )
+        assert query_rotation.generation == 1
+        assert query_rotation.status == "verified"
+        assert query_rotation.mime_type == "video/mp4"
+        assert query_rotation.size_bytes == 123
+        assert query_rotation.checksum_sha256 == "c" * 64
+        assert query_rotation.local_path == "archive/sha256/cc/video.mp4"
+
+        replacement = repository.upsert_for_content(
+            contents[0].id,
+            AssetUpsert(
+                platform="bili",
+                remote_id="remote-video-2",
+                kind="video",
+                position=0,
+                source_url="https://cdn.example.test/media/replacement.mp4",
+            ),
+        )
+        assert replacement.id == discovered.id
+        assert replacement.generation == 2
+        assert replacement.status == "discovered"
+        assert replacement.mime_type is None
+        assert replacement.size_bytes is None
+        assert replacement.checksum_sha256 is None
+        assert replacement.local_path is None
+        assert replacement.etag is None
+        assert replacement.last_modified is None
+        assert replacement.download_job_id is None
+
+        with pytest.raises(AssetConflictError):
+            repository.queue(
+                replacement.id,
+                expected_generation=1,
+                expected_status="discovered",
+                at=observed_at,
+            )
+        with pytest.raises(AssetConflictError):
+            repository.queue(
+                replacement.id,
+                expected_generation=2,
+                expected_status="failed_retryable",
+                at=observed_at,
+            )
+
+        explicitly_reset = repository.reset(
+            replacement.id,
+            expected_generation=2,
+            expected_status="discovered",
+            value=AssetUpsert(
+                platform="bili",
+                remote_id="remote-video-2",
+                kind="video",
+                position=0,
+                source_url="https://cdn.example.test/media/replacement.mp4",
+            ),
+            at=observed_at,
+        )
+        assert explicitly_reset.generation == 3
+        assert explicitly_reset.status == "discovered"
+
+
+def test_expired_download_recovery_preserves_generation_and_fences_old_worker(database: Database) -> None:
+    first_attempt = datetime(2026, 8, 30, 3, tzinfo=UTC)
+    reclaimed_at = first_attempt + timedelta(seconds=2)
+    with database.session() as session:
+        _author, contents = AuthorRepository(session).upsert_with_contents(
+            AuthorUpsert(platform="bili", remote_id="resume-author", display_name="Resume Author"),
+            [ContentUpsert(remote_id="resume-content", kind="video")],
+        )
+        assets = AssetRepository(session)
+        discovered = assets.upsert_for_content(
+            contents[0].id,
+            AssetUpsert(
+                platform="bili",
+                remote_id="resume-video",
+                kind="video",
+                position=0,
+                source_url="https://cdn.example.test/media/resume.mp4",
+            ),
+        )
+        original_locator_fingerprint = discovered.locator_fingerprint
+        queued = assets.queue(
+            discovered.id,
+            expected_generation=1,
+            expected_status="discovered",
+            at=first_attempt,
+        )
+        jobs = JobRepository(session)
+        job = jobs.enqueue(
+            job_type="asset_download",
+            natural_key=f"{queued.id}:{queued.generation}",
+            available_at=first_attempt,
+        )
+        first_claim = jobs.claim(job.id, worker_id="worker-old", lease_seconds=1, now=first_attempt)
+        assert first_claim is not None
+        assert first_claim.lease_token is not None
+        jobs.start(
+            job.id,
+            worker_id="worker-old",
+            lease_token=first_claim.lease_token,
+            now=first_attempt,
+        )
+        assets.start(
+            queued.id,
+            expected_generation=1,
+            expected_status="queued",
+            job_id=job.id,
+            worker_id="worker-old",
+            lease_token=first_claim.lease_token,
+            at=first_attempt,
+        )
+
+        assert jobs.reclaim_expired(job_id=job.id, now=reclaimed_at) == 1
+        recovered = assets.recover_expired_download(
+            queued.id,
+            expected_generation=1,
+            expected_status="downloading",
+            job_id=job.id,
+            at=reclaimed_at,
+        )
+        assert recovered.status == "failed_retryable"
+        assert recovered.generation == 1
+        assert recovered.locator_fingerprint == original_locator_fingerprint
+
+        requeued = assets.queue(
+            recovered.id,
+            expected_generation=1,
+            expected_status="failed_retryable",
+            at=reclaimed_at,
+        )
+        second_claim = jobs.claim(job.id, worker_id="worker-new", lease_seconds=60, now=reclaimed_at)
+        assert second_claim is not None
+        assert second_claim.lease_token is not None
+        jobs.start(
+            job.id,
+            worker_id="worker-new",
+            lease_token=second_claim.lease_token,
+            now=reclaimed_at,
+        )
+        resumed = assets.start(
+            requeued.id,
+            expected_generation=1,
+            expected_status="queued",
+            job_id=job.id,
+            worker_id="worker-new",
+            lease_token=second_claim.lease_token,
+            at=reclaimed_at,
+        )
+        assert resumed.generation == 1
+        assert resumed.locator_fingerprint == original_locator_fingerprint
+
+        with pytest.raises(AssetLeaseLostError):
+            assets.verify(
+                resumed.id,
+                expected_generation=1,
+                expected_status="downloading",
+                job_id=job.id,
+                worker_id="worker-old",
+                lease_token=first_claim.lease_token,
+                mime_type="video/mp4",
+                size_bytes=1,
+                checksum_sha256="e" * 64,
+                local_path="archive/sha256/ee/stale.mp4",
+                at=reclaimed_at,
+            )
+        with pytest.raises(AssetLeaseLostError):
+            assets.fail(
+                resumed.id,
+                expected_generation=1,
+                expected_status="downloading",
+                job_id=job.id,
+                worker_id="worker-old",
+                lease_token=first_claim.lease_token,
+                retryable=True,
+                error_code="stale_worker",
+                error_message="stale worker must not finalize",
+                at=reclaimed_at,
+            )
+        assert assets.require(resumed.id).status == "downloading"
+
+        failed = assets.fail(
+            resumed.id,
+            expected_generation=1,
+            expected_status="downloading",
+            job_id=job.id,
+            worker_id="worker-new",
+            lease_token=second_claim.lease_token,
+            retryable=True,
+            error_code="network_timeout",
+            error_message="retry later",
+            at=reclaimed_at,
+        )
+        assert failed.status == "failed_retryable"
+
+
+def test_job_exact_claim_never_consumes_another_queue_item(database: Database) -> None:
+    now = datetime(2026, 8, 30, 4, tzinfo=UTC)
+    with database.session() as session:
+        repository = JobRepository(session)
+        untouched = repository.enqueue(job_type="asset_download", natural_key="untouched", available_at=now)
+        requested = repository.enqueue(job_type="asset_download", natural_key="requested", available_at=now)
+
+        claimed = repository.claim(requested.id, worker_id="exact-worker", now=now)
+        assert claimed is not None
+        assert claimed.id == requested.id
+        assert claimed.status == "claimed"
+        untouched_after = repository.get(untouched.id)
+        assert untouched_after is not None
+        assert untouched_after.status == "queued"
+
+
 def test_concurrent_sqlite_author_content_upsert_is_idempotent(database: Database) -> None:
     start = Barrier(2)
 
@@ -405,6 +693,8 @@ def test_concurrent_sqlite_author_content_upsert_is_idempotent(database: Databas
                     results[0][1],
                     AssetUpsert(
                         platform="dy",
+                        content_remote_type="content",
+                        content_remote_id="shared-content",
                         kind="cover",
                         position=0,
                         source_url=f"https://example.com/{label}.jpg",
@@ -610,6 +900,13 @@ def test_job_expiry_fencing_and_terminal_recovery(database: Database) -> None:
                 lease_token=stale_token,
                 now=reclaimed_at,
             )
+        with pytest.raises(LeaseLostError):
+            repository.renew_unreclaimed_lease(
+                job_id,
+                worker_id="stable-worker",
+                lease_token=stale_token,
+                now=reclaimed_at,
+            )
         completed = repository.complete(
             job_id,
             worker_id="stable-worker",
@@ -640,3 +937,41 @@ def test_job_expiry_fencing_and_terminal_recovery(database: Database) -> None:
         assert recovered.finished_at == reclaimed_at
         assert recovered.lease_owner is None
         assert recovered.lease_token is None
+
+
+def test_expired_running_token_can_renew_only_before_reclaim(database: Database) -> None:
+    claimed_at = datetime(2026, 8, 30, 1, tzinfo=UTC)
+    expired_at = claimed_at + timedelta(seconds=2)
+    with database.session() as session:
+        repository = JobRepository(session)
+        job = repository.enqueue(
+            job_type="sync",
+            natural_key="unreclaimed-renewal",
+            max_attempts=1,
+            available_at=claimed_at,
+        )
+        claimed = repository.claim(job.id, worker_id="live-worker", lease_seconds=1, now=claimed_at)
+        assert claimed is not None and claimed.lease_token is not None
+        token = claimed.lease_token
+        repository.start(job.id, worker_id="live-worker", lease_token=token, now=claimed_at)
+
+    with database.session() as session:
+        repository = JobRepository(session)
+        renewed = repository.renew_unreclaimed_lease(
+            job.id,
+            worker_id="live-worker",
+            lease_token=token,
+            lease_seconds=30,
+            now=expired_at,
+        )
+        assert renewed.status == "running"
+        assert renewed.lease_token == token
+        assert renewed.lease_expires_at == expired_at + timedelta(seconds=30)
+        assert repository.reclaim_expired(job_id=job.id, now=expired_at) == 0
+        completed = repository.complete(
+            job.id,
+            worker_id="live-worker",
+            lease_token=token,
+            now=expired_at,
+        )
+        assert completed.status == "succeeded"

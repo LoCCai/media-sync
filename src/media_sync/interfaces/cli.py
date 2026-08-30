@@ -20,7 +20,7 @@ from typing import Annotated, Any
 from uuid import UUID, uuid4
 
 import typer
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import create_engine, inspect, select, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import IntegrityError, OperationalError, SQLAlchemyError
 from sqlalchemy.orm import Session
@@ -28,14 +28,27 @@ from sqlalchemy.orm import Session
 from media_sync import __version__
 from media_sync.adapters.fake import FakePlatformAdapter
 from media_sync.application import SyncRequest, SyncService
+from media_sync.application.downloads import (
+    AssetDownloadOrchestrationError,
+    AssetDownloadRequest,
+    AssetDownloadService,
+)
+from media_sync.application.emby import (
+    EmbyExportRequest,
+    EmbyExportService,
+    export_error_is_retryable,
+)
 from media_sync.config import Settings, get_settings
-from media_sync.domain import AccountRef, Cursor, DomainError, LoginMethod, Platform, RunStatus
+from media_sync.domain import AccountRef, AssetStatus, Cursor, DomainError, LoginMethod, Platform, RunStatus
+from media_sync.exporters.emby import EmbyExporter, ExportError
 from media_sync.infrastructure.db import (
     Account,
     AccountRepository,
+    Asset,
     AuthorRepository,
     AuthorUpsert,
     Base,
+    Content,
     Database,
     IngestionMode,
     MediaCrawlerIngestionService,
@@ -72,6 +85,14 @@ from media_sync.integrations.mediacrawler.policies import (
     normalize_creator_reference,
 )
 from media_sync.integrations.mediacrawler.receipt import load_validated_output_snapshot
+from media_sync.media import (
+    DownloadLimits,
+    FFprobeMediaProbe,
+    NetworkLimits,
+    SafeHttpClient,
+    SecureMediaDownloader,
+    SocketAddressResolver,
+)
 from media_sync.security import (
     InvalidSecretReferenceError,
     SecretError,
@@ -89,13 +110,17 @@ account_app = typer.Typer(help="Platform account commands.")
 subscription_app = typer.Typer(help="Creator subscription commands.")
 sync_app = typer.Typer(help="Subscription synchronization commands.")
 mediacrawler_app = typer.Typer(help="License-gated external MediaCrawler bridge commands.")
+asset_app = typer.Typer(help="Verified media asset download commands.")
+emby_app = typer.Typer(help="Emby/Jellyfin library export commands.")
 app.add_typer(db_app, name="db")
 app.add_typer(account_app, name="account")
 app.add_typer(subscription_app, name="subscription")
 app.add_typer(sync_app, name="sync")
 app.add_typer(mediacrawler_app, name="mediacrawler")
+app.add_typer(asset_app, name="asset")
+app.add_typer(emby_app, name="emby")
 
-_EXPECTED_DATABASE_REVISION = "0002_checkpoint"
+_EXPECTED_DATABASE_REVISION = "0003_media_download_emby"
 _REQUIRED_DATABASE_TABLES = frozenset(str(name) for name in Base.metadata.tables)
 
 
@@ -129,6 +154,11 @@ def main(
 def collect_doctor_report(settings: Settings) -> dict[str, Any]:
     """Collect a secret-free, read-only environment report."""
 
+    tools = {
+        "ffmpeg": shutil.which("ffmpeg"),
+        "ffprobe": shutil.which("ffprobe"),
+        "git": shutil.which("git"),
+    }
     runtime_roots = {
         "state": settings.state_dir,
         "archive": settings.archive_dir,
@@ -142,10 +172,12 @@ def collect_doctor_report(settings: Settings) -> dict[str, Any]:
         "system": runtime_platform.system(),
         "database_driver": settings.resolved_database_url.split(":", 1)[0],
         "api_bind": f"{settings.api_host}:{settings.api_port}",
-        "tools": {
-            "ffmpeg": shutil.which("ffmpeg"),
-            "ffprobe": shutil.which("ffprobe"),
-            "git": shutil.which("git"),
+        "tools": tools,
+        "requirements": {
+            "asset_download": {
+                "ffprobe_required_for": ["video", "audio"],
+                "ready": tools["ffprobe"] is not None,
+            }
         },
         "paths": {name: str(path.resolve()) for name, path in runtime_roots.items()},
         "path_exists": {name: path.exists() for name, path in runtime_roots.items()},
@@ -312,6 +344,24 @@ def _subscription_payload(
     return payload
 
 
+def _asset_payload(asset: Asset, *, author_id: str) -> dict[str, object]:
+    """Return only stable asset discovery and lifecycle fields."""
+
+    return {
+        "id": asset.id,
+        "author_id": author_id,
+        "content_id": asset.content_id,
+        "platform": asset.platform,
+        "kind": asset.kind,
+        "position": asset.position,
+        "generation": asset.generation,
+        "status": asset.status,
+        "mime_type": asset.mime_type,
+        "size_bytes": asset.size_bytes,
+        "verified_at": _iso_datetime(asset.verified_at),
+    }
+
+
 def _emit_record(payload: dict[str, object], *, json_output: bool, label: str) -> None:
     if json_output:
         typer.echo(json.dumps(payload, ensure_ascii=False, indent=2))
@@ -443,6 +493,11 @@ def doctor(
     typer.echo(f"API default: {report['api_bind']}")
     for name, executable in report["tools"].items():
         typer.echo(f"{name}: {executable or 'NOT FOUND'}")
+    asset_download_ready = report["requirements"]["asset_download"]["ready"]
+    typer.echo(
+        "video/audio asset download prerequisite: "
+        f"ffprobe is required ({'ready' if asset_download_ready else 'NOT READY'})"
+    )
     for name, path in report["paths"].items():
         marker = "exists" if report["path_exists"][name] else "will be created"
         typer.echo(f"{name}: {path} ({marker})")
@@ -752,6 +807,230 @@ def list_subscriptions(
     with _database_session() as session:
         records = [_subscription_payload(subscription) for subscription in SubscriptionRepository(session).list()]
     _emit_list(records, json_output=json_output, label="subscriptions")
+
+
+@asset_app.command("list")
+def list_assets(
+    author_id: Annotated[
+        UUID | None,
+        typer.Option(help="Limit results to one local author UUID."),
+    ] = None,
+    status: Annotated[
+        AssetStatus | None,
+        typer.Option(help="Limit results to one asset lifecycle status."),
+    ] = None,
+    json_output: Annotated[bool, typer.Option("--json", help="Emit machine-readable JSON.")] = False,
+) -> None:
+    """List stable asset IDs without locators, source URLs, paths or raw metadata."""
+
+    with _database_session() as session:
+        statement = select(Asset, Content.author_id).join(Content, Asset.content_id == Content.id)
+        if author_id is not None:
+            statement = statement.where(Content.author_id == str(author_id))
+        if status is not None:
+            statement = statement.where(Asset.status == status.value)
+        statement = statement.order_by(
+            Content.author_id,
+            Asset.content_id,
+            Asset.kind,
+            Asset.position,
+            Asset.id,
+        )
+        records = [
+            _asset_payload(asset, author_id=row_author_id) for asset, row_author_id in session.execute(statement).all()
+        ]
+    _emit_list(records, json_output=json_output, label="assets")
+
+
+@asset_app.command("download")
+def download_asset(
+    asset_id: Annotated[UUID, typer.Option(help="Local asset UUID to download.")],
+    worker_id: Annotated[
+        str,
+        typer.Option(help="Stable local worker label; lease tokens still fence every attempt."),
+    ] = "cli-worker",
+    lease_seconds: Annotated[
+        int,
+        typer.Option(min=1, max=86_400, help="Download job lease duration in seconds."),
+    ] = 3_600,
+    max_attempts: Annotated[
+        int,
+        typer.Option(min=1, max=100, help="Maximum attempts for this asset generation."),
+    ] = 5,
+    json_output: Annotated[bool, typer.Option("--json", help="Emit machine-readable JSON.")] = False,
+) -> None:
+    """Download and archive one asset; ffprobe is required for video/audio assets."""
+
+    settings = get_settings()
+    database = Database(settings.resolved_database_url)
+    try:
+        with database.session() as session:
+            asset_preflight = session.execute(
+                select(Asset.status, Asset.kind, Asset.locator).where(Asset.id == str(asset_id))
+            ).one_or_none()
+        asset_status = asset_preflight[0] if asset_preflight is not None else None
+        asset_kind = asset_preflight[1] if asset_preflight is not None else None
+        asset_locator = asset_preflight[2] if asset_preflight is not None else None
+        requires_download = asset_status not in {
+            None,
+            AssetStatus.VERIFIED.value,
+            AssetStatus.FAILED_TERMINAL.value,
+        }
+        if requires_download and isinstance(asset_locator, Mapping) and asset_locator.get("type") == "adapter_refresh":
+            _emit_record(
+                {
+                    "asset_id": str(asset_id),
+                    "status": "blocked",
+                    "disposition": "not_started",
+                    "persisted_status": asset_status,
+                    "error_code": "locator_refresh_unsupported",
+                    "retryable": True,
+                },
+                json_output=json_output,
+                label="Asset download",
+            )
+            raise typer.Exit(code=1)
+
+        ffprobe = shutil.which("ffprobe")
+        if requires_download and asset_kind in {"video", "audio"} and ffprobe is None:
+            _emit_record(
+                {
+                    "asset_id": str(asset_id),
+                    "status": "blocked",
+                    "disposition": "not_started",
+                    "persisted_status": asset_status,
+                    "error_code": "media_probe_unavailable",
+                    "retryable": True,
+                },
+                json_output=json_output,
+                label="Asset download",
+            )
+            raise typer.Exit(code=1)
+
+        limits = DownloadLimits()
+        downloader = SecureMediaDownloader(
+            SafeHttpClient(
+                SocketAddressResolver(),
+                limits=NetworkLimits(timeout_seconds=min(limits.total_timeout_seconds, 120.0)),
+            ),
+            probe=FFprobeMediaProbe(ffprobe) if ffprobe is not None else None,
+            limits=limits,
+        )
+        outcome = AssetDownloadService(database, downloader).run(
+            AssetDownloadRequest(
+                asset_id=asset_id,
+                worker_id=_required_option(worker_id, "worker_id"),
+                work_root=settings.job_dir / "downloads",
+                archive_root=settings.archive_dir,
+                lease_seconds=lease_seconds,
+                max_attempts=max_attempts,
+            )
+        )
+    except AssetDownloadOrchestrationError as error:
+        payload: dict[str, object] = {
+            "asset_id": str(asset_id),
+            "status": "failed",
+            "error_code": error.code,
+            "retryable": error.retryable,
+        }
+        _emit_record(payload, json_output=json_output, label="Asset download")
+        raise typer.Exit(code=1) from None
+    except SQLAlchemyError:
+        raise typer.BadParameter("asset download database operation failed safely") from None
+    finally:
+        database.dispose()
+
+    payload = {
+        "asset_id": str(outcome.asset_id),
+        "generation": outcome.generation,
+        "job_id": str(outcome.job_id) if outcome.job_id is not None else None,
+        "status": outcome.status.value,
+        "disposition": outcome.disposition,
+        "archive_path": str(outcome.archive_path),
+        "checksum_sha256": outcome.checksum_sha256,
+        "size_bytes": outcome.size_bytes,
+        "mime_type": outcome.mime_type,
+    }
+    _emit_record(payload, json_output=json_output, label="Asset download")
+
+
+@emby_app.command("export")
+def export_emby_author(
+    author_id: Annotated[UUID, typer.Option(help="Local author UUID to export.")],
+    worker_id: Annotated[
+        str,
+        typer.Option(help="Stable local worker label; lease tokens fence every attempt."),
+    ] = "cli-worker",
+    lease_seconds: Annotated[
+        int,
+        typer.Option(min=1, max=86_400, help="Export job lease duration in seconds."),
+    ] = 300,
+    max_attempts: Annotated[
+        int,
+        typer.Option(min=1, max=100, help="Maximum attempts for this author snapshot."),
+    ] = 5,
+    json_output: Annotated[bool, typer.Option("--json", help="Emit machine-readable JSON.")] = False,
+) -> None:
+    """Publish one complete verified author snapshot to the Emby/Jellyfin tree."""
+
+    settings = get_settings()
+    database = Database(settings.resolved_database_url)
+    try:
+        outcome = EmbyExportService(
+            database,
+            EmbyExporter(
+                settings.export_dir,
+                staging_root=settings.job_dir / "emby-export",
+            ),
+        ).export_author(
+            EmbyExportRequest(
+                author_id=str(author_id),
+                worker_id=_required_option(worker_id, "worker_id"),
+                lease_seconds=lease_seconds,
+                max_attempts=max_attempts,
+            )
+        )
+    except ExportError as error:
+        _emit_record(
+            {
+                "author_id": str(author_id),
+                "status": "failed",
+                "error_code": error.code,
+                "retryable": export_error_is_retryable(error.code),
+            },
+            json_output=json_output,
+            label="Emby export",
+        )
+        raise typer.Exit(code=1) from None
+    except SQLAlchemyError:
+        _emit_record(
+            {
+                "author_id": str(author_id),
+                "status": "failed",
+                "error_code": "export_database_failed",
+                "retryable": True,
+            },
+            json_output=json_output,
+            label="Emby export",
+        )
+        raise typer.Exit(code=1) from None
+    finally:
+        database.dispose()
+
+    _emit_record(
+        {
+            "author_id": str(author_id),
+            "job_id": outcome.job_id,
+            "status": "succeeded",
+            "disposition": "already_exported" if outcome.already_exported else "exported",
+            "output_path": outcome.output_path,
+            "source_fingerprint": outcome.source_fingerprint,
+            "rendered_fingerprint": outcome.rendered_fingerprint,
+            "managed_file_count": outcome.managed_file_count,
+        },
+        json_output=json_output,
+        label="Emby export",
+    )
 
 
 def _mark_ingest_failure(database: Database, run_id: str, error_code: str) -> None:

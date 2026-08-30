@@ -6,7 +6,7 @@ import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Final
-from urllib.parse import parse_qsl, unquote_plus, urlencode, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, unquote, unquote_plus, urlencode, urlsplit, urlunsplit
 
 from .secrets import InvalidSecretReferenceError, SecretReference, SecretValue
 
@@ -17,15 +17,24 @@ _SECRET_KEY = re.compile(
     r"(?:^|[_-])(?:auth(?:orization)?|cookie|csrf|passwd|password|secret|session|sign(?:ature)?|token)(?:$|[_-])",
     re.IGNORECASE,
 )
+_COMPOSITE_SECRET_KEY = re.compile(r"(?:^|_)(?:api|access)_?key(?:$|_)")
 _SECRET_KEY_NAMES = frozenset(
     {
         "ac_time_value",
         "a1",
+        "access_key",
+        "accesskey",
+        "api_key",
+        "apikey",
         "bili_jct",
         "mstoken",
+        "private_key",
         "refresh_token",
         "sessdata",
+        "signing_key",
         "webid",
+        "x_api_key",
+        "xapikey",
     }
 )
 _SECRET_QUERY_NAMES = frozenset(
@@ -33,6 +42,7 @@ _SECRET_QUERY_NAMES = frozenset(
         "a_bogus",
         "access_key",
         "access_token",
+        "api_key",
         "auth",
         "auth_key",
         "authorization",
@@ -61,6 +71,7 @@ _SECRET_QUERY_NAMES = frozenset(
         "x_amz_credential",
         "x_amz_security_token",
         "x_amz_signature",
+        "x_api_key",
         "x_bogus",
         "x_goog_credential",
         "x_goog_signature",
@@ -69,10 +80,44 @@ _SECRET_QUERY_NAMES = frozenset(
     }
 )
 _INLINE_ASSIGNMENT = re.compile(
-    r"(?i)\b(authorization|cookie|csrf|password|passwd|secret|session|token)\b(\s*[:=]\s*)([^\r\n,]+)"
+    r"(?i)(?<![?&\w-])\b(authorization|cookie|csrf|password|passwd|secret|session|token|"
+    r"(?:[a-z][a-z0-9]*[_-]?)?(?:api|access)[_-]?key(?:[_-]?id)?|"
+    r"private[_-]?key|signing[_-]?key)"
+    r"\b(\s*[:=]\s*)([^\r\n,]+)"
 )
 _HTTP_URL = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)
 _REFERENCE_KEYS = frozenset({"credential_ref", "secret_ref"})
+_SECRET_PATH_MARKERS = frozenset(
+    {
+        "access_key",
+        "access_token",
+        "accesskey",
+        "apikey",
+        "api_key",
+        "auth",
+        "auth_key",
+        "authorization",
+        "cookie",
+        "credential",
+        "credentials",
+        "password",
+        "passwd",
+        "private_key",
+        "refresh_token",
+        "secret",
+        "session",
+        "session_id",
+        "sessionid",
+        "sig",
+        "sign",
+        "signature",
+        "signing_key",
+        "token",
+        "x_api_key",
+        "xapikey",
+    }
+)
+_MAX_PATH_DECODE_PASSES: Final = 3
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,17 +142,84 @@ def _secret_strings(values: Sequence[str | SecretValue]) -> tuple[str, ...]:
     return tuple(sorted(normalized, key=len, reverse=True))
 
 
+def _normalized_secret_name(value: str) -> str:
+    # Preserve acronym boundaries so both ``aws_access_key_id`` and
+    # ``AWSAccessKeyId`` normalize to the same representation.
+    value = re.sub(r"(?<=[A-Z])(?=[A-Z][a-z])", "_", value)
+    value = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", value)
+    return value.lower().replace("-", "_")
+
+
+def _is_secret_key_name(value: str) -> bool:
+    normalized = _normalized_secret_name(value)
+    return (
+        normalized in _SECRET_KEY_NAMES
+        or _SECRET_KEY.search(normalized) is not None
+        or _COMPOSITE_SECRET_KEY.search(normalized) is not None
+    )
+
+
 def _is_secret_query_name(value: str) -> bool:
-    normalized = value.lower().replace("-", "_")
-    return normalized in _SECRET_QUERY_NAMES or _SECRET_KEY.search(normalized) is not None
+    normalized = _normalized_secret_name(value)
+    return normalized in _SECRET_QUERY_NAMES or _is_secret_key_name(normalized)
+
+
+def _is_secret_path_marker(value: str) -> bool:
+    normalized = _normalized_secret_name(value)
+    return normalized in _SECRET_PATH_MARKERS or _COMPOSITE_SECRET_KEY.search(normalized) is not None
+
+
+def _decoded_path_variants(path: str) -> tuple[str, ...]:
+    variants = [path]
+    current = path
+    for _ in range(_MAX_PATH_DECODE_PASSES):
+        decoded = unquote(current)
+        if decoded == current:
+            break
+        variants.append(decoded)
+        current = decoded
+    return tuple(variants)
+
+
+def _secret_path_values(path: str) -> tuple[str, ...]:
+    """Return values attached to credential-marker path segments.
+
+    Markers must be complete segments (``/token/value``) or complete
+    assignment keys (``/token=value`` or ``/file;token=value``).  Checking a
+    bounded sequence of percent-decoded variants catches encoded separators
+    without treating ordinary names such as ``tokenized-video.mp4`` as secret.
+    """
+
+    values: set[str] = set()
+    for variant in _decoded_path_variants(path):
+        segments = variant.split("/")
+        for index, segment in enumerate(segments):
+            matrix_parts = segment.split(";")
+            marker = matrix_parts[0]
+            if _is_secret_path_marker(marker):
+                for candidate in segments[index + 1 :]:
+                    if candidate:
+                        values.add(candidate)
+                        break
+            for assignment in matrix_parts:
+                key, separator, candidate = assignment.partition("=")
+                if separator and candidate and _is_secret_path_marker(key):
+                    values.add(candidate)
+    return tuple(sorted(values, key=len, reverse=True))
+
+
+def has_secret_url_path(path: str) -> bool:
+    """Return whether an HTTP URL path contains credential-shaped material."""
+
+    return bool(_secret_path_values(path))
 
 
 def secret_url_components(value: str) -> tuple[str, ...]:
     """Return sensitive URL components worth matching as standalone output.
 
-    Both encoded and decoded query values are retained.  This complements an
-    exact match on the complete URL when a child echoes only one signature or
-    credential component.
+    Encoded and decoded query values plus credential-bound path values are
+    retained.  This complements an exact match on the complete URL when a
+    child echoes only one signature or credential component.
     """
 
     try:
@@ -118,6 +230,7 @@ def secret_url_components(value: str) -> tuple[str, ...]:
         return ()
 
     components: set[str] = set()
+    components.update(_secret_path_values(parsed.path))
     for pair in parsed.query.split("&"):
         raw_key, separator, raw_value = pair.partition("=")
         if not separator or not _is_secret_query_name(unquote_plus(raw_key)):
@@ -132,9 +245,9 @@ def _redact_url(value: str) -> str:
     try:
         parsed = urlsplit(value)
     except ValueError:
-        return value
+        return REDACTED
     if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
-        return value
+        return REDACTED
     query = parse_qsl(parsed.query, keep_blank_values=True)
     changed = parsed.username is not None or parsed.password is not None
     netloc = parsed.netloc
@@ -158,9 +271,13 @@ def _redact_url(value: str) -> str:
     if fragment:
         fragment = REDACTED
         changed = True
+    path = parsed.path
+    if has_secret_url_path(path):
+        path = "/%5BREDACTED%5D"
+        changed = True
     if not changed:
         return value
-    return urlunsplit((parsed.scheme, netloc, parsed.path, urlencode(safe_query), fragment))
+    return urlunsplit((parsed.scheme, netloc, path, urlencode(safe_query), fragment))
 
 
 def redact_text(
@@ -206,7 +323,7 @@ class _Redactor:
                     return SecretReference.parse(value).serialize()
                 except InvalidSecretReferenceError:
                     return REDACTED
-            if normalized_key.replace("-", "_") in _SECRET_KEY_NAMES or _SECRET_KEY.search(key):
+            if _is_secret_key_name(key):
                 return REDACTED
         if isinstance(value, SecretValue):
             return REDACTED
@@ -259,6 +376,7 @@ __all__ = [
     "REDACTED",
     "TRUNCATED",
     "RedactionPolicy",
+    "has_secret_url_path",
     "redact",
     "redact_mapping",
     "redact_text",

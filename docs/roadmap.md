@@ -24,12 +24,18 @@ Build a self-hosted service that can authenticate against all platforms supporte
 
 ### Phase 2 — MediaCrawler bridge / MediaCrawler 外部适配
 
+- Status: offline command construction, fixture normalization and sealed ingestion were delivered; the authorized live smoke test remains `NOT_RUN` because no account or interactive challenge was authorized.
+- 状态：离线命令构造、夹具归一化与密封导入已交付；由于未授权账户或真人交互挑战，授权真人 smoke test 继续为 `NOT_RUN`。
+
 - Discover and validate a pinned external MediaCrawler checkout.
 - Translate login mode and creator subscription into isolated crawler jobs.
 - Ingest JSON/JSONL results into the normalized domain without importing or copying restricted source.
 - Acceptance: dry-run command construction and fixture ingestion work for all seven platform identifiers; one authorized live smoke test is documented separately.
 
 ### Phase 3 — Download and Emby export / 下载与 Emby 导出
+
+- Status: the execution 0005 offline scope is complete and its final root evidence is recorded. The downloader includes lock/scope and archive-to-database recovery under the documented trusted-runtime-root boundary. Secret sinks cover composite API/access-key variants and credential-bearing URL paths, including legacy asset backfill. The `0003` round trip removes generation-bound and non-recoverable failed identities while preserving the succeeded Emby chain and valid publication-intent recovery state. Emby managed ownership is anchored by a durable Job predecessor chain with publish intent/result recovery, complete-tree validation, empty snapshots and concurrent publication fencing. Live signed-locator refresh/CDN retrieval and Emby/Jellyfin rescans/playback are outside this automated acceptance and remain `NOT_RUN`.
+- 状态：执行 0005 的离线范围已完成，并记录最终根任务证据。下载器在已记录的可信运行根目录边界下提供锁/scope 及归档到数据库的恢复。密钥落点覆盖组合 API/access-key 变体及带凭据 URL 路径，包括 legacy 资产回填。`0003` 往返会移除 generation-bound 及不可恢复的失败身份，同时保留已成功 Emby 链与有效发布 intent 恢复状态。Emby 受管所有权由持久 Job predecessor chain 锚定，并提供 publish intent/result 恢复、完整树验证、空快照与并发发布 fencing。真实签名 locator refresh/CDN 下载及 Emby/Jellyfin 重扫/播放不属于本自动验收，继续保持 `NOT_RUN`。
 
 - Download assets with resumability, checksums, type/size limits and safe filenames.
 - Map video and image posts into stable creator/content directories.
@@ -38,10 +44,13 @@ Build a self-hosted service that can authenticate against all platforms supporte
 
 ### Phase 4 — Scheduler, API and operations / 调度、API 与运维
 
+- Status: not implemented; durable jobs and current CLI application services are prerequisites, not evidence that a scheduler, REST service or production worker is available.
+- 状态：尚未实现；持久任务及当前 CLI 应用服务只是前置条件，不能作为调度器、REST 服务或生产 worker 已可用的证据。
+
 - Job scheduler, retry/backoff, concurrency and per-platform rate limits.
 - Local REST API and CLI for account, subscription, sync and export operations.
 - Health/readiness endpoints, structured logs and Docker packaging.
-- Acceptance: end-to-end test covers subscribe → scan → ingest → download → export; restart is idempotent.
+- Acceptance: an offline end-to-end test covers subscribe → scan → ingest → download → export and restart idempotency; authorized live platform/CDN and Emby qualification remains Phase 5 evidence.
 
 ### Phase 5 — Platform qualification / 平台逐项验收
 

@@ -14,6 +14,7 @@ authors = [
 dependencies = [
     "alembic>=1.14,<2",
     "fastapi>=0.115,<1",
+    "httpcore>=1,<2",
     "httpx>=0.28,<1",
     "pydantic>=2.10,<3",
     "pydantic-settings>=2.7,<3",

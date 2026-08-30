@@ -23,7 +23,10 @@ from media_sync.domain import (
     RunStatus,
     transition_run,
 )
+from media_sync.media.errors import MediaDownloadError
+from media_sync.media.locator import AdapterRefreshLocator, DirectLocator
 
+from .asset_identity import stable_asset_key
 from .base import utc_now
 from .models import SyncRun
 from .repositories import (
@@ -82,16 +85,30 @@ def _content_upsert(snapshot: ContentSnapshot) -> ContentUpsert:
     )
 
 
-def _asset_upsert(snapshot: AssetSnapshot) -> AssetUpsert:
+def _asset_upsert(snapshot: AssetSnapshot, *, content_remote_type: str) -> AssetUpsert:
+    try:
+        locator = DirectLocator(snapshot.source_url).as_dict()
+    except MediaDownloadError:
+        locator = AdapterRefreshLocator(
+            adapter="fake",
+            asset_key=stable_asset_key(
+                platform=snapshot.platform.value,
+                content_remote_type=content_remote_type,
+                content_remote_id=snapshot.content_remote_id,
+                kind=snapshot.kind.value,
+                position=snapshot.position,
+                remote_id=snapshot.remote_id,
+            ),
+        ).as_dict()
     return AssetUpsert(
         platform=snapshot.platform.value,
+        content_remote_type=content_remote_type,
+        content_remote_id=snapshot.content_remote_id,
         remote_id=snapshot.remote_id,
         kind=snapshot.kind.value,
         position=snapshot.position,
         source_url=snapshot.source_url,
-        mime_type=snapshot.mime_type,
-        size_bytes=snapshot.size_bytes,
-        checksum_sha256=snapshot.checksum_sha256,
+        locator=locator,
         raw=snapshot.raw,
     )
 
@@ -156,7 +173,10 @@ class SQLAlchemySyncRepository:
             content = contents[0]
             asset_repository = AssetRepository(self.session)
             for asset in assets:
-                asset_repository.upsert_for_content(content.id, _asset_upsert(asset))
+                asset_repository.upsert_for_content(
+                    content.id,
+                    _asset_upsert(asset, content_remote_type=snapshot.remote_type),
+                )
             self.session.flush()
 
         self._observe_watermark_boundary(snapshot)

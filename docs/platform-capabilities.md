@@ -65,6 +65,24 @@ Creator-mode dispatch exists for all seven platforms (`media_platform/*/core.py:
 
 Media download is disabled by the misspelled non-CLI switch `ENABLE_GET_MEIDAS` (`config/base_config.py:107-108`). Implementations are under `store/*/*_store_media.py`; current HTTP clients buffer complete responses and lack `.part`, Range resume, MIME/probe and checksum validation.
 
+### media-sync downloader/export status / media-sync 下载与导出状态
+
+Execution 0005 implements an offline-qualified, platform-independent downloader and Emby/Jellyfin layout v1. Query-free `direct` locators use per-hop public-DNS validation, address-pinned connections, manual redirects, strict resumable Range semantics, byte/time limits, MIME/container probing, mandatory bounded `ffprobe` structural validation for video/audio, SHA-256 and immutable content-addressed publication. Download orchestration adds a per-asset OS lock, a non-disclosing work/archive scope fingerprint, exact lease/reclaim CAS and restart recovery after archive commit but before database finalization. In 0.x, these filesystem guarantees assume dedicated operator-controlled runtime roots and ancestors; hostile same-permission parent-directory substitution is outside the threat model.
+
+执行 0005 实现了通过离线验收的平台无关下载器与 Emby/Jellyfin layout v1。无 query 的 `direct` locator 会执行逐跳公网 DNS 验证、固定地址连接、手动重定向、严格断点续传语义、字节/时间限制、MIME/容器探测、音视频强制且有界的 `ffprobe` 结构验证、SHA-256 与不可变内容寻址发布。下载编排还提供逐资产 OS 锁、不披露路径的 work/archive scope 指纹、精确租约/reclaim CAS，以及归档提交后、数据库收尾前的重启恢复。0.x 的这些文件系统保证以运行根目录及祖先是操作员控制的专用目录为前提；同权限恶意进程替换父目录不在威胁模型内。
+
+Export uses deterministic creator/content identities, NFO and allowlisted provenance, an author lock, staging and a filesystem manifest/file CAS. Managed ownership does not come from the disk manifest alone: succeeded `export.emby` Job results form a unique predecessor chain and anchor exact source/tree/manifest hashes. Publication and interrupted roll-forward revalidate the complete desired managed tree before success or journal cleanup. Pre-publish intent supports exact database-finalization recovery, including empty snapshots; `A → B → A` is valid, a forged or unexpected manifest is rejected, and concurrent siblings leave one winner without deleting user-modified or unmanaged files.
+
+导出使用稳定作者/内容身份、NFO 与白名单来源、作者锁、staging 及文件系统 manifest/file CAS。受管所有权不由磁盘 manifest 单独决定：succeeded `export.emby` Job result 组成唯一 predecessor chain，并锚定精确 source/tree/manifest 哈希。发布及中断 roll-forward 会在成功或清理 journal 前复核完整 desired 受管树。发布前 intent 支持精确数据库收尾恢复，包括空快照；允许 `A → B → A`，拒绝伪造或意外 manifest，并发 sibling 只留下一个胜者，且不会删除用户修改或非受管文件。
+
+MediaCrawler-discovered assets intentionally persist only a stable `adapter_refresh` locator because platform/CDN URLs may contain expiring signatures. The refresh adapter is not implemented in 0005, so CLI preflight reports `blocked`/`not_started`, the unchanged `persisted_status` and fixed code `locator_refresh_unsupported` without creating a Job or mutating the Asset; this prevents accidental persistence of signed URLs. Real CDN retrieval and an Emby/Jellyfin rescan therefore remain `NOT_RUN` for every platform until an authorized account and refresh path are qualified.
+
+MediaCrawler 发现的资产只持久化稳定的 `adapter_refresh` locator，因为平台/CDN URL 可能包含过期签名。0005 尚未实现 refresh adapter，因此 CLI preflight 返回 `blocked`/`not_started`、未改变的 `persisted_status` 及固定代码 `locator_refresh_unsupported`，不创建 Job、不修改 Asset，避免误存签名 URL。七个平台的真实 CDN 获取及 Emby/Jellyfin 重扫仍保持 `NOT_RUN`，直到在用户授权账户与 refresh 路径上完成验收。
+
+Composite API/access-key mapping names are redacted across snake_case, kebab-case, camelCase and provider-prefixed forms without erasing ordinary `key`, `public_key` or `key_id` fields. Credential-marker URL paths, including encoded and double-encoded variants, are redacted at sinks and rejected by both `direct` locators and source-hint derivation. Current ingestion and the `0003` legacy backfill therefore persist only a stable `adapter_refresh` identity for such an asset; the legacy unsafe `source_url` is cleared. On downgrade, `0003` also clears all asset download FKs and generation-bound Jobs, removes non-recoverable non-succeeded Emby identities, and preserves the succeeded publication chain plus structurally valid publication-intent recovery state.
+
+组合 API/access-key 映射名会在 snake_case、kebab-case、camelCase 及带提供商前缀的形式下脱敏，但不会删除普通 `key`、`public_key` 或 `key_id` 字段。带凭据标记的 URL 路径（包括编码及双重编码变体）会在落点脱敏，并被 `direct` locator 与 source-hint 派生同时拒绝。当前导入与 `0003` legacy 回填因此只为此类资产持久稳定 `adapter_refresh` 身份，并清空 legacy 不安全 `source_url`。`0003` downgrade 还会清空所有资产下载 FK 与 generation-bound Job，移除不可恢复的未成功 Emby 身份，同时保留已成功发布链与结构有效的发布 intent 恢复状态。
+
 ## Storage and scheduling / 存储与调度
 
 | Capability / 能力 | Upstream state / 上游现状 | media-sync response / media-sync 方案 |
@@ -78,6 +96,10 @@ Media download is disabled by the misspelled non-CLI switch `ENABLE_GET_MEIDAS` 
 
 ## Qualification status / 验收状态
 
-No live account was used during this source audit. All seven live login/sync entries are therefore `NOT_RUN`. Automated bridge/fixture tests may prove command and ingestion behavior, but they do not change live qualification status.
+No live account or interactive challenge was used during execution 0005. All seven live QR/Cookie/saved-session login and creator-sync entries are therefore `NOT_RUN`; phone login remains unsupported rather than merely untested. No live signed-locator refresh or CDN retrieval ran, and no Emby/Jellyfin server was started, rescanned or used for playback. Automated bridge/fixture/download/export tests may prove only offline contracts and cannot promote any live row.
 
-源码审计未使用真人账户，因此七个平台的真人登录/同步状态均为 `NOT_RUN`。桥接器和 fixture 自动测试只能证明命令与导入行为，不能改变真人验收状态。
+执行 0005 未使用真人账户，也未进行交互挑战，因此七个平台的真人二维码/Cookie/保存会话登录及作者同步均为 `NOT_RUN`；手机号登录仍属于不支持，而非仅仅未测试。没有执行真实签名 locator refresh 或 CDN 下载，也未启动、重扫 Emby/Jellyfin 或进行播放。桥接器、fixture、下载和导出自动测试只能证明离线契约，不能提升任何真人行。
+
+Platform-specific DASH/multi-part/subtitle/danmaku and slideshow/mux derivatives, MediaCrawler refresh, scheduler/rate-limit/backoff, REST operations, Docker and production operations are unavailable or deferred implementation scope, not `NOT_RUN` qualification outcomes.
+
+平台特有 DASH/多 P/字幕/弹幕及幻灯片/mux 衍生物、MediaCrawler refresh、调度/限流/退避、REST 运维、Docker 与生产运维属于不可用或延期实现范围，不是 `NOT_RUN` 验收结果。

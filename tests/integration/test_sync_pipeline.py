@@ -14,6 +14,7 @@ from media_sync.adapters.fake import FakePlatformAdapter
 from media_sync.application import SyncRequest, SyncService
 from media_sync.domain import (
     AccountRef,
+    AssetKind,
     AssetSnapshot,
     ContentSnapshot,
     LoginMethod,
@@ -29,6 +30,7 @@ from media_sync.infrastructure.db import (
     SubscriptionRepository,
 )
 from media_sync.infrastructure.db.models import Asset, Author, Content, RunEvent, Subscription, SyncRun
+from media_sync.media.locator import AdapterRefreshLocator, DirectLocator, locator_fingerprint, parse_locator
 
 
 def _database_url(path: Path) -> str:
@@ -113,6 +115,7 @@ async def test_fake_sync_twice_persists_normalized_incremental_state(database: D
         assert session.scalar(select(func.count()).select_from(Asset)) == 4
         assert session.scalar(select(func.count()).select_from(SyncRun)) == 2
         assert session.scalar(select(func.count()).select_from(RunEvent)) == 10
+        assert all(isinstance(parse_locator(asset.locator), DirectLocator) for asset in session.scalars(select(Asset)))
 
         subscription = session.get(Subscription, str(subscription_id))
         assert subscription is not None
@@ -160,6 +163,73 @@ async def test_fake_sync_twice_persists_normalized_incremental_state(database: D
                 RunStatus.INGESTING.value,
                 RunStatus.SUCCEEDED.value,
             ]
+
+
+@pytest.mark.asyncio
+async def test_fake_discovery_replay_preserves_verified_asset_bytes(database: Database) -> None:
+    account, subscription_id = _seed_subscription(database)
+    first_url = "https://fixture.invalid/bili/assets/item-001/000.jpg?quality=720"
+    replay_url = "https://fixture.invalid/bili/assets/item-001/000.jpg?quality=1080"
+
+    def adapter(source_url: str) -> FakePlatformAdapter:
+        return FakePlatformAdapter(
+            assets={
+                "item-001": (
+                    AssetSnapshot(
+                        platform=Platform.BILI,
+                        remote_id="item-001-asset-000",
+                        content_remote_id="item-001",
+                        kind=AssetKind.IMAGE,
+                        source_url=source_url,
+                        mime_type="image/jpeg",
+                    ),
+                )
+            }
+        )
+
+    request = SyncRequest(
+        subscription_id=subscription_id,
+        account=account,
+        creator_reference="creator-001",
+        max_items=1,
+        page_size=1,
+    )
+    with database.session() as session:
+        first = await SyncService(adapter(first_url), SQLAlchemySyncRepository(session)).run(request)
+        assert first.status is RunStatus.SUCCEEDED
+
+    with database.session() as session:
+        stored = session.scalar(select(Asset))
+        assert stored is not None
+        stored.status = "verified"
+        stored.mime_type = "image/jpeg"
+        stored.size_bytes = 17
+        stored.checksum_sha256 = "a" * 64
+        stored.local_path = "archive/sha256/aa/verified.jpg"
+        original_id = stored.id
+        original_generation = stored.generation
+        original_locator_fingerprint = stored.locator_fingerprint
+
+    with database.session() as session:
+        replay = await SyncService(adapter(replay_url), SQLAlchemySyncRepository(session)).run(request)
+        assert replay.status is RunStatus.SUCCEEDED
+
+    with database.session() as session:
+        stored = session.scalar(select(Asset))
+        assert stored is not None
+        assert stored.id == original_id
+        assert stored.generation == original_generation
+        assert stored.semantic_fingerprint is not None
+        assert stored.locator_fingerprint == original_locator_fingerprint
+        parsed_locator = parse_locator(stored.locator)
+        assert isinstance(parsed_locator, AdapterRefreshLocator)
+        assert stored.locator_fingerprint == locator_fingerprint(parsed_locator)
+        assert stored.source_url == "https://fixture.invalid/bili/assets/item-001/000.jpg"
+        assert stored.status == "verified"
+        assert stored.mime_type == "image/jpeg"
+        assert stored.size_bytes == 17
+        assert stored.checksum_sha256 == "a" * 64
+        assert stored.local_path == "archive/sha256/aa/verified.jpg"
 
 
 class _FailOnSecondContentRepository(SQLAlchemySyncRepository):

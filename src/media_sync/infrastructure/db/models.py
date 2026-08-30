@@ -293,8 +293,10 @@ class Asset(TimestampMixin, Base):
         CheckConstraint(f"kind IN ({_quoted_values(ASSET_KINDS)})", name="kind"),
         CheckConstraint(f"status IN ({_quoted_values(ASSET_STATUSES)})", name="status"),
         CheckConstraint("position >= 0", name="position_nonnegative"),
+        CheckConstraint("generation >= 1", name="generation_positive"),
         CheckConstraint("size_bytes IS NULL OR size_bytes >= 0", name="size_bytes_nonnegative"),
         Index("ix_assets_status", "status"),
+        Index("ix_assets_download_job_id", "download_job_id"),
         Index("ix_assets_checksum_sha256", "checksum_sha256"),
     )
 
@@ -310,6 +312,9 @@ class Asset(TimestampMixin, Base):
     position: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     source_url: Mapped[str | None] = mapped_column(Text)
     locator: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict, server_default=text("'{}'"))
+    semantic_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    locator_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    generation: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
     mime_type: Mapped[str | None] = mapped_column(String(255))
     size_bytes: Mapped[int | None] = mapped_column(Integer)
     checksum_sha256: Mapped[str | None] = mapped_column(String(64))
@@ -317,6 +322,19 @@ class Asset(TimestampMixin, Base):
     width: Mapped[int | None] = mapped_column(Integer)
     height: Mapped[int | None] = mapped_column(Integer)
     duration_ms: Mapped[int | None] = mapped_column(Integer)
+    download_job_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("jobs.id", ondelete="SET NULL"),
+    )
+    etag: Mapped[str | None] = mapped_column(String(512))
+    last_modified: Mapped[str | None] = mapped_column(String(255))
+    queued_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    download_started_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    downloaded_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    verified_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    last_error_code: Mapped[str | None] = mapped_column(String(128))
+    last_error_message: Mapped[str | None] = mapped_column(Text)
+    last_error_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     status: Mapped[str] = mapped_column(
         String(32),
         nullable=False,

@@ -22,6 +22,7 @@ from media_sync.security import (
     redact,
     redact_mapping,
     redact_text,
+    secret_url_components,
 )
 
 SENTINEL = "sentinel-secret-value"
@@ -164,6 +165,35 @@ def test_recursive_redaction_removes_nested_values_and_signed_url_parameters() -
     assert source["nested"][0]["cookie"] == SENTINEL  # type: ignore[index]
 
 
+@pytest.mark.parametrize(
+    "key",
+    [
+        "api_key",
+        "apiKey",
+        "API-KEY",
+        "access_key",
+        "accessKey",
+        "aws_access_key_id",
+        "AWSAccessKeyId",
+        "google_api_key_value",
+        "x-api-key",
+        "xApiKey",
+        "private_key",
+        "signing-key",
+    ],
+)
+def test_recursive_redaction_covers_explicit_composite_secret_keys(key: str) -> None:
+    assert redact_mapping({key: SENTINEL}) == {key: REDACTED}
+
+
+@pytest.mark.parametrize(
+    "key",
+    ["key", "public_key", "publicKey", "key_id", "keyId", "keyboard_layout", "monkey", "access_keynote"],
+)
+def test_recursive_redaction_does_not_treat_ordinary_key_names_as_secrets(key: str) -> None:
+    assert redact_mapping({key: "ordinary-value"}) == {key: "ordinary-value"}
+
+
 def test_text_redaction_is_bounded_and_deterministic() -> None:
     value = f"Cookie: {SENTINEL} https://example.test/path?token={SENTINEL}"
 
@@ -197,6 +227,10 @@ def test_text_redaction_sanitizes_signed_urls_embedded_in_messages() -> None:
         "Key-Pair-Id",
         "X-Amz-Credential",
         "X-Goog-Signature",
+        "api_key",
+        "apiKey",
+        "X-API-Key",
+        "accessKey",
     ],
 )
 def test_text_redaction_sanitizes_common_signed_url_parameters(query_key: str) -> None:
@@ -207,6 +241,85 @@ def test_text_redaction_sanitizes_common_signed_url_parameters(query_key: str) -
     assert SENTINEL not in result
     assert "quality=1080" in result
     assert "%5BREDACTED%5D" in result
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "api_key",
+        "apiKey",
+        "access_key",
+        "accessKey",
+        "aws_access_key_id",
+        "AWSAccessKeyId",
+        "x-api-key",
+        "xApiKey",
+        "private_key",
+        "signingKey",
+    ],
+)
+def test_text_redaction_sanitizes_composite_key_assignments(key: str) -> None:
+    result = redact_text(f"request failed: {key}={SENTINEL}")
+
+    assert SENTINEL not in result
+    assert REDACTED in result
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        f"/token/{SENTINEL}/video.mp4",
+        f"/token%2F{SENTINEL}%2Fvideo.mp4",
+        f"/token%252F{SENTINEL}%252Fvideo.mp4",
+        f"/download;session={SENTINEL}/video.mp4",
+        f"/signature={SENTINEL}/video.mp4",
+    ],
+)
+def test_text_redaction_sanitizes_credential_bearing_url_paths(path: str) -> None:
+    value = f"request failed at https://media.test{path}?quality=1080"
+
+    result = redact_text(value)
+
+    assert SENTINEL not in result
+    assert "https://media.test/%5BREDACTED%5D" in result
+    assert "quality=1080" in result
+
+
+def test_secret_url_components_includes_encoded_path_credential_value() -> None:
+    value = f"https://media.test/token%252F{SENTINEL}%252Fvideo.mp4"
+
+    assert SENTINEL in secret_url_components(value)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/tokenized-video.mp4",
+        "/session-recording.mp4",
+        "/mytoken/file.mp4",
+        "/token",
+        "/public_key/value/video.mp4",
+        "/key/value/video.mp4",
+    ],
+)
+def test_text_redaction_preserves_noncredential_path_boundaries(path: str) -> None:
+    value = f"https://media.test{path}"
+
+    assert redact_text(value) == value
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        f"https://[malformed/token/{SENTINEL}/file.mp4",
+        f"https:///token/{SENTINEL}/file.mp4",
+    ],
+)
+def test_text_redaction_fails_closed_for_malformed_credential_urls(value: str) -> None:
+    result = redact_text(f"request failed at {value}")
+
+    assert SENTINEL not in result
+    assert REDACTED in result
 
 
 def test_text_redaction_removes_url_userinfo_and_boundary_spanning_secret() -> None:

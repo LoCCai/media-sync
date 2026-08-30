@@ -11,19 +11,23 @@ import builtins
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from typing import Any, cast
+from typing import Any, NoReturn, cast
 
-from sqlalchemy import and_, case, func, or_, select, update
+from sqlalchemy import and_, case, exists, func, or_, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.orm import Session, joinedload
 
-from media_sync.domain.enums import AuthStatus, RunStatus
-from media_sync.domain.transitions import transition_auth, transition_run
+from media_sync.domain.enums import AssetStatus, AuthStatus, RunStatus
+from media_sync.domain.transitions import transition_asset, transition_auth, transition_run
+from media_sync.media.errors import MediaDownloadError
+from media_sync.media.locator import AdapterRefreshLocator, DirectLocator, parse_locator
 from media_sync.security import SecretReference, redact_mapping, redact_text
 
+from .asset_identity import AssetFingerprints, asset_fingerprints, asset_source_hint, stable_asset_key
 from .base import new_uuid, utc_now
 from .models import (
+    ASSET_STATUSES,
     JOB_STATUSES,
     RUN_STATUSES,
     TERMINAL_JOB_STATUSES,
@@ -64,6 +68,31 @@ class StaleCheckpointError(RepositoryError):
             f"subscription {subscription_id} checkpoint is stale: "
             f"expected revision {expected_revision}, current revision {actual_revision}"
         )
+
+
+class AssetConflictError(RepositoryError):
+    """An asset generation or lifecycle compare-and-swap did not match."""
+
+    def __init__(self, asset_id: str, expected_generation: int, expected_status: str) -> None:
+        self.asset_id = asset_id
+        self.expected_generation = expected_generation
+        self.expected_status = expected_status
+        super().__init__(
+            f"asset {asset_id} lifecycle changed: expected generation {expected_generation} in status {expected_status}"
+        )
+
+
+class AssetLeaseLostError(LeaseLostError):
+    """An asset mutation was attempted without the active download job lease."""
+
+
+class ExportRecordConflictError(RepositoryError):
+    """An export record changed since its caller observed the lifecycle state."""
+
+    def __init__(self, export_record_id: str, expected_status: str) -> None:
+        self.export_record_id = export_record_id
+        self.expected_status = expected_status
+        super().__init__(f"export record {export_record_id} lifecycle changed: expected status {expected_status}")
 
 
 class _UnsetType:
@@ -137,17 +166,14 @@ class AssetUpsert:
     kind: str
     position: int
     platform: str
+    content_remote_type: str | None = None
+    content_remote_id: str | None = None
     remote_id: str | None = None
     source_url: str | None = field(default=None, repr=False)
     locator: Mapping[str, Any] = field(default_factory=dict, repr=False)
-    mime_type: str | None = None
-    size_bytes: int | None = None
-    checksum_sha256: str | None = None
-    local_path: str | None = field(default=None, repr=False)
     width: int | None = None
     height: int | None = None
     duration_ms: int | None = None
-    status: str = "discovered"
     raw: Mapping[str, Any] = field(default_factory=dict, repr=False)
 
 
@@ -440,69 +466,728 @@ class AuthorRepository:
 
 
 class AssetRepository:
+    """Discovery metadata and fenced downloader-owned lifecycle mutations."""
+
     def __init__(self, session: Session) -> None:
         self.session = session
 
     def get(self, asset_id: str) -> Asset | None:
         return self.session.get(Asset, asset_id)
 
-    def upsert_for_content(self, content_id: str, value: AssetUpsert) -> Asset:
-        now = utc_now()
-        safe_source_url = _safe_text(value.source_url)
+    def require(self, asset_id: str) -> Asset:
+        asset = self.get(asset_id)
+        if asset is None:
+            raise NotFoundError(f"asset not found: {asset_id}")
+        return asset
+
+    def _prepare_discovery(
+        self,
+        content_id: str,
+        value: AssetUpsert,
+    ) -> tuple[dict[str, Any], AssetFingerprints]:
+        if (value.content_remote_type is None) != (value.content_remote_id is None):
+            raise ValueError("content remote type and ID must be provided together")
+        if value.content_remote_type is None or value.content_remote_id is None:
+            content = self.session.get(Content, content_id)
+            if content is None:
+                raise NotFoundError(f"content not found: {content_id}")
+            if content.platform != value.platform:
+                raise RepositoryError("asset and content platforms do not match")
+            content_remote_type = content.remote_type
+            content_remote_id = content.remote_id
+        else:
+            content_remote_type = value.content_remote_type
+            content_remote_id = value.content_remote_id
+
+        safe_source_url = asset_source_hint(value.source_url)
+        safe_source_url = _safe_text(safe_source_url)
         locator = _json(value.locator)
-        if value.source_url is not None and safe_source_url != value.source_url:
-            locator["refresh_required"] = True
-        values: dict[str, Any] = {
+        if not locator:
+            try:
+                if value.source_url is None:
+                    raise MediaDownloadError("locator_invalid")
+                locator = DirectLocator(value.source_url).as_dict()
+            except MediaDownloadError:
+                locator = AdapterRefreshLocator(
+                    adapter="database",
+                    asset_key=stable_asset_key(
+                        platform=value.platform,
+                        content_remote_type=content_remote_type,
+                        content_remote_id=content_remote_id,
+                        kind=value.kind,
+                        position=value.position,
+                        remote_id=value.remote_id,
+                    ),
+                ).as_dict()
+        try:
+            locator = parse_locator(locator).as_dict()
+        except MediaDownloadError as error:
+            raise RepositoryError("asset locator is invalid") from error
+        fingerprints = asset_fingerprints(
+            platform=value.platform,
+            content_remote_type=content_remote_type,
+            content_remote_id=content_remote_id,
+            kind=value.kind,
+            position=value.position,
+            remote_id=value.remote_id,
+            source_url=safe_source_url,
+            locator=locator,
+            width=value.width,
+            height=value.height,
+            duration_ms=value.duration_ms,
+        )
+        discovery_values: dict[str, Any] = {
             "platform": value.platform,
             "remote_id": value.remote_id,
             "source_url": safe_source_url,
             "locator": locator,
-            "mime_type": value.mime_type,
-            "size_bytes": value.size_bytes,
-            "checksum_sha256": value.checksum_sha256,
-            "local_path": value.local_path,
+            "semantic_fingerprint": fingerprints.semantic,
+            "locator_fingerprint": fingerprints.locator,
             "width": value.width,
             "height": value.height,
             "duration_ms": value.duration_ms,
-            "status": value.status,
             "raw": _json(value.raw),
         }
+        return discovery_values, fingerprints
+
+    def upsert_for_content(self, content_id: str, value: AssetUpsert) -> Asset:
+        """Upsert discovery-owned fields without downgrading the same bytes.
+
+        The stable ``(content, kind, position)`` slot retains downloader-owned
+        fields when remote ID and semantic fingerprint match.  A replacement
+        increments ``generation`` and clears those fields in the same CAS.
+        """
+
+        now = utc_now()
+        values, fingerprints = self._prepare_discovery(content_id, value)
         if self.session.get_bind().dialect.name == "sqlite":
-            statement = (
+            insert_statement = (
                 sqlite_insert(Asset)
                 .values(
                     id=new_uuid(),
                     content_id=content_id,
                     kind=value.kind,
                     position=value.position,
+                    generation=1,
+                    status=AssetStatus.DISCOVERED.value,
                     created_at=now,
                     updated_at=now,
                     **values,
                 )
-                .on_conflict_do_update(
-                    index_elements=[Asset.content_id, Asset.kind, Asset.position],
-                    set_={**values, "updated_at": now},
-                )
+                .on_conflict_do_nothing(index_elements=[Asset.content_id, Asset.kind, Asset.position])
                 .returning(Asset)
                 .execution_options(populate_existing=True)
             )
-            return self.session.scalars(statement).one()
+            created = self.session.scalars(insert_statement).one_or_none()
+            if created is not None:
+                return created
 
-        asset = self.session.scalar(
-            select(Asset).where(
-                Asset.content_id == content_id,
-                Asset.kind == value.kind,
-                Asset.position == value.position,
+        last_observed: tuple[str, int, str] | None = None
+        for _attempt in range(5):
+            asset = self.session.scalar(
+                select(Asset)
+                .where(
+                    Asset.content_id == content_id,
+                    Asset.kind == value.kind,
+                    Asset.position == value.position,
+                )
+                .execution_options(populate_existing=True)
             )
+            if asset is None:
+                asset = Asset(
+                    content_id=content_id,
+                    kind=value.kind,
+                    position=value.position,
+                    generation=1,
+                    status=AssetStatus.DISCOVERED.value,
+                    **values,
+                )
+                self.session.add(asset)
+                self.session.flush()
+                return asset
+
+            expected_generation = asset.generation
+            expected_status = asset.status
+            last_observed = asset.id, expected_generation, expected_status
+            if asset.remote_id == value.remote_id and asset.semantic_fingerprint == fingerprints.semantic:
+                update_statement = (
+                    update(Asset)
+                    .where(
+                        Asset.id == asset.id,
+                        Asset.generation == expected_generation,
+                        Asset.semantic_fingerprint == asset.semantic_fingerprint,
+                    )
+                    .values(**values, updated_at=now)
+                    .returning(Asset)
+                    .execution_options(synchronize_session="fetch", populate_existing=True)
+                )
+                updated = self.session.execute(update_statement).scalar_one_or_none()
+                if updated is not None:
+                    return updated
+                continue
+
+            try:
+                return self._reset_prepared(
+                    asset.id,
+                    expected_generation=expected_generation,
+                    expected_status=expected_status,
+                    values=values,
+                    at=now,
+                )
+            except AssetConflictError:
+                continue
+
+        if last_observed is None:  # pragma: no cover - every loop either inserts or observes
+            raise RepositoryError("asset discovery could not observe its conflicting row")
+        raise AssetConflictError(*last_observed)
+
+    def queue(
+        self,
+        asset_id: str,
+        *,
+        expected_generation: int,
+        expected_status: str,
+        at: datetime | None = None,
+    ) -> Asset:
+        """Queue one asset only if its generation and status still match."""
+
+        self._validate_asset_cas(expected_generation, expected_status)
+        transition_asset(AssetStatus(expected_status), AssetStatus.QUEUED)
+        current = _aware_utc(at)
+        return self._cas_update(
+            asset_id,
+            expected_generation=expected_generation,
+            expected_status=expected_status,
+            values={
+                "status": AssetStatus.QUEUED.value,
+                "download_job_id": None,
+                "queued_at": current,
+                "download_started_at": None,
+                "last_error_code": None,
+                "last_error_message": None,
+                "last_error_at": None,
+                "updated_at": current,
+            },
         )
-        if asset is None:
-            asset = Asset(content_id=content_id, kind=value.kind, position=value.position, **values)
-            self.session.add(asset)
+
+    def start(
+        self,
+        asset_id: str,
+        *,
+        expected_generation: int,
+        expected_status: str,
+        job_id: str,
+        worker_id: str,
+        lease_token: str,
+        at: datetime | None = None,
+    ) -> Asset:
+        """Start downloading under the currently owned, unexpired job lease."""
+
+        self._validate_asset_cas(expected_generation, expected_status)
+        transition_asset(AssetStatus(expected_status), AssetStatus.DOWNLOADING)
+        current = _aware_utc(at)
+        return self._owned_cas_update(
+            asset_id,
+            expected_generation=expected_generation,
+            expected_status=expected_status,
+            job_id=job_id,
+            worker_id=worker_id,
+            lease_token=lease_token,
+            allowed_job_statuses=("claimed", "running"),
+            at=current,
+            values={
+                "status": AssetStatus.DOWNLOADING.value,
+                "download_job_id": job_id,
+                "download_started_at": current,
+                "downloaded_at": None,
+                "verified_at": None,
+                "mime_type": None,
+                "size_bytes": None,
+                "checksum_sha256": None,
+                "local_path": None,
+                "etag": None,
+                "last_modified": None,
+                "last_error_code": None,
+                "last_error_message": None,
+                "last_error_at": None,
+                "updated_at": current,
+            },
+        )
+
+    def fail(
+        self,
+        asset_id: str,
+        *,
+        expected_generation: int,
+        expected_status: str,
+        job_id: str,
+        worker_id: str,
+        lease_token: str,
+        retryable: bool,
+        error_code: str,
+        error_message: str,
+        at: datetime | None = None,
+    ) -> Asset:
+        """Record a bounded failure while the caller still owns the job."""
+
+        self._validate_asset_cas(expected_generation, expected_status)
+        if expected_status != AssetStatus.DOWNLOADING.value:
+            raise ValueError("asset failure requires downloading status")
+        target = AssetStatus.FAILED_RETRYABLE if retryable else AssetStatus.FAILED_TERMINAL
+        transition_asset(AssetStatus(expected_status), target)
+        current = _aware_utc(at)
+        code = self._bounded_text(error_code, field_name="error_code", max_length=128)
+        message = self._bounded_text(error_message, field_name="error_message", max_length=2_000)
+        return self._owned_cas_update(
+            asset_id,
+            expected_generation=expected_generation,
+            expected_status=expected_status,
+            job_id=job_id,
+            worker_id=worker_id,
+            lease_token=lease_token,
+            allowed_job_statuses=("claimed", "running"),
+            at=current,
+            extra_asset_condition=Asset.download_job_id == job_id,
+            values={
+                "status": target.value,
+                "last_error_code": code,
+                "last_error_message": _safe_text(message),
+                "last_error_at": current,
+                "updated_at": current,
+            },
+        )
+
+    def verify(
+        self,
+        asset_id: str,
+        *,
+        expected_generation: int,
+        expected_status: str,
+        job_id: str,
+        worker_id: str,
+        lease_token: str,
+        mime_type: str,
+        size_bytes: int,
+        checksum_sha256: str,
+        local_path: str,
+        etag: str | None = None,
+        last_modified: str | None = None,
+        at: datetime | None = None,
+    ) -> Asset:
+        """Atomically publish verified local bytes under an active job lease."""
+
+        self._validate_asset_cas(expected_generation, expected_status)
+        current_status = AssetStatus(expected_status)
+        if current_status is AssetStatus.DOWNLOADING:
+            transition_asset(current_status, AssetStatus.DOWNLOADED)
+            transition_asset(AssetStatus.DOWNLOADED, AssetStatus.VERIFIED)
+        elif current_status is AssetStatus.DOWNLOADED:
+            transition_asset(current_status, AssetStatus.VERIFIED)
         else:
-            for name, item in values.items():
-                setattr(asset, name, item)
-        self.session.flush()
-        return asset
+            raise ValueError("asset verification requires downloading or downloaded status")
+        if size_bytes < 0:
+            raise ValueError("size_bytes must be non-negative")
+        checksum = checksum_sha256.strip().lower()
+        if len(checksum) != 64 or any(character not in "0123456789abcdef" for character in checksum):
+            raise ValueError("checksum_sha256 must contain 64 hexadecimal characters")
+        actual_mime = self._bounded_text(mime_type, field_name="mime_type", max_length=255)
+        actual_path = self._bounded_text(local_path, field_name="local_path", max_length=4_096)
+        safe_etag = self._optional_validator(etag, field_name="etag", max_length=512)
+        if safe_etag is not None and safe_etag.startswith("W/"):
+            raise ValueError("etag must be a strong validator")
+        safe_last_modified = self._optional_validator(
+            last_modified,
+            field_name="last_modified",
+            max_length=255,
+        )
+        current = _aware_utc(at)
+        return self._owned_cas_update(
+            asset_id,
+            expected_generation=expected_generation,
+            expected_status=expected_status,
+            job_id=job_id,
+            worker_id=worker_id,
+            lease_token=lease_token,
+            allowed_job_statuses=("running",),
+            at=current,
+            extra_asset_condition=Asset.download_job_id == job_id,
+            values={
+                "status": AssetStatus.VERIFIED.value,
+                "mime_type": actual_mime,
+                "size_bytes": size_bytes,
+                "checksum_sha256": checksum,
+                "local_path": _safe_text(actual_path),
+                "etag": _safe_text(safe_etag) if safe_etag is not None else None,
+                "last_modified": _safe_text(safe_last_modified) if safe_last_modified is not None else None,
+                "downloaded_at": current,
+                "verified_at": current,
+                "last_error_code": None,
+                "last_error_message": None,
+                "last_error_at": None,
+                "updated_at": current,
+            },
+        )
+
+    def reset_verified_archive(
+        self,
+        asset_id: str,
+        *,
+        expected_generation: int,
+        expected_local_path: str,
+        expected_checksum_sha256: str,
+        expected_size_bytes: int,
+        error_code: str,
+        error_message: str,
+        at: datetime | None = None,
+    ) -> Asset:
+        """Fence a missing or corrupt verified blob into a fresh generation."""
+
+        if expected_generation < 1 or expected_size_bytes < 0:
+            raise ValueError("verified archive reset expectations are invalid")
+        code = self._bounded_text(error_code, field_name="error_code", max_length=128)
+        message = self._bounded_text(error_message, field_name="error_message", max_length=2_000)
+        current = _aware_utc(at)
+        statement = (
+            update(Asset)
+            .where(
+                Asset.id == asset_id,
+                Asset.generation == expected_generation,
+                Asset.status == AssetStatus.VERIFIED.value,
+                Asset.local_path == expected_local_path,
+                Asset.checksum_sha256 == expected_checksum_sha256,
+                Asset.size_bytes == expected_size_bytes,
+            )
+            .values(
+                generation=Asset.generation + 1,
+                status=AssetStatus.DISCOVERED.value,
+                mime_type=None,
+                size_bytes=None,
+                checksum_sha256=None,
+                local_path=None,
+                download_job_id=None,
+                etag=None,
+                last_modified=None,
+                queued_at=None,
+                download_started_at=None,
+                downloaded_at=None,
+                verified_at=None,
+                last_error_code=code,
+                last_error_message=_safe_text(message),
+                last_error_at=current,
+                updated_at=current,
+            )
+            .returning(Asset)
+            .execution_options(synchronize_session="fetch", populate_existing=True)
+        )
+        reset = self.session.execute(statement).scalar_one_or_none()
+        if reset is not None:
+            return reset
+        existing = self.get(asset_id)
+        if existing is None:
+            raise NotFoundError(f"asset not found: {asset_id}")
+        raise AssetConflictError(asset_id, expected_generation, AssetStatus.VERIFIED.value)
+
+    def recover_expired_download(
+        self,
+        asset_id: str,
+        *,
+        expected_generation: int,
+        expected_status: str,
+        job_id: str,
+        at: datetime | None = None,
+    ) -> Asset:
+        """Mirror a reclaimed job failure onto its still-downloading asset.
+
+        This recovery never changes generation or locator identity, so a
+        generation-bound ``.part`` file remains eligible for the next attempt.
+        """
+
+        self._validate_asset_cas(expected_generation, expected_status)
+        if expected_status != AssetStatus.DOWNLOADING.value:
+            raise ValueError("expired download recovery requires downloading status")
+        current = _aware_utc(at)
+        for job_status, target in (
+            ("failed_retryable", AssetStatus.FAILED_RETRYABLE),
+            ("failed_terminal", AssetStatus.FAILED_TERMINAL),
+        ):
+            statement = (
+                update(Asset)
+                .where(
+                    Asset.id == asset_id,
+                    Asset.generation == expected_generation,
+                    Asset.status == expected_status,
+                    Asset.download_job_id == job_id,
+                    exists(
+                        select(Job.id).where(
+                            Job.id == job_id,
+                            Job.status == job_status,
+                            Job.lease_owner.is_(None),
+                            Job.lease_token.is_(None),
+                            Job.lease_expires_at.is_(None),
+                        )
+                    ),
+                )
+                .values(
+                    status=target.value,
+                    last_error_code="download_lease_expired",
+                    last_error_message="download job lease expired",
+                    last_error_at=current,
+                    updated_at=current,
+                )
+                .returning(Asset)
+                .execution_options(synchronize_session="fetch", populate_existing=True)
+            )
+            recovered = self.session.execute(statement).scalar_one_or_none()
+            if recovered is not None:
+                return recovered
+
+        existing = self.session.scalar(
+            select(Asset).where(Asset.id == asset_id).execution_options(populate_existing=True)
+        )
+        if existing is None:
+            raise NotFoundError(f"asset not found: {asset_id}")
+        if existing.generation != expected_generation or existing.status != expected_status:
+            raise AssetConflictError(asset_id, expected_generation, expected_status)
+        raise AssetLeaseLostError(f"download job is not reclaimable for asset {asset_id}")
+
+    def resume_reclaimed_prepared_result(
+        self,
+        asset_id: str,
+        *,
+        expected_generation: int,
+        expected_status: str,
+        job_id: str,
+        worker_id: str,
+        lease_token: str,
+        at: datetime | None = None,
+    ) -> Asset:
+        """Resume an exact lease-expired asset only to commit proven local bytes."""
+
+        if expected_status not in {
+            AssetStatus.FAILED_RETRYABLE.value,
+            AssetStatus.FAILED_TERMINAL.value,
+        }:
+            raise ValueError("prepared-result recovery requires a reclaimed asset status")
+        self._validate_asset_cas(expected_generation, expected_status)
+        current = _aware_utc(at)
+        return self._owned_cas_update(
+            asset_id,
+            expected_generation=expected_generation,
+            expected_status=expected_status,
+            job_id=job_id,
+            worker_id=worker_id,
+            lease_token=lease_token,
+            allowed_job_statuses=("running",),
+            at=current,
+            extra_asset_condition=and_(
+                Asset.download_job_id == job_id,
+                Asset.last_error_code == "download_lease_expired",
+            ),
+            values={
+                "status": AssetStatus.DOWNLOADING.value,
+                "last_error_code": None,
+                "last_error_message": None,
+                "last_error_at": None,
+                "updated_at": current,
+            },
+        )
+
+    def resume_terminal_prepared_result(
+        self,
+        asset_id: str,
+        *,
+        expected_generation: int,
+        job_id: str,
+        worker_id: str,
+        lease_token: str,
+        at: datetime | None = None,
+    ) -> Asset:
+        """Backward-compatible terminal-only prepared-result recovery."""
+
+        return self.resume_reclaimed_prepared_result(
+            asset_id,
+            expected_generation=expected_generation,
+            expected_status=AssetStatus.FAILED_TERMINAL.value,
+            job_id=job_id,
+            worker_id=worker_id,
+            lease_token=lease_token,
+            at=at,
+        )
+
+    def reset(
+        self,
+        asset_id: str,
+        *,
+        expected_generation: int,
+        expected_status: str,
+        value: AssetUpsert,
+        at: datetime | None = None,
+    ) -> Asset:
+        """Explicitly begin a new generation and clear downloader-owned data."""
+
+        self._validate_asset_cas(expected_generation, expected_status)
+        asset = self.require(asset_id)
+        if asset.kind != value.kind or asset.position != value.position:
+            raise RepositoryError("asset reset cannot change its stable kind/position slot")
+        values, _fingerprints = self._prepare_discovery(asset.content_id, value)
+        return self._reset_prepared(
+            asset_id,
+            expected_generation=expected_generation,
+            expected_status=expected_status,
+            values=values,
+            at=_aware_utc(at),
+        )
+
+    def _reset_prepared(
+        self,
+        asset_id: str,
+        *,
+        expected_generation: int,
+        expected_status: str,
+        values: Mapping[str, Any],
+        at: datetime,
+    ) -> Asset:
+        return self._cas_update(
+            asset_id,
+            expected_generation=expected_generation,
+            expected_status=expected_status,
+            values={
+                **dict(values),
+                "generation": Asset.generation + 1,
+                "status": AssetStatus.DISCOVERED.value,
+                "mime_type": None,
+                "size_bytes": None,
+                "checksum_sha256": None,
+                "local_path": None,
+                "download_job_id": None,
+                "etag": None,
+                "last_modified": None,
+                "queued_at": None,
+                "download_started_at": None,
+                "downloaded_at": None,
+                "verified_at": None,
+                "last_error_code": None,
+                "last_error_message": None,
+                "last_error_at": None,
+                "updated_at": at,
+            },
+        )
+
+    def _cas_update(
+        self,
+        asset_id: str,
+        *,
+        expected_generation: int,
+        expected_status: str,
+        values: Mapping[str, Any],
+    ) -> Asset:
+        statement = (
+            update(Asset)
+            .where(
+                Asset.id == asset_id,
+                Asset.generation == expected_generation,
+                Asset.status == expected_status,
+            )
+            .values(**dict(values))
+            .returning(Asset)
+            .execution_options(synchronize_session="fetch", populate_existing=True)
+        )
+        asset = self.session.execute(statement).scalar_one_or_none()
+        if asset is not None:
+            return asset
+        self._raise_asset_conflict(asset_id, expected_generation, expected_status)
+
+    def _owned_cas_update(
+        self,
+        asset_id: str,
+        *,
+        expected_generation: int,
+        expected_status: str,
+        job_id: str,
+        worker_id: str,
+        lease_token: str,
+        allowed_job_statuses: Sequence[str],
+        at: datetime,
+        values: Mapping[str, Any],
+        extra_asset_condition: Any | None = None,
+    ) -> Asset:
+        for field_name, field_value in (
+            ("job_id", job_id),
+            ("worker_id", worker_id),
+            ("lease_token", lease_token),
+        ):
+            self._bounded_text(field_value, field_name=field_name, max_length=512)
+        conditions: list[Any] = [
+            Asset.id == asset_id,
+            Asset.generation == expected_generation,
+            Asset.status == expected_status,
+            exists(
+                select(Job.id).where(
+                    Job.id == job_id,
+                    Job.lease_owner == worker_id,
+                    Job.lease_token == lease_token,
+                    Job.status.in_(tuple(allowed_job_statuses)),
+                    Job.lease_expires_at.is_not(None),
+                    Job.lease_expires_at > at,
+                )
+            ),
+        ]
+        if extra_asset_condition is not None:
+            conditions.append(extra_asset_condition)
+        statement = (
+            update(Asset)
+            .where(*conditions)
+            .values(**dict(values))
+            .returning(Asset)
+            .execution_options(synchronize_session="fetch", populate_existing=True)
+        )
+        asset = self.session.execute(statement).scalar_one_or_none()
+        if asset is not None:
+            return asset
+        existing = self.session.scalar(
+            select(Asset).where(Asset.id == asset_id).execution_options(populate_existing=True)
+        )
+        if existing is None:
+            raise NotFoundError(f"asset not found: {asset_id}")
+        if existing.generation != expected_generation or existing.status != expected_status:
+            raise AssetConflictError(asset_id, expected_generation, expected_status)
+        raise AssetLeaseLostError(f"download job no longer owns asset {asset_id}")
+
+    def _raise_asset_conflict(
+        self,
+        asset_id: str,
+        expected_generation: int,
+        expected_status: str,
+    ) -> NoReturn:
+        existing = self.session.scalar(
+            select(Asset.id).where(Asset.id == asset_id).execution_options(populate_existing=True)
+        )
+        if existing is None:
+            raise NotFoundError(f"asset not found: {asset_id}")
+        raise AssetConflictError(asset_id, expected_generation, expected_status)
+
+    @staticmethod
+    def _validate_asset_cas(expected_generation: int, expected_status: str) -> None:
+        if expected_generation < 1:
+            raise ValueError("expected_generation must be positive")
+        _require_status(expected_status, ASSET_STATUSES, "asset")
+
+    @staticmethod
+    def _bounded_text(value: str, *, field_name: str, max_length: int) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError(f"{field_name} must not be blank")
+        if len(normalized) > max_length:
+            raise ValueError(f"{field_name} is too long")
+        if "\r" in normalized or "\n" in normalized:
+            raise ValueError(f"{field_name} must be a single line")
+        return normalized
+
+    @classmethod
+    def _optional_validator(cls, value: str | None, *, field_name: str, max_length: int) -> str | None:
+        if value is None:
+            return None
+        return cls._bounded_text(value, field_name=field_name, max_length=max_length)
 
 
 class SubscriptionRepository:
@@ -936,13 +1621,16 @@ class JobRepository:
         self.session.flush()
         return job
 
-    def reclaim_expired(self, *, now: datetime | None = None) -> int:
+    def reclaim_expired(self, *, now: datetime | None = None, job_id: str | None = None) -> int:
         current = _aware_utc(now)
-        expired = and_(
+        expired_conditions: list[Any] = [
             Job.status.in_(("claimed", "running")),
             Job.lease_expires_at.is_not(None),
             Job.lease_expires_at <= current,
-        )
+        ]
+        if job_id is not None:
+            expired_conditions.append(Job.id == job_id)
+        expired = and_(*expired_conditions)
         terminal_result = cast(
             CursorResult[Any],
             self.session.execute(
@@ -978,6 +1666,59 @@ class JobRepository:
             ),
         )
         return int(terminal_result.rowcount or 0) + int(queued_result.rowcount or 0)
+
+    def claim(
+        self,
+        job_id: str,
+        *,
+        worker_id: str,
+        lease_seconds: int = 60,
+        now: datetime | None = None,
+    ) -> Job | None:
+        """Claim exactly one requested job without consuming another queue item."""
+
+        if lease_seconds < 1:
+            raise ValueError("lease_seconds must be positive")
+        current = _aware_utc(now)
+        self.reclaim_expired(now=current, job_id=job_id)
+        self.session.execute(
+            update(Job)
+            .where(
+                Job.id == job_id,
+                Job.status.in_(("retry_wait", "failed_retryable")),
+                Job.available_at <= current,
+                Job.attempts < Job.max_attempts,
+            )
+            .values(status="queued", updated_at=current)
+        )
+        eligible = and_(
+            Job.id == job_id,
+            Job.status == "queued",
+            Job.available_at <= current,
+            Job.attempts < Job.max_attempts,
+        )
+        statement = (
+            update(Job)
+            .where(eligible)
+            .values(
+                status="claimed",
+                lease_owner=worker_id,
+                lease_token=new_uuid(),
+                lease_expires_at=current + timedelta(seconds=lease_seconds),
+                attempts=Job.attempts + 1,
+                started_at=None,
+                finished_at=None,
+                updated_at=current,
+            )
+            .returning(Job)
+            .execution_options(synchronize_session="fetch", populate_existing=True)
+        )
+        claimed = self.session.execute(statement).scalar_one_or_none()
+        if claimed is not None:
+            return claimed
+        if self.get(job_id) is None:
+            raise NotFoundError(f"job not found: {job_id}")
+        return None
 
     def claim_next(
         self,
@@ -1053,21 +1794,182 @@ class JobRepository:
         worker_id: str,
         lease_token: str,
         lease_seconds: int = 60,
+        replacement_payload: Mapping[str, Any] | None = None,
         now: datetime | None = None,
     ) -> Job:
         if lease_seconds < 1:
             raise ValueError("lease_seconds must be positive")
         current = _aware_utc(now)
+        values: dict[str, Any] = {
+            "lease_expires_at": current + timedelta(seconds=lease_seconds),
+            "updated_at": current,
+        }
+        if replacement_payload is not None:
+            values["payload"] = _json(replacement_payload)
         return self._owned_update(
             job_id,
             worker_id,
             lease_token,
             allowed_statuses=("running",),
-            values={
-                "lease_expires_at": current + timedelta(seconds=lease_seconds),
-                "updated_at": current,
-            },
+            values=values,
             lease_valid_at=current,
+        )
+
+    def renew_unreclaimed_lease(
+        self,
+        job_id: str,
+        *,
+        worker_id: str,
+        lease_token: str,
+        lease_seconds: int = 60,
+        now: datetime | None = None,
+    ) -> Job:
+        """Renew an exact running token even after expiry if nobody reclaimed it.
+
+        This compare-and-swap deliberately has no ``lease_expires_at > now``
+        predicate.  A concurrent reclaim clears the owner and token, so either
+        that reclaim or this renewal wins while a stale/replaced token fails.
+        """
+
+        if lease_seconds < 1:
+            raise ValueError("lease_seconds must be positive")
+        current = _aware_utc(now)
+        statement = (
+            update(Job)
+            .where(
+                Job.id == job_id,
+                Job.status == "running",
+                Job.lease_owner == worker_id,
+                Job.lease_token == lease_token,
+                Job.lease_expires_at.is_not(None),
+            )
+            .values(
+                lease_expires_at=current + timedelta(seconds=lease_seconds),
+                updated_at=current,
+            )
+            .returning(Job)
+            .execution_options(synchronize_session="fetch", populate_existing=True)
+        )
+        job = self.session.execute(statement).scalar_one_or_none()
+        if job is not None:
+            return job
+        if self.get(job_id) is None:
+            raise NotFoundError(f"job not found: {job_id}")
+        raise LeaseLostError(f"worker {worker_id!r} no longer owns job {job_id}")
+
+    def takeover_expired_running_lease(
+        self,
+        job_id: str,
+        *,
+        expected_worker_id: str,
+        expected_lease_token: str,
+        worker_id: str,
+        lease_seconds: int = 60,
+        now: datetime | None = None,
+    ) -> Job:
+        """Replace one exact expired running token without consuming an attempt.
+
+        The application may use this only after proving that the previous
+        attempt already prepared and published the immutable local result.
+        """
+
+        if lease_seconds < 1:
+            raise ValueError("lease_seconds must be positive")
+        current = _aware_utc(now)
+        statement = (
+            update(Job)
+            .where(
+                Job.id == job_id,
+                Job.status == "running",
+                Job.lease_owner == expected_worker_id,
+                Job.lease_token == expected_lease_token,
+                Job.lease_expires_at.is_not(None),
+                Job.lease_expires_at <= current,
+            )
+            .values(
+                lease_owner=worker_id,
+                lease_token=new_uuid(),
+                lease_expires_at=current + timedelta(seconds=lease_seconds),
+                updated_at=current,
+            )
+            .returning(Job)
+            .execution_options(synchronize_session="fetch", populate_existing=True)
+        )
+        job = self.session.execute(statement).scalar_one_or_none()
+        if job is not None:
+            return job
+        if self.get(job_id) is None:
+            raise NotFoundError(f"job not found: {job_id}")
+        raise LeaseLostError(f"expired running lease changed for job {job_id}")
+
+    def resume_reclaimed_prepared_result(
+        self,
+        job_id: str,
+        *,
+        expected_status: str,
+        worker_id: str,
+        lease_seconds: int = 60,
+        now: datetime | None = None,
+    ) -> Job:
+        """Resume an exact reclaimed attempt solely to commit its prepared result."""
+
+        if lease_seconds < 1:
+            raise ValueError("lease_seconds must be positive")
+        if expected_status not in {"failed_retryable", "failed_terminal"}:
+            raise ValueError("prepared-result recovery requires a reclaimed job status")
+        current = _aware_utc(now)
+        attempt_state = (
+            Job.attempts < Job.max_attempts
+            if expected_status == "failed_retryable"
+            else Job.attempts >= Job.max_attempts
+        )
+        statement = (
+            update(Job)
+            .where(
+                Job.id == job_id,
+                Job.status == expected_status,
+                attempt_state,
+                Job.lease_owner.is_(None),
+                Job.lease_token.is_(None),
+                Job.lease_expires_at.is_(None),
+                Job.last_error_code == "lease_expired",
+            )
+            .values(
+                status="running",
+                lease_owner=worker_id,
+                lease_token=new_uuid(),
+                lease_expires_at=current + timedelta(seconds=lease_seconds),
+                finished_at=None,
+                updated_at=current,
+                last_error_code=None,
+                last_error_message=None,
+            )
+            .returning(Job)
+            .execution_options(synchronize_session="fetch", populate_existing=True)
+        )
+        job = self.session.execute(statement).scalar_one_or_none()
+        if job is not None:
+            return job
+        if self.get(job_id) is None:
+            raise NotFoundError(f"job not found: {job_id}")
+        raise LeaseLostError(f"reclaimed prepared result is no longer resumable for job {job_id}")
+
+    def resume_terminal_prepared_result(
+        self,
+        job_id: str,
+        *,
+        worker_id: str,
+        lease_seconds: int = 60,
+        now: datetime | None = None,
+    ) -> Job:
+        """Backward-compatible terminal-only prepared-result recovery."""
+
+        return self.resume_reclaimed_prepared_result(
+            job_id,
+            expected_status="failed_terminal",
+            worker_id=worker_id,
+            lease_seconds=lease_seconds,
+            now=now,
         )
 
     def complete(
@@ -1076,26 +1978,99 @@ class JobRepository:
         *,
         worker_id: str,
         lease_token: str,
+        replacement_payload: Mapping[str, Any] | None = None,
         now: datetime | None = None,
     ) -> Job:
         current = _aware_utc(now)
+        values: dict[str, Any] = {
+            "status": "succeeded",
+            "lease_owner": None,
+            "lease_token": None,
+            "lease_expires_at": None,
+            "finished_at": current,
+            "updated_at": current,
+            "last_error_code": None,
+            "last_error_message": None,
+        }
+        if replacement_payload is not None:
+            values["payload"] = _json(replacement_payload)
         return self._owned_update(
             job_id,
             worker_id,
             lease_token,
             allowed_statuses=("running",),
-            values={
-                "status": "succeeded",
-                "lease_owner": None,
-                "lease_token": None,
-                "lease_expires_at": None,
-                "finished_at": current,
-                "updated_at": current,
-                "last_error_code": None,
-                "last_error_message": None,
-            },
+            values=values,
             lease_valid_at=current,
         )
+
+    def complete_recovered_publication(
+        self,
+        job_id: str,
+        *,
+        expected_status: str,
+        expected_attempts: int,
+        expected_lease_token: str | None,
+        replacement_payload: Mapping[str, Any],
+        now: datetime | None = None,
+    ) -> Job:
+        """Finalize an exact expired publication after its durable tree was verified.
+
+        The caller must validate the prepared publication against the filesystem
+        before entering this transaction.  This CAS accepts only an already
+        reclaimable/failed job generation; a live owner can never be displaced.
+        """
+
+        if expected_status not in {
+            "queued",
+            "claimed",
+            "running",
+            "retry_wait",
+            "failed_retryable",
+            "failed_terminal",
+        }:
+            raise ValueError("unsupported recovered publication job status")
+        if expected_attempts < 1:
+            raise ValueError("expected_attempts must be positive")
+        current = _aware_utc(now)
+        ownership_state = or_(
+            and_(
+                Job.status.in_(("claimed", "running")),
+                Job.lease_expires_at.is_not(None),
+                Job.lease_expires_at <= current,
+            ),
+            Job.status.in_(("queued", "retry_wait", "failed_retryable", "failed_terminal")),
+        )
+        statement = (
+            update(Job)
+            .where(
+                Job.id == job_id,
+                Job.status == expected_status,
+                Job.attempts == expected_attempts,
+                Job.lease_token.is_(expected_lease_token)
+                if expected_lease_token is None
+                else Job.lease_token == expected_lease_token,
+                ownership_state,
+            )
+            .values(
+                status="succeeded",
+                payload=_json(replacement_payload),
+                lease_owner=None,
+                lease_token=None,
+                lease_expires_at=None,
+                finished_at=current,
+                updated_at=current,
+                last_error_code=None,
+                last_error_message=None,
+            )
+            .returning(Job)
+            .execution_options(synchronize_session="fetch", populate_existing=True)
+        )
+        job = self.session.execute(statement).scalar_one_or_none()
+        if job is not None:
+            return job
+        if self.get(job_id) is None:
+            raise NotFoundError(f"job not found: {job_id}")
+        raise LeaseLostError(f"publication job is no longer recoverable: {job_id}")
 
     def fail(
         self,
@@ -1111,11 +2086,12 @@ class JobRepository:
     ) -> Job:
         current = _aware_utc(now)
         retry_status = "retry_wait" if retry_at is not None and _aware_utc(retry_at) > current else "failed_retryable"
+        retry_available = current if retry_at is None else _aware_utc(retry_at)
         attempts_remain = Job.attempts < Job.max_attempts
         status: Any = case((attempts_remain, retry_status), else_="failed_terminal") if retryable else "failed_terminal"
         available_at: Any = (
             case(
-                (attempts_remain, _aware_utc(retry_at)),
+                (attempts_remain, retry_available),
                 else_=Job.available_at,
             )
             if retryable
@@ -1199,11 +2175,39 @@ class JobRepository:
 
 
 class ExportRecordRepository:
+    """Idempotent export identities with a strict compare-and-swap lifecycle."""
+
+    _STATUSES = frozenset({"pending", "running", "succeeded", "failed_retryable", "failed_terminal"})
+
     def __init__(self, session: Session) -> None:
         self.session = session
 
     def get(self, export_record_id: str) -> ExportRecord | None:
         return self.session.get(ExportRecord, export_record_id)
+
+    def get_by_identity(
+        self,
+        *,
+        content_id: str,
+        exporter: str,
+        exporter_version: str,
+        source_fingerprint: str,
+    ) -> ExportRecord | None:
+        return self.session.scalar(
+            select(ExportRecord).where(
+                ExportRecord.content_id == content_id,
+                ExportRecord.exporter == exporter,
+                ExportRecord.exporter_version == exporter_version,
+                ExportRecord.source_fingerprint == source_fingerprint,
+            )
+        )
+
+    def list_for_content(self, content_id: str, *, exporter: str | None = None) -> list[ExportRecord]:
+        statement = select(ExportRecord).where(ExportRecord.content_id == content_id)
+        if exporter is not None:
+            statement = statement.where(ExportRecord.exporter == exporter)
+        statement = statement.order_by(ExportRecord.created_at, ExportRecord.id)
+        return list(self.session.scalars(statement).all())
 
     def record(
         self,
@@ -1215,6 +2219,8 @@ class ExportRecordRepository:
         output_path: str,
         status: str = "pending",
     ) -> ExportRecord:
+        self._require_status(status)
+        self._require_fingerprint(source_fingerprint, field_name="source_fingerprint")
         if self.session.get_bind().dialect.name == "sqlite":
             now = utc_now()
             statement = (
@@ -1266,14 +2272,174 @@ class ExportRecordRepository:
         self.session.flush()
         return record
 
+    def begin(
+        self,
+        *,
+        content_id: str,
+        exporter: str,
+        exporter_version: str,
+        source_fingerprint: str,
+        output_path: str,
+        expected_statuses: Sequence[str] = ("pending", "failed_retryable"),
+        at: datetime | None = None,
+    ) -> ExportRecord:
+        """Create an identity or move one observed retryable state to running.
+
+        A succeeded identity is returned unchanged, which makes an already
+        exported author snapshot cheap to detect.  Every other mutation is a
+        compare-and-swap against the exact status read in this transaction.
+        """
+
+        allowed = tuple(expected_statuses)
+        if not allowed:
+            raise ValueError("expected export record statuses must not be empty")
+        for status in allowed:
+            self._require_status(status)
+        record = self.record(
+            content_id=content_id,
+            exporter=exporter,
+            exporter_version=exporter_version,
+            source_fingerprint=source_fingerprint,
+            output_path=output_path,
+        )
+        if record.status == "succeeded":
+            return record
+        observed_status = record.status
+        if observed_status not in allowed:
+            raise ExportRecordConflictError(record.id, "|".join(allowed))
+        current = _aware_utc(at)
+        statement = (
+            update(ExportRecord)
+            .where(
+                ExportRecord.id == record.id,
+                ExportRecord.content_id == content_id,
+                ExportRecord.exporter == exporter,
+                ExportRecord.exporter_version == exporter_version,
+                ExportRecord.source_fingerprint == source_fingerprint,
+                ExportRecord.output_path == output_path,
+                ExportRecord.status == observed_status,
+            )
+            .values(
+                status="running",
+                rendered_fingerprint=None,
+                error_message=None,
+                exported_at=None,
+                updated_at=current,
+            )
+            .returning(ExportRecord)
+            .execution_options(synchronize_session="fetch", populate_existing=True)
+        )
+        updated_record = self.session.execute(statement).scalar_one_or_none()
+        if updated_record is None:
+            raise ExportRecordConflictError(record.id, observed_status)
+        return updated_record
+
+    def complete(
+        self,
+        export_record_id: str,
+        *,
+        expected_source_fingerprint: str,
+        expected_output_path: str,
+        rendered_fingerprint: str,
+        expected_status: str = "running",
+        at: datetime | None = None,
+    ) -> ExportRecord:
+        """Complete exactly one running export identity by CAS."""
+
+        self._require_status(expected_status)
+        self._require_fingerprint(expected_source_fingerprint, field_name="source_fingerprint")
+        self._require_fingerprint(rendered_fingerprint, field_name="rendered_fingerprint")
+        current = _aware_utc(at)
+        statement = (
+            update(ExportRecord)
+            .where(
+                ExportRecord.id == export_record_id,
+                ExportRecord.source_fingerprint == expected_source_fingerprint,
+                ExportRecord.output_path == expected_output_path,
+                ExportRecord.status == expected_status,
+            )
+            .values(
+                status="succeeded",
+                rendered_fingerprint=rendered_fingerprint,
+                error_message=None,
+                exported_at=current,
+                updated_at=current,
+            )
+            .returning(ExportRecord)
+            .execution_options(synchronize_session="fetch", populate_existing=True)
+        )
+        record = self.session.execute(statement).scalar_one_or_none()
+        if record is not None:
+            return record
+        if self.get(export_record_id) is None:
+            raise NotFoundError(f"export record not found: {export_record_id}")
+        raise ExportRecordConflictError(export_record_id, expected_status)
+
+    def fail(
+        self,
+        export_record_id: str,
+        *,
+        expected_source_fingerprint: str,
+        expected_output_path: str,
+        retryable: bool,
+        error_code: str,
+        expected_status: str = "running",
+        at: datetime | None = None,
+    ) -> ExportRecord:
+        """Classify a running export failure without persisting raw errors."""
+
+        self._require_status(expected_status)
+        self._require_fingerprint(expected_source_fingerprint, field_name="source_fingerprint")
+        if not 1 <= len(error_code) <= 128 or any(
+            character not in "abcdefghijklmnopqrstuvwxyz0123456789_" for character in error_code
+        ):
+            raise ValueError("export error code must use lowercase ASCII letters, digits, or underscores")
+        current = _aware_utc(at)
+        statement = (
+            update(ExportRecord)
+            .where(
+                ExportRecord.id == export_record_id,
+                ExportRecord.source_fingerprint == expected_source_fingerprint,
+                ExportRecord.output_path == expected_output_path,
+                ExportRecord.status == expected_status,
+            )
+            .values(
+                status="failed_retryable" if retryable else "failed_terminal",
+                rendered_fingerprint=None,
+                error_message=_safe_text(error_code),
+                exported_at=None,
+                updated_at=current,
+            )
+            .returning(ExportRecord)
+            .execution_options(synchronize_session="fetch", populate_existing=True)
+        )
+        record = self.session.execute(statement).scalar_one_or_none()
+        if record is not None:
+            return record
+        if self.get(export_record_id) is None:
+            raise NotFoundError(f"export record not found: {export_record_id}")
+        raise ExportRecordConflictError(export_record_id, expected_status)
+
+    def _require_status(self, status: str) -> None:
+        if status not in self._STATUSES:
+            raise ValueError(f"unsupported export record status: {status!r}")
+
+    @staticmethod
+    def _require_fingerprint(value: str, *, field_name: str) -> None:
+        if len(value) != 64 or any(character not in "0123456789abcdef" for character in value):
+            raise ValueError(f"{field_name} must be a lowercase SHA-256 digest")
+
 
 __all__ = [
     "AccountRepository",
+    "AssetConflictError",
+    "AssetLeaseLostError",
     "AssetRepository",
     "AssetUpsert",
     "AuthorRepository",
     "AuthorUpsert",
     "ContentUpsert",
+    "ExportRecordConflictError",
     "ExportRecordRepository",
     "JobRepository",
     "LeaseLostError",

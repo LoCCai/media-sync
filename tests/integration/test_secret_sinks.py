@@ -22,6 +22,7 @@ from media_sync.infrastructure.db import (
     SyncRunRepository,
 )
 from media_sync.infrastructure.db.models import Asset, Author, Content, Job, LoginSession, RunEvent, SyncRun
+from media_sync.media.locator import AdapterRefreshLocator, parse_locator
 from media_sync.security import REDACTED, InvalidSecretReferenceError
 
 SENTINEL = "sentinel-secret-value"
@@ -68,7 +69,10 @@ def test_all_json_error_and_url_sinks_redact_before_sqlite(tmp_path: Path) -> No
                     remote_id="author-1",
                     display_name="Author",
                     profile_url=f"https://example.test/author?token={SENTINEL}",
-                    raw={"nested": {"cookie": SENTINEL}},
+                    raw={
+                        "nested": {"cookie": SENTINEL},
+                        "credential_path_url": f"https://media.test/token/{SENTINEL}/avatar.jpg",
+                    },
                 ),
                 [
                     ContentUpsert(
@@ -89,7 +93,6 @@ def test_all_json_error_and_url_sinks_redact_before_sqlite(tmp_path: Path) -> No
                     kind="video",
                     position=0,
                     source_url=f"https://media.test/video.mp4?signature={SENTINEL}&quality=1080",
-                    locator={"token": SENTINEL},
                     raw={"cookie": SENTINEL},
                 ),
             )
@@ -97,7 +100,17 @@ def test_all_json_error_and_url_sinks_redact_before_sqlite(tmp_path: Path) -> No
             login_session = LoginSessionRepository(session).create(
                 account_id=account.id,
                 method="cookie",
-                public_payload={"cookie": SENTINEL},
+                public_payload={
+                    "cookie": SENTINEL,
+                    "api_key": f"{SENTINEL}-api",
+                    "access_key": f"{SENTINEL}-access",
+                    "aws_access_key_id": f"{SENTINEL}-aws-snake",
+                    "AWSAccessKeyId": f"{SENTINEL}-aws-camel",
+                    "x-api-key": f"{SENTINEL}-x-api",
+                    "key": "ordinary-key",
+                    "public_key": "ordinary-public-key",
+                    "key_id": "ordinary-key-id",
+                },
             )
             run = SyncRunRepository(session).create(
                 subscription_id=subscription.id,
@@ -158,18 +171,74 @@ def test_all_json_error_and_url_sinks_redact_before_sqlite(tmp_path: Path) -> No
             stored_job = session.get(Job, job_id)
 
             assert stored_author is not None and stored_author.raw["nested"]["cookie"] == REDACTED
+            assert SENTINEL not in stored_author.raw["credential_path_url"]
+            assert "%5BREDACTED%5D" in stored_author.raw["credential_path_url"]
             assert stored_author.profile_url is not None and SENTINEL not in stored_author.profile_url
             assert stored_content is not None and SENTINEL not in (stored_content.body or "")
             assert stored_content.canonical_url is not None and SENTINEL not in stored_content.canonical_url
             assert stored_asset is not None and SENTINEL not in (stored_asset.source_url or "")
-            assert stored_asset.locator["token"] == REDACTED
-            assert stored_asset.locator["refresh_required"] is True
+            assert isinstance(parse_locator(stored_asset.locator), AdapterRefreshLocator)
+            assert SENTINEL not in str(stored_asset.locator)
             assert stored_login is not None and stored_login.public_payload["cookie"] == REDACTED
+            assert stored_login.public_payload["api_key"] == REDACTED
+            assert stored_login.public_payload["access_key"] == REDACTED
+            assert stored_login.public_payload["aws_access_key_id"] == REDACTED
+            assert stored_login.public_payload["AWSAccessKeyId"] == REDACTED
+            assert stored_login.public_payload["x-api-key"] == REDACTED
+            assert stored_login.public_payload["key"] == "ordinary-key"
+            assert stored_login.public_payload["public_key"] == "ordinary-public-key"
+            assert stored_login.public_payload["key_id"] == "ordinary-key-id"
             assert stored_run is not None and stored_run.manifest["authorization"] == REDACTED
             assert stored_run.error_message is not None and SENTINEL not in stored_run.error_message
             assert all(SENTINEL not in (event.message or "") for event in stored_events)
             assert stored_job is not None and stored_job.payload["nested"]["password"] == REDACTED
             assert stored_job.last_error_message is not None and SENTINEL not in stored_job.last_error_message
+    finally:
+        database.dispose()
+
+    assert SENTINEL.encode() not in database_path.read_bytes()
+
+
+@pytest.mark.parametrize(
+    ("label", "path"),
+    [
+        ("raw", f"/token/{SENTINEL}/video.mp4"),
+        ("encoded", f"/token%2F{SENTINEL}%2Fvideo.mp4"),
+        ("double-encoded", f"/token%252F{SENTINEL}%252Fvideo.mp4"),
+    ],
+)
+def test_credential_bearing_asset_paths_never_reach_orm_or_sqlite(
+    tmp_path: Path,
+    label: str,
+    path: str,
+) -> None:
+    database_path = tmp_path / f"path-secret-{label}.sqlite3"
+    database = Database(_database_url(database_path))
+    database.create_schema()
+    try:
+        with database.session() as session:
+            author, contents = AuthorRepository(session).upsert_with_contents(
+                AuthorUpsert(platform="bili", remote_id="author-path", display_name="Author"),
+                [ContentUpsert(remote_id="content-path", kind="video")],
+            )
+            stored = AssetRepository(session).upsert_for_content(
+                contents[0].id,
+                AssetUpsert(
+                    platform="bili",
+                    kind="video",
+                    position=0,
+                    source_url=f"https://media.test{path}",
+                ),
+            )
+            asset_id = stored.id
+            assert author.id
+
+        with database.session() as session:
+            stored = session.get(Asset, asset_id)
+            assert stored is not None
+            assert stored.source_url is None
+            assert isinstance(parse_locator(stored.locator), AdapterRefreshLocator)
+            assert SENTINEL not in str(stored.locator)
     finally:
         database.dispose()
 
