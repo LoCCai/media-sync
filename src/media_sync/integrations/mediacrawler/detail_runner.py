@@ -38,6 +38,7 @@ from media_sync.integrations.mediacrawler.checkout import (
     verify_mediacrawler_checkout,
     verify_mediacrawler_python,
 )
+from media_sync.integrations.mediacrawler.normalizers import _BILI_PROGRESSIVE_FIELD
 from media_sync.integrations.mediacrawler.policies import (
     RunPaths,
     WatchdogLimits,
@@ -50,11 +51,12 @@ from media_sync.integrations.mediacrawler.runner import (
     _close_process_tree,
     _WindowsJob,
 )
+from media_sync.media import ResolvedLocator
 from media_sync.media.errors import MediaDownloadError
 from media_sync.security import SecretValue
 from media_sync.security.secrets import MAX_SECRET_BYTES
 
-DETAIL_RUNNER_SCHEMA_VERSION = 1
+DETAIL_RUNNER_SCHEMA_VERSION = 2
 MAX_DETAIL_REQUEST_BYTES = 128 * 1024
 MAX_DETAIL_FRAME_OVERHEAD = 8 * 1024
 
@@ -115,6 +117,7 @@ class MediaCrawlerDetailRequest:
     cookie: SecretValue | None = field(default=None, repr=False)
     headless: bool = True
     request_delay_seconds: float = 2.0
+    bili_progressive_detail: bool = False
     watchdogs: WatchdogLimits = field(default_factory=WatchdogLimits)
 
     def __post_init__(self) -> None:
@@ -137,6 +140,10 @@ class MediaCrawlerDetailRequest:
         if login_method is not LoginMethod.COOKIE and self.cookie is not None:
             raise MediaDownloadError("locator_refresh_configuration_invalid")
         if not isinstance(self.headless, bool):
+            raise MediaDownloadError("locator_refresh_configuration_invalid")
+        if not isinstance(self.bili_progressive_detail, bool) or (
+            self.bili_progressive_detail and platform is not Platform.BILI
+        ):
             raise MediaDownloadError("locator_refresh_configuration_invalid")
         delay = self.request_delay_seconds
         if isinstance(delay, bool) or not isinstance(delay, int | float) or not 0 < float(delay) <= 60:
@@ -273,6 +280,7 @@ class MediaCrawlerDetailProcessRunner:
                 "cookie": cookie,
                 "headless": request.headless,
                 "request_delay_seconds": request.request_delay_seconds,
+                "bili_progressive_detail": request.bili_progressive_detail,
                 "watchdogs": {
                     "max_seconds": limits.max_seconds,
                     "max_output_bytes": limits.max_output_bytes,
@@ -360,6 +368,7 @@ class MediaCrawlerDetailProcessRunner:
                 "configuration_invalid": "locator_refresh_configuration_invalid",
                 "temporary": "locator_refresh_temporary",
                 "auth_expired": "locator_refresh_auth_expired",
+                "unsupported": "locator_refresh_unsupported",
             }.get(status, "locator_refresh_result_invalid")
             raise MediaDownloadError(code)
         try:
@@ -391,6 +400,10 @@ def _strict_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
     return result
 
 
+def _reject_json_constant(_value: str) -> None:
+    raise ValueError("non-standard JSON number")
+
+
 def _parse_child_frame(frame: bytes) -> tuple[str, str]:
     try:
         decoded = json.loads(frame, object_pairs_hook=_strict_object)
@@ -402,7 +415,14 @@ def _parse_child_frame(frame: bytes) -> tuple[str, str]:
         raise MediaDownloadError("locator_refresh_result_invalid")
     status = decoded.get("status")
     payload = decoded.get("payload")
-    if status not in {"succeeded", "configuration_invalid", "temporary", "result_invalid", "auth_expired"}:
+    if status not in {
+        "succeeded",
+        "configuration_invalid",
+        "temporary",
+        "result_invalid",
+        "auth_expired",
+        "unsupported",
+    }:
         raise MediaDownloadError("locator_refresh_result_invalid")
     if not isinstance(status, str) or not isinstance(payload, str):
         raise MediaDownloadError("locator_refresh_result_invalid")
@@ -415,6 +435,32 @@ class _ChildConfigurationError(RuntimeError):
 
 class _ChildAuthExpiredError(RuntimeError):
     """The expected saved profile disappeared before the child could probe it."""
+
+
+class _ChildTemporaryError(RuntimeError):
+    """A bounded upstream lookup failed without returning a usable response."""
+
+
+class _ChildUnsupportedError(RuntimeError):
+    """The current media shape is intentionally outside the closed contract."""
+
+
+@dataclass(frozen=True, slots=True)
+class _BiliProgressiveResult:
+    """One validated play URL whose value must stay out of repr and disk."""
+
+    aid: int
+    cid: int
+    url: str = field(repr=False)
+
+    def __post_init__(self) -> None:
+        if type(self.aid) is not int or self.aid <= 0 or type(self.cid) is not int or self.cid <= 0:
+            raise ValueError("invalid Bilibili identity")
+        try:
+            validated = ResolvedLocator(self.url)
+        except MediaDownloadError as exc:
+            raise ValueError("invalid Bilibili progressive URL") from exc
+        object.__setattr__(self, "url", validated.url)
 
 
 @dataclass(frozen=True, slots=True)
@@ -431,6 +477,7 @@ class _ChildRequest:
     cookie: str | None = field(default=None, repr=False)
     headless: bool = True
     request_delay_seconds: float = 2.0
+    bili_progressive_detail: bool = False
     watchdogs: WatchdogLimits = field(default_factory=WatchdogLimits)
 
     @classmethod
@@ -453,9 +500,14 @@ class _ChildRequest:
             "cookie",
             "headless",
             "request_delay_seconds",
+            "bili_progressive_detail",
             "watchdogs",
         }
-        if not isinstance(raw, Mapping) or set(raw) != expected or raw.get("schema_version") != 1:
+        if (
+            not isinstance(raw, Mapping)
+            or set(raw) != expected
+            or raw.get("schema_version") != DETAIL_RUNNER_SCHEMA_VERSION
+        ):
             raise _ChildConfigurationError
         try:
             platform = Platform(raw["platform"])
@@ -486,11 +538,18 @@ class _ChildRequest:
             headless = raw["headless"]
             if not isinstance(headless, bool):
                 raise _ChildConfigurationError
+            bili_progressive_detail = raw["bili_progressive_detail"]
+            if not isinstance(bili_progressive_detail, bool) or (
+                bili_progressive_detail and platform is not Platform.BILI
+            ):
+                raise _ChildConfigurationError
         except (KeyError, TypeError, ValueError, OSError) as exc:
             raise _ChildConfigurationError from exc
         if platform not in _SUPPORTED_PLATFORMS or login_method is LoginMethod.PHONE:
             raise _ChildConfigurationError
         if (login_method is LoginMethod.COOKIE) != (cookie is not None):
+            raise _ChildConfigurationError
+        if bili_progressive_detail and content_remote_id != detail_reference:
             raise _ChildConfigurationError
         if profile_root.parent.parent != account_root or output_root.parent != job_root:
             raise _ChildConfigurationError
@@ -509,6 +568,7 @@ class _ChildRequest:
             cookie=cookie,
             headless=headless,
             request_delay_seconds=float(delay),
+            bili_progressive_detail=bili_progressive_detail,
             watchdogs=watchdogs,
         )
 
@@ -597,30 +657,97 @@ def _configure_upstream(config: Any, request: _ChildRequest) -> None:
     setattr(config, _DETAIL_CONFIG_ATTRIBUTES[request.platform], [request.detail_reference])
 
 
-async def _run_bilibili_aid(upstream_main: Any, request: _ChildRequest) -> None:
+def _positive_bili_id(value: object) -> int:
+    if type(value) is not int or value <= 0:
+        raise ValueError("invalid Bilibili identity")
+    return value
+
+
+def _first_bili_cid(view: Mapping[str, object]) -> int:
+    if "pages" in view:
+        pages = view["pages"]
+        if pages is None or pages == []:
+            return _positive_bili_id(view.get("cid"))
+        if not isinstance(pages, list) or not isinstance(pages[0], Mapping):
+            raise ValueError("invalid Bilibili pages")
+        return _positive_bili_id(pages[0].get("cid"))
+    return _positive_bili_id(view.get("cid"))
+
+
+def _bili_progressive_result(play: object, *, aid: int, cid: int) -> _BiliProgressiveResult:
+    if not isinstance(play, Mapping):
+        raise ValueError("invalid Bilibili play response")
+    if "durl" not in play or play.get("durl") is None:
+        raise _ChildUnsupportedError
+    durl = play["durl"]
+    if not isinstance(durl, list):
+        raise ValueError("invalid Bilibili durl response")
+    if len(durl) != 1:
+        raise _ChildUnsupportedError
+    segment = durl[0]
+    if not isinstance(segment, Mapping) or not isinstance(segment.get("url"), str):
+        raise ValueError("invalid Bilibili durl segment")
+    return _BiliProgressiveResult(aid=aid, cid=cid, url=segment["url"])
+
+
+async def _run_bilibili_aid(upstream_main: Any, request: _ChildRequest) -> _BiliProgressiveResult | None:
     """Use the pinned client's aid-capable detail entry when discovery stored av."""
 
     crawler = upstream_main.CrawlerFactory.create_crawler(platform=request.platform.value)
+    try:
+        requested_aid = int(request.detail_reference)
+    except ValueError as exc:
+        raise _ChildConfigurationError from exc
+    if requested_aid <= 0 or requested_aid > 2**63 - 1 or str(requested_aid) != request.detail_reference:
+        raise _ChildConfigurationError
+    progressive: _BiliProgressiveResult | None = None
+    callback_called = False
 
     async def get_specified_videos(instance: Any, _references: list[str]) -> None:
+        nonlocal callback_called, progressive
+        callback_called = True
         semaphore = asyncio.Semaphore(1)
         detail = await instance.get_video_info_task(
-            aid=int(request.detail_reference),
+            aid=requested_aid,
             bvid="",
             semaphore=semaphore,
         )
         if detail is None:
+            if request.bili_progressive_detail:
+                raise _ChildTemporaryError
             return
+        if not isinstance(detail, Mapping) or not isinstance(detail.get("View"), Mapping):
+            raise ValueError("invalid Bilibili detail response")
+        view = detail["View"]
+        returned_aid = _positive_bili_id(view.get("aid"))
+        if returned_aid != requested_aid:
+            raise ValueError("Bilibili aid mismatch")
         store = importlib.import_module("store.bilibili")
         await store.update_bilibili_video(detail)
         await store.update_up_info(detail)
+        if request.bili_progressive_detail:
+            cid = _first_bili_cid(view)
+            try:
+                play = await instance.get_video_play_url_task(
+                    aid=requested_aid,
+                    cid=cid,
+                    semaphore=semaphore,
+                )
+            except Exception as exc:
+                raise _ChildTemporaryError from exc
+            if play is None:
+                raise _ChildTemporaryError
+            progressive = _bili_progressive_result(play, aid=requested_aid, cid=cid)
 
     crawler.get_specified_videos = MethodType(get_specified_videos, crawler)
     upstream_main.crawler = crawler
     await crawler.start()
+    if not callback_called:
+        raise RuntimeError("Bilibili detail callback did not run")
+    return progressive
 
 
-async def _run_upstream(request: _ChildRequest) -> Any:
+async def _run_upstream(request: _ChildRequest) -> tuple[Any, _BiliProgressiveResult | None]:
     os.chdir(request.checkout_root)
     if str(request.checkout_root) not in sys.path:
         sys.path.insert(0, str(request.checkout_root))
@@ -636,11 +763,11 @@ async def _run_upstream(request: _ChildRequest) -> Any:
     if not _module_belongs_to_checkout(upstream_main, request.checkout_root):
         raise _ChildConfigurationError
 
-    async def dispatch() -> None:
+    async def dispatch() -> _BiliProgressiveResult | None:
         if request.platform is Platform.BILI and request.detail_reference.isdigit():
-            await _run_bilibili_aid(upstream_main, request)
-        else:
-            await upstream_main.main()
+            return await _run_bilibili_aid(upstream_main, request)
+        await upstream_main.main()
+        return None
 
     try:
         if request.login_method is LoginMethod.SAVED_SESSION:
@@ -649,15 +776,15 @@ async def _run_upstream(request: _ChildRequest) -> Any:
             )
 
             with fence_saved_session_qr_fallback(request.platform):
-                await dispatch()
+                progressive = await dispatch()
         else:
-            await dispatch()
+            progressive = await dispatch()
     except SystemExit as error:
         raise RuntimeError("upstream exited without a successful result") from error
-    return upstream_main
+    return upstream_main, progressive
 
 
-async def _watch_upstream(request: _ChildRequest) -> Any:
+async def _watch_upstream(request: _ChildRequest) -> tuple[Any, _BiliProgressiveResult | None]:
     deadline = time.monotonic() + request.watchdogs.max_seconds
     task = asyncio.create_task(_run_upstream(request))
     try:
@@ -694,15 +821,84 @@ def _read_content_jsonl(request: _ChildRequest) -> bytes:
     return bytes(payload)
 
 
+def _augment_bili_progressive_jsonl(
+    payload: bytes,
+    progressive: _BiliProgressiveResult,
+    limits: WatchdogLimits,
+) -> bytes:
+    """Inject one private field into bytes only; never reopen or rewrite output."""
+
+    lines = payload.splitlines()
+    if len(lines) > limits.max_output_items:
+        raise ValueError("detail payload exceeds record limit")
+    output = bytearray()
+    matches = 0
+    for raw_line in lines:
+        if len(raw_line) + 1 > limits.max_line_bytes:
+            raise ValueError("detail payload exceeds line limit")
+        encoded = raw_line
+        if raw_line.strip():
+            try:
+                decoded = json.loads(
+                    raw_line,
+                    object_pairs_hook=_strict_object,
+                    parse_constant=_reject_json_constant,
+                )
+            except (UnicodeError, json.JSONDecodeError, ValueError) as exc:
+                raise ValueError("invalid detail JSONL") from exc
+            if not isinstance(decoded, Mapping):
+                raise ValueError("invalid detail JSONL record")
+            if _contains_private_detail_field(decoded):
+                raise ValueError("private detail field collision")
+            if decoded.get("video_id") == str(progressive.aid):
+                matches += 1
+                enriched = dict(decoded)
+                enriched[_BILI_PROGRESSIVE_FIELD] = progressive.url
+                encoded = json.dumps(
+                    enriched,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+                if len(encoded) + 1 > limits.max_line_bytes:
+                    raise ValueError("detail payload exceeds line limit")
+        output.extend(encoded)
+        output.extend(b"\n")
+        if len(output) > limits.max_output_bytes:
+            raise ValueError("detail payload exceeds output limit")
+    if matches != 1:
+        raise ValueError("Bilibili detail record mismatch")
+    return bytes(output)
+
+
+def _contains_private_detail_field(value: object) -> bool:
+    if isinstance(value, Mapping):
+        return _BILI_PROGRESSIVE_FIELD in value or any(_contains_private_detail_field(item) for item in value.values())
+    if isinstance(value, list):
+        return any(_contains_private_detail_field(item) for item in value)
+    return False
+
+
 async def _execute_child(request: _ChildRequest) -> tuple[str, bytes]:
     upstream_main: Any | None = None
     try:
-        upstream_main = await _watch_upstream(request)
-        return "succeeded", _read_content_jsonl(request)
+        upstream_main, progressive = await _watch_upstream(request)
+        payload = _read_content_jsonl(request)
+        if request.bili_progressive_detail:
+            if progressive is None:
+                raise _ChildTemporaryError
+            else:
+                payload = _augment_bili_progressive_jsonl(payload, progressive, request.watchdogs)
+        elif progressive is not None:
+            raise ValueError("unexpected Bilibili progressive result")
+        return "succeeded", payload
     except _ChildConfigurationError:
         return "configuration_invalid", b""
     except _ChildAuthExpiredError:
         return "auth_expired", b""
+    except _ChildTemporaryError:
+        return "temporary", b""
+    except _ChildUnsupportedError:
+        return "unsupported", b""
     except TimeoutError:
         return "temporary", b""
     except Exception as error:

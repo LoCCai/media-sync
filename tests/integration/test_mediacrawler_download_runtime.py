@@ -121,37 +121,43 @@ def _seed(
     *,
     source_count: int,
     login_method: LoginMethod = LoginMethod.COOKIE,
+    platform: Platform = Platform.BILI,
+    content_remote_type: str = "content",
+    asset_kind: AssetKind = AssetKind.COVER,
+    asset_position: int = 0,
+    asset_remote_id: str = ASSET_REMOTE_ID,
+    source_url: str | None = SOURCE_HINT,
 ) -> _RuntimeSeed:
     with database.session() as session:
         author, contents = AuthorRepository(session).upsert_with_contents(
             AuthorUpsert(
-                platform=Platform.BILI.value,
+                platform=platform.value,
                 remote_id="runtime-author",
                 display_name="Runtime Author",
             ),
-            (ContentUpsert(remote_id=CONTENT_ID, remote_type="content", kind="video"),),
+            (ContentUpsert(remote_id=CONTENT_ID, remote_type=content_remote_type, kind="video"),),
         )
         locator = AdapterRefreshLocator(
             adapter="mediacrawler",
             asset_key=stable_asset_key(
-                platform=Platform.BILI.value,
-                content_remote_type="content",
+                platform=platform.value,
+                content_remote_type=content_remote_type,
                 content_remote_id=CONTENT_ID,
-                kind=AssetKind.COVER.value,
-                position=0,
-                remote_id=ASSET_REMOTE_ID,
+                kind=asset_kind.value,
+                position=asset_position,
+                remote_id=asset_remote_id,
             ),
         )
         asset = AssetRepository(session).upsert_for_content(
             contents[0].id,
             AssetUpsert(
-                platform=Platform.BILI.value,
-                content_remote_type="content",
+                platform=platform.value,
+                content_remote_type=content_remote_type,
                 content_remote_id=CONTENT_ID,
-                kind=AssetKind.COVER.value,
-                position=0,
-                remote_id=ASSET_REMOTE_ID,
-                source_url=SOURCE_HINT,
+                kind=asset_kind.value,
+                position=asset_position,
+                remote_id=asset_remote_id,
+                source_url=source_url,
                 locator=locator.as_dict(),
             ),
         )
@@ -159,7 +165,7 @@ def _seed(
         first_account_id: UUID | None = None
         for index in range(max(source_count, 1)):
             account = AccountRepository(session).create(
-                platform=Platform.BILI.value,
+                platform=platform.value,
                 adapter="mediacrawler",
                 display_name=f"runtime-account-{index}",
                 login_method=login_method.value if index == 0 else LoginMethod.QR.value,
@@ -332,6 +338,110 @@ def test_construction_is_lazy_and_touches_neither_database_secret_nor_child(
     )
 
     assert isinstance(refresher, LazyMediaCrawlerLocatorRefresher)
+    assert provider.calls == []
+    assert fake_detail_runner.instances == []
+
+
+@pytest.mark.parametrize(
+    (
+        "platform",
+        "content_remote_type",
+        "asset_kind",
+        "asset_position",
+        "asset_remote_id",
+        "source_url",
+    ),
+    [
+        pytest.param(
+            Platform.BILI,
+            "content",
+            AssetKind.COVER,
+            0,
+            f"{CONTENT_ID}:cover:0",
+            None,
+            id="bili-cover",
+        ),
+        pytest.param(
+            Platform.BILI,
+            "content",
+            AssetKind.VIDEO,
+            1,
+            f"{CONTENT_ID}:video:1",
+            None,
+            id="bili-video-position-one",
+        ),
+        pytest.param(
+            Platform.BILI,
+            "article",
+            AssetKind.VIDEO,
+            0,
+            f"{CONTENT_ID}:video:0",
+            None,
+            id="non-content-remote-type",
+        ),
+        pytest.param(
+            Platform.BILI,
+            "content",
+            AssetKind.VIDEO,
+            0,
+            f"{CONTENT_ID}:video:wrong",
+            None,
+            id="wrong-video-remote-id",
+        ),
+        pytest.param(
+            Platform.XHS,
+            "content",
+            AssetKind.VIDEO,
+            0,
+            f"{CONTENT_ID}:video:0",
+            None,
+            id="non-bili-video",
+        ),
+        pytest.param(
+            Platform.BILI,
+            "content",
+            AssetKind.VIDEO,
+            0,
+            f"{CONTENT_ID}:video:0",
+            SOURCE_HINT,
+            id="bili-video-non-null-source",
+        ),
+    ],
+)
+def test_bili_progressive_source_shape_is_closed_before_secret_or_child(
+    database: Database,
+    tmp_path: Path,
+    fake_detail_runner: type[_FakeMediaCrawlerDetailProcessRunner],
+    platform: Platform,
+    content_remote_type: str,
+    asset_kind: AssetKind,
+    asset_position: int,
+    asset_remote_id: str,
+    source_url: str | None,
+) -> None:
+    seed = _seed(
+        database,
+        source_count=1,
+        platform=platform,
+        content_remote_type=content_remote_type,
+        asset_kind=asset_kind,
+        asset_position=asset_position,
+        asset_remote_id=asset_remote_id,
+        source_url=source_url,
+    )
+    provider = _RecordingSecretProvider({"MC_COOKIE": "must-not-be-read"})
+    refresher = _lazy(
+        database,
+        seed,
+        SecretResolver({SecretScheme.ENV: provider}),
+        tmp_path,
+        subscription_id=seed.source_subscription_ids[0],
+    )
+
+    with pytest.raises(MediaDownloadError) as caught:
+        refresher.resolve(seed.locator)
+
+    assert caught.value.code == "locator_refresh_configuration_invalid"
     assert provider.calls == []
     assert fake_detail_runner.instances == []
 

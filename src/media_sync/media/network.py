@@ -16,8 +16,20 @@ import httpcore
 import httpx
 
 from media_sync.media.errors import MediaDownloadError
+from media_sync.media.locator import MediaRequestProfile
 
 _REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
+_BILIBILI_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+)
+_PROFILE_HEADERS: Mapping[MediaRequestProfile, Mapping[str, str]] = {
+    MediaRequestProfile.DEFAULT: {},
+    MediaRequestProfile.BILIBILI_MEDIA: {
+        "User-Agent": _BILIBILI_USER_AGENT,
+        "Referer": "https://www.bilibili.com/",
+        "Origin": "https://www.bilibili.com",
+    },
+}
 SocketOption: TypeAlias = tuple[int, int, int] | tuple[int, int, bytes | bytearray] | tuple[int, int, None, int]
 
 
@@ -315,18 +327,21 @@ class SafeHttpClient:
         url: str,
         *,
         headers: Mapping[str, str] | None = None,
+        request_profile: MediaRequestProfile = MediaRequestProfile.DEFAULT,
         timeout_seconds: float | None = None,
     ) -> Iterator[tuple[httpx.Response, ValidatedTarget]]:
         """Yield the first non-redirect response in a bounded, validated chain."""
 
+        if not isinstance(request_profile, MediaRequestProfile):
+            raise MediaDownloadError("locator_invalid")
         started = self._monotonic()
         total_timeout = min(timeout_seconds or self.limits.timeout_seconds, self.limits.timeout_seconds)
         current = _canonical_runtime_url(url, limit=self.limits.max_url_chars)
         visited: set[str] = set()
-        request_headers: dict[str, str] = {}
+        request_headers = dict(_PROFILE_HEADERS[request_profile])
         for raw_name, value in (headers or {}).items():
             name = raw_name.lower()
-            if name not in {"range", "if-range"} or name in request_headers:
+            if name not in {"range", "if-range"} or any(existing.lower() == name for existing in request_headers):
                 raise MediaDownloadError("download_range_invalid")
             request_headers[name] = value
         request_headers.update({"Accept": "*/*", "Accept-Encoding": "identity"})

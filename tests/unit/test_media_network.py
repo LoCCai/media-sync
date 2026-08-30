@@ -5,7 +5,18 @@ from collections.abc import Callable, Sequence
 import httpx
 import pytest
 
-from media_sync.media import MediaDownloadError, NetworkLimits, SafeHttpClient, ValidatedTarget, validate_target
+from media_sync.media import (
+    MediaDownloadError,
+    MediaRequestProfile,
+    NetworkLimits,
+    SafeHttpClient,
+    ValidatedTarget,
+    validate_target,
+)
+
+BILIBILI_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+)
 
 
 class _Resolver:
@@ -36,6 +47,10 @@ def test_safe_http_pins_validated_address_and_sets_origin_headers() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.headers["host"] == "media.test"
         assert request.headers["accept-encoding"] == "identity"
+        assert "referer" not in request.headers
+        assert "origin" not in request.headers
+        assert "cookie" not in request.headers
+        assert "authorization" not in request.headers
         return httpx.Response(200, content=b"ok")
 
     client = SafeHttpClient(resolver, transport_factory=_factory(handler, targets))
@@ -45,6 +60,55 @@ def test_safe_http_pins_validated_address_and_sets_origin_headers() -> None:
 
     assert targets == [target]
     assert resolver.calls == [("media.test", 443)]
+
+
+def test_bilibili_profile_is_fixed_and_survives_redirect_while_resume_headers_drop() -> None:
+    resolver = _Resolver({"origin.test": ("8.8.8.8",), "cdn.test": ("1.1.1.1",)})
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        assert request.headers["user-agent"] == BILIBILI_USER_AGENT
+        assert request.headers["referer"] == "https://www.bilibili.com/"
+        assert request.headers["origin"] == "https://www.bilibili.com"
+        assert "cookie" not in request.headers
+        assert "authorization" not in request.headers
+        if request.url.host == "origin.test":
+            assert request.headers["range"] == "bytes=4-"
+            assert request.headers["if-range"] == '"public-validator"'
+            return httpx.Response(307, headers={"Location": "https://cdn.test/final?signature=ephemeral"})
+        assert "range" not in request.headers
+        assert "if-range" not in request.headers
+        return httpx.Response(200, content=b"fresh")
+
+    client = SafeHttpClient(resolver, transport_factory=lambda _target: httpx.MockTransport(handler))
+    with client.stream(
+        "https://origin.test/file",
+        headers={"Range": "bytes=4-", "If-Range": '"public-validator"'},
+        request_profile=MediaRequestProfile.BILIBILI_MEDIA,
+    ) as (response, _target):
+        assert response.read() == b"fresh"
+
+    assert len(requests) == 2
+
+
+@pytest.mark.parametrize("name", ["Cookie", "Authorization", "User-Agent", "Referer", "Origin", "X-Arbitrary"])
+def test_bilibili_profile_rejects_every_caller_header_except_resume_state(name: str) -> None:
+    sentinel = "caller-controlled-secret"
+    client = SafeHttpClient(_Resolver({"media.test": ("8.8.8.8",)}))
+
+    with (
+        pytest.raises(MediaDownloadError) as caught,
+        client.stream(
+            "https://media.test/file",
+            headers={name: sentinel},
+            request_profile=MediaRequestProfile.BILIBILI_MEDIA,
+        ),
+    ):
+        pass
+
+    assert caught.value.code == "download_range_invalid"
+    assert sentinel not in str(caught.value)
 
 
 def test_each_redirect_is_resolved_and_public_to_private_is_rejected() -> None:

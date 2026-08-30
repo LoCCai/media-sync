@@ -207,13 +207,14 @@ def fixture_path(relative_path: str) -> Path:
     return FIXTURE_ROOT / relative_path
 
 
-def context(platform: Platform) -> NormalizationContext:
+def context(platform: Platform, *, allow_bili_progressive_detail: bool = False) -> NormalizationContext:
     return NormalizationContext(
         platform=platform,
         creator_remote_id=f"trusted-{platform.value}-author",
         creator_display_name=f"可信作者-{platform.value}",
         upstream_sha=PINNED_SHA.upper(),
         ingested_at=INGESTED_AT,
+        allow_bili_progressive_detail=allow_bili_progressive_detail,
     )
 
 
@@ -325,7 +326,12 @@ def test_asset_order_ids_and_media_semantics_are_deterministic() -> None:
         AssetKind.VIDEO,
         AssetKind.COVER,
     )
-    assert tuple(asset.kind for asset in records["987654321"].assets) == (AssetKind.COVER,)
+    bili_assets = records["987654321"].assets
+    assert tuple(asset.kind for asset in bili_assets) == (AssetKind.VIDEO, AssetKind.COVER)
+    assert bili_assets[0].remote_id == "987654321:video:0"
+    assert bili_assets[0].position == 0
+    assert bili_assets[0].source_url is None
+    assert bili_assets[1].remote_id == "987654321:cover:0"
 
 
 def test_pinned_jsonl_asset_omissions_are_explicit_not_inferred_as_downloads() -> None:
@@ -357,6 +363,36 @@ def test_bili_video_and_dynamic_ids_use_distinct_persistence_namespaces() -> Non
 
     assert video.remote_id == dynamic.remote_id
     assert (video.remote_type, dynamic.remote_type) == ("content", "dynamic")
+
+
+def test_bili_progressive_detail_field_is_closed_and_detail_gated() -> None:
+    payload = source_record("bili/contents.v1.jsonl")
+    progressive_url = "https://cdn.example.test/bili/video.mp4?signature=ephemeral"
+    payload["__media_sync_bili_progressive_url"] = progressive_url
+
+    ordinary = normalize_record(payload, context(Platform.BILI))
+    assert ordinary.assets[0].remote_id == "987654321:video:0"
+    assert ordinary.assets[0].source_url is None
+    assert "__media_sync_bili_progressive_url" not in ordinary.content.raw["record"]
+    assert all("__media_sync_bili_progressive_url" not in asset.raw["record"] for asset in ordinary.assets)
+
+    detail = normalize_record(
+        payload,
+        context(Platform.BILI, allow_bili_progressive_detail=True),
+    )
+    assert detail.assets[0].remote_id == "987654321:video:0"
+    assert detail.assets[0].source_url == progressive_url
+    assert "__media_sync_bili_progressive_url" not in detail.content.raw["record"]
+    assert all("__media_sync_bili_progressive_url" not in asset.raw["record"] for asset in detail.assets)
+
+
+def test_bili_dynamic_never_materializes_progressive_detail_asset() -> None:
+    payload = source_record("bili/dynamics.v1.jsonl")
+    payload["__media_sync_bili_progressive_url"] = "https://cdn.example.test/bili/dynamic.mp4"
+
+    item = normalize_record(payload, context(Platform.BILI, allow_bili_progressive_detail=True))
+    assert item.assets == ()
+    assert "__media_sync_bili_progressive_url" not in item.content.raw["record"]
 
 
 def test_replay_is_equal_and_mixed_timestamp_inputs_normalize_to_utc() -> None:

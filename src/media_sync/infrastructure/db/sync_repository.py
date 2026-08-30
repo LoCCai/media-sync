@@ -86,9 +86,7 @@ def _content_upsert(snapshot: ContentSnapshot) -> ContentUpsert:
 
 
 def _asset_upsert(snapshot: AssetSnapshot, *, content_remote_type: str) -> AssetUpsert:
-    try:
-        locator = DirectLocator(snapshot.source_url).as_dict()
-    except MediaDownloadError:
+    if snapshot.source_url is None:
         locator = AdapterRefreshLocator(
             adapter="fake",
             asset_key=stable_asset_key(
@@ -100,6 +98,21 @@ def _asset_upsert(snapshot: AssetSnapshot, *, content_remote_type: str) -> Asset
                 remote_id=snapshot.remote_id,
             ),
         ).as_dict()
+    else:
+        try:
+            locator = DirectLocator(snapshot.source_url).as_dict()
+        except MediaDownloadError:
+            locator = AdapterRefreshLocator(
+                adapter="fake",
+                asset_key=stable_asset_key(
+                    platform=snapshot.platform.value,
+                    content_remote_type=content_remote_type,
+                    content_remote_id=snapshot.content_remote_id,
+                    kind=snapshot.kind.value,
+                    position=snapshot.position,
+                    remote_id=snapshot.remote_id,
+                ),
+            ).as_dict()
     return AssetUpsert(
         platform=snapshot.platform.value,
         content_remote_type=content_remote_type,

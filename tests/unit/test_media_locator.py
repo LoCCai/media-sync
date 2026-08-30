@@ -9,6 +9,7 @@ from media_sync.media import (
     AdapterRefreshLocator,
     DirectLocator,
     MediaDownloadError,
+    MediaRequestProfile,
     ResolvedLocator,
     canonical_locator_json,
     locator_fingerprint,
@@ -26,6 +27,7 @@ def test_direct_locator_is_canonical_and_fingerprinted() -> None:
     )
     assert len(locator_fingerprint(locator)) == 64
     assert parse_locator(canonical_locator_json(locator)) == locator
+    assert resolve_locator(locator).request_profile is MediaRequestProfile.DEFAULT
 
 
 @pytest.mark.parametrize(
@@ -137,6 +139,19 @@ def test_injected_refresh_port_returns_ephemeral_direct_locator() -> None:
 
     resolved = resolve_locator(locator, refresh)
     assert resolved.url == "https://media.test/refreshed.mp4?signature=ephemeral-secret"
+    assert resolved.request_profile is MediaRequestProfile.DEFAULT
     assert "ephemeral-secret" not in repr(resolved)
     assert "ephemeral-secret" not in canonical_locator_json(locator)
     assert refresh.calls == 1
+
+
+def test_resolved_locator_carries_only_a_closed_non_secret_request_profile() -> None:
+    signed_url = "https://media.test/refreshed.mp4?signature=ephemeral-secret"
+    resolved = ResolvedLocator(signed_url, MediaRequestProfile.BILIBILI_MEDIA)
+
+    assert resolved.request_profile is MediaRequestProfile.BILIBILI_MEDIA
+    assert "ephemeral-secret" not in repr(resolved)
+    assert signed_url not in repr(resolved)
+
+    with pytest.raises(MediaDownloadError, match="locator_invalid"):
+        ResolvedLocator(signed_url, "bilibili_media")  # type: ignore[arg-type]

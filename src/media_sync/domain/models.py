@@ -277,7 +277,7 @@ class AssetSnapshot:
     remote_id: str
     content_remote_id: str
     kind: AssetKind
-    source_url: str = field(repr=False)
+    source_url: str | None = field(default=None, repr=False)
     position: int = 0
     mime_type: str | None = None
     size_bytes: int | None = None
@@ -291,10 +291,7 @@ class AssetSnapshot:
             "content_remote_id",
             _required_text(self.content_remote_id, "content_remote_id"),
         )
-        source_url = _validate_http_url(self.source_url, "source_url")
-        if source_url is None:  # pragma: no cover - source_url is statically non-optional
-            raise DomainValidationError("source_url is required", field="source_url")
-        object.__setattr__(self, "source_url", source_url)
+        object.__setattr__(self, "source_url", _validate_http_url(self.source_url, "source_url"))
         if self.position < 0:
             raise DomainValidationError("position must be non-negative", field="position")
         object.__setattr__(self, "mime_type", _optional_text(self.mime_type, "mime_type"))

@@ -174,7 +174,21 @@ class LazyMediaCrawlerLocatorRefresher:
             if not isinstance(locator, AdapterRefreshLocator) or locator.adapter != "mediacrawler":
                 raise MediaDownloadError("locator_refresh_source_mismatch")
             source_hint = asset_source_hint(asset.source_url)
-            if source_hint is None or source_hint != asset.source_url:
+            bili_video_slot = (
+                platform is Platform.BILI
+                and content.remote_type == "content"
+                and asset_kind is AssetKind.VIDEO
+                and asset.position == 0
+            )
+            locator_only_bili_video = (
+                bili_video_slot and asset.remote_id == f"{content.remote_id}:video:0" and asset.source_url is None
+            )
+            if source_hint is None:
+                if asset.source_url is not None or not locator_only_bili_video:
+                    raise MediaDownloadError("locator_refresh_configuration_invalid")
+            elif source_hint != asset.source_url:
+                raise MediaDownloadError("locator_refresh_configuration_invalid")
+            if bili_video_slot and not locator_only_bili_video:
                 raise MediaDownloadError("locator_refresh_configuration_invalid")
 
             cookie = None

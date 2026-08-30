@@ -134,6 +134,14 @@ def test_asset_snapshot_validates_download_metadata() -> None:
     )
     assert asset.checksum_sha256 == "a" * 64
 
+    locator_only = AssetSnapshot(
+        platform=Platform.BILI,
+        remote_id="asset-2",
+        content_remote_id="item-1",
+        kind=AssetKind.VIDEO,
+    )
+    assert locator_only.source_url is None
+
     with pytest.raises(DomainValidationError, match="non-negative"):
         AssetSnapshot(
             platform=Platform.DY,

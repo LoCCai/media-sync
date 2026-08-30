@@ -472,7 +472,12 @@ class SecureMediaDownloader:
             remaining = self._remaining(started)
             headers = self._resume_headers(state)
             try:
-                with self._http.stream(locator.url, headers=headers, timeout_seconds=remaining) as (response, _target):
+                with self._http.stream(
+                    locator.url,
+                    headers=headers,
+                    request_profile=locator.request_profile,
+                    timeout_seconds=remaining,
+                ) as (response, _target):
                     if can_refresh_auth and response.status_code in {401, 403}:
                         if auth_refreshes >= 1:
                             raise MediaDownloadError("locator_refresh_auth_expired")

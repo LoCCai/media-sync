@@ -7,6 +7,7 @@ import json
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from enum import StrEnum
 from typing import Literal, Protocol, TypeAlias
 from urllib.parse import urlsplit, urlunsplit
 
@@ -129,13 +130,23 @@ class AdapterRefreshLocator:
 AssetLocator: TypeAlias = DirectLocator | AdapterRefreshLocator
 
 
+class MediaRequestProfile(StrEnum):
+    """Closed, non-secret HTTP request behavior for an ephemeral locator."""
+
+    DEFAULT = "default"
+    BILIBILI_MEDIA = "bilibili_media"
+
+
 @dataclass(frozen=True, slots=True)
 class ResolvedLocator:
     """Ephemeral runtime locator that may contain a signed query."""
 
     url: str = field(repr=False)
+    request_profile: MediaRequestProfile = MediaRequestProfile.DEFAULT
 
     def __post_init__(self) -> None:
+        if not isinstance(self.request_profile, MediaRequestProfile):
+            raise _fail()
         raw = self.url
         if not isinstance(raw, str) or raw != raw.strip() or len(raw) > 4096:
             raise _fail()
@@ -247,6 +258,7 @@ __all__ = [
     "AssetLocator",
     "DirectLocator",
     "LocatorRefreshPort",
+    "MediaRequestProfile",
     "ResolvedLocator",
     "canonical_locator_json",
     "locator_fingerprint",

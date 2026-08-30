@@ -16,7 +16,12 @@ from uuid import UUID
 
 from media_sync.domain import AssetKind, LoginMethod, Platform
 from media_sync.infrastructure.db.asset_identity import asset_source_hint, stable_asset_key
-from media_sync.media import AdapterRefreshLocator, MediaDownloadError, ResolvedLocator
+from media_sync.media import (
+    AdapterRefreshLocator,
+    MediaDownloadError,
+    MediaRequestProfile,
+    ResolvedLocator,
+)
 from media_sync.security import SecretValue
 
 from .detail_runner import (
@@ -47,7 +52,7 @@ class MediaCrawlerRefreshContext:
     asset_remote_id: str | None
     asset_kind: AssetKind
     asset_position: int
-    source_hint: str = field(repr=False)
+    source_hint: str | None = field(repr=False)
     locator: AdapterRefreshLocator = field(repr=False)
     detail_reference: str | SecretValue | None = field(default=None, repr=False)
     cookie: SecretValue | None = field(default=None, repr=False)
@@ -87,9 +92,27 @@ class MediaCrawlerRefreshContext:
         )
         if self.locator.asset_key != expected_key:
             raise MediaDownloadError("locator_refresh_asset_mismatch")
-        if asset_source_hint(self.source_hint) != self.source_hint:
+        locator_only_bili_video = _is_locator_only_bili_video(
+            platform=platform,
+            content_remote_type=self.content_remote_type,
+            content_remote_id=self.content_remote_id,
+            asset_remote_id=self.asset_remote_id,
+            kind=asset_kind,
+            position=self.asset_position,
+            source_hint=self.source_hint,
+        )
+        if self.source_hint is None:
+            if not locator_only_bili_video:
+                raise MediaDownloadError("locator_refresh_configuration_invalid")
+        elif asset_source_hint(self.source_hint) != self.source_hint:
+            raise MediaDownloadError("locator_refresh_configuration_invalid")
+        if _is_bili_video_slot(platform, self.content_remote_type, asset_kind, self.asset_position) and not (
+            locator_only_bili_video
+        ):
             raise MediaDownloadError("locator_refresh_configuration_invalid")
         if platform in _SUPPORTED_PLATFORMS and asset_kind not in _supported_kinds(platform):
+            raise MediaDownloadError("locator_refresh_unsupported")
+        if platform is Platform.BILI and asset_kind is AssetKind.VIDEO and self.asset_position != 0:
             raise MediaDownloadError("locator_refresh_unsupported")
         if platform is Platform.XHS:
             _validate_xhs_detail_reference(self.detail_reference, self.content_remote_id)
@@ -109,6 +132,17 @@ class MediaCrawlerRefreshContext:
         object.__setattr__(self, "asset_kind", asset_kind)
         object.__setattr__(self, "request_delay_seconds", float(delay))
 
+    def _bili_progressive_detail(self) -> bool:
+        return _is_locator_only_bili_video(
+            platform=self.platform,
+            content_remote_type=self.content_remote_type,
+            content_remote_id=self.content_remote_id,
+            asset_remote_id=self.asset_remote_id,
+            kind=self.asset_kind,
+            position=self.asset_position,
+            source_hint=self.source_hint,
+        )
+
     def detail_request(self) -> MediaCrawlerDetailRequest:
         """Project only child/runtime facts; discovery metadata stays parent-side."""
 
@@ -122,6 +156,7 @@ class MediaCrawlerRefreshContext:
             cookie=self.cookie,
             headless=self.headless,
             request_delay_seconds=self.request_delay_seconds,
+            bili_progressive_detail=self._bili_progressive_detail(),
             watchdogs=self.watchdogs,
         )
 
@@ -170,6 +205,7 @@ class MediaCrawlerLocatorRefresher:
                     creator_remote_id=context.author_remote_id,
                     creator_display_name=context.author_display_name,
                     ingested_at=self._clock(),
+                    allow_bili_progressive_detail=context._bili_progressive_detail(),
                 ),
                 max_bytes=context.watchdogs.max_output_bytes,
                 max_line_bytes=context.watchdogs.max_line_bytes,
@@ -200,12 +236,18 @@ class MediaCrawlerLocatorRefresher:
             if asset.remote_id == context.asset_remote_id
             and asset.kind is context.asset_kind
             and asset.position == context.asset_position
-            and asset_source_hint(asset.source_url) == context.source_hint
+            and (context._bili_progressive_detail() or asset_source_hint(asset.source_url) == context.source_hint)
         ]
         if len(candidates) != 1:
             raise MediaDownloadError("locator_refresh_asset_mismatch")
+        source_url = candidates[0].source_url
+        if source_url is None:
+            raise MediaDownloadError("locator_refresh_result_invalid")
+        profile = (
+            MediaRequestProfile.BILIBILI_MEDIA if context._bili_progressive_detail() else MediaRequestProfile.DEFAULT
+        )
         try:
-            return ResolvedLocator(candidates[0].source_url)
+            return ResolvedLocator(source_url, profile)
         except MediaDownloadError as exc:
             raise MediaDownloadError("locator_refresh_result_invalid") from exc
 
@@ -215,8 +257,34 @@ def _supported_kinds(platform: Platform) -> frozenset[AssetKind]:
         Platform.XHS: frozenset({AssetKind.IMAGE, AssetKind.VIDEO}),
         Platform.DY: frozenset({AssetKind.IMAGE, AssetKind.VIDEO, AssetKind.AUDIO, AssetKind.COVER}),
         Platform.KS: frozenset({AssetKind.VIDEO, AssetKind.COVER}),
-        Platform.BILI: frozenset({AssetKind.COVER}),
+        Platform.BILI: frozenset({AssetKind.VIDEO, AssetKind.COVER}),
     }.get(platform, frozenset())
+
+
+def _is_bili_video_slot(
+    platform: Platform,
+    content_remote_type: str,
+    kind: AssetKind,
+    position: int,
+) -> bool:
+    return platform is Platform.BILI and content_remote_type == "content" and kind is AssetKind.VIDEO and position == 0
+
+
+def _is_locator_only_bili_video(
+    *,
+    platform: Platform,
+    content_remote_type: str,
+    content_remote_id: str,
+    asset_remote_id: str | None,
+    kind: AssetKind,
+    position: int,
+    source_hint: str | None,
+) -> bool:
+    return (
+        _is_bili_video_slot(platform, content_remote_type, kind, position)
+        and asset_remote_id == f"{content_remote_id}:video:0"
+        and source_hint is None
+    )
 
 
 def _context_text(value: object, *, maximum: int = 255) -> str:

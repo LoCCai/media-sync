@@ -20,6 +20,7 @@ from media_sync.media import (
     DownloadLimits,
     DownloadRequest,
     MediaDownloadError,
+    MediaRequestProfile,
     PartMetadata,
     ProbeResult,
     ResolvedLocator,
@@ -743,6 +744,24 @@ class _RotatingSignedRefresh:
         return ResolvedLocator(f"https://media.test/runtime?signature={self.calls}")
 
 
+class _BilibiliRefresh:
+    def resolve(self, _locator: AdapterRefreshLocator) -> ResolvedLocator:
+        return ResolvedLocator(
+            "https://media.test/runtime?signature=bilibili-ephemeral",
+            MediaRequestProfile.BILIBILI_MEDIA,
+        )
+
+
+class _ChangingProfileRefresh:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def resolve(self, _locator: AdapterRefreshLocator) -> ResolvedLocator:
+        self.calls += 1
+        profile = MediaRequestProfile.DEFAULT if self.calls == 1 else MediaRequestProfile.BILIBILI_MEDIA
+        return ResolvedLocator(f"https://media.test/runtime?signature={self.calls}", profile)
+
+
 def test_adapter_refresh_re_resolves_once_after_auth_failure(tmp_path: Path) -> None:
     seen: list[str] = []
     refresher = _RotatingSignedRefresh()
@@ -772,6 +791,91 @@ def test_adapter_refresh_re_resolves_once_after_auth_failure(tmp_path: Path) -> 
         "https://media.test/runtime?signature=1",
         "https://media.test/runtime?signature=2",
     ]
+
+
+def test_adapter_refresh_uses_the_latest_request_profile_after_auth_failure(tmp_path: Path) -> None:
+    refresher = _ChangingProfileRefresh()
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.params["signature"] == "1":
+            assert "referer" not in request.headers
+            assert "origin" not in request.headers
+            return httpx.Response(403)
+        assert request.headers["referer"] == "https://www.bilibili.com/"
+        assert request.headers["origin"] == "https://www.bilibili.com"
+        assert request.headers["user-agent"].startswith("Mozilla/5.0 ")
+        assert "cookie" not in request.headers
+        assert "authorization" not in request.headers
+        return _ok()
+
+    request = DownloadRequest(
+        asset_id=uuid4(),
+        generation=1,
+        locator=AdapterRefreshLocator("mediacrawler", "bili/video-1/video/0"),
+        work_root=tmp_path / "jobs",
+        archive_root=tmp_path / "archive",
+        expected_kind=AssetKind.IMAGE,
+    )
+    downloader = SecureMediaDownloader(
+        SafeHttpClient(_Resolver(), transport_factory=lambda _target: httpx.MockTransport(handler)),
+        refresher=refresher,
+    )
+
+    assert downloader.download(request).archive_path.read_bytes() == PNG
+    assert refresher.calls == 2
+    assert len(requests) == 2
+
+
+def test_bilibili_request_profile_is_preserved_when_a_partial_download_resumes(tmp_path: Path) -> None:
+    split = 8
+    requests = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal requests
+        requests += 1
+        assert request.headers["referer"] == "https://www.bilibili.com/"
+        assert request.headers["origin"] == "https://www.bilibili.com"
+        assert request.headers["user-agent"].startswith("Mozilla/5.0 ")
+        assert "cookie" not in request.headers
+        assert "authorization" not in request.headers
+        if requests == 1:
+            assert "range" not in request.headers
+            return httpx.Response(
+                200,
+                headers={"Content-Length": str(len(PNG)), "ETag": ETAG},
+                stream=_BreakingStream(PNG[:split]),
+            )
+        assert request.headers["range"] == f"bytes={split}-"
+        assert request.headers["if-range"] == ETAG
+        return httpx.Response(
+            206,
+            headers={
+                "Content-Length": str(len(PNG) - split),
+                "Content-Range": f"bytes {split}-{len(PNG) - 1}/{len(PNG)}",
+                "ETag": ETAG,
+            },
+            content=PNG[split:],
+        )
+
+    request = DownloadRequest(
+        asset_id=uuid4(),
+        generation=1,
+        locator=AdapterRefreshLocator("mediacrawler", "bili/video-1/video/0"),
+        work_root=tmp_path / "jobs",
+        archive_root=tmp_path / "archive",
+        expected_kind=AssetKind.IMAGE,
+    )
+    downloader = SecureMediaDownloader(
+        SafeHttpClient(_Resolver(), transport_factory=lambda _target: httpx.MockTransport(handler)),
+        refresher=_BilibiliRefresh(),
+    )
+
+    with pytest.raises(MediaDownloadError, match="download_interrupted"):
+        downloader.download(request)
+    assert downloader.download(request).archive_path.read_bytes() == PNG
+    assert requests == 2
 
 
 def test_adapter_refresh_second_auth_failure_is_fixed_retryable_error(tmp_path: Path) -> None:

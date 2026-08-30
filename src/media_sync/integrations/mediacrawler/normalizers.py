@@ -35,6 +35,7 @@ from .jsonl import (
 
 _GIT_SHA = re.compile(r"[0-9a-fA-F]{40}\Z")
 _CHINA_TZ = timezone(timedelta(hours=8))
+_BILI_PROGRESSIVE_FIELD = "__media_sync_bili_progressive_url"
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,6 +47,7 @@ class NormalizationContext:
     creator_display_name: str
     upstream_sha: str
     ingested_at: datetime
+    allow_bili_progressive_detail: bool = False
 
     def __post_init__(self) -> None:
         creator_remote_id = self.creator_remote_id.strip()
@@ -102,7 +104,7 @@ class _ContentParts:
     canonical_url: str | None
     published_at: datetime | None
     metrics: Mapping[str, int | float]
-    asset_groups: tuple[tuple[AssetKind, tuple[str, ...]], ...] = ()
+    asset_groups: tuple[tuple[AssetKind, tuple[str | None, ...]], ...] = ()
     remote_type: str = "content"
 
 
@@ -155,6 +157,16 @@ def _url_list(value: object) -> tuple[str, ...]:
             result.append(url)
             seen.add(url)
     return tuple(result)
+
+
+def _strip_private_detail_field(value: object) -> object:
+    """Copy JSON-shaped input while removing the closed detail-only field."""
+
+    if isinstance(value, Mapping):
+        return {key: _strip_private_detail_field(item) for key, item in value.items() if key != _BILI_PROGRESSIVE_FIELD}
+    if isinstance(value, Sequence) and not isinstance(value, bytes | bytearray | str):
+        return [_strip_private_detail_field(item) for item in value]
+    return value
 
 
 def _number(value: object) -> int | float | None:
@@ -326,7 +338,7 @@ def _normalize_ks(record: Mapping[str, object]) -> _ContentParts:
     )
 
 
-def _normalize_bili(record: Mapping[str, object]) -> _ContentParts:
+def _normalize_bili(record: Mapping[str, object], *, allow_progressive_detail: bool = False) -> _ContentParts:
     if _text(record.get("dynamic_id")) is not None:
         remote_id = _required_id(record, "dynamic_id")
         body = _text(record.get("text"))
@@ -370,8 +382,16 @@ def _normalize_bili(record: Mapping[str, object]) -> _ContentParts:
                 "video_comment": "comments",
             },
         ),
-        # The pinned content JSONL exposes the cover but not a playable stream.
-        asset_groups=((AssetKind.COVER, _url_list(record.get("video_cover_url"))),),
+        # Every ordinary Bilibili video owns a stable video slot. The optional
+        # private detail field is only trusted by an explicitly gated detail
+        # flow; otherwise the slot remains locator-only for a later refresh.
+        asset_groups=(
+            (
+                AssetKind.VIDEO,
+                (_safe_url(record.get(_BILI_PROGRESSIVE_FIELD)) if allow_progressive_detail else None,),
+            ),
+            (AssetKind.COVER, _url_list(record.get("video_cover_url"))),
+        ),
     )
 
 
@@ -438,7 +458,9 @@ _NORMALIZERS = {
 }
 
 
-def _mime_type(kind: AssetKind, source_url: str) -> str | None:
+def _mime_type(kind: AssetKind, source_url: str | None) -> str | None:
+    if source_url is None:
+        return None
     suffix = Path(urlsplit(source_url).path).suffix.lower()
     known = {
         ".jpg": "image/jpeg",
@@ -463,12 +485,12 @@ def _mime_type(kind: AssetKind, source_url: str) -> str | None:
 def _build_assets(
     platform: Platform,
     content_remote_id: str,
-    groups: Sequence[tuple[AssetKind, Sequence[str]]],
+    groups: Sequence[tuple[AssetKind, Sequence[str | None]]],
     raw: Mapping[str, object],
 ) -> tuple[AssetSnapshot, ...]:
     assets: list[AssetSnapshot] = []
     for kind, urls in groups:
-        seen: set[str] = set()
+        seen: set[str | None] = set()
         position = 0
         for source_url in urls:
             if source_url in seen:
@@ -496,12 +518,18 @@ def normalize_record(record: Mapping[str, object], context: NormalizationContext
     if "comment_id" in record:
         raise RecordNormalizationError(QuarantineReason.UNKNOWN_RECORD)
     try:
-        parts = _NORMALIZERS[context.platform](record)
+        if context.platform is Platform.BILI:
+            parts = _normalize_bili(record, allow_progressive_detail=context.allow_bili_progressive_detail)
+        else:
+            parts = _NORMALIZERS[context.platform](record)
+        sanitized_record = _strip_private_detail_field(record)
+        if not isinstance(sanitized_record, Mapping):  # pragma: no cover - record is already a mapping
+            raise RecordNormalizationError(QuarantineReason.INVALID_RECORD)
         envelope = MediaCrawlerEnvelope(
             platform=context.platform,
             upstream_sha=context.upstream_sha,
             ingested_at=context.ingested_at,
-            record=record,
+            record=sanitized_record,
         )
         raw = envelope.as_mapping()
         author = AuthorSnapshot(

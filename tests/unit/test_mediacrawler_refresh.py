@@ -18,7 +18,7 @@ from media_sync.integrations.mediacrawler.refresh import (
     MediaCrawlerLocatorRefresher,
     MediaCrawlerRefreshContext,
 )
-from media_sync.media import AdapterRefreshLocator, MediaDownloadError
+from media_sync.media import AdapterRefreshLocator, MediaDownloadError, MediaRequestProfile
 from media_sync.security import SecretValue
 
 UPSTREAM_SHA = "d6f7c5bb906b6dac40ddf343ef9e26438a3de092"
@@ -50,35 +50,38 @@ def _context(
     content_id: str,
     kind: AssetKind,
     position: int,
-    signed_url: str,
+    signed_url: str | None,
+    content_remote_type: str = "content",
+    remote_id: str | None = None,
     detail_reference: str | SecretValue | None = None,
     locator: AdapterRefreshLocator | None = None,
 ) -> MediaCrawlerRefreshContext:
-    remote_id = f"{content_id}:{kind.value}:{position}"
+    active_remote_id = remote_id or f"{content_id}:{kind.value}:{position}"
     active_locator = locator or AdapterRefreshLocator(
         adapter="mediacrawler",
         asset_key=stable_asset_key(
             platform=platform.value,
-            content_remote_type="content",
+            content_remote_type=content_remote_type,
             content_remote_id=content_id,
             kind=kind.value,
             position=position,
-            remote_id=remote_id,
+            remote_id=active_remote_id,
         ),
     )
     source_hint = asset_source_hint(signed_url)
-    assert source_hint is not None
+    if signed_url is not None:
+        assert source_hint is not None
     return MediaCrawlerRefreshContext(
         asset_id=ASSET_ID,
         account_id=ACCOUNT_ID,
         subscription_id=SUBSCRIPTION_ID,
         platform=platform,
         login_method=LoginMethod.QR,
-        content_remote_type="content",
+        content_remote_type=content_remote_type,
         content_remote_id=content_id,
         author_remote_id="creator-42",
         author_display_name="Fixture creator",
-        asset_remote_id=remote_id,
+        asset_remote_id=active_remote_id,
         asset_kind=kind,
         asset_position=position,
         source_hint=source_hint,
@@ -230,6 +233,107 @@ def test_bound_refresher_selects_exact_normalized_asset_in_memory(
     assert runner.calls[0].content_remote_id == content_id
     assert "sentinel" not in repr(resolved)
     assert "sentinel" not in repr(context)
+
+
+def test_bilibili_locator_only_video_uses_private_detail_gate_and_media_profile() -> None:
+    signed_url = "https://v.example.test/bili/first.mp4?" + "signature=private-sentinel"
+    context = _context(
+        platform=Platform.BILI,
+        content_id="987654321",
+        kind=AssetKind.VIDEO,
+        position=0,
+        signed_url=None,
+    )
+    runner = _FakeDetailRunner(
+        _jsonl(
+            {
+                "video_id": "987654321",
+                "video_type": "video",
+                "title": "video",
+                "video_cover_url": "https://i.example.test/bili/cover.jpg",
+                "__media_sync_bili_progressive_url": signed_url,
+            }
+        )
+    )
+
+    resolved = MediaCrawlerLocatorRefresher(context, runner, clock=lambda: NOW).resolve(context.locator)
+
+    assert resolved.url == signed_url
+    assert resolved.request_profile is MediaRequestProfile.BILIBILI_MEDIA
+    assert runner.calls[0].bili_progressive_detail is True
+    assert "private-sentinel" not in repr(resolved)
+
+
+def test_bilibili_locator_only_video_requires_the_private_progressive_result() -> None:
+    context = _context(
+        platform=Platform.BILI,
+        content_id="987654321",
+        kind=AssetKind.VIDEO,
+        position=0,
+        signed_url=None,
+    )
+    runner = _FakeDetailRunner(
+        _jsonl(
+            {
+                "video_id": "987654321",
+                "video_type": "video",
+                "title": "video",
+                "video_cover_url": "https://i.example.test/bili/cover.jpg",
+            }
+        )
+    )
+
+    with pytest.raises(MediaDownloadError) as caught:
+        MediaCrawlerLocatorRefresher(context, runner, clock=lambda: NOW).resolve(context.locator)
+
+    assert caught.value.code == "locator_refresh_result_invalid"
+
+
+def test_bilibili_progressive_video_rejects_a_non_null_persisted_source_hint() -> None:
+    with pytest.raises(MediaDownloadError) as caught:
+        _context(
+            platform=Platform.BILI,
+            content_id="987654321",
+            kind=AssetKind.VIDEO,
+            position=0,
+            signed_url="https://v.example.test/bili/first.mp4?signature=must-not-persist",
+        )
+
+    assert caught.value.code == "locator_refresh_configuration_invalid"
+
+
+@pytest.mark.parametrize(
+    ("platform", "kind", "position", "remote_type", "remote_id"),
+    [
+        (Platform.BILI, AssetKind.COVER, 0, "content", "987654321:cover:0"),
+        (Platform.BILI, AssetKind.VIDEO, 1, "content", "987654321:video:1"),
+        (Platform.BILI, AssetKind.VIDEO, 0, "dynamic", "987654321:video:0"),
+        (Platform.BILI, AssetKind.VIDEO, 0, "content", "wrong-video-slot"),
+        (Platform.DY, AssetKind.VIDEO, 0, "content", "987654321:video:0"),
+    ],
+)
+def test_missing_source_hint_is_closed_to_the_exact_bilibili_video_slot(
+    platform: Platform,
+    kind: AssetKind,
+    position: int,
+    remote_type: str,
+    remote_id: str,
+) -> None:
+    with pytest.raises(MediaDownloadError) as caught:
+        _context(
+            platform=platform,
+            content_id="987654321",
+            kind=kind,
+            position=position,
+            signed_url=None,
+            content_remote_type=remote_type,
+            remote_id=remote_id,
+        )
+
+    assert caught.value.code in {
+        "locator_refresh_configuration_invalid",
+        "locator_refresh_unsupported",
+    }
 
 
 def test_xhs_requires_explicit_secret_detail_reference_and_uses_it() -> None:
