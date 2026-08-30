@@ -21,8 +21,9 @@ from media_sync.application.mediacrawler import (
     NormalizedMediaCrawlerOutput,
     load_normalized_output,
 )
-from media_sync.domain import LoginMethod, RunStatus
+from media_sync.domain import AuthStatus, LoginMethod, RunStatus
 from media_sync.infrastructure.db import (
+    AccountRepository,
     Database,
     LeaseLostError,
     MediaCrawlerIngestionResult,
@@ -40,6 +41,7 @@ from media_sync.integrations.mediacrawler.bridge import (
     MediaCrawlerRunMode,
     MediaCrawlerRunSpec,
     RunnerManifest,
+    SavedSessionUnavailableError,
     verify_manifest_checkout,
 )
 from media_sync.integrations.mediacrawler.checkout import (
@@ -118,6 +120,7 @@ _RECOVERED_ARTIFACT_KEYS = frozenset(
 )
 
 _PROCESS_FAILURES: Mapping[MediaCrawlerProcessStatus, str] = {
+    MediaCrawlerProcessStatus.AUTH_EXPIRED: "auth_expired",
     MediaCrawlerProcessStatus.ACCOUNT_BUSY: "account_busy",
     MediaCrawlerProcessStatus.TIMED_OUT: "upstream_timeout",
     MediaCrawlerProcessStatus.START_FAILED: "upstream_unavailable",
@@ -423,6 +426,24 @@ class MediaCrawlerScheduledHandler:
                 current_run_attempt=current_attempt,
                 current_run_checkpoint_revision_before=current_checkpoint_revision_before,
             )
+
+    def _record_saved_session_expiry(self, context: SubscriptionJobContext) -> None:
+        """Persist normal saved-session expiry without widening stale ownership."""
+
+        if context.account.login_method is not LoginMethod.SAVED_SESSION:
+            return
+        with self.database.session() as session:
+            self._guard(context, session)
+            account = AccountRepository(session).require(str(context.account.account_id))
+            if account.adapter != "mediacrawler" or account.login_method != LoginMethod.SAVED_SESSION.value:
+                raise RepositoryError("scheduled MediaCrawler account scope changed")
+            if account.auth_status == AuthStatus.AUTHENTICATED.value:
+                AccountRepository(session).set_auth_status(
+                    account.id,
+                    AuthStatus.EXPIRED.value,
+                    expected_status=AuthStatus.AUTHENTICATED.value,
+                    at=self._now(),
+                )
 
     @staticmethod
     def _run_metadata(
@@ -1296,13 +1317,16 @@ class MediaCrawlerScheduledHandler:
                 attempt_paths,
                 "license_acknowledgement_required",
             )
+        except SavedSessionUnavailableError:
+            try:
+                self._record_saved_session_expiry(context)
+            except LeaseLostError:
+                raise
+            except Exception:
+                pass
+            return await self._fail_attempt(context, prepared, attempt_paths, "auth_expired")
         except BridgeConfigurationError:
-            error_code = (
-                "credentials_unavailable"
-                if context.account.login_method is LoginMethod.SAVED_SESSION
-                else "configuration_invalid"
-            )
-            return await self._fail_attempt(context, prepared, attempt_paths, error_code)
+            return await self._fail_attempt(context, prepared, attempt_paths, "configuration_invalid")
         except (CheckoutValidationError, FullHistoryAcknowledgementRequired, MediaCrawlerPolicyError, OSError):
             return await self._fail_attempt(context, prepared, attempt_paths, "configuration_invalid")
         except Exception:
@@ -1329,6 +1353,13 @@ class MediaCrawlerScheduledHandler:
             raise asyncio.CancelledError
         if not process.succeeded:
             error_code = _PROCESS_FAILURES.get(process.status, "unexpected_handler_failure")
+            if error_code == "auth_expired":
+                try:
+                    self._record_saved_session_expiry(context)
+                except LeaseLostError:
+                    raise
+                except Exception:
+                    pass
             return await self._fail_attempt(context, prepared, attempt_paths, error_code)
 
         try:

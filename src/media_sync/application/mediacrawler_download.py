@@ -8,6 +8,7 @@ for a signed locator.
 
 from __future__ import annotations
 
+import contextlib
 from pathlib import Path
 from threading import Lock
 from uuid import UUID
@@ -16,8 +17,9 @@ from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import joinedload
 
-from media_sync.domain import AssetKind, LoginMethod, Platform
+from media_sync.domain import AssetKind, AuthStatus, LoginMethod, Platform
 from media_sync.infrastructure.db import (
+    AccountRepository,
     AssetRefreshSourceRepository,
     Database,
     RepositoryError,
@@ -72,6 +74,7 @@ class LazyMediaCrawlerLocatorRefresher:
         self._license_acknowledged = license_acknowledged
         self._detail_reference_ref = detail_reference_ref
         self._delegate: MediaCrawlerLocatorRefresher | None = None
+        self._saved_session_account_id: UUID | None = None
         self._lock = Lock()
 
     def resolve(self, locator: AdapterRefreshLocator) -> ResolvedLocator:
@@ -84,7 +87,12 @@ class LazyMediaCrawlerLocatorRefresher:
                 if delegate is None:
                     delegate = self._build()
                     self._delegate = delegate
-        return delegate.resolve(locator)
+        try:
+            return delegate.resolve(locator)
+        except MediaDownloadError as error:
+            if error.code == "locator_refresh_auth_expired":
+                self._record_saved_session_expiry()
+            raise
 
     def _build(self) -> MediaCrawlerLocatorRefresher:
         if self._python_executable is None or not self._license_acknowledged:
@@ -106,7 +114,28 @@ class LazyMediaCrawlerLocatorRefresher:
             python_executable=self._python_executable,
             license_acknowledged=self._license_acknowledged,
         )
+        if context.login_method is LoginMethod.SAVED_SESSION:
+            self._saved_session_account_id = context.account_id
         return MediaCrawlerLocatorRefresher(context, runner)
+
+    def _record_saved_session_expiry(self) -> None:
+        account_id = self._saved_session_account_id
+        if account_id is None:
+            return
+        # The fixed download error remains authoritative even if a concurrent
+        # account update wins this best-effort authentication-state CAS.
+        with contextlib.suppress(Exception), self._database.session() as session:
+            account = AccountRepository(session).require(str(account_id))
+            if (
+                account.adapter == "mediacrawler"
+                and account.login_method == LoginMethod.SAVED_SESSION.value
+                and account.auth_status == AuthStatus.AUTHENTICATED.value
+            ):
+                AccountRepository(session).set_auth_status(
+                    account.id,
+                    AuthStatus.EXPIRED.value,
+                    expected_status=AuthStatus.AUTHENTICATED.value,
+                )
 
     def _load_context(self) -> MediaCrawlerRefreshContext:
         with self._database.session() as session:

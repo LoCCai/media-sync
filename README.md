@@ -6,9 +6,9 @@
 
 ## Current status / 当前状态
 
-The local function-first path is now implemented through execution 0010. Execution 0009 commit `98cf387` provides exact provenance-bound, default-off MediaCrawler signed-locator refresh for the currently supported offline Asset shapes. Execution 0010 adds an atomic sync-success coordinator plus a separate explicit bounded `pipeline run` worker for sequential download and Emby export. The combined pipeline/scheduler/CLI gate passes 154 tests; the final full suite passes 930 tests with one Windows-inapplicable skip. No resident daemon, forced synchronous-thread cancellation, multi-worker HA, seven-platform complete download or user-authorized platform/CDN/real Emby qualification is claimed. Every live row remains `NOT_RUN`. Requirements and exact evidence are tracked in [`docs/`](docs/README.md).
+The local function-first path is implemented through execution 0010 commit `f2e5899`, and execution 0011 is complete for its offline scope in the current worktree pending the bilingual local commit. Execution 0011 adds an explicit double-gated QR-login command, durable Account/LoginSession transitions, a closed child outcome independent of process exit code, atomic QR-to-`saved_session` handoff and background saved-session fail-closed behavior. Its integrated focused gate passes 274 tests; the complete suite passes 1080 tests with one Windows-inapplicable POSIX mode-bit test skipped. No coverage run is claimed. No real QR scan, platform account, creator endpoint, CDN or media server was used, so every live row remains `NOT_RUN`. No resident daemon, hard-parent-death login recovery, forced synchronous-thread cancellation, cross-host HA or seven-platform complete download is claimed. Requirements and exact evidence are tracked in [`docs/`](docs/README.md).
 
-本地功能优先链路现已实现到执行 0010。执行 0009 提交 `98cf387` 为当前离线支持的 Asset 形状提供精确来源绑定、默认关闭的 MediaCrawler 签名 locator 刷新；执行 0010 新增 sync 成功时原子入队的协调器，以及另行显式运行、负责串行下载和 Emby 导出的有界 `pipeline run` worker。Pipeline/scheduler/CLI 合并门禁通过 154 项测试；最终完整套件通过 930 项，另有 1 项 Windows 不适用的 skip。不宣称已有常驻 daemon、同步线程强制取消、多 worker HA、七平台完整下载或用户授权的平台/CDN/真实 Emby 验收。全部真人行保持 `NOT_RUN`。需求与准确证据均保存在 [`docs/`](docs/README.md)。
+本地功能优先链路已在执行 0010 提交 `f2e5899` 实现；执行 0011 当前工作树的离线范围也已完成，正等待中英双语本地提交。执行 0011 新增显式双 gate QR 登录命令、持久 Account/LoginSession 状态迁移、独立于进程退出码的封闭 child 结果、QR 到 `saved_session` 的原子交接，以及后台 saved-session 关闭失败行为。其合并专项门禁通过 274 项测试；完整套件通过 1080 项，另有 1 项 Windows 不适用的 POSIX mode-bit 测试跳过。不宣称运行过覆盖率。没有使用真人二维码扫码、平台账户、作者端点、CDN 或媒体服务器，因此全部真人行保持 `NOT_RUN`。不宣称已有常驻 daemon、父进程被强杀后的登录自动回收、同步线程强制取消、跨主机 HA 或七平台完整下载。需求与准确证据均保存在 [`docs/`](docs/README.md)。
 
 ## Foundation quickstart / 基线快速开始
 
@@ -43,6 +43,31 @@ uv run media-sync scheduler job list --subscription-id <SUBSCRIPTION_UUID> --jso
 The pipeline heartbeat renews exact Job/worker/token ownership and prevents a stale coordinator from finalizing over a successor. It does not provide forced cancellation: the production handler is synchronous and runs through `asyncio.to_thread`, whose underlying thread can continue child/download/export work after its asyncio wrapper is cancelled. Cooperative cancellation and multi-worker HA remain follow-up work.
 
 Pipeline heartbeat 会续租精确 Job/worker/token，并阻止旧协调器覆盖后继收尾；它不提供强制取消。生产 handler 为同步函数并通过 `asyncio.to_thread` 运行，其 asyncio 包装被取消后，底层线程仍可能继续 child/download/export 工作。协作式取消与多 worker HA 属于后续工作。
+
+## Interactive QR login quickstart / 交互式 QR 登录快速开始
+
+This flow can open a headed MediaCrawler browser and access a real platform account. Use only an account you are authorized to access, review the pinned MediaCrawler non-commercial learning license, and configure the pinned checkout/Python runtime first. The current automated evidence is offline only: no real QR row has been qualified. / 此流程可能打开 MediaCrawler 有头浏览器并访问真人平台账户。只能使用你有权访问的账户，先审阅锁定版 MediaCrawler 的非商业学习许可证，并配置锁定 checkout/Python runtime。当前自动化证据仅为离线证据：尚无真人 QR 行完成验收。
+
+Create one QR account without a credential reference, then run the blocking login with both per-invocation gates. Scan the QR code in the visible upstream browser; QR bytes and tokens are not printed or stored by media-sync. / 先创建一个不带 credential 引用的 QR 账户，再同时提供两个逐次调用 gate 运行阻塞式登录。请在可见的上游浏览器中扫码；media-sync 不打印也不保存二维码字节或 token。
+
+```powershell
+uv run media-sync db init
+uv run media-sync account add --platform bili --adapter mediacrawler --display-name bili-qr --login-method qr --json
+uv run media-sync account login --account-id <ACCOUNT_UUID> --enable-mediacrawler --accept-mediacrawler-license --json
+uv run media-sync account login-status --account-id <ACCOUNT_UUID> --json
+```
+
+A successful result atomically changes the account to `saved_session`. An expired saved-session account may use the same explicit command again: start atomically moves it to `qr/authenticating`, success restores `saved_session/authenticated`, and timeout/cancellation/failure leaves a retryable QR state. If that account already has a `qr_required`/`waiting_auth` scheduler Job, inspect its redaction-safe ID and resume that exact Job explicitly; login does not silently run or replace it. The later scheduler worker remains a separate, default-off invocation. / 成功结果会把账户原子切换为 `saved_session`。已过期的 saved-session 账户可再次使用同一显式命令：启动时原子切到 `qr/authenticating`，成功后恢复为 `saved_session/authenticated`，超时/取消/失败则留在可重试 QR 状态。如果该账户已有 `qr_required`/`waiting_auth` 调度 Job，请先查看其脱敏 ID，再显式恢复该精确 Job；登录不会静默运行或替换它。后续 scheduler worker 仍是独立且默认关闭的调用。
+
+```powershell
+uv run media-sync scheduler job list --subscription-id <SUBSCRIPTION_UUID> --json
+uv run media-sync scheduler job resume --job-id <WAITING_JOB_UUID> --json
+uv run media-sync scheduler run --max-jobs 1 --scan-limit 100 --enable-mediacrawler --accept-mediacrawler-license --json
+```
+
+Background saved-session reuse is forced headless and cannot fall back to QR. A missing derived profile or a probe that reaches the blocked QR fallback fails closed as `auth_expired`; ordinary bridge configuration faults remain `configuration_invalid`. Upstream `pong() == false` can also include network ambiguity, so `auth_expired` is a conservative action state, not a precise remote-cause diagnosis. Run the explicit login command again rather than expecting a scheduler worker to open a challenge. Normal timeout/Ctrl+C paths terminalize their durable login session, but hard parent termination such as SIGKILL has no parent-liveness auto-recovery yet. / 后台 saved-session 复用会被强制为无头模式，不能回退到二维码。派生 profile 缺失或探测进入被阻止的 QR 回退时会以 `auth_expired` 关闭失败；普通 bridge 配置错误继续映射为 `configuration_invalid`。上游 `pong() == false` 也可能包含网络异常歧义，因此 `auth_expired` 是保守动作状态，不是精确远端原因诊断。应再次运行显式登录命令，不能期待 scheduler worker 打开交互挑战。正常超时/Ctrl+C 路径会终结其持久登录会话，但 SIGKILL 等父进程硬终止尚无 parent-liveness 自动回收。
+
+Focused offline commands, exact results and the seven-platform live `NOT_RUN` matrix are recorded in [`docs/executions/0011-mediacrawler-interactive-login/verification.md`](docs/executions/0011-mediacrawler-interactive-login/verification.md). / 离线专项命令、准确结果及七平台真人 `NOT_RUN` 矩阵记录在 [`docs/executions/0011-mediacrawler-interactive-login/verification.md`](docs/executions/0011-mediacrawler-interactive-login/verification.md)。
 
 For an already configured pinned MediaCrawler checkout/runtime and an authorized due subscription, the external handler remains default-off and requires both per-run switches below. This command can launch the crawler; it is not part of the network-free Fake quickstart.
 
@@ -122,7 +147,7 @@ Schema 往返会主动清理与 generation 绑定的身份。从 `0003` 降级�
 ## Scope / 范围
 
 - Platforms / 平台: Xiaohongshu, Douyin, Kuaishou, Bilibili, Weibo, Tieba and Zhihu. / 小红书、抖音、快手、哔哩哔哩、微博、百度贴吧、知乎。
-- Authentication / 登录: the current bridge exposes reachable QR, Cookie and saved-browser-session paths from the pinned source; phone login is not claimed. / 当前桥接按锁定源码的可达路径支持二维码、Cookie 与已保存浏览器会话；不宣称手机号登录可用。
+- Authentication / 登录: explicit double-gated QR command for initial QR accounts and expired saved-session reauthentication, opaque Cookie references, and background-only saved-session reuse; phone login is unsupported. Offline seven-identifier coverage does not imply live qualification. / 面向初始 QR 账户及已过期 saved-session 重认证的显式双 gate QR 命令、不透明 Cookie 引用与仅后台 saved-session 复用；手机号登录不受支持。离线七标识覆盖不代表真人验收。
 - Subscription / 订阅：stores author identity, incremental watermarks and deduplication state. MediaCrawler accounts additionally persist closed policy v1: `schema_version`, optional `creator_input.secret_ref`, explicit `allow_full_history`, positive `request_delay_seconds` bounded at 300, and `headless`; license acknowledgement is separate, per-worker and default-off. Execution 0007 runs forward scheduled attempts through the opt-in handler. Execution 0010 atomically enqueues a downstream coordinator on sync success, but only an explicit bounded `pipeline run` performs download/export. The proven `CRAWLER_MAX_SLEEP_SEC` setting with `MAX_CONCURRENCY_NUM=1` is not a per-request HTTP-spacing guarantee. / 保存作者身份、增量水位与去重状态。MediaCrawler 账户还会持久化封闭 policy v1：`schema_version`、可选 `creator_input.secret_ref`、显式 `allow_full_history`、最大为 300 的正数 `request_delay_seconds`，以及 `headless`；许可证确认独立存在、逐 worker 提供且默认关闭。执行 0007 通过显式启用的 handler 运行 forward 定时 attempt。执行 0010 在 sync 成功时原子 enqueue 下游协调器，但只有显式有界 `pipeline run` 才执行下载/导出。已证明的 `CRAWLER_MAX_SLEEP_SEC` 配置与 `MAX_CONCURRENCY_NUM=1` 不代表逐 HTTP 请求间隔保证。
 - Content / 内容: normalized posts, videos, images and related metadata. / 归一化图文、视频、图片及相关元数据。
 - Media library / 媒体库: stable directories, media files, posters/covers and Emby/Jellyfin NFO. / 输出稳定目录、媒体文件、海报/封面和 Emby/Jellyfin NFO。

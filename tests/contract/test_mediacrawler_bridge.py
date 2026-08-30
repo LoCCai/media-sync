@@ -28,6 +28,7 @@ from media_sync.integrations.mediacrawler.bridge import (
     MediaCrawlerRunMode,
     MediaCrawlerRunSpec,
     RunnerManifest,
+    SavedSessionUnavailableError,
 )
 from media_sync.integrations.mediacrawler.checkout import (
     MEDIACRAWLER_LICENSE,
@@ -533,7 +534,7 @@ def test_saved_session_and_profile_path_isolation(fake_project: FakeProject, tmp
     assert saved.paths.profile_root == second.paths.profile_root
     assert saved.paths.output_root != second.paths.output_root
     assert isolated.paths.profile_root != saved.paths.profile_root
-    with pytest.raises(BridgeConfigurationError):
+    with pytest.raises(SavedSessionUnavailableError):
         _bridge().prepare(_request(fake_project, tmp_path / "absent", login_method=LoginMethod.SAVED_SESSION))
 
 

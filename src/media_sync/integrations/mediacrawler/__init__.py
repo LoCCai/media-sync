@@ -10,6 +10,7 @@ from .bridge import (
     MediaCrawlerRunSpec,
     PrivateRunnerInputs,
     RunnerManifest,
+    SavedSessionUnavailableError,
 )
 from .checkout import (
     CheckoutValidationError,
@@ -27,6 +28,20 @@ from .detail_runner import (
     MediaCrawlerDetailResult,
 )
 from .envelope import MediaCrawlerEnvelope
+from .login import (
+    MediaCrawlerLoginMode,
+    MediaCrawlerLoginRequest,
+    MediaCrawlerLoginResult,
+    MediaCrawlerLoginRunner,
+    MediaCrawlerLoginStatus,
+)
+from .login_runner import (
+    LOGIN_ONLY_CRAWLER_TYPE,
+    LOGIN_RUNNER_SCHEMA_VERSION,
+    MediaCrawlerLoginProcessRunner,
+    SavedSessionQrFallbackBlocked,
+    fence_saved_session_qr_fallback,
+)
 from .policies import (
     FullHistoryAcknowledgementRequired,
     MediaCrawlerPolicyError,
@@ -69,6 +84,8 @@ __all__ = [
     "DETAIL_RUNNER_SCHEMA_VERSION",
     "LEGACY_COMPLETION_RECEIPT_SCHEMA_VERSION",
     "LEGACY_MANIFEST_SCHEMA_VERSION",
+    "LOGIN_ONLY_CRAWLER_TYPE",
+    "LOGIN_RUNNER_SCHEMA_VERSION",
     "MANIFEST_SCHEMA_VERSION",
     "MAX_REQUEST_DELAY_SECONDS",
     "SUBSCRIPTION_POLICY_SCHEMA_VERSION",
@@ -91,6 +108,12 @@ __all__ = [
     "MediaCrawlerDetailResult",
     "MediaCrawlerEnvelope",
     "MediaCrawlerLocatorRefresher",
+    "MediaCrawlerLoginMode",
+    "MediaCrawlerLoginProcessRunner",
+    "MediaCrawlerLoginRequest",
+    "MediaCrawlerLoginResult",
+    "MediaCrawlerLoginRunner",
+    "MediaCrawlerLoginStatus",
     "MediaCrawlerPolicyError",
     "MediaCrawlerProcessResult",
     "MediaCrawlerProcessRunner",
@@ -105,12 +128,15 @@ __all__ = [
     "OutputStats",
     "PrivateRunnerInputs",
     "RunnerManifest",
+    "SavedSessionQrFallbackBlocked",
+    "SavedSessionUnavailableError",
     "ValidatedOutputSnapshot",
     "VerifiedCheckout",
     "VerifiedPython",
     "WatchdogLimits",
     "cleanup_attempt_root",
     "completion_receipt_path",
+    "fence_saved_session_qr_fallback",
     "from_subscription_policy",
     "load_validated_output_snapshot",
     "verify_mediacrawler_checkout",

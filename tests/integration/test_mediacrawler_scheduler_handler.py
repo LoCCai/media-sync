@@ -20,6 +20,7 @@ import pytest
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from media_sync.application.authentication import AccountLoginRequest, MediaCrawlerQrLoginService
 from media_sync.application.mediacrawler import NormalizedMediaCrawlerOutput, load_normalized_output
 from media_sync.domain import AccountRef, LoginMethod, Platform
 from media_sync.infrastructure.db import (
@@ -46,8 +47,14 @@ from media_sync.integrations.mediacrawler.bridge import (
     MediaCrawlerRunMode,
     MediaCrawlerRunSpec,
     RunnerManifest,
+    SavedSessionUnavailableError,
 )
 from media_sync.integrations.mediacrawler.checkout import VerifiedPython
+from media_sync.integrations.mediacrawler.login import (
+    MediaCrawlerLoginRequest,
+    MediaCrawlerLoginResult,
+    MediaCrawlerLoginStatus,
+)
 from media_sync.integrations.mediacrawler.normalizers import (
     NormalizationContext,
     NormalizedMediaRecord,
@@ -215,6 +222,20 @@ class _Runner:
         self.calls.append((spec, cancelled))
         status = MediaCrawlerProcessStatus.CANCELLED if cancelled else self.statuses.pop(0)
         return MediaCrawlerProcessResult(status=status, message="fixed fixture outcome")
+
+
+class _SuccessfulLoginRunner:
+    def run(
+        self,
+        request: MediaCrawlerLoginRequest,
+        *,
+        on_account_locked: Callable[[], None] | None = None,
+        cancellation: Event | None = None,
+    ) -> MediaCrawlerLoginResult:
+        del request, cancellation
+        assert on_account_locked is not None
+        on_account_locked()
+        return MediaCrawlerLoginResult(MediaCrawlerLoginStatus.AUTHENTICATED, PINNED_SHA)
 
 
 class _ProtocolRecordingRunner:
@@ -604,6 +625,7 @@ def _seed(
     credential_ref: str | None = "env:MEDIACRAWLER_TEST_COOKIE",
     creator_remote_id: str = "creator-001",
     next_run_at: datetime | None = NOW - timedelta(seconds=1),
+    auth_status: str = "authenticated",
 ) -> str:
     with database.session() as session:
         account = AccountRepository(session).create(
@@ -612,7 +634,7 @@ def _seed(
             display_name=f"scheduled-{platform.value}-{login_method.value}-{uuid4()}",
             login_method=login_method.value,
             credential_ref=credential_ref,
-            auth_status="authenticated",
+            auth_status=auth_status,
         )
         author = AuthorRepository(session).upsert(
             AuthorUpsert(
@@ -1258,17 +1280,35 @@ async def test_enablement_license_and_runtime_fail_closed_before_spawn(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("login_method", "credential_ref", "bridge_error", "expected_status", "expected_code", "run_count"),
+    (
+        "login_method",
+        "credential_ref",
+        "bridge_error",
+        "expected_status",
+        "expected_code",
+        "expected_run_status",
+        "expected_account_status",
+    ),
     [
-        (LoginMethod.QR, None, None, "waiting_user", "qr_required", 0),
-        (LoginMethod.COOKIE, None, None, "waiting_auth", "credentials_unavailable", 0),
+        (LoginMethod.QR, None, None, "waiting_user", "qr_required", None, None),
+        (LoginMethod.COOKIE, None, None, "waiting_auth", "credentials_unavailable", None, None),
         (
             LoginMethod.SAVED_SESSION,
             None,
-            BridgeConfigurationError("fixture profile is unavailable"),
+            SavedSessionUnavailableError("fixture profile is unavailable"),
             "waiting_auth",
-            "credentials_unavailable",
-            1,
+            "auth_expired",
+            "awaiting_auth",
+            "expired",
+        ),
+        (
+            LoginMethod.SAVED_SESSION,
+            None,
+            BridgeConfigurationError("fixture manifest is invalid"),
+            "failed_terminal",
+            "configuration_invalid",
+            "failed_terminal",
+            "authenticated",
         ),
     ],
 )
@@ -1280,7 +1320,8 @@ async def test_scheduled_auth_paths_wait_without_fake_interaction(
     bridge_error: Exception | None,
     expected_status: str,
     expected_code: str,
-    run_count: int,
+    expected_run_status: str | None,
+    expected_account_status: str | None,
 ) -> None:
     _seed(database, login_method=login_method, credential_ref=credential_ref)
     bridge = _Bridge(bridge_error)
@@ -1294,11 +1335,138 @@ async def test_scheduled_auth_paths_wait_without_fake_interaction(
     assert not runner.calls
     assert len(bridge.requests) == (1 if login_method is LoginMethod.SAVED_SESSION else 0)
     with database.session() as session:
-        assert session.scalar(select(func.count()).select_from(SyncRun)) == run_count
-        if run_count:
+        assert session.scalar(select(func.count()).select_from(SyncRun)) == (1 if expected_run_status else 0)
+        if expected_run_status is not None:
             run = session.scalar(select(SyncRun))
-            assert run is not None and run.status == "awaiting_auth"
+            assert run is not None and run.status == expected_run_status
             assert run.error_code == expected_code and run.error_message is None
+        if expected_account_status is not None:
+            account = session.scalar(select(Account))
+            assert account is not None and account.auth_status == expected_account_status
+
+
+@pytest.mark.asyncio
+async def test_qr_login_handoff_resumes_existing_job_as_saved_session(
+    database: Database,
+    tmp_path: Path,
+) -> None:
+    subscription_id = _seed(
+        database,
+        login_method=LoginMethod.QR,
+        credential_ref=None,
+        auth_status="required",
+    )
+    clock = _Clock()
+    scheduler = DurableSchedulerService(database, clock=clock)
+    scheduler.tick(limit=1)
+    first = await SubscriptionWorker(
+        database,
+        SubscriptionHandlerRegistry({"mediacrawler": _handler(database, tmp_path)}),
+        clock=clock,
+        random_fraction=lambda: 0.0,
+    ).run_once(worker_id="qr-required-worker")
+    assert (first.status, first.error_code) == ("waiting_user", "qr_required")
+
+    with database.session() as session:
+        subscription = SubscriptionRepository(session).get(subscription_id)
+        assert subscription is not None
+        account_id = UUID(subscription.account_id)
+    login = MediaCrawlerQrLoginService(database, _SuccessfulLoginRunner()).run(
+        AccountLoginRequest(account_id=account_id)
+    )
+    assert login.authenticated
+
+    clock.value += timedelta(days=1)
+    resumed = scheduler.resume_job(first.job_id or "")
+    bridge = _Bridge()
+    crawler = _Runner()
+    second = await SubscriptionWorker(
+        database,
+        SubscriptionHandlerRegistry({"mediacrawler": _handler(database, tmp_path, bridge=bridge, runner=crawler)}),
+        clock=clock,
+        random_fraction=lambda: 0.0,
+    ).run_once(worker_id="saved-session-worker")
+
+    assert resumed.status == "queued"
+    assert second.status == "succeeded"
+    assert second.attempt == 2
+    assert len(bridge.requests) == len(crawler.calls) == 1
+    assert bridge.requests[0].login_method is LoginMethod.SAVED_SESSION
+    with database.session() as session:
+        subscription = SubscriptionRepository(session).get(subscription_id)
+        assert subscription is not None
+        assert (subscription.account.login_method, subscription.account.auth_status) == (
+            "saved_session",
+            "authenticated",
+        )
+
+
+@pytest.mark.asyncio
+async def test_expired_saved_session_reauthentication_resumes_existing_job(
+    database: Database,
+    tmp_path: Path,
+) -> None:
+    subscription_id = _seed(
+        database,
+        login_method=LoginMethod.SAVED_SESSION,
+        credential_ref=None,
+    )
+    clock = _Clock()
+    scheduler = DurableSchedulerService(database, clock=clock)
+    scheduler.tick(limit=1)
+    first = await SubscriptionWorker(
+        database,
+        SubscriptionHandlerRegistry(
+            {
+                "mediacrawler": _handler(
+                    database,
+                    tmp_path,
+                    runner=_Runner([MediaCrawlerProcessStatus.AUTH_EXPIRED]),
+                )
+            }
+        ),
+        clock=clock,
+        random_fraction=lambda: 0.0,
+    ).run_once(worker_id="expired-session-worker")
+    assert (first.status, first.error_code) == ("waiting_auth", "auth_expired")
+
+    with database.session() as session:
+        subscription = SubscriptionRepository(session).get(subscription_id)
+        assert subscription is not None
+        account_id = UUID(subscription.account_id)
+        assert (subscription.account.login_method, subscription.account.auth_status) == (
+            "saved_session",
+            "expired",
+        )
+
+    login = MediaCrawlerQrLoginService(database, _SuccessfulLoginRunner()).run(
+        AccountLoginRequest(account_id=account_id)
+    )
+    assert login.authenticated
+
+    clock.value += timedelta(days=1)
+    resumed = scheduler.resume_job(first.job_id or "")
+    bridge = _Bridge()
+    crawler = _Runner()
+    second = await SubscriptionWorker(
+        database,
+        SubscriptionHandlerRegistry({"mediacrawler": _handler(database, tmp_path, bridge=bridge, runner=crawler)}),
+        clock=clock,
+        random_fraction=lambda: 0.0,
+    ).run_once(worker_id="reauthenticated-session-worker")
+
+    assert resumed.status == "queued"
+    assert second.status == "succeeded"
+    assert second.attempt == 2
+    assert len(bridge.requests) == len(crawler.calls) == 1
+    assert bridge.requests[0].login_method is LoginMethod.SAVED_SESSION
+    with database.session() as session:
+        subscription = SubscriptionRepository(session).get(subscription_id)
+        assert subscription is not None
+        assert (subscription.account.login_method, subscription.account.auth_status) == (
+            "saved_session",
+            "authenticated",
+        )
 
 
 @pytest.mark.asyncio
@@ -1309,6 +1477,7 @@ async def test_scheduled_auth_paths_wait_without_fake_interaction(
         (MediaCrawlerProcessStatus.TIMED_OUT, "upstream_timeout", "retry_wait", "failed_retryable"),
         (MediaCrawlerProcessStatus.START_FAILED, "upstream_unavailable", "retry_wait", "failed_retryable"),
         (MediaCrawlerProcessStatus.UPSTREAM_FAILED, "temporary_upstream", "retry_wait", "failed_retryable"),
+        (MediaCrawlerProcessStatus.AUTH_EXPIRED, "auth_expired", "waiting_auth", "awaiting_auth"),
         (
             MediaCrawlerProcessStatus.CONFIGURATION_FAILED,
             "configuration_invalid",
@@ -1348,6 +1517,24 @@ async def test_process_outcomes_use_only_the_fixed_failure_mapping(
         run = session.scalar(select(SyncRun))
         assert run is not None and run.status == expected_run_status
         assert run.error_code == expected_code and run.error_message is None
+
+
+@pytest.mark.asyncio
+async def test_saved_session_probe_failure_expires_account_and_waits_for_auth(
+    database: Database,
+    tmp_path: Path,
+) -> None:
+    _seed(database, login_method=LoginMethod.SAVED_SESSION, credential_ref=None)
+    runner = _Runner([MediaCrawlerProcessStatus.AUTH_EXPIRED])
+
+    result = await _run_worker(database, _handler(database, tmp_path, runner=runner))
+
+    assert (result.status, result.error_code) == ("waiting_auth", "auth_expired")  # type: ignore[attr-defined]
+    with database.session() as session:
+        account = session.scalar(select(Account))
+        run = session.scalar(select(SyncRun))
+        assert account is not None and account.auth_status == "expired"
+        assert run is not None and (run.status, run.error_code) == ("awaiting_auth", "auth_expired")
 
 
 @pytest.mark.asyncio

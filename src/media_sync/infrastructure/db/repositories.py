@@ -17,7 +17,7 @@ from uuid import UUID
 from sqlalchemy import and_, case, exists, func, or_, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.engine import CursorResult
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.orm import Session, aliased, joinedload
 
 from media_sync.domain.enums import AssetStatus, AuthStatus, RunStatus
 from media_sync.domain.transitions import transition_asset, transition_auth, transition_run
@@ -96,6 +96,23 @@ class ExportRecordConflictError(RepositoryError):
         self.export_record_id = export_record_id
         self.expected_status = expected_status
         super().__init__(f"export record {export_record_id} lifecycle changed: expected status {expected_status}")
+
+
+class AccountLoginConflictError(RepositoryError):
+    """An account cannot start or identify one exact interactive login."""
+
+    def __init__(self, account_id: str) -> None:
+        self.account_id = account_id
+        super().__init__(f"account {account_id} is not eligible for MediaCrawler QR login")
+
+
+class LoginSessionConflictError(RepositoryError):
+    """A login-session compare-and-swap no longer names the current state."""
+
+    def __init__(self, login_session_id: str, expected_status: str) -> None:
+        self.login_session_id = login_session_id
+        self.expected_status = expected_status
+        super().__init__(f"login session {login_session_id} is not current in expected status {expected_status!r}")
 
 
 class _UnsetType:
@@ -180,6 +197,19 @@ class AssetUpsert:
     raw: Mapping[str, Any] = field(default_factory=dict, repr=False)
 
 
+@dataclass(frozen=True, slots=True)
+class LoginSessionState:
+    """Redaction-safe observable state for one interactive login session."""
+
+    id: str
+    account_id: str
+    status: str
+    expires_at: datetime | None
+    completed_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+
+
 class AccountRepository:
     """Persistence operations for platform accounts."""
 
@@ -230,16 +260,44 @@ class AccountRepository:
             self.session.scalars(select(Account).order_by(Account.platform, Account.display_name, Account.id)).all()
         )
 
-    def set_auth_status(self, account_id: str, status: str, *, at: datetime | None = None) -> Account:
-        account = self.require(account_id)
-        transition_auth(AuthStatus(account.auth_status), AuthStatus(status))
-        account.auth_status = status
-        account.auth_updated_at = _aware_utc(at)
-        self.session.flush()
-        return account
+    def set_auth_status(
+        self,
+        account_id: str,
+        status: str,
+        *,
+        expected_status: str,
+        at: datetime | None = None,
+    ) -> Account:
+        """Move one exact observed authentication state by compare-and-swap."""
+
+        transition_auth(AuthStatus(expected_status), AuthStatus(status))
+        current = _aware_utc(at)
+        account = self.session.execute(
+            update(Account)
+            .where(Account.id == account_id, Account.auth_status == expected_status)
+            .values(auth_status=status, auth_updated_at=current, updated_at=current)
+            .returning(Account)
+            .execution_options(synchronize_session="fetch", populate_existing=True)
+        ).scalar_one_or_none()
+        if account is not None:
+            return account
+        if self.get(account_id) is None:
+            raise NotFoundError(f"account not found: {account_id}")
+        raise AccountLoginConflictError(account_id)
 
 
 class LoginSessionRepository:
+    """Conditional lifecycle for redaction-safe interactive login state.
+
+    The existing per-account filesystem lock owns local process exclusion.
+    These database operations independently fence stale or duplicate state
+    transitions.  Multi-row transitions run inside a savepoint so callers may
+    catch a fixed conflict without accidentally committing half a handoff.
+    """
+
+    _ACTIVE_STATUSES = ("pending", "waiting_user")
+    _START_AUTH_STATUSES = ("unknown", "required", "expired", "failed")
+
     def __init__(self, session: Session) -> None:
         self.session = session
 
@@ -265,6 +323,322 @@ class LoginSessionRepository:
 
     def get(self, login_session_id: str) -> LoginSession | None:
         return self.session.get(LoginSession, login_session_id)
+
+    def list_for_account(self, account_id: str) -> list[LoginSessionState]:
+        """Return newest-first observable state without public payload data."""
+
+        self._require_account_exists(account_id)
+        sessions = self.session.scalars(
+            select(LoginSession)
+            .where(LoginSession.account_id == account_id)
+            .order_by(LoginSession.created_at.desc(), LoginSession.id.desc())
+        ).all()
+        return [self._state(login_session) for login_session in sessions]
+
+    def get_active_for_account(self, account_id: str) -> LoginSessionState | None:
+        """Return the sole active session or fail closed on corrupt siblings."""
+
+        self._require_account_exists(account_id)
+        active = self.session.scalars(
+            select(LoginSession)
+            .where(
+                LoginSession.account_id == account_id,
+                LoginSession.status.in_(self._ACTIVE_STATUSES),
+            )
+            .order_by(LoginSession.created_at, LoginSession.id)
+            .limit(2)
+        ).all()
+        if len(active) > 1:
+            raise AccountLoginConflictError(account_id)
+        return self._state(active[0]) if active else None
+
+    def start_mediacrawler_qr(
+        self,
+        account_id: str,
+        *,
+        expires_at: datetime,
+        at: datetime | None = None,
+    ) -> LoginSessionState:
+        """Start one exact MediaCrawler QR login and mark its account active."""
+
+        current = _aware_utc(at)
+        expiry = _aware_utc(expires_at)
+        if expiry <= current:
+            raise ValueError("login session expiry must be later than its start time")
+
+        active_session_exists = exists().where(
+            LoginSession.account_id == Account.id,
+            LoginSession.status.in_(self._ACTIVE_STATUSES),
+        )
+        eligible_login_state = or_(
+            and_(
+                Account.login_method == "qr",
+                Account.auth_status.in_(self._START_AUTH_STATUSES),
+            ),
+            and_(
+                Account.login_method == "saved_session",
+                Account.auth_status == "expired",
+            ),
+        )
+        with self.session.begin_nested():
+            account = self.session.execute(
+                update(Account)
+                .where(
+                    Account.id == account_id,
+                    Account.adapter == "mediacrawler",
+                    eligible_login_state,
+                    Account.credential_ref.is_(None),
+                    Account.profile_path.is_(None),
+                    ~active_session_exists,
+                )
+                .values(
+                    login_method="qr",
+                    auth_status="authenticating",
+                    auth_updated_at=current,
+                    updated_at=current,
+                )
+                .returning(Account)
+                .execution_options(synchronize_session="fetch", populate_existing=True)
+            ).scalar_one_or_none()
+            if account is None:
+                self._raise_account_login_conflict(account_id)
+
+            login_session = LoginSession(
+                account_id=account_id,
+                method="qr",
+                status="pending",
+                challenge_kind="qr",
+                public_payload={},
+                expires_at=expiry,
+                completed_at=None,
+                created_at=current,
+                updated_at=current,
+            )
+            self.session.add(login_session)
+            self.session.flush()
+            state = self._state(login_session)
+        return state
+
+    def mark_waiting_user(
+        self,
+        login_session_id: str,
+        *,
+        at: datetime | None = None,
+    ) -> LoginSessionState:
+        """Publish that the exact pending QR session now awaits user action."""
+
+        current = _aware_utc(at)
+        with self.session.begin_nested():
+            updated = self.session.execute(
+                update(LoginSession)
+                .where(
+                    self._current_session_condition(
+                        login_session_id,
+                        "pending",
+                        not_expired_at=current,
+                    ),
+                )
+                .values(status="waiting_user", updated_at=current)
+                .returning(LoginSession)
+                .execution_options(synchronize_session="fetch", populate_existing=True)
+            ).scalar_one_or_none()
+            if updated is None:
+                self._raise_login_session_conflict(login_session_id, "pending")
+            state = self._state(updated)
+        return state
+
+    def succeed_mediacrawler_qr(
+        self,
+        login_session_id: str,
+        *,
+        at: datetime | None = None,
+    ) -> LoginSessionState:
+        """Atomically hand one current QR account over to saved-session use."""
+
+        return self._finish_mediacrawler_qr(
+            login_session_id,
+            target_status="succeeded",
+            account_auth_status="authenticated",
+            saved_session=True,
+            require_unexpired=True,
+            at=at,
+        )
+
+    def expire_mediacrawler_qr(
+        self,
+        login_session_id: str,
+        *,
+        at: datetime | None = None,
+    ) -> LoginSessionState:
+        """Record an expired interactive attempt without retaining a session."""
+
+        return self._finish_mediacrawler_qr(
+            login_session_id,
+            target_status="expired",
+            account_auth_status="required",
+            saved_session=False,
+            require_unexpired=False,
+            at=at,
+        )
+
+    def fail_mediacrawler_qr(
+        self,
+        login_session_id: str,
+        *,
+        at: datetime | None = None,
+    ) -> LoginSessionState:
+        """Record a fixed interactive failure and keep QR as the retry method."""
+
+        return self._finish_mediacrawler_qr(
+            login_session_id,
+            target_status="failed",
+            account_auth_status="failed",
+            saved_session=False,
+            require_unexpired=False,
+            at=at,
+        )
+
+    def cancel_mediacrawler_qr(
+        self,
+        login_session_id: str,
+        *,
+        at: datetime | None = None,
+    ) -> LoginSessionState:
+        """Cancel one current attempt and conservatively require login again."""
+
+        return self._finish_mediacrawler_qr(
+            login_session_id,
+            target_status="cancelled",
+            account_auth_status="required",
+            saved_session=False,
+            require_unexpired=False,
+            at=at,
+        )
+
+    def _finish_mediacrawler_qr(
+        self,
+        login_session_id: str,
+        *,
+        target_status: str,
+        account_auth_status: str,
+        saved_session: bool,
+        require_unexpired: bool,
+        at: datetime | None,
+    ) -> LoginSessionState:
+        if target_status not in {"succeeded", "expired", "failed", "cancelled"}:
+            raise ValueError("unsupported login session terminal status")
+        current = _aware_utc(at)
+        expected_status = "waiting_user"
+        with self.session.begin_nested():
+            updated = self.session.execute(
+                update(LoginSession)
+                .where(
+                    self._current_session_condition(
+                        login_session_id,
+                        expected_status,
+                        not_expired_at=current if require_unexpired else None,
+                    ),
+                )
+                .values(
+                    status=target_status,
+                    completed_at=current,
+                    updated_at=current,
+                )
+                .returning(LoginSession)
+                .execution_options(synchronize_session="fetch", populate_existing=True)
+            ).scalar_one_or_none()
+            if updated is None:
+                self._raise_login_session_conflict(login_session_id, expected_status)
+
+            account_values: dict[str, Any] = {
+                "auth_status": account_auth_status,
+                "auth_updated_at": current,
+                "updated_at": current,
+            }
+            if saved_session:
+                account_values["login_method"] = "saved_session"
+            account = self.session.execute(
+                update(Account)
+                .where(
+                    Account.id == updated.account_id,
+                    Account.adapter == "mediacrawler",
+                    Account.login_method == "qr",
+                    Account.auth_status == "authenticating",
+                    Account.credential_ref.is_(None),
+                    Account.profile_path.is_(None),
+                )
+                .values(**account_values)
+                .returning(Account.id)
+                .execution_options(synchronize_session="fetch")
+            ).scalar_one_or_none()
+            if account is None:
+                raise LoginSessionConflictError(login_session_id, expected_status)
+            state = self._state(updated)
+        return state
+
+    def _current_session_condition(
+        self,
+        login_session_id: str,
+        expected_status: str,
+        *,
+        not_expired_at: datetime | None = None,
+    ) -> Any:
+        self._require_active_status(expected_status)
+        sibling = aliased(LoginSession)
+        active_sibling_exists = exists().where(
+            sibling.account_id == LoginSession.account_id,
+            sibling.id != LoginSession.id,
+            sibling.status.in_(self._ACTIVE_STATUSES),
+        )
+        current_account_exists = exists().where(
+            Account.id == LoginSession.account_id,
+            Account.adapter == "mediacrawler",
+            Account.login_method == "qr",
+            Account.auth_status == "authenticating",
+            Account.credential_ref.is_(None),
+            Account.profile_path.is_(None),
+        )
+        conditions = [
+            LoginSession.id == login_session_id,
+            LoginSession.method == "qr",
+            LoginSession.challenge_kind == "qr",
+            LoginSession.status == expected_status,
+            current_account_exists,
+            ~active_sibling_exists,
+        ]
+        if not_expired_at is not None:
+            conditions.append(LoginSession.expires_at > not_expired_at)
+        return and_(*conditions)
+
+    def _require_account_exists(self, account_id: str) -> None:
+        if self.session.scalar(select(Account.id).where(Account.id == account_id)) is None:
+            raise NotFoundError(f"account not found: {account_id}")
+
+    def _raise_account_login_conflict(self, account_id: str) -> NoReturn:
+        self._require_account_exists(account_id)
+        raise AccountLoginConflictError(account_id)
+
+    def _raise_login_session_conflict(self, login_session_id: str, expected_status: str) -> NoReturn:
+        if self.session.scalar(select(LoginSession.id).where(LoginSession.id == login_session_id)) is None:
+            raise NotFoundError(f"login session not found: {login_session_id}")
+        raise LoginSessionConflictError(login_session_id, expected_status)
+
+    @classmethod
+    def _require_active_status(cls, status: str) -> None:
+        if status not in cls._ACTIVE_STATUSES:
+            raise ValueError("expected login session status must be pending or waiting_user")
+
+    @staticmethod
+    def _state(login_session: LoginSession) -> LoginSessionState:
+        return LoginSessionState(
+            id=login_session.id,
+            account_id=login_session.account_id,
+            status=login_session.status,
+            expires_at=login_session.expires_at,
+            completed_at=login_session.completed_at,
+            created_at=login_session.created_at,
+            updated_at=login_session.updated_at,
+        )
 
 
 class AuthorRepository:
@@ -2693,6 +3067,7 @@ class ExportRecordRepository:
 
 
 __all__ = [
+    "AccountLoginConflictError",
     "AccountRepository",
     "AssetConflictError",
     "AssetLeaseLostError",
@@ -2706,7 +3081,9 @@ __all__ = [
     "ExportRecordRepository",
     "JobRepository",
     "LeaseLostError",
+    "LoginSessionConflictError",
     "LoginSessionRepository",
+    "LoginSessionState",
     "NotFoundError",
     "RepositoryError",
     "SubscriptionRepository",

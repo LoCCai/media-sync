@@ -94,6 +94,10 @@ class BridgeConfigurationError(MediaCrawlerPolicyError):
     """A bridge request or runner manifest is malformed."""
 
 
+class SavedSessionUnavailableError(BridgeConfigurationError):
+    """The derived account profile required by saved-session mode is absent."""
+
+
 class MediaCrawlerRunMode(StrEnum):
     """Checkpoint namespace that a prepared crawl is allowed to advance."""
 
@@ -795,7 +799,7 @@ class MediaCrawlerBridge:
         if request.login_method is LoginMethod.SAVED_SESSION and (
             not paths.profile_root.is_dir() or not any(paths.profile_root.iterdir())
         ):
-            raise BridgeConfigurationError("saved-session login requires an existing account profile")
+            raise SavedSessionUnavailableError("saved-session login requires an existing account profile")
 
         paths.integration_root.mkdir(parents=True, exist_ok=True)
         paths.account_root.mkdir(parents=True, exist_ok=True)
@@ -894,5 +898,6 @@ __all__ = [
     "MediaCrawlerRunSpec",
     "PrivateRunnerInputs",
     "RunnerManifest",
+    "SavedSessionUnavailableError",
     "verify_manifest_checkout",
 ]

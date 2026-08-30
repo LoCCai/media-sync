@@ -35,6 +35,12 @@ from media_sync.application import (
     SyncRequest,
     SyncService,
 )
+from media_sync.application.authentication import (
+    AccountLoginError,
+    AccountLoginOutcome,
+    AccountLoginRequest,
+    MediaCrawlerQrLoginService,
+)
 from media_sync.application.downloads import (
     AssetDownloadOrchestrationError,
     AssetDownloadRequest,
@@ -60,6 +66,8 @@ from media_sync.infrastructure.db import (
     Content,
     Database,
     IngestionMode,
+    LoginSessionRepository,
+    LoginSessionState,
     MediaCrawlerIngestionService,
     NotFoundError,
     RepositoryError,
@@ -84,6 +92,12 @@ from media_sync.integrations.mediacrawler.checkout import (
     verify_mediacrawler_checkout,
     verify_mediacrawler_python,
 )
+from media_sync.integrations.mediacrawler.login import (
+    MediaCrawlerLoginRequest,
+    MediaCrawlerLoginResult,
+    MediaCrawlerLoginStatus,
+)
+from media_sync.integrations.mediacrawler.login_runner import MediaCrawlerLoginProcessRunner
 from media_sync.integrations.mediacrawler.policies import (
     MediaCrawlerPolicyError,
     build_run_paths,
@@ -361,6 +375,106 @@ def _account_payload(account: Account, *, created: bool | None = None) -> dict[s
     if created is not None:
         payload["created"] = created
     return payload
+
+
+def _account_login_outcome_payload(outcome: AccountLoginOutcome) -> dict[str, object]:
+    """Project a completed login without profile, challenge, or child-process data."""
+
+    return {
+        "account_id": str(outcome.account_id),
+        "login_session_id": str(outcome.login_session_id),
+        "runner_status": outcome.runner_status.value,
+        "login_session_status": outcome.session_status,
+        "auth_status": outcome.auth_status.value,
+        "expires_at": _iso_datetime(outcome.expires_at),
+        "completed_at": _iso_datetime(outcome.completed_at),
+        "created_at": _iso_datetime(outcome.created_at),
+        "updated_at": _iso_datetime(outcome.updated_at),
+    }
+
+
+def _account_login_status_payload(
+    account: Account,
+    latest: LoginSessionState | None,
+) -> dict[str, object]:
+    """Project current Account auth plus the latest redaction-safe session state."""
+
+    return {
+        "account_id": account.id,
+        "auth_status": account.auth_status,
+        "auth_updated_at": _iso_datetime(account.auth_updated_at),
+        "login_session_id": latest.id if latest is not None else None,
+        "login_session_status": latest.status if latest is not None else None,
+        "expires_at": _iso_datetime(latest.expires_at) if latest is not None else None,
+        "completed_at": _iso_datetime(latest.completed_at) if latest is not None else None,
+        "created_at": _iso_datetime(latest.created_at) if latest is not None else None,
+        "updated_at": _iso_datetime(latest.updated_at) if latest is not None else None,
+    }
+
+
+_ACCOUNT_LOGIN_RETRYABLE_CODES = frozenset(
+    {
+        "account_login_busy",
+        "account_login_start_failed",
+        "account_login_result_invalid",
+        "account_login_conflict",
+        "account_login_unexpected",
+    }
+)
+
+
+def _account_login_error_payload(account_id: UUID, code: str) -> dict[str, object]:
+    """Return one fixed failure record without exception or upstream-controlled text."""
+
+    return {
+        "account_id": str(account_id),
+        "status": "failed",
+        "error_code": code,
+        "retryable": code in _ACCOUNT_LOGIN_RETRYABLE_CODES,
+    }
+
+
+class _UnavailableMediaCrawlerLoginRunner:
+    """Fail closed after account eligibility checks when no Python is configured."""
+
+    def run(
+        self,
+        request: MediaCrawlerLoginRequest,
+        *,
+        on_account_locked: Any = None,
+        cancellation: Any = None,
+    ) -> MediaCrawlerLoginResult:
+        del request, on_account_locked, cancellation
+        return MediaCrawlerLoginResult(MediaCrawlerLoginStatus.CONFIGURATION_INVALID)
+
+
+class _DeferredMediaCrawlerLoginRunner:
+    """Construct the filesystem/process integration only after application preflight."""
+
+    def __init__(self, settings: Settings) -> None:
+        self._settings = settings
+
+    def run(
+        self,
+        request: MediaCrawlerLoginRequest,
+        *,
+        on_account_locked: Any = None,
+        cancellation: Any = None,
+    ) -> MediaCrawlerLoginResult:
+        python_executable = self._settings.mediacrawler_python_executable
+        if python_executable is None:  # pragma: no cover - caller selects the unavailable boundary
+            return MediaCrawlerLoginResult(MediaCrawlerLoginStatus.CONFIGURATION_INVALID)
+        return MediaCrawlerLoginProcessRunner(
+            lock_path=self._settings.mediacrawler_lock_path,
+            integration_root=self._settings.resolved_mediacrawler_runtime_dir,
+            python_executable=python_executable,
+            enabled=True,
+            license_acknowledged=True,
+        ).run(
+            request,
+            on_account_locked=on_account_locked,
+            cancellation=cancellation,
+        )
 
 
 def _subscription_payload(
@@ -883,6 +997,117 @@ def list_accounts(
     with _database_session() as session:
         records = [_account_payload(account) for account in AccountRepository(session).list()]
     _emit_list(records, json_output=json_output, label="accounts")
+
+
+@account_app.command("login")
+def login_account(
+    account_id: Annotated[
+        UUID,
+        typer.Option(help="Exact local QR or expired saved-session account UUID."),
+    ],
+    enable_mediacrawler: Annotated[
+        bool,
+        typer.Option(
+            "--enable-mediacrawler",
+            help="Explicitly enable one headed MediaCrawler login attempt.",
+        ),
+    ] = False,
+    accept_mediacrawler_license: Annotated[
+        bool,
+        typer.Option(
+            "--accept-mediacrawler-license",
+            help="Acknowledge the pinned non-commercial learning license for this login attempt.",
+        ),
+    ] = False,
+    timeout_seconds: Annotated[
+        float,
+        typer.Option(min=0.001, max=3_600.0, help="Hard timeout before the login child is cancelled and joined."),
+    ] = 180.0,
+    json_output: Annotated[bool, typer.Option("--json", help="Emit machine-readable JSON.")] = False,
+) -> None:
+    """Run one blocking, host-assisted MediaCrawler QR login."""
+
+    if not enable_mediacrawler:
+        _emit_record(
+            _account_login_error_payload(account_id, "mediacrawler_not_enabled"),
+            json_output=json_output,
+            label="Account login",
+        )
+        raise typer.Exit(code=1)
+    if not accept_mediacrawler_license:
+        _emit_record(
+            _account_login_error_payload(account_id, "license_acknowledgement_required"),
+            json_output=json_output,
+            label="Account login",
+        )
+        raise typer.Exit(code=1)
+    if not math.isfinite(timeout_seconds) or timeout_seconds <= 0 or timeout_seconds > 3_600:
+        raise typer.BadParameter("timeout_seconds must be finite and between zero and 3600")
+
+    database: Database | None = None
+    try:
+        settings = get_settings()
+        database = Database(settings.resolved_database_url)
+        if settings.mediacrawler_python_executable is None:
+            login_runner: Any = _UnavailableMediaCrawlerLoginRunner()
+        else:
+            login_runner = _DeferredMediaCrawlerLoginRunner(settings)
+        outcome = MediaCrawlerQrLoginService(database, login_runner).run(
+            AccountLoginRequest(
+                account_id=account_id,
+                timeout_seconds=timeout_seconds,
+                poll_seconds=min(0.05, timeout_seconds / 2),
+            )
+        )
+    except AccountLoginError as error:
+        _emit_record(
+            _account_login_error_payload(account_id, error.code),
+            json_output=json_output,
+            label="Account login",
+        )
+        raise typer.Exit(code=1) from None
+    except Exception:
+        _emit_record(
+            _account_login_error_payload(account_id, "account_login_unexpected"),
+            json_output=json_output,
+            label="Account login",
+        )
+        raise typer.Exit(code=1) from None
+    finally:
+        if database is not None:
+            database.dispose()
+
+    _emit_record(
+        _account_login_outcome_payload(outcome),
+        json_output=json_output,
+        label="Account login",
+    )
+    if not outcome.authenticated:
+        raise typer.Exit(code=1)
+
+
+@account_app.command("login-status")
+def account_login_status(
+    account_id: Annotated[UUID, typer.Option(help="Exact local account UUID.")],
+    json_output: Annotated[bool, typer.Option("--json", help="Emit machine-readable JSON.")] = False,
+) -> None:
+    """Show Account auth and latest login-session state without challenge data."""
+
+    with _database_session() as session:
+        account = AccountRepository(session).get(str(account_id))
+        if account is None:
+            payload = None
+        else:
+            sessions = LoginSessionRepository(session).list_for_account(account.id)
+            payload = _account_login_status_payload(account, sessions[0] if sessions else None)
+    if payload is None:
+        _emit_record(
+            _account_login_error_payload(account_id, "account_login_not_found"),
+            json_output=json_output,
+            label="Account login status",
+        )
+        raise typer.Exit(code=1)
+    _emit_record(payload, json_output=json_output, label="Account login status")
 
 
 @subscription_app.command("add")

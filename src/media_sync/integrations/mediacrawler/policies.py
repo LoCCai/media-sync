@@ -44,9 +44,11 @@ CREATOR_CONFIG_ATTRIBUTES = {
 _UPSTREAM_LOGIN_TYPES = {
     LoginMethod.QR: "qrcode",
     LoginMethod.COOKIE: "cookie",
-    # A saved persistent profile is checked before launch.  If it has expired,
-    # qrcode is the least surprising upstream challenge fallback.
-    LoginMethod.SAVED_SESSION: "qrcode",
+    # Keep saved-session identity distinct in our manifest/config projection.
+    # The pinned CLI parser may coerce unknown values back to QR, so this value
+    # is not a security boundary: every saved-session child must additionally
+    # fence ``Login.begin`` before invoking the upstream crawler.
+    LoginMethod.SAVED_SESSION: "saved_session",
 }
 _ZHIHU_TOKEN = re.compile(r"[A-Za-z0-9._-]{1,255}\Z")
 

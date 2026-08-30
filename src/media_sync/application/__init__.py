@@ -1,5 +1,11 @@
 """Framework-independent application use cases."""
 
+from media_sync.application.authentication import (
+    AccountLoginError,
+    AccountLoginOutcome,
+    AccountLoginRequest,
+    MediaCrawlerQrLoginService,
+)
 from media_sync.application.downloads import (
     ASSET_DOWNLOAD_JOB_TYPE,
     AssetDownloadOrchestrationError,
@@ -44,6 +50,9 @@ __all__ = [
     "ASSET_DOWNLOAD_JOB_TYPE",
     "EMBY_EXPORTER_NAME",
     "EMBY_EXPORT_JOB_TYPE",
+    "AccountLoginError",
+    "AccountLoginOutcome",
+    "AccountLoginRequest",
     "AssetDownloadOrchestrationError",
     "AssetDownloadOutcome",
     "AssetDownloadRequest",
@@ -54,6 +63,7 @@ __all__ = [
     "LazyMediaCrawlerLocatorRefresher",
     "LocalPipelineRuntimeConfig",
     "MediaCrawlerOutputRejected",
+    "MediaCrawlerQrLoginService",
     "NormalizedMediaCrawlerOutput",
     "SelectedPipelineAsset",
     "SubscriptionAssetSelection",

@@ -47,6 +47,7 @@ EXIT_OUTPUT_FILES = 24
 EXIT_OUTPUT_LINE = 25
 EXIT_OUTPUT_TREE = 26
 EXIT_CANCELLED = 27
+EXIT_AUTH_EXPIRED = 28
 EXIT_UPSTREAM = 30
 
 
@@ -66,6 +67,7 @@ class MediaCrawlerProcessStatus(StrEnum):
     COMPLETION_FAILED = "completion_failed"
     ACCOUNT_BUSY = "account_busy"
     CANCELLED = "cancelled"
+    AUTH_EXPIRED = "auth_expired"
 
 
 class AttemptCleanupStatus(StrEnum):
@@ -127,6 +129,7 @@ _STATUS_MESSAGES = {
     MediaCrawlerProcessStatus.COMPLETION_FAILED: "MediaCrawler child output could not be sealed safely",
     MediaCrawlerProcessStatus.ACCOUNT_BUSY: "MediaCrawler account profile is already in use",
     MediaCrawlerProcessStatus.CANCELLED: "MediaCrawler child execution was cancelled",
+    MediaCrawlerProcessStatus.AUTH_EXPIRED: "MediaCrawler saved session is no longer authenticated",
 }
 
 
@@ -438,6 +441,7 @@ def _status_for_returncode(returncode: int) -> MediaCrawlerProcessStatus:
         EXIT_OUTPUT_LINE: MediaCrawlerProcessStatus.OUTPUT_LINE_EXCEEDED,
         EXIT_OUTPUT_TREE: MediaCrawlerProcessStatus.OUTPUT_TREE_INVALID,
         EXIT_CANCELLED: MediaCrawlerProcessStatus.CANCELLED,
+        EXIT_AUTH_EXPIRED: MediaCrawlerProcessStatus.AUTH_EXPIRED,
     }.get(returncode, MediaCrawlerProcessStatus.UPSTREAM_FAILED)
 
 
@@ -1299,8 +1303,11 @@ def _configure_upstream(config: Any, manifest: RunnerManifest, creator_reference
     if manifest.request_delay_seconds is None:
         raise RuntimeError("legacy manifests are recovery-only")
     config.CRAWLER_MAX_SLEEP_SEC = manifest.request_delay_seconds
-    config.HEADLESS = manifest.headless
-    config.CDP_HEADLESS = manifest.headless
+    # Saved sessions are background-only.  Even a subscription that formerly
+    # requested a headed browser cannot turn expiry into an interactive flow.
+    headless = True if manifest.login_method.value == "saved_session" else manifest.headless
+    config.HEADLESS = headless
+    config.CDP_HEADLESS = headless
     config.AUTO_CLOSE_BROWSER = True
     config.CREATOR_MODE = True
     config.XHS_INTERNATIONAL = False
@@ -1322,7 +1329,24 @@ async def _watch_upstream(
     cleanup_reserve = min(5.0, max(0.05, limits.max_seconds * 0.1))
     run_seconds = max(0.01, limits.max_seconds - cleanup_reserve)
     deadline = time.monotonic() + run_seconds
-    task = asyncio.create_task(upstream_main.main())
+
+    async def guarded_main() -> None:
+        try:
+            if manifest.login_method.value == "saved_session":
+                from media_sync.integrations.mediacrawler.login_runner import (
+                    fence_saved_session_qr_fallback,
+                )
+
+                with fence_saved_session_qr_fallback(manifest.platform):
+                    await upstream_main.main()
+            else:
+                await upstream_main.main()
+        except SystemExit as error:
+            # Upstream login paths may use SystemExit(0) for failure.  Convert
+            # it inside the task so asyncio cannot turn it into child success.
+            raise RuntimeError("upstream exited without a successful result") from error
+
+    task = asyncio.create_task(guarded_main())
     try:
         while True:
             if cancellation is not None and cancellation.is_set():
@@ -1382,7 +1406,7 @@ async def _execute_child(
         if manifest.login_method.value == "saved_session" and (
             not manifest.profile_root.is_dir() or not any(manifest.profile_root.iterdir())
         ):
-            return EXIT_CONFIGURATION
+            return EXIT_AUTH_EXPIRED
 
         sys.argv = ["mediacrawler"]
         config = importlib.import_module("config")
@@ -1397,7 +1421,19 @@ async def _execute_child(
         cookie = None
         if cancellation is not None and cancellation.is_set():
             return EXIT_CANCELLED
-        await _watch_upstream(upstream_main, manifest, cancellation)
+        try:
+            await _watch_upstream(upstream_main, manifest, cancellation)
+        except (_ChildCancelledError, _ChildWatchdogError):
+            raise
+        except Exception as error:
+            if manifest.login_method.value == "saved_session":
+                from media_sync.integrations.mediacrawler.login_runner import (
+                    SavedSessionQrFallbackBlocked,
+                )
+
+                if isinstance(error, SavedSessionQrFallbackBlocked):
+                    return EXIT_AUTH_EXPIRED
+            raise
         return 0
     except _ChildCancelledError:
         return EXIT_CANCELLED
@@ -1425,6 +1461,7 @@ def _emit_fixed_status(returncode: int) -> None:
         EXIT_OUTPUT_LINE: "output_line_exceeded",
         EXIT_OUTPUT_TREE: "output_tree_invalid",
         EXIT_CANCELLED: "cancelled",
+        EXIT_AUTH_EXPIRED: "auth_expired",
     }.get(returncode, "upstream_failed")
     encoded = json.dumps({"status": status}, separators=(",", ":")).encode("ascii") + b"\n"
     with contextlib.suppress(OSError):

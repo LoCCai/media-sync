@@ -116,7 +116,12 @@ def _policy(*, headless: bool = False, request_delay_seconds: float = 7.25) -> d
     }
 
 
-def _seed(database: Database, *, source_count: int) -> _RuntimeSeed:
+def _seed(
+    database: Database,
+    *,
+    source_count: int,
+    login_method: LoginMethod = LoginMethod.COOKIE,
+) -> _RuntimeSeed:
     with database.session() as session:
         author, contents = AuthorRepository(session).upsert_with_contents(
             AuthorUpsert(
@@ -157,8 +162,8 @@ def _seed(database: Database, *, source_count: int) -> _RuntimeSeed:
                 platform=Platform.BILI.value,
                 adapter="mediacrawler",
                 display_name=f"runtime-account-{index}",
-                login_method=LoginMethod.COOKIE.value if index == 0 else LoginMethod.QR.value,
-                credential_ref="env:MC_COOKIE" if index == 0 else None,
+                login_method=login_method.value if index == 0 else LoginMethod.QR.value,
+                credential_ref="env:MC_COOKIE" if index == 0 and login_method is LoginMethod.COOKIE else None,
                 auth_status="authenticated",
             )
             subscription = SubscriptionRepository(session).create(
@@ -329,3 +334,34 @@ def test_construction_is_lazy_and_touches_neither_database_secret_nor_child(
     assert isinstance(refresher, LazyMediaCrawlerLocatorRefresher)
     assert provider.calls == []
     assert fake_detail_runner.instances == []
+
+
+def test_saved_session_detail_auth_expiry_is_fixed_and_persisted(
+    database: Database,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _ExpiredDetailRunner(_FakeMediaCrawlerDetailProcessRunner):
+        def run(self, request: MediaCrawlerDetailRequest) -> MediaCrawlerDetailResult:
+            self.calls.append(request)
+            raise MediaDownloadError("locator_refresh_auth_expired")
+
+    _ExpiredDetailRunner.reset()
+    monkeypatch.setattr(runtime, "MediaCrawlerDetailProcessRunner", _ExpiredDetailRunner)
+    seed = _seed(database, source_count=1, login_method=LoginMethod.SAVED_SESSION)
+    refresher = _lazy(
+        database,
+        seed,
+        SecretResolver({}),
+        tmp_path,
+        subscription_id=seed.source_subscription_ids[0],
+    )
+
+    with pytest.raises(MediaDownloadError) as caught:
+        refresher.resolve(seed.locator)
+
+    assert caught.value.code == "locator_refresh_auth_expired"
+    request = _ExpiredDetailRunner.instances[0].calls[0]
+    assert request.login_method is LoginMethod.SAVED_SESSION
+    with database.session() as session:
+        assert AccountRepository(session).require(str(seed.account_id)).auth_status == "expired"

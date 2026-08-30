@@ -15,7 +15,6 @@ import importlib
 import json
 import os
 import shutil
-import signal
 import subprocess
 import sys
 import time
@@ -46,7 +45,11 @@ from media_sync.integrations.mediacrawler.policies import (
     inspect_output,
     upstream_login_type,
 )
-from media_sync.integrations.mediacrawler.runner import _AccountFileLock
+from media_sync.integrations.mediacrawler.runner import (
+    _AccountFileLock,
+    _close_process_tree,
+    _WindowsJob,
+)
 from media_sync.media.errors import MediaDownloadError
 from media_sync.security import SecretValue
 from media_sync.security.secrets import MAX_SECRET_BYTES
@@ -221,7 +224,7 @@ class MediaCrawlerDetailProcessRunner:
                 if request.login_method is LoginMethod.SAVED_SESSION and (
                     not paths.profile_root.is_dir() or not any(paths.profile_root.iterdir())
                 ):
-                    raise MediaDownloadError("locator_refresh_configuration_invalid")
+                    raise MediaDownloadError("locator_refresh_auth_expired")
                 paths.output_root.mkdir(parents=True, exist_ok=False)
                 child_payload = self._child_payload(request, checkout, paths)
                 output = self._execute(runtime.executable, checkout.root, child_payload, request.watchdogs)
@@ -326,16 +329,27 @@ class MediaCrawlerDetailProcessRunner:
         except OSError as exc:
             raise MediaDownloadError("locator_refresh_temporary") from exc
 
+        windows_job = _WindowsJob.attach(process)
+        if os.name == "nt" and windows_job is None:
+            _close_process_tree(process, None)
+            raise MediaDownloadError("locator_refresh_temporary")
+
         cleanup_reserve = max(5.0, min(15.0, limits.max_seconds * 0.1))
+        tree_closed = False
         try:
             frame, _stderr = process.communicate(child_payload, timeout=limits.max_seconds + cleanup_reserve)
         except subprocess.TimeoutExpired as exc:
-            _terminate_process_tree(process)
+            tree_closed = _close_process_tree(process, windows_job)
             with contextlib.suppress(OSError, subprocess.TimeoutExpired):
                 process.communicate(timeout=2)
             raise MediaDownloadError("locator_refresh_temporary") from exc
         finally:
             child_payload = b""
+            if not tree_closed:
+                tree_closed = _close_process_tree(process, windows_job)
+
+        if not tree_closed:
+            raise MediaDownloadError("locator_refresh_result_invalid")
 
         maximum_frame = ((limits.max_output_bytes + 2) // 3 * 4) + MAX_DETAIL_FRAME_OVERHEAD
         if len(frame) > maximum_frame:
@@ -345,6 +359,7 @@ class MediaCrawlerDetailProcessRunner:
             code = {
                 "configuration_invalid": "locator_refresh_configuration_invalid",
                 "temporary": "locator_refresh_temporary",
+                "auth_expired": "locator_refresh_auth_expired",
             }.get(status, "locator_refresh_result_invalid")
             raise MediaDownloadError(code)
         try:
@@ -387,38 +402,19 @@ def _parse_child_frame(frame: bytes) -> tuple[str, str]:
         raise MediaDownloadError("locator_refresh_result_invalid")
     status = decoded.get("status")
     payload = decoded.get("payload")
-    if status not in {"succeeded", "configuration_invalid", "temporary", "result_invalid"}:
+    if status not in {"succeeded", "configuration_invalid", "temporary", "result_invalid", "auth_expired"}:
         raise MediaDownloadError("locator_refresh_result_invalid")
     if not isinstance(status, str) or not isinstance(payload, str):
         raise MediaDownloadError("locator_refresh_result_invalid")
     return status, payload
 
 
-def _terminate_process_tree(process: subprocess.Popen[bytes]) -> None:
-    if process.poll() is not None:
-        return
-    if os.name == "nt":
-        with contextlib.suppress(OSError, subprocess.TimeoutExpired):
-            subprocess.run(
-                ("taskkill.exe", "/PID", str(process.pid), "/T", "/F"),
-                check=False,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                timeout=5,
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-            )
-    else:
-        kill_process_group = getattr(os, "killpg", None)
-        if callable(kill_process_group):
-            with contextlib.suppress(OSError):
-                kill_process_group(process.pid, int(getattr(signal, "SIGKILL", signal.SIGTERM)))
-    with contextlib.suppress(OSError):
-        process.kill()
-
-
 class _ChildConfigurationError(RuntimeError):
     """A private child request is invalid; its text never crosses the process."""
+
+
+class _ChildAuthExpiredError(RuntimeError):
+    """The expected saved profile disappeared before the child could probe it."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -566,7 +562,7 @@ def _configure_upstream(config: Any, request: _ChildRequest) -> None:
     if request.login_method is LoginMethod.SAVED_SESSION and (
         not request.profile_root.is_dir() or not any(request.profile_root.iterdir())
     ):
-        raise _ChildConfigurationError
+        raise _ChildAuthExpiredError
 
     config.PLATFORM = request.platform.value
     config.LOGIN_TYPE = upstream_login_type(request.login_method)
@@ -589,8 +585,9 @@ def _configure_upstream(config: Any, request: _ChildRequest) -> None:
     config.STATIC_PROXY_URL = ""
     config.MAX_CONCURRENCY_NUM = 1
     config.CRAWLER_MAX_SLEEP_SEC = request.request_delay_seconds
-    config.HEADLESS = request.headless
-    config.CDP_HEADLESS = request.headless
+    headless = True if request.login_method is LoginMethod.SAVED_SESSION else request.headless
+    config.HEADLESS = headless
+    config.CDP_HEADLESS = headless
     config.AUTO_CLOSE_BROWSER = True
     config.CREATOR_MODE = False
     config.XHS_INTERNATIONAL = False
@@ -638,10 +635,25 @@ async def _run_upstream(request: _ChildRequest) -> Any:
     upstream_main = importlib.import_module("main")
     if not _module_belongs_to_checkout(upstream_main, request.checkout_root):
         raise _ChildConfigurationError
-    if request.platform is Platform.BILI and request.detail_reference.isdigit():
-        await _run_bilibili_aid(upstream_main, request)
-    else:
-        await upstream_main.main()
+
+    async def dispatch() -> None:
+        if request.platform is Platform.BILI and request.detail_reference.isdigit():
+            await _run_bilibili_aid(upstream_main, request)
+        else:
+            await upstream_main.main()
+
+    try:
+        if request.login_method is LoginMethod.SAVED_SESSION:
+            from media_sync.integrations.mediacrawler.login_runner import (
+                fence_saved_session_qr_fallback,
+            )
+
+            with fence_saved_session_qr_fallback(request.platform):
+                await dispatch()
+        else:
+            await dispatch()
+    except SystemExit as error:
+        raise RuntimeError("upstream exited without a successful result") from error
     return upstream_main
 
 
@@ -689,16 +701,26 @@ async def _execute_child(request: _ChildRequest) -> tuple[str, bytes]:
         return "succeeded", _read_content_jsonl(request)
     except _ChildConfigurationError:
         return "configuration_invalid", b""
+    except _ChildAuthExpiredError:
+        return "auth_expired", b""
     except TimeoutError:
         return "temporary", b""
-    except Exception:
+    except Exception as error:
+        if request.login_method is LoginMethod.SAVED_SESSION:
+            from media_sync.integrations.mediacrawler.login_runner import (
+                SavedSessionQrFallbackBlocked,
+            )
+
+            if isinstance(error, SavedSessionQrFallbackBlocked):
+                return "auth_expired", b""
         return "result_invalid", b""
     finally:
-        if upstream_main is not None:
+        cleanup_module = upstream_main or sys.modules.get("main")
+        if cleanup_module is not None and _module_belongs_to_checkout(cleanup_module, request.checkout_root):
             config = sys.modules.get("config")
             if config is not None:
                 config.__dict__["COOKIES"] = ""
-            cleanup = getattr(upstream_main, "async_cleanup", None)
+            cleanup = getattr(cleanup_module, "async_cleanup", None)
             if callable(cleanup):
                 with contextlib.suppress(asyncio.TimeoutError, Exception):
                     await asyncio.wait_for(cleanup(), timeout=5.0)

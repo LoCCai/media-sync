@@ -28,6 +28,7 @@ from .models import (
     SyncRun,
 )
 from .repositories import (
+    AccountLoginConflictError,
     AccountRepository,
     AssetConflictError,
     AssetLeaseLostError,
@@ -41,7 +42,9 @@ from .repositories import (
     ExportRecordRepository,
     JobRepository,
     LeaseLostError,
+    LoginSessionConflictError,
     LoginSessionRepository,
+    LoginSessionState,
     NotFoundError,
     RepositoryError,
     StaleCheckpointError,
@@ -53,6 +56,7 @@ from .sync_repository import SQLAlchemySyncRepository
 __all__ = [
     "ASSET_IDENTITY_VERSION",
     "Account",
+    "AccountLoginConflictError",
     "AccountRepository",
     "Asset",
     "AssetConflictError",
@@ -77,7 +81,9 @@ __all__ = [
     "JobRepository",
     "LeaseLostError",
     "LoginSession",
+    "LoginSessionConflictError",
     "LoginSessionRepository",
+    "LoginSessionState",
     "MediaCrawlerIngestionResult",
     "MediaCrawlerIngestionService",
     "NotFoundError",
