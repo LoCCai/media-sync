@@ -6,9 +6,9 @@
 
 ## Current status / 当前状态
 
-The local function-first path is implemented through execution 0011 commit `8bb16f6`. Execution 0011 adds an explicit double-gated QR-login command, durable Account/LoginSession transitions, a closed child outcome independent of process exit code, atomic QR-to-`saved_session` handoff and background saved-session fail-closed behavior. Its integrated focused gate passes 274 tests; the complete suite passes 1080 tests with one Windows-inapplicable POSIX mode-bit test skipped. No coverage run is claimed. No real QR scan, platform account, creator endpoint, CDN or media server was used, so every live row remains `NOT_RUN`. No resident daemon, hard-parent-death login recovery, forced synchronous-thread cancellation, cross-host HA or seven-platform complete download is claimed. Requirements and exact evidence are tracked in [`docs/`](docs/README.md).
+The local function-first path is implemented through execution 0012 commit `28655f8`. It now includes explicit QR login, continuing parent control and a post-result guardian for the login child, deadline-fenced abandoned-session recovery, and the foreground `scheduler supervise` chain for stale-login reconciliation, schedule materialization, subscription sync and durable pipeline work. The integrated focused gate passes 283 tests with one skip; the complete suite passes 1156 tests with the same Windows-inapplicable POSIX mode-bit test skipped. No coverage run is claimed. No real QR scan, platform account, creator endpoint, CDN or media server was used, so every live row remains `NOT_RUN`. This is not an auto-restarting daemon, Windows Service/systemd unit, forced synchronous-thread cancellation, cross-host HA or seven-platform complete download. Requirements and exact evidence are tracked in [`docs/`](docs/README.md).
 
-本地功能优先链路已实现到执行 0011 提交 `8bb16f6`。执行 0011 新增显式双 gate QR 登录命令、持久 Account/LoginSession 状态迁移、独立于进程退出码的封闭 child 结果、QR 到 `saved_session` 的原子交接，以及后台 saved-session 关闭失败行为。其合并专项门禁通过 274 项测试；完整套件通过 1080 项，另有 1 项 Windows 不适用的 POSIX mode-bit 测试跳过。不宣称运行过覆盖率。没有使用真人二维码扫码、平台账户、作者端点、CDN 或媒体服务器，因此全部真人行保持 `NOT_RUN`。不宣称已有常驻 daemon、父进程被强杀后的登录自动回收、同步线程强制取消、跨主机 HA 或七平台完整下载。需求与准确证据均保存在 [`docs/`](docs/README.md)。
+本地功能优先链路已实现到执行 0012 提交 `28655f8`。当前已包含显式二维码登录、登录 child 的持续父进程控制与结果 guardian、受截止时间 fencing 保护的遗留会话回收，以及依次运行 stale-login 协调、调度物化、订阅同步和持久 pipeline 的前台 `scheduler supervise` 全链。合并专项门禁通过 283 项并跳过 1 项；完整套件通过 1156 项，跳过的仍是 Windows 不适用的 POSIX mode-bit 测试。不宣称运行过覆盖率。没有使用真人二维码扫码、平台账户、作者端点、CDN 或媒体服务器，因此全部真人行保持 `NOT_RUN`。它不是自动重启 daemon、Windows Service/systemd 服务，不提供同步线程强停、跨主机 HA 或七平台完整下载。需求与准确证据均保存在 [`docs/`](docs/README.md)。
 
 ## Foundation quickstart / 基线快速开始
 
@@ -36,13 +36,19 @@ uv run media-sync pipeline run --max-jobs 1 --scan-limit 100 --heartbeat-interva
 uv run media-sync scheduler job list --subscription-id <SUBSCRIPTION_UUID> --json
 ```
 
-`sync run` remains available for an explicit one-off Fake synchronization. Scheduler controls also include `subscription pause|resume|run-now`, `scheduler job resume|cancel`, and `scheduler lane list|set|reset`. A successful scheduler Job only enqueues `pipeline.subscription`; it does not download or export inline. The separate pipeline command must be invoked to process that queue. Both workers return when idle and never sleep; they are local control surfaces, not production supervisors or daemons.
+`sync run` remains available for an explicit one-off Fake synchronization. Scheduler controls also include `subscription pause|resume|run-now`, `scheduler job resume|cancel`, and `scheduler lane list|set|reset`. A successful scheduler Job only enqueues `pipeline.subscription`; it does not download or export inline. With the bounded commands, `pipeline run` must still be invoked separately. Execution 0012 also provides an explicit foreground loop that advances the complete local chain and waits when idle:
 
-`sync run` 仍可用于显式的一次性 Fake 同步。调度控制还包括 `subscription pause|resume|run-now`、`scheduler job resume|cancel` 与 `scheduler lane list|set|reset`。成功的 scheduler Job 只 enqueue `pipeline.subscription`，不会内联下载或导出；必须另行调用 pipeline 命令处理该队列。两个 worker 都在空闲时返回且不会 sleep；它们是本地控制面，不是生产 supervisor 或 daemon。
+`sync run` 仍可用于显式的一次性 Fake 同步。调度控制还包括 `subscription pause|resume|run-now`、`scheduler job resume|cancel` 与 `scheduler lane list|set|reset`。成功的 scheduler Job 只 enqueue `pipeline.subscription`，不会内联下载或导出；使用有界命令时仍须另行调用 `pipeline run`。执行 0012 还提供一个显式前台循环，可推进完整本地链路并在空闲时等待：
 
-The pipeline heartbeat renews exact Job/worker/token ownership and prevents a stale coordinator from finalizing over a successor. It does not provide forced cancellation: the production handler is synchronous and runs through `asyncio.to_thread`, whose underlying thread can continue child/download/export work after its asyncio wrapper is cancelled. Cooperative cancellation and multi-worker HA remain follow-up work.
+```powershell
+uv run media-sync scheduler supervise --idle-interval-seconds 1 --json
+```
 
-Pipeline heartbeat 会续租精确 Job/worker/token，并阻止旧协调器覆盖后继收尾；它不提供强制取消。生产 handler 为同步函数并通过 `asyncio.to_thread` 运行，其 asyncio 包装被取消后，底层线程仍可能继续 child/download/export 工作。协作式取消与多 worker HA 属于后续工作。
+The first Ctrl+C/SIGTERM stops new ticks and claims, cancels and joins active subscription work, and drains one already-active thread-backed pipeline attempt under heartbeat. A repeated signal force-exits and leaves durable leases/fencing to recovery. This command is a single-host foreground supervisor, not an installed or auto-restarting service. / 第一次 Ctrl+C/SIGTERM 会停止新的 tick 与 claim，取消并 join 进行中的订阅工作，并在 heartbeat 下等待一项已经 active 的线程型 pipeline 尝试。重复信号会强制退出，由持久租约/fencing 负责恢复。该命令是单主机前台监督器，不是已安装或自动重启的服务。
+
+The pipeline heartbeat renews exact Job/worker/token ownership and prevents a stale coordinator from finalizing over a successor. It does not provide forced cancellation: the production handler is synchronous and runs through `asyncio.to_thread`. The resident supervisor therefore shields and drains an already-started pipeline attempt—even under repeated task cancellation—instead of claiming that the underlying thread stopped. Forced synchronous-thread termination and multi-worker HA remain follow-up work.
+
+Pipeline heartbeat 会续租精确 Job/worker/token，并阻止旧协调器覆盖后继收尾；它不提供强制取消。生产 handler 为同步函数并通过 `asyncio.to_thread` 运行，因此常驻监督器会 shield 并等待已经启动的一项 pipeline 尝试，即使 task 被重复取消也不会冒充底层线程已经停止。同步线程强制终止与多 worker HA 仍属于后续工作。
 
 ## Interactive QR login quickstart / 交互式 QR 登录快速开始
 
@@ -65,9 +71,9 @@ uv run media-sync scheduler job resume --job-id <WAITING_JOB_UUID> --json
 uv run media-sync scheduler run --max-jobs 1 --scan-limit 100 --enable-mediacrawler --accept-mediacrawler-license --json
 ```
 
-Background saved-session reuse is forced headless and cannot fall back to QR. A missing derived profile or a probe that reaches the blocked QR fallback fails closed as `auth_expired`; ordinary bridge configuration faults remain `configuration_invalid`. Upstream `pong() == false` can also include network ambiguity, so `auth_expired` is a conservative action state, not a precise remote-cause diagnosis. Run the explicit login command again rather than expecting a scheduler worker to open a challenge. Normal timeout/Ctrl+C paths terminalize their durable login session, but hard parent termination such as SIGKILL has no parent-liveness auto-recovery yet. / 后台 saved-session 复用会被强制为无头模式，不能回退到二维码。派生 profile 缺失或探测进入被阻止的 QR 回退时会以 `auth_expired` 关闭失败；普通 bridge 配置错误继续映射为 `configuration_invalid`。上游 `pong() == false` 也可能包含网络异常歧义，因此 `auth_expired` 是保守动作状态，不是精确远端原因诊断。应再次运行显式登录命令，不能期待 scheduler worker 打开交互挑战。正常超时/Ctrl+C 路径会终结其持久登录会话，但 SIGKILL 等父进程硬终止尚无 parent-liveness 自动回收。
+Background saved-session reuse is forced headless and cannot fall back to QR. A missing derived profile or a probe that reaches the blocked QR fallback fails closed as `auth_expired`; ordinary bridge configuration faults remain `configuration_invalid`. Upstream `pong() == false` can also include network ambiguity, so `auth_expired` is a conservative action state, not a precise remote-cause diagnosis. Run the explicit login command again rather than expecting a scheduler worker to open a challenge. The login child now keeps START/CANCEL/EOF parent control and a post-result guardian: hard parent death terminates the owned child/browser tree before its inherited account lock becomes reusable. Any abandoned durable `waiting_user` state is recovered only after its exact `expires_at` deadline, while holding that same account lock and passing repository CAS; lock availability alone never authorizes early recovery. / 后台 saved-session 复用会被强制为无头模式，不能回退到二维码。派生 profile 缺失或探测进入被阻止的 QR 回退时会以 `auth_expired` 关闭失败；普通 bridge 配置错误继续映射为 `configuration_invalid`。上游 `pong() == false` 也可能包含网络异常歧义，因此 `auth_expired` 是保守动作状态，不是精确远端原因诊断。应再次运行显式登录命令，不能期待 scheduler worker 打开交互挑战。登录 child 现在持续保留 START/CANCEL/EOF 父进程控制与结果 guardian：父进程被硬杀后，所属 child/浏览器树会先退出，继承的账户锁才可复用。遗留的持久 `waiting_user` 状态只会在精确 `expires_at` 截止时间后、持有同一账户锁并通过仓储 CAS 时回收；仅凭锁可获取绝不允许提前回收。
 
-Focused offline commands, exact results and the seven-platform live `NOT_RUN` matrix are recorded in [`docs/executions/0011-mediacrawler-interactive-login/verification.md`](docs/executions/0011-mediacrawler-interactive-login/verification.md). / 离线专项命令、准确结果及七平台真人 `NOT_RUN` 矩阵记录在 [`docs/executions/0011-mediacrawler-interactive-login/verification.md`](docs/executions/0011-mediacrawler-interactive-login/verification.md)。
+Focused offline commands, exact execution 0012 results and the seven-platform live `NOT_RUN` matrix are recorded in [`docs/executions/0012-login-recovery-resident-supervisor/verification.md`](docs/executions/0012-login-recovery-resident-supervisor/verification.md). / 离线专项命令、执行 0012 的准确结果及七平台真人 `NOT_RUN` 矩阵记录在 [`docs/executions/0012-login-recovery-resident-supervisor/verification.md`](docs/executions/0012-login-recovery-resident-supervisor/verification.md)。
 
 For an already configured pinned MediaCrawler checkout/runtime and an authorized due subscription, the external handler remains default-off and requires both per-run switches below. This command can launch the crawler; it is not part of the network-free Fake quickstart.
 
@@ -76,17 +82,18 @@ For an already configured pinned MediaCrawler checkout/runtime and an authorized
 ```powershell
 uv run media-sync scheduler run --max-jobs 1 --scan-limit 100 --enable-mediacrawler --accept-mediacrawler-license --json
 uv run media-sync pipeline run --max-jobs 1 --scan-limit 100 --lease-seconds 3600 --heartbeat-interval-seconds 20 --enable-mediacrawler --accept-mediacrawler-license --json
+uv run media-sync scheduler supervise --enable-mediacrawler --accept-mediacrawler-license --json
 ```
 
 The two MediaCrawler switches are required independently on each bounded command. For an XHS coordinator, add one opaque reference such as `--xhs-detail-reference-ref env:MEDIA_SYNC_XHS_NOTE_DETAIL_URL`; its secret value must be the exact note detail URL with `xsec` authority. One reference does not provide automatic multi-note lookup.
 
 两个 MediaCrawler 开关必须在每个有界命令上分别提供。处理小红书协调器时，可额外添加一个不透明引用，例如 `--xhs-detail-reference-ref env:MEDIA_SYNC_XHS_NOTE_DETAIL_URL`；其密钥值必须是带 `xsec` 权限的精确 note 详情 URL。一个引用不等于支持多 note 自动查找。
 
-Only opaque secret references such as `env:MEDIA_SYNC_BILI_COOKIE` or `keyring:media-sync/bili-demo` may be passed to `--credential-ref`; raw Cookie/password values are rejected. Run the complete offline test suite with `uv run pytest`; the complete quality gate also includes lint, format, strict types, build/package, documentation, pinned-upstream, patch and secret-sentinel checks. See [`docs/executions/0010-automatic-media-pipeline/verification.md`](docs/executions/0010-automatic-media-pipeline/verification.md) for the current scheduler/pipeline closeout commands and results.
+Only opaque secret references such as `env:MEDIA_SYNC_BILI_COOKIE` or `keyring:media-sync/bili-demo` may be passed to `--credential-ref`; raw Cookie/password values are rejected. Run the complete offline test suite with `uv run pytest`; the complete quality gate also includes lint, format, strict types, build/package, documentation, pinned-upstream, patch and secret-sentinel checks. See [`docs/executions/0012-login-recovery-resident-supervisor/verification.md`](docs/executions/0012-login-recovery-resident-supervisor/verification.md) for the current supervisor closeout commands and results.
 
 OS-keyring lookup is optional; install it with `uv sync --extra keyring` before using a `keyring:` reference. Confined `file:<relative-path>` references resolve below `MEDIA_SYNC_SECRET_FILE_DIR` (or the private state-directory default).
 
-`--credential-ref` 只接受 `env:MEDIA_SYNC_BILI_COOKIE`、`keyring:media-sync/bili-demo` 等不透明引用；原始 Cookie/密码会被拒绝。`uv run pytest` 会运行完整离线测试套件；完整质量门禁还包括 lint、格式、严格类型、构建/打包、文档、锁定上游、补丁与密钥哨兵检查。当前调度器/pipeline 的准确收尾命令及实际结果位于 [`docs/executions/0010-automatic-media-pipeline/verification.md`](docs/executions/0010-automatic-media-pipeline/verification.md)。
+`--credential-ref` 只接受 `env:MEDIA_SYNC_BILI_COOKIE`、`keyring:media-sync/bili-demo` 等不透明引用；原始 Cookie/密码会被拒绝。`uv run pytest` 会运行完整离线测试套件；完整质量门禁还包括 lint、格式、严格类型、构建/打包、文档、锁定上游、补丁与密钥哨兵检查。当前监督器的准确收尾命令及实际结果位于 [`docs/executions/0012-login-recovery-resident-supervisor/verification.md`](docs/executions/0012-login-recovery-resident-supervisor/verification.md)。
 
 系统钥匙串是可选能力；使用 `keyring:` 引用前请运行 `uv sync --extra keyring`。`file:<relative-path>` 只会在 `MEDIA_SYNC_SECRET_FILE_DIR` 下解析；未配置时使用私有状态目录中的默认位置。
 

@@ -1,8 +1,11 @@
 # Execution 0012 goal / 执行 0012 目标
 
-- Status / 状态：Planned; implementation and qualification not yet claimed / 计划已冻结；尚不宣称实现或验收完成
+- Status / 状态：Complete for the offline single-host foreground scope; live qualification remains `NOT_RUN` / 离线单机前台范围已完成；真人验收保持 `NOT_RUN`
 - Started / 开始时间：2026-08-31 03:46 +08:00
+- Completed / 完成时间：2026-08-31 04:54 +08:00
 - Predecessor / 前置：Execution 0011 closeout commit `11ec5fd`
+- Plan commit / 计划提交：`4494226`
+- Implementation commit / 实现提交：`28655f8`
 
 ## Outcome / 结果
 
@@ -10,9 +13,11 @@ Deliver a locally resident, single-host foreground supervisor together with hard
 
 交付一个本机常驻、单主机的前台监督器，同时补齐 MediaCrawler 交互登录在父进程硬终止时的进程树收容，以及按截止时间回收遗留 LoginSession 状态。登录父进程被强杀后不得留下仍运行的 child/浏览器进程树；超过截止时间的遗留尝试必须无需人工修改 SQLite 即可恢复重试；一个常驻循环必须把到期调度推进到订阅同步及既有持久下载/Emby pipeline，并在停止时按当前阶段采取准确策略。
 
-## Current evidence boundary / 当前证据边界
+## Delivered evidence boundary / 已交付证据边界
 
-The predecessor proves normal timeout, cancellation and Ctrl+C cleanup, but its login child consumes stdin to EOF and therefore has no continuing parent-control channel. A hard kill can also leave `waiting_user` plus `qr/authenticating` durable state. The generic scheduled MediaCrawler runner already has an offline hard-parent-death contract, while the login-only runner does not. The resident product surface is still absent; only bounded `scheduler tick`, `scheduler run` and `pipeline run` commands exist. / 前置执行已证明正常超时、取消与 Ctrl+C 清理，但登录 child 以 stdin EOF 作为请求结束，因此没有持续的父进程控制通道。父进程被强杀还可能遗留 `waiting_user` 与 `qr/authenticating` 持久状态。通用定时 MediaCrawler runner 已有离线父进程硬终止契约，但仅登录 runner 尚无；当前也没有常驻产品入口，只有有界的 `scheduler tick`、`scheduler run` 与 `pipeline run` 命令。
+Execution 0012 closes the predecessor gaps for the documented local boundary. The login child now uses bounded request/result length frames, continuing START/CANCEL/EOF control and a post-result guardian. Windows and POSIX hard-parent-death contracts prove the owned child/grandchild tree exits before the inherited account lock becomes reusable, including the exact result-read/pre-control-close window. Deadline-expired durable state can be reconciled under the same account lock and exact repository CAS; rotating bounded enumeration prevents an early busy candidate from starving later accounts. The explicit `scheduler supervise` command fairly runs reconciliation, tick, subscription and pipeline phases, with cancellation-resilient exact joins. / 执行 0012 已在文档声明的本地边界内关闭前置缺口。登录 child 现使用有界请求/结果长度 frame、持续 START/CANCEL/EOF 控制及结果 guardian。Windows 与 POSIX 父进程硬终止契约证明所属 child/grandchild 树会先退出，继承账户锁才可复用；其中包括“父进程已读完结果、尚未关闭控制通道”的精确窗口。超过截止时间的持久状态可在同一账户锁与精确仓储 CAS 下协调；有界轮转枚举避免早期 busy 候选饿死后续账户。显式 `scheduler supervise` 命令公平运行协调、tick、订阅与 pipeline 阶段，并提供可承受重复取消的精确 join。
+
+Automated evidence is offline. The Fake supervisor integration proves durable sync and pipeline Jobs can reach success in one cycle, but it does not prove real creator traffic, signed CDN download, FFmpeg handling of real media or Emby/Jellyfin rescan/playback. The process remains a foreground local command, not daemonization, automatic restart, OS service integration, Docker or cross-host HA. / 自动证据均为离线证据。Fake supervisor 集成证明持久 sync 与 pipeline Job 可在一个 cycle 内成功，但不证明真人作者流量、签名 CDN 下载、FFmpeg 对真实媒体的处理或 Emby/Jellyfin 重扫/播放。该进程仍是本地前台命令，不是 daemon 化、自动重启、操作系统服务、Docker 或跨主机 HA。
 
 ## Acceptance / 验收
 
@@ -27,4 +32,4 @@ The predecessor proves normal timeout, cancellation and Ctrl+C cleanup, but its 
 
 ## Recovery timing decision / 回收时机决策
 
-Execution 0011 currently releases the account lock before the application writes the final LoginSession/Account transition. Therefore execution 0012 uses the durable session deadline as the recovery authority and does not treat “lock is currently free” as proof of abandonment. This avoids reclaiming a normal authenticated result in the small lock-release-to-database-finish window. / 执行 0011 当前会先释放账户锁，再由应用层写入 LoginSession/Account 最终迁移。因此执行 0012 以持久会话截止时间作为回收依据，不把“锁当前空闲”当作遗弃证明，避免把账户锁释放至数据库收尾之间的正常认证结果误回收。
+The retained login ordering releases the account lock before the application writes the final LoginSession/Account transition. Execution 0012 therefore uses the durable session deadline as recovery authority and never treats “the lock is currently free” as abandonment proof. An authenticated result that misses its durable deadline remains a timeout rather than gaining authority from child completion. / 保留的登录顺序会先释放账户锁，再由应用层写入 LoginSession/Account 最终迁移。因此执行 0012 使用持久会话截止时间作为回收权威，绝不把“当前锁可获取”当作遗弃证明。错过持久截止时间的认证结果仍按超时处理，不会因 child 已完成而获得额外权威。

@@ -1,8 +1,11 @@
 # Execution 0012 plan / 执行 0012 计划
 
-- Status / 状态：Frozen before implementation / 实现前已冻结
+- Status / 状态：Executed; all frozen acceptance boundaries retained / 已执行；全部冻结验收边界均保留
 - Plan date / 计划日期：2026-08-31
+- Completion date / 完成日期：2026-08-31
 - Predecessor / 前置：Execution 0011 closeout commit `11ec5fd`
+- Plan commit / 计划提交：`4494226`
+- Implementation commit / 实现提交：`28655f8`
 
 ## Delivery sequence / 交付顺序
 
@@ -13,7 +16,7 @@
 
 2. **Keep login under continuing parent control / 让登录持续受父进程控制**
    - Reuse or extract the mature fixed control primitives from the scheduled MediaCrawler runner rather than defining an incompatible protocol. / 复用或抽取定时 MediaCrawler runner 已成熟的固定控制原语，不定义不兼容协议。
-   - Replace EOF-delimited login input with one bounded request frame plus START/CANCEL/EOF control. Attach parent-side containment before START and establish child-side containment/control watching before importing upstream modules. / 把以 EOF 定界的登录输入改为一个有界请求 frame 加 START/CANCEL/EOF 控制；START 前先附加父侧收容，并在导入上游模块前建立 child 侧收容与控制监视。
+   - Replace EOF-delimited login input with one bounded request frame plus START/CANCEL/EOF control. Attach parent-side containment before START and establish child-side containment/control watching before importing upstream modules. The delivered protocol also length-frames the result so Windows does not depend on standard-pipe EOF while the guardian remains alive. / 把以 EOF 定界的登录输入改为一个有界请求 frame 加 START/CANCEL/EOF 控制；START 前先附加父侧收容，并在导入上游模块前建立 child 侧收容与控制监视。交付协议还会对结果做长度 framing，从而避免 Windows 在 guardian 仍存活时依赖标准管道 EOF。
    - Preserve join-before-lock-release for normal completion, timeout and cancellation, and prove true hard-parent-death cleanup with an owned child/grandchild contract. / 保持正常完成、超时、取消路径先 join 再释放锁，并通过真实所属 child/grandchild 契约证明父进程硬终止清理。
 
 3. **Add deadline-fenced durable reconciliation / 增加受截止时间保护的持久协调**
@@ -30,6 +33,12 @@
    - Run focused repository/application/protocol/process/supervisor/CLI gates and exercise Windows-specific hard-kill behavior on this host. / 运行仓储、应用、协议、进程、监督器与 CLI 专项门禁，并在本 Windows 主机执行专属 hard-kill 行为。
    - Run full pytest, Ruff lint/format, mypy, documentation and pinned-upstream checks, build, `git diff --check`, tracked/runtime artifact checks and a high-confidence secret scan. / 运行完整 pytest、Ruff lint/格式、mypy、文档与锁定上游检查、构建、`git diff --check`、跟踪/runtime 产物检查及高置信密钥扫描。
    - Update goal/plan/progress/verification with exact commands and results, retain every live row as `NOT_RUN`, then create bilingual local implementation and closeout commits. / 用准确命令与结果更新目标/计划/推进/验证文档，全部真人行保持 `NOT_RUN`，再创建中英双语本地实现与收尾提交。
+
+## Implementation notes / 实现记录
+
+- Windows retains a standard stdout pipe until process exit even after the child closes CRT descriptor 1. The result channel was therefore upgraded to an exact 4-byte big-endian length plus bounded JSON payload. The parent reads one complete frame, begins control/tree shutdown immediately, then rejects any remainder after join. This preserves the one-frame contract without requiring guardian exit. / Windows 即使在 child 关闭 CRT 描述符 1 后，也会把标准 stdout 管道保留到进程退出。因此结果通道升级为精确 4 字节大端长度加有界 JSON payload。父进程读完一个完整 frame 后立即开始控制/进程树关停，并在 join 后拒绝任何剩余字节；这样无需 guardian 退出即可保留单 frame 契约。
+- Review found that `(expires_at, id) LIMIT` enumeration could let one permanently busy early account starve later candidates. The delivered reconciler keeps a serialized rotating keyset cursor for global sweeps, wraps at the end, and leaves exact per-account reconciliation cursor-free. / 审查发现 `(expires_at, id) LIMIT` 枚举可能让一个永久 busy 的早期账户饿死后续候选。交付的协调器为全局 sweep 保留串行化轮转 keyset 游标，到尾部回绕；精确单账户协调不使用该游标。
+- Review also found that cancelling the supervisor task after a stop-triggered shield drain could orphan the thread-backed pipeline attempt. Subscription cancel/join and pipeline drain are now resilient to repeated task cancellation and propagate the first caller cancellation only after the exact attempt is done. / 审查还发现：在停止已触发 shield drain 后取消 supervisor task，可能遗留线程型 pipeline 尝试。订阅 cancel/join 与 pipeline drain 现可承受重复 task cancellation，并只在精确 attempt 完成后传播第一次调用方取消。
 
 ## Risks and rollback points / 风险与回退点
 
