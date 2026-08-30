@@ -1,8 +1,10 @@
 # Execution 0014 verification / 执行 0014 验证
 
-- Status / 状态：Baseline only; implementation gates not yet run / 仅完成基线；实现门禁尚未运行
+- Status / 状态：Offline implementation and closeout gates pass; live qualification remains `NOT_RUN` / 离线实现与收尾门禁通过；真人验收仍为 `NOT_RUN`
 - Environment / 环境：Windows, local workspace, Python environment resolved by `uv` / Windows、本地工作区、由 `uv` 解析 Python 环境
 - Evidence date / 证据日期：2026-08-31
+- Plan commit / 计划提交：`95c7082`
+- Implementation commit / 实现提交：`c4ab537`
 
 ## Starting baseline / 起始基线
 
@@ -12,21 +14,38 @@
 
 This baseline proves the predecessor Kuaishou normalizer/unit refresh cases and platform-neutral media machinery. It does not prove the pinned Kuaishou detail configuration, exact runtime provenance, video+cover transfer, Emby primary-media layout or platform-level replay. / 该基线证明既有快手 normalizer/单元 refresh case 及平台无关媒体机制；不证明锁定的快手 detail 配置、精确 runtime 来源、视频+封面传输、Emby 主媒体目录或平台级重放。
 
-## Planned focused gates / 计划中的专项门禁
+## Focused implementation evidence / 实现专项证据
 
-| Scope / 范围 | Evidence required / 所需证据 | Status / 状态 |
-| --- | --- | --- |
-| Discovery identity and durable raw / 发现身份与持久 raw | Exact video/cover remote IDs, positions, MIME/source hints, adapter locators, query rotation/generation behavior, and known/unknown query sentinels absent from ORM/SQLite raw / 精确视频/封面 remote ID、position、MIME/source hint、adapter locator、query 轮换/generation 行为，以及 ORM/SQLite raw 中已知/未知 query 哨兵均不存在 | `NOT_RUN` |
-| Pinned detail process / 锁定 detail 进程 | Raw-ID `KS_SPECIFIED_ID_LIST`, detail/JSONL/media-off switches, signed output, bounded frame, repr safety and normal-success cleanup / 纯 ID `KS_SPECIFIED_ID_LIST`、detail/JSONL/媒体关闭开关、签名输出、有界 frame、repr 安全及正常成功清理 | `NOT_RUN` |
-| Exact refresh/runtime / 精确 refresh/runtime | Bound Subscription/Account, exact content/asset/source hint, missing/drift/duplicate outcomes and no persistent signed URL / 绑定 Subscription/Account、精确 content/asset/source hint、缺失/漂移/重复结果及无签名 URL 持久化 | `NOT_RUN` |
-| Playable video+cover / 可播放视频+封面 | Deterministic MP4/PNG, default profile without Cookie/Auth, probe, SHA-256 archive, durable Asset/Job and Emby `.mp4`/poster/NFO/source / 确定性 MP4/PNG、无 Cookie/Auth 默认 profile、探测、SHA-256 归档、持久 Asset/Job 及 Emby `.mp4`/海报/NFO/source | `NOT_RUN` |
-| Replay and closed sinks / 重放与封闭落点 | `already_verified`/`already_exported`, no repeated detail/network/probe, and signed-sentinel scans across SQLite/runtime/work/archive/library/repr/Git / `already_verified`/`already_exported`、无重复 detail/network/probe，以及 SQLite/runtime/work/archive/library/repr/Git 签名哨兵扫描 | `NOT_RUN` |
+| Scope / 范围 | Command / 命令 | Exit / 退出码 | Result / 结果 |
+| --- | --- | ---: | --- |
+| Kuaishou discovery/raw, pinned detail process, exact Account/Subscription refresh, video+cover download/probe/archive, Emby publication and replay / 快手发现/raw、锁定 detail 进程、精确 Account/Subscription 刷新、视频+封面下载/探测/归档、Emby 发布及重放 | `uv run pytest -q tests/contract/test_mediacrawler_ingestion.py tests/contract/test_mediacrawler_detail_refresh.py tests/unit/test_mediacrawler_refresh.py tests/integration/test_mediacrawler_db_ingestion.py tests/integration/test_mediacrawler_download_runtime.py tests/integration/test_kuaishou_playable_pipeline.py tests/unit/test_media_downloader.py tests/unit/test_media_locator.py tests/unit/test_media_network.py tests/unit/test_emby_layout.py` | `0` | `PASS` — `228 passed in 25.49s` |
 
-## Planned focused command / 计划专项命令
+The focused gate proves exact video/cover remote IDs, positions, MIME/source hints and provenance; userinfo/query/fragment/nested-shape values absent from normalized raw, ORM and disposed SQLite/sidecars; a real fake checkout through the process runner; fixed missing/drift/duplicate outcomes; exact lazy Account/Subscription binding; the default request profile without Cookie or Authorization; deterministic MP4/PNG transfer, mandatory video probe, SHA-256 archive and Emby `.mp4`/poster/NFO/source publication. Query-only replay preserves generation and re-reads live counters to prove no second detail runner, HTTP, DNS or probe call. / 专项门禁证明精确视频/封面 remote ID、position、MIME/source hint 与来源；userinfo/query/fragment/嵌套形状值不会进入归一化 raw、ORM 及 dispose 后 SQLite/sidecar；真实 fake checkout 经过 process runner；缺失/漂移/重复返回固定结果；惰性 runtime 精确绑定 Account/Subscription；默认 request profile 不含 Cookie 或 Authorization；确定性 MP4/PNG 完成传输、强制视频探测、SHA-256 归档及 Emby `.mp4`/海报/NFO/source 发布。仅 query 变化的重放会保留 generation，并重新读取实时计数，证明不会再次调用 detail runner、HTTP、DNS 或 probe。
 
-```powershell
-uv run pytest -q tests/contract/test_mediacrawler_ingestion.py tests/contract/test_mediacrawler_detail_refresh.py tests/unit/test_mediacrawler_refresh.py tests/integration/test_mediacrawler_db_ingestion.py tests/integration/test_mediacrawler_download_runtime.py tests/integration/test_kuaishou_playable_pipeline.py tests/unit/test_media_downloader.py tests/unit/test_media_locator.py tests/unit/test_media_network.py tests/unit/test_emby_layout.py
-```
+## Complete root closeout gates / 根任务完整收尾门禁
+
+| Check / 检查 | Command / 命令 | Exit / 退出码 | Result / 结果 |
+| --- | --- | ---: | --- |
+| Complete offline suite / 完整离线套件 | `uv run pytest -q` | `0` | `PASS` — `1206 passed, 1 skipped in 269.21s` |
+| Lint / 静态检查 | `uv run ruff check .` | `0` | `PASS` — `All checks passed!` |
+| Format / 格式 | `uv run ruff format --check .` | `0` | `PASS` — `217 files already formatted` |
+| Strict typing / 严格类型 | `uv run mypy src/media_sync` | `0` | `PASS` — `Success: no issues found in 77 source files` |
+| Documentation links / 文档链接 | `uv run python scripts/check_docs.py` | `0` | `PASS` — `Documentation links OK (72 Markdown files checked)` |
+| Pinned upstreams / 锁定上游 | `uv run python scripts/check_upstreams.py` | `0` | `PASS` — `Upstreams OK (2 locked checkouts verified)` |
+| Source distribution and wheel / 源码包与 wheel | `uv build` | `0` | `PASS` — built `dist\media_sync-0.1.0.tar.gz` and `dist\media_sync-0.1.0-py3-none-any.whl` |
+| Patch whitespace / 补丁空白 | `git diff --check` and `git diff --cached --check` / `git diff --check` 与 `git diff --cached --check` | `0` | `PASS` — no output / 无输出 |
+
+The single skip is `tests/contract/test_mediacrawler_supervision.py:556`: POSIX mode bits are not the Windows ACL boundary. It is environment-inapplicable, not a failed feature. No coverage command ran, so execution 0014 makes no coverage claim. / 唯一跳过项为 `tests/contract/test_mediacrawler_supervision.py:556`：POSIX mode bit 不是 Windows ACL 边界；它在当前环境不适用，不是功能失败。本执行未运行 coverage 命令，因此不声明覆盖率。
+
+## Retained and ephemeral-data audit / 保留产物与瞬态数据审计
+
+The final read-only PowerShell audit enumerated tracked and standard-untracked files plus every real file below ignored `.media-sync` and `dist`. It rejected tracked/untracked runtime or credential paths, constructed three execution markers from split non-secret literals, byte-scanned Git-visible/runtime/build files without printing matched data, and verified that the frozen `0007`/`0008` sentinel roots still exist. / 最终只读 PowerShell 审计枚举 tracked、标准 untracked 文件，以及忽略目录 `.media-sync` 与 `dist` 下的每个真实文件；它拒绝被跟踪/未跟踪的运行或凭据路径，从拆分的非密钥字面量构造三个执行标记，在不打印命中数据的情况下扫描 Git 可见/runtime/build 字节，并确认冻结的 `0007`/`0008` 哨兵根仍然存在。
+
+| Audit / 审计 | Exit / 退出码 | Final counts / 最终计数 |
+| --- | ---: | --- |
+| Git/runtime/build inventory and exact ephemeral-marker scan / Git、runtime、build 清单及精确瞬态标记扫描 | `0` | `tracked=235`; `untracked=0`; `tracked_forbidden=0`; `suspicious_untracked=0`; `runtime_and_build_files=914`; `git_ephemeral_marker_hits=0`; `runtime_ephemeral_marker_hits=0`; `sentinel_roots_preserved=1` |
+
+The end-to-end tests separately scan Author/Content/Asset raw and locators, Job/SyncRun payloads, disposed SQLite and sidecars, detail runtime, download/export work roots, archive, Emby library, source metadata and object representations. Dynamic known/unknown query, fragment, userinfo and nested-shape sentinels are absent from every durable sink. / 端到端测试还分别扫描 Author/Content/Asset raw 与 locator、Job/SyncRun payload、dispose 后 SQLite 及 sidecar、detail runtime、下载/导出工作根、归档、Emby 媒体库、source 元数据与对象表示。动态已知/未知 query、fragment、userinfo 及嵌套形状哨兵不会进入任何持久落点。
 
 ## Live qualification / 真人验收
 
@@ -38,6 +57,4 @@ uv run pytest -q tests/contract/test_mediacrawler_ingestion.py tests/contract/te
 | Real platform bytes through FFmpeg/ffprobe / 真实平台字节经 FFmpeg/ffprobe | `NOT_RUN` |
 | Real Emby/Jellyfin scan and playback / 真人 Emby/Jellyfin 重扫与播放 | `NOT_RUN` |
 
-## Complete closeout gates / 完整收尾门禁
-
-Full pytest, Ruff lint/format, mypy, documentation links, pinned-upstream verification, package build, patch checks and final retained/Git signed-sentinel audits remain `NOT_RUN`. No coverage or live qualification claim is made by this planning record. / 完整 pytest、Ruff lint/格式、mypy、文档链接、锁定上游验证、包构建、补丁检查及最终 retained/Git 签名哨兵审计仍为 `NOT_RUN`。本计划记录不声明覆盖率或真人验收。
+Offline fake checkout, mock DNS/HTTP and synthetic bytes do not promote any live row. Same-ID/same-origin/path byte replacement and injected detail-cleanup failure remain the explicit limitations recorded in `goal.md` and `progress.md`. / 离线 fake checkout、mock DNS/HTTP 与合成字节不会提升任何真人行。同 ID/同 origin/path 字节替换及注入 detail 清理失败继续作为 `goal.md` 与 `progress.md` 中的明确限制。
