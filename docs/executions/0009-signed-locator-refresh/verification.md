@@ -1,0 +1,90 @@
+# Execution 0009 verification / 执行 0009 验证
+
+- Verification state / 验证状态：`NOT_RUN`
+- Planning date / 计划日期：2026-08-30
+- Network/account policy / 网络与账户策略：offline fake pinned-upstream modules, repository-owned local helpers and mock HTTP only; no browser connected to a platform, real credential, platform/CDN endpoint or Emby/Jellyfin server / 仅离线 fake 锁定上游模块、仓库自有本地 helper 与 mock HTTP；不使用连接平台的浏览器、真实凭据、平台/CDN 端点或 Emby/Jellyfin 服务器
+- Implementation state / 实现状态：`NOT_RUN`
+
+This file is the frozen verification contract for execution 0009, not implementation evidence. Planning-baseline documentation checks are recorded separately; no migration, refresh, cleanup, signed-sentinel or live row is promoted until its exact command and result are recorded.
+
+本文件是执行 0009 的冻结验证契约，不是实现证据。计划基线文档检查单独记录；在记录准确命令与结果前，不提升任何 migration、刷新、清理、签名哨兵或真人行。
+
+## Planning-baseline checks / 计划基线检查
+
+The following rows qualify only the committed goal/plan/progress/verification baseline. They do not execute behavior.
+
+下列各行只验收已提交的 goal/plan/progress/verification 基线，不执行行为。
+
+| Check / 检查 | Exact command / 准确命令 | Result / 结果 |
+| --- | --- | --- |
+| Documentation links / 文档链接 | `uv run python scripts/check_docs.py` | PASS — `Documentation links OK (52 Markdown files checked).` / 通过 |
+| Locked upstreams / 锁定上游 | `uv run python scripts/check_upstreams.py` | PASS — `Upstreams OK (2 locked checkouts verified).` / 通过 |
+| Patch whitespace / 补丁空白 | `git diff --check` | PASS — exit `0`, no output / 通过 — 退出码 `0`，无输出 |
+
+## Planned behavior evidence / 计划行为证据
+
+| Scope / 范围 | Required evidence / 必需证据 | Status / 状态 |
+| --- | --- | --- |
+| Migration and backfill / Migration 与 backfill | Head/round-trip/FKs/indexes; exact platform/author/adapter/stable-key unique inference; ambiguous/malformed/corrupt cases unbound; existing recovery identities preserved / head/往返/FK/索引、精确平台/作者/adapter/stable-key 唯一推断、歧义/畸形/损坏不绑定、保留恢复身份 | `NOT_RUN` |
+| Ingestion observation / 导入 observation | Same transaction as Asset/checkpoint; wrong-run/cross-relation rollback; older-run replay cannot regress `(created_at,id)` last-run order/timestamps; multi-account; both replacement kinds advance generation; archive-reset eligibility / 同事务、错误关系回滚、旧 run 重放不回退 last-run 全序/时间、多账户、两类替换推进 generation、归档 reset 资格 | `NOT_RUN` |
+| Source selector / 来源 selector | No-Job 0/1/N; existing-Job authority; explicit mismatch; shared-lock second filesystem-block check catches post-first-read writer before SecretResolver/claim/attach/prepare/spawn; no FS I/O in transaction / 两种来源模式；共用锁二次 block 检查在密钥/claim/attach/prepare/spawn 前拦截首次读取后的 writer；事务无 FS I/O | `NOT_RUN` |
+| Recovery ordering / 恢复顺序 | Read-only inspection zero-mutation; valid verified result needs no source/profile/credential; prepared recovery only bound CAS/finalization; both zero child/HTTP/new attempt / inspection 零变更、verified 无来源/profile/凭据、prepared 只做已绑定 CAS/收尾、两者无 child/HTTP/新 attempt | `NOT_RUN` |
+| Job source/config binding / Job 来源与配置绑定 | Existing natural key and `run_id = NULL`; closed ID/platform/fingerprint payload omits observation kind; legacy-to-ingested upgrade preserves retry Job; retry/running/prepared source immutable; transactional config identities exact after secret resolution / 既有 natural key 与空 `run_id`、payload 不含 observation kind、audit kind 升级保留 retry Job、恢复来源不可变、事务复核配置 | `NOT_RUN` |
+| Private child protocol / 私有 child 协议 | Dedicated pipe/handle; strict frame/error matrix; shared account lock spans child-tree join, HTTP/finalization and cleanup; every cleanup-block writer uses same fence; parent death/cancel / 专用 pipe、严格帧/错误矩阵、共用账户锁覆盖 child tree/HTTP/收尾/cleanup、所有 block writer 共用 fence、父死亡/取消 | `NOT_RUN` |
+| Platform selectors / 平台 selector | Exact stored hint required; XHS creator secret/author/token/source, 4 x 30/120-second bound and fixed invalid/expired/not-found/schema/timeout dispositions; DY/KS/Bili shapes; WB/Tieba/Zhihu no spawn / 要求精确 stored hint；XHS authority、数值边界及固定 disposition；其余形状与三个不 spawn 平台 | `NOT_RUN` |
+| Candidate identity / 候选身份 | Child validates semantics; full-request fingerprint binds response; query-free hint selects exactly one; same-kind ambiguity and position-only matching fail closed / child 验证语义、完整 request fingerprint 绑定响应、无 query hint 精确选一、同 kind 歧义与仅 position 匹配 fail closed | `NOT_RUN` |
+| Downloader / 下载器 | Signed URL reaches mock HTTP only; one 401/403 re-resolve; direct unchanged; resume safe; metadata/redirect headers unchanged / 签名 URL 只到 mock HTTP、一次重解析、direct 不变、续传安全、metadata/header 不变 | `NOT_RUN` |
+| Terminal cleanup / 终态清理 | Non-empty fresh/recovered sentinels and exact restart source; after real success commit inject malformed result, readback error/mismatch, all four states, repeated cancel/lease loss/restart and assert zero failure mutation/reingest; deterministic recovery identity and concurrent disappearance / 非空来源哨兵与精确重启；真实成功提交后注入 result/readback/四状态/取消/重启并断言 failure mutation/重复导入为零；确定性恢复身份与并发消失 | `NOT_RUN` |
+| Secret sinks / 密钥落点 | Private-pipe + mock-request observation, then exact post-cleanup filesystem/SQLite/operator/JUnit zero-match with named negative exclusions / 私有 pipe + mock request 观察，随后清理后多落点精确零匹配及命名负向排除 | `NOT_RUN` |
+
+## Planned quality gates / 计划质量门禁
+
+Exact focused nodes, case counts, timings and retained-sentinel statistics will be finalized only after implementation. Every result remains `NOT_RUN` until the final invocation and material output are recorded.
+
+准确专项节点、case 数、耗时及留存哨兵统计只在实现后定稿；在记录最终调用与关键输出前，全部结果保持 `NOT_RUN`。
+
+| Check / 检查 | Planned command or scope / 计划命令或范围 | Status / 状态 |
+| --- | --- | --- |
+| Locked dependencies / 锁定依赖 | `uv sync --all-groups --locked` | `NOT_RUN` |
+| Lint / 代码规范 | `uv run ruff check .` | `NOT_RUN` |
+| Format / 格式 | `uv run ruff format --check .` | `NOT_RUN` |
+| Strict types / 严格类型 | `uv run mypy src/media_sync` | `NOT_RUN` |
+| Full branch-aware suite / 完整分支感知套件 | `uv run pytest --cov=media_sync --cov-report=term` | `NOT_RUN` |
+| Focused refresh/cleanup gate / Refresh/清理专项 | Exact unit/contract/integration/migration nodes / 精确 unit/contract/integration/migration 节点 | `NOT_RUN` |
+| Build and wheel smoke / 构建与 wheel smoke | `uv build` plus clean wheel install/import/CLI checks / 构建及干净 wheel 安装/import/CLI | `NOT_RUN` |
+| Packaged migrations/resources / 随包迁移/资源 | Head inventory and round-trip tests / head 清单及往返测试 | `NOT_RUN` |
+| Documentation / 文档 | `uv run python scripts/check_docs.py` | `NOT_RUN` |
+| Pinned upstreams / 锁定上游 | `uv run python scripts/check_upstreams.py` | `NOT_RUN` |
+| Patch whitespace / 补丁空白 | `git diff --check` | `NOT_RUN` |
+| Runtime artifacts untracked / 运行产物未跟踪 | Scoped ignore, `git ls-files` and `git status` checks / 限定 ignore、`git ls-files` 与 `git status` | `NOT_RUN` |
+| Fresh retained sentinel / 全新留存哨兵 | `.media-sync/verification/0009-refresh-sentinel-root` exact allowlist/scans / 精确 allowlist/扫描 | `NOT_RUN` |
+
+## Planned retained-artifact rules / 计划留存产物规则
+
+- The 0009 retained root must not exist before its one authoritative run and must never be deleted or recreated afterward. The 0007 and 0008 roots remain untouched read-only evidence. / 0009 留存根在唯一权威运行前必须不存在，之后不得删除或重建；0007 与 0008 根保持不动的只读证据。
+- Use an exact safe-test allowlist, never module-level `-k` subtraction. Name every profile/quarantine/unresolved or deliberate raw-fixture case excluded from whole-tree zero-match evidence. / 使用精确安全测试 allowlist，不依赖模块级 `-k` 减法；逐项命名从整树零匹配排除的 profile/quarantine/unresolved 或故意原始夹具 case。
+- Prove a generated signed sentinel entered the dedicated private pipe and mock HTTP request. Separately prove post-collection dynamic sentinels existed in non-empty fresh/recovered JSONL source roots before exact cleanup, and bind already-succeeded restart to the same exact source identity. Do not put values in source, pytest IDs, assertions, JUnit properties or operator strings. / 证明生成签名哨兵进入专用私有 pipe 与 mock HTTP 请求；另证明 collection 后动态哨兵在非空 fresh/recovered JSONL 来源根清理前确实存在，并把 already-succeeded restart 绑定到相同精确来源身份。不得把值写入源码、pytest ID、断言、JUnit property 或运维字符串。
+- Validate every Windows pytest `current` alias as an existing same-parent in-root target and independently enumerate/scan every real target. / 把每个 Windows pytest `current` alias 验证为根内同父现存目标，并独立枚举/扫描每个真实目标。
+- Final traversal, content/path scan and SQLite main/sidecar/logical scan fail closed on any unreadable, locked, nonregular, reparse or traversal condition. / 最终遍历、内容/路径扫描及 SQLite main/sidecar/逻辑扫描遇到不可读、锁定、非普通、reparse 或遍历异常时 fail closed。
+
+## Live qualification / 真人资格验证
+
+| Platform / 平台 | QR login / 二维码登录 | Cookie login / Cookie 登录 | Saved session / 保存会话 | Creator/detail refresh / 作者/detail 刷新 | Live CDN / 真人 CDN | Real Emby/Jellyfin / 真实 Emby/Jellyfin |
+| --- | --- | --- | --- | --- | --- | --- |
+| `xhs` | `NOT_RUN` | `NOT_RUN` | `NOT_RUN` | `NOT_RUN` | `NOT_RUN` | `NOT_RUN` |
+| `dy` | `NOT_RUN` | `NOT_RUN` | `NOT_RUN` | `NOT_RUN` | `NOT_RUN` | `NOT_RUN` |
+| `ks` | `NOT_RUN` | `NOT_RUN` | `NOT_RUN` | `NOT_RUN` | `NOT_RUN` | `NOT_RUN` |
+| `bili` | `NOT_RUN` | `NOT_RUN` | `NOT_RUN` | `NOT_RUN` | `NOT_RUN` | `NOT_RUN` |
+| `wb` | `NOT_RUN` | `NOT_RUN` | `NOT_RUN` | `NOT_RUN` | `NOT_RUN` | `NOT_RUN` |
+| `tieba` | `NOT_RUN` | `NOT_RUN` | `NOT_RUN` | `NOT_RUN` | `NOT_RUN` | `NOT_RUN` |
+| `zhihu` | `NOT_RUN` | `NOT_RUN` | `NOT_RUN` | `NOT_RUN` | `NOT_RUN` | `NOT_RUN` |
+
+Phone login remains unsupported. Offline fake-detail evidence never changes this table.
+
+手机号登录仍不支持；离线 fake detail 证据绝不改变本表。
+
+## Deferred implementation / 延期实现
+
+The durable automatic `sync → download → Emby` DAG is execution 0010. QR UX, credential-bearing CDN headers, Bilibili playable derivatives, Weibo/Tieba/Zhihu Asset discovery, per-request upstream spacing, REST, resident supervision, Docker and HA/PostgreSQL remain deferred. Persistent unresolved cleanup blocks require later explicit operator repair/acknowledgement and are never silently cleared.
+
+持久自动 `sync → download → Emby` DAG 属于执行 0010。QR UX、可能携带凭据的 CDN header、Bilibili 可播放衍生物、微博/贴吧/知乎 Asset discovery、逐请求上游间隔、REST、常驻监督、Docker 及 HA/PostgreSQL 继续延期。持久 unresolved 清理 block 需要后续显式操作员修复/确认，绝不静默清除。

@@ -85,6 +85,10 @@ MediaCrawler-discovered assets intentionally persist only a stable `adapter_refr
 
 MediaCrawler 发现的资产只持久化稳定的 `adapter_refresh` locator，因为平台/CDN URL 可能包含过期签名。截至 0008 仍未实现 refresh adapter，因此 CLI preflight 返回 `blocked`/`not_started`、未改变的 `persisted_status` 及固定代码 `locator_refresh_unsupported`，不创建 Job、不修改 Asset，避免误存签名 URL。七个平台的真实 CDN 获取及 Emby/Jellyfin 重扫仍保持 `NOT_RUN`，直到在用户授权账户与 refresh 路径上完成验收。
 
+Execution 0009 currently adds only a frozen contract, not runtime capability: a many-to-many Asset/Subscription observation, immutable generation-bound Job source, a dedicated child result pipe distinct from stdout/stderr, child-owned exact candidate selection, URL-only parent download, and fresh/recovered/restart terminal cleanup. Any semantic or persisted locator replacement must start a new generation; a generation-only archive reset keeps matching provenance eligible. The network path is hard-fenced by enable/license and unresolved cleanup state before secrets, Job attachment or child spawn. Implementation and offline behavior evidence remain `NOT_RUN`.
+
+执行 0009 当前只新增冻结契约，不新增运行能力：多对多 Asset/Subscription observation、generation-bound 不可变 Job 来源、与 stdout/stderr 分离的专用 child 结果 pipe、child 内精确候选选择、父进程仅 URL 下载，以及 fresh/recovered/restart 终态清理。任何 semantic 或持久 locator 替换都必须开启新 generation；单纯归档 reset 后匹配来源仍 eligible。网络路径必须在密钥解析、Job attach 或 child spawn 前先通过 enable/license 与 unresolved cleanup 硬 fence。实现与离线行为证据继续为 `NOT_RUN`。
+
 Successful sealed v3 attempt output remains a separate temporary boundary: its JSONL may contain an unknown signed query that the parent could not pre-register as a known secret. Execution 0008 does not broaden its failure-artifact zero-match proof to that recovery root. Execution 0009 must implement refresh together with successful/recovery terminal cleanup or isolation before automatic network-bearing work is enabled.
 
 成功密封的 v3 attempt 输出仍是独立临时边界：其 JSONL 可能含父进程无法预先登记的未知签名 query。执行 0008 不会把失败产物零匹配证明扩大到该恢复根；执行 0009 必须在启用自动网络工作前，把 refresh 与成功/恢复终态清理或隔离一并实现。
@@ -115,9 +119,9 @@ No live account or interactive challenge has been used. All seven live QR/Cookie
 
 仍未使用真人账户或交互挑战。七个平台的真人二维码/Cookie/保存会话登录、作者流量及定时运行全部保持 `NOT_RUN`；手机号登录仍属于不支持，而不是仅未测试。没有运行真实签名 locator 刷新/CDN 获取或真实 Emby/Jellyfin 扫描/播放。执行 0007 自身的 AC6/AC13 记录继续作为历史 `PARTIAL` 证据。
 
-Execution 0008 now closes only those two gaps as successor offline evidence. The deterministic child-exit/pre-seal and single/repeated post-seal/pre-ingest barriers pass, and the exact eleven-failure × three-sink matrix proves 33 cells with fail-closed retained-filesystem/SQLite scans and fixed operator authority. The full suite passes 837 tests with one Windows-inapplicable skip and 79% branch-aware coverage. Signed-locator refresh remains unimplemented through 0008 and belongs to execution 0009; durable automatic downstream planning remains execution 0010.
+Execution 0008 now closes only those two gaps as successor offline evidence. The deterministic child-exit/pre-seal and single/repeated post-seal/pre-ingest barriers pass, and the exact eleven-failure × three-sink matrix proves 33 cells with fail-closed retained-filesystem/SQLite scans and fixed operator authority. The full suite passes 837 tests with one Windows-inapplicable skip and 79% branch-aware coverage. Execution 0009 has frozen the signed-locator refresh/terminal-cleanup plan only; implementation remains `NOT_RUN`. Durable automatic downstream planning remains execution 0010.
 
-执行 0008 现只以继任离线证据关闭上述两个缺口。确定性 child-exit/pre-seal 及单次/重复 post-seal/pre-ingest barrier 通过；精确“11 种失败 × 3 类落点”矩阵以 fail-closed 留存文件系统/SQLite 扫描及固定运维权限证明 33 个 cell。完整套件通过 837 项测试、1 项 Windows 不适用的 skip，分支感知覆盖率 79%。签名 locator refresh 截至 0008 仍未实现，属于执行 0009；持久自动下游规划仍属于执行 0010。
+执行 0008 现只以继任离线证据关闭上述两个缺口。确定性 child-exit/pre-seal 及单次/重复 post-seal/pre-ingest barrier 通过；精确“11 种失败 × 3 类落点”矩阵以 fail-closed 留存文件系统/SQLite 扫描及固定运维权限证明 33 个 cell。完整套件通过 837 项测试、1 项 Windows 不适用的 skip，分支感知覆盖率 79%。执行 0009 目前只冻结签名 locator refresh/终态清理计划，实现保持 `NOT_RUN`；持久自动下游规划仍属于执行 0010。
 
 Platform-specific DASH/multi-part/subtitle/danmaku and slideshow/mux derivatives, MediaCrawler refresh, per-request HTTP spacing, automatic downstream planning, REST operations, Docker and production operations remain unavailable or deferred implementation scope, not `NOT_RUN` qualification outcomes. The only upstream pacing evidence is configuration of `CRAWLER_MAX_SLEEP_SEC` together with `MAX_CONCURRENCY_NUM=1`; it is not a guarantee for every HTTP request.
 
