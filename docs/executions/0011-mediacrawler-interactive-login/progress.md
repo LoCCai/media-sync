@@ -1,6 +1,6 @@
 # Execution 0011 progress / 执行 0011 推进结果
 
-- Status / 状态：Complete for the offline implementation and automated verification scope in the current worktree; implementation commit pending; live qualification `NOT_RUN` / 当前工作树的离线实现与自动验证范围已完成；实现提交待创建；真人验收为 `NOT_RUN`
+- Status / 状态：Complete for the offline implementation and automated verification scope in local commit `8bb16f6`; live qualification `NOT_RUN` / 离线实现与自动验证范围已在本地提交 `8bb16f6` 完成；真人验收为 `NOT_RUN`
 - Started / 开始时间：2026-08-31 02:17 +08:00
 - Predecessor / 前置：Execution 0010 commit `f2e5899`
 
@@ -45,6 +45,6 @@
 
 ## Remaining outside the completed offline scope / 已完成离线范围之外的待办
 
-- Implementation commit pending; remote push remains unclaimed. / 实现提交待创建；不宣称远端已推送。
+- Bilingual implementation commit `8bb16f6` created; remote push remains unclaimed. / 已创建中英双语实现提交 `8bb16f6`；不宣称远端已推送。
 - Real-account QR scans for all platforms remain `NOT_RUN`. / 所有平台真人账户二维码扫码保持 `NOT_RUN`。
 - Hard-parent-death LoginSession recovery and a parent-liveness protocol remain for the next execution; normal timeout/cancellation/Ctrl+C coverage does not prove SIGKILL recovery. / 父进程硬终止后的 LoginSession 回收与 parent-liveness 协议留待下一执行；正常超时/取消/Ctrl+C 覆盖不证明 SIGKILL 回收。

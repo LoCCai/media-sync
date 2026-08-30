@@ -1,6 +1,6 @@
 # Execution 0011 verification / 执行 0011 验证
 
-- Verification state / 验证状态：`PASS` for the offline implementation and automated verification scope; implementation commit pending; every live row remains `NOT_RUN` / 离线实现与自动验证范围为 `PASS`；实现提交待创建；全部真人行保持 `NOT_RUN`
+- Verification state / 验证状态：`PASS` for the offline implementation and automated verification scope recorded in local commit `8bb16f6`; every live row remains `NOT_RUN` / 离线实现与自动验证范围为 `PASS`，并已记录在本地提交 `8bb16f6`；全部真人行保持 `NOT_RUN`
 - Verification date / 验证日期：2026-08-31
 - Predecessor / 前置：Execution 0010 commit `f2e5899`
 - Qualification boundary / 验收边界：offline repository/fake-child/CLI/scheduler protocol first; every real-account row remains `NOT_RUN` / 先验收离线仓储/fake-child/CLI/调度协议；全部真人账户行保持 `NOT_RUN`

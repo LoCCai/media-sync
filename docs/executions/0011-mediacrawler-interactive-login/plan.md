@@ -1,6 +1,6 @@
 # Execution 0011 plan / 执行 0011 计划
 
-- Status / 状态：Offline implementation, automated verification and final read-only secret audit complete; implementation commit pending; live qualification remains `NOT_RUN` / 离线实现、自动验证与最终只读密钥审计已完成；实现提交待创建；真人验收保持 `NOT_RUN`
+- Status / 状态：Offline implementation, automated verification, final read-only secret audit and local implementation commit `8bb16f6` complete; live qualification remains `NOT_RUN` / 离线实现、自动验证、最终只读密钥审计及本地实现提交 `8bb16f6` 已完成；真人验收保持 `NOT_RUN`
 - Plan date / 计划日期：2026-08-31
 - Predecessor / 前置：Execution 0010 commit `f2e5899`
 
@@ -29,16 +29,16 @@
    - Validate profile presence before creator traffic; distinguish unavailable saved-session state from ordinary bridge configuration errors, and conservatively map a blocked QR fallback to auth-required state without claiming an exact remote cause. / 在作者流量前验证 profile 存在性；区分 saved-session 不可用状态与普通 bridge 配置错误，并把被阻止的 QR 回退保守映射为需认证状态，但不宣称精确远端原因。
    - Prove background scheduler execution never opens a headed interactive challenge. / 证明后台调度执行绝不打开有头交互挑战。
 
-5. **Verify and close out / 验证与收尾 — gates and secret review complete; implementation commit pending / 门禁与密钥复核已完成；实现提交待创建**
+5. **Verify and close out / 验证与收尾 — gates, secret review and implementation commit complete / 门禁、密钥复核与实现提交已完成**
    - Add repository, login protocol, process supervision, seven-identifier contract, scheduler handoff, CLI and secret-sink tests. / 新增仓储、登录协议、进程监督、七标识 contract、调度交接、CLI 与密钥落点测试。
    - Cover deadline and Ctrl+C terminalization, expired saved-session reauthentication and ordinary-configuration versus auth-expired classification. / 覆盖截止时间与 Ctrl+C 收尾、已过期 saved-session 重认证，以及普通配置错误与 auth-expired 分类。
    - Run focused tests, full pytest, Ruff, format, mypy, docs/upstream checks, build and `git diff --check`. / 运行专项测试、完整 pytest、Ruff、格式、mypy、文档/上游检查、构建与 `git diff --check`。
    - Update all four execution records with exact commands/results and keep every live-account row `NOT_RUN`. / 用准确命令/结果更新四份执行记录，并保持全部真人账户行 `NOT_RUN`。
    - Create a bilingual local implementation commit after the complete gate. Do not push until the user gives a new explicit instruction. / 完整门禁通过后创建中英双语本地实现提交；在用户再次明确指示前不得推送。
 
-## Administrative closeout still pending / 仍待管理性收尾
+## Administrative closeout / 管理性收尾
 
-- Create and record the bilingual local implementation commit; do not claim a remote push. / 创建并记录中英双语本地实现提交；不得宣称已远端推送。
+- Bilingual local implementation commit `8bb16f6` is recorded; no remote push is claimed. / 已记录中英双语本地实现提交 `8bb16f6`；不宣称已远端推送。
 - Keep all seven live QR and saved-session reuse rows `NOT_RUN` until an operator authorizes and performs the real scan. / 在操作员授权并执行真人扫码前，七个平台的真人 QR 与 saved-session 复用行全部保持 `NOT_RUN`。
 - Carry hard-parent-death LoginSession recovery/parent-liveness into the next execution; do not infer it from normal timeout, cancellation or Ctrl+C coverage. / 把父进程硬终止后的 LoginSession 回收/parent-liveness 留到下一执行；不得用正常超时、取消或 Ctrl+C 覆盖推断该能力。
 

@@ -1,6 +1,6 @@
 # Execution 0011 goal / 执行 0011 目标
 
-- Status / 状态：Complete for the offline implementation and automated verification scope in the current worktree; bilingual local commit pending; every live row is `NOT_RUN` / 当前工作树的离线实现与自动验证范围已完成；中英双语本地提交待创建；全部真人行保持 `NOT_RUN`
+- Status / 状态：Complete for the offline implementation and automated verification scope in local commit `8bb16f6`; every live row is `NOT_RUN` / 离线实现与自动验证范围已在本地提交 `8bb16f6` 完成；全部真人行保持 `NOT_RUN`
 - Started / 开始时间：2026-08-31 02:17 +08:00
 - Predecessor / 前置：Execution 0010 commit `f2e5899`
 
@@ -12,7 +12,7 @@ Deliver an explicit host-assisted MediaCrawler QR-login command for one exact in
 
 ## Current evidence boundary / 当前证据边界
 
-The implementation is present in the shared local worktree but has not yet received its bilingual implementation commit. Focused offline evidence covers the repository state machine (`32 passed`), application orchestration (`33 passed`), repository/application/login-model composition (`83 passed`), login-only integration (`42 passed`), saved-session audit (`25 passed`), CLI surface (`77 passed`) and the integrated login/saved-session/scheduler/download slice (`274 passed`). The complete suite passes `1080` tests with one Windows-inapplicable POSIX mode-bit test skipped; no coverage run is claimed. No browser, real platform account, creator endpoint, CDN or media server was used by these checks. / 实现已存在于共享本地工作树，但尚未形成中英双语实现提交。当前离线专项证据覆盖仓储状态机（`32 passed`）、应用编排（`33 passed`）、仓储/应用/登录模型组合（`83 passed`）、仅登录集成（`42 passed`）、saved-session 审计（`25 passed`）、CLI 控制面（`77 passed`），以及登录/saved-session/调度/下载合并切片（`274 passed`）。完整套件通过 `1080` 项，另有 1 项 Windows 不适用的 POSIX mode-bit 测试跳过；不宣称运行过覆盖率。这些检查没有使用浏览器、真人平台账户、作者端点、CDN 或媒体服务器。
+The implementation is recorded in bilingual local commit `8bb16f6`. Focused offline evidence covers the repository state machine (`32 passed`), application orchestration (`33 passed`), repository/application/login-model composition (`83 passed`), login-only integration (`42 passed`), saved-session audit (`25 passed`), CLI surface (`77 passed`) and the integrated login/saved-session/scheduler/download slice (`274 passed`). The complete suite passes `1080` tests with one Windows-inapplicable POSIX mode-bit test skipped; no coverage run is claimed. No browser, real platform account, creator endpoint, CDN or media server was used by these checks. / 实现已记录在中英双语本地提交 `8bb16f6`。当前离线专项证据覆盖仓储状态机（`32 passed`）、应用编排（`33 passed`）、仓储/应用/登录模型组合（`83 passed`）、仅登录集成（`42 passed`）、saved-session 审计（`25 passed`）、CLI 控制面（`77 passed`），以及登录/saved-session/调度/下载合并切片（`274 passed`）。完整套件通过 `1080` 项，另有 1 项 Windows 不适用的 POSIX mode-bit 测试跳过；不宣称运行过覆盖率。这些检查没有使用浏览器、真人平台账户、作者端点、CDN 或媒体服务器。
 
 ## Acceptance / 验收
 
