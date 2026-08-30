@@ -99,7 +99,7 @@ Composite API/access-key mapping names are redacted across snake_case, kebab-cas
 | Idempotent upsert / 幂等写入 | SQL path does select-then-write / SQL 先查后写 | Database unique constraints and atomic upsert / 唯一约束与原子 upsert |
 | JSONL isolation / JSONL 隔离 | Per-day append / 按日追加 | Unique output root per run / 每任务独立输出根目录 |
 | Multi-account profile / 多账户 profile | Per platform only / 仅按平台 | Per platform and account / 按平台与账户 |
-| Durable scheduling / 持久调度 | In-memory WebUI queue only / 仅内存 WebUI 队列 | Execution 0006 durable due cycles, retry policy and platform/account launch lanes; execution 0007 adds a default-off, license-gated MediaCrawler forward handler with attempt roots, parent heartbeat/supervision and exact ingestion fencing. Seven-platform offline protocol passes; AC6/AC13 remain `PARTIAL` / 执行 0006 提供持久到期周期、重试策略与平台/账户启动 lane；执行 0007 新增默认关闭、受许可证约束的 MediaCrawler forward handler，包含 attempt 根、父进程 heartbeat/监督与精确导入 fencing。七平台离线协议通过；AC6/AC13 仍为 `PARTIAL` |
+| Durable scheduling / 持久调度 | In-memory WebUI queue only / 仅内存 WebUI 队列 | Execution 0006 durable due cycles, retry policy and platform/account launch lanes; execution 0007 adds a default-off, license-gated MediaCrawler forward handler with attempt roots, parent heartbeat/supervision and exact ingestion fencing. Seven-platform offline protocol passes; AC6/AC13 remain `PARTIAL`. Execution 0008 plans their offline evidence closeout but has not run / 执行 0006 提供持久到期周期、重试策略与平台/账户启动 lane；执行 0007 新增默认关闭、受许可证约束的 MediaCrawler forward handler，包含 attempt 根、父进程 heartbeat/监督与精确导入 fencing。七平台离线协议通过；AC6/AC13 仍为 `PARTIAL`。执行 0008 已计划其离线证据收口，但尚未运行 |
 
 ## Qualification status / 验收状态
 
@@ -110,6 +110,10 @@ Execution 0007 supplies automated offline evidence for all seven identifiers: su
 No live account or interactive challenge has been used. All seven live QR/Cookie/saved-session login, creator traffic and scheduled-run entries remain `NOT_RUN`; phone login remains unsupported rather than merely untested. No live signed-locator refresh/CDN retrieval or real Emby/Jellyfin scan/playback has run. AC6 cancellation-barrier coverage and AC13's complete failure/secret-sink matrix remain `PARTIAL`, so neither is represented as complete offline qualification.
 
 仍未使用真人账户或交互挑战。七个平台的真人二维码/Cookie/保存会话登录、作者流量及定时运行全部保持 `NOT_RUN`；手机号登录仍属于不支持，而不是仅未测试。没有运行真实签名 locator 刷新/CDN 获取或真实 Emby/Jellyfin 扫描/播放。AC6 的取消 barrier 覆盖与 AC13 的完整失败/密钥落点矩阵仍为 `PARTIAL`，因此两者都不会被写成完整离线验收。
+
+Execution 0008 is a frozen plan to close only those two offline evidence gaps with deterministic phase barriers and an exact eleven-failure × three-sink matrix. No execution 0008 implementation or behavioral verification has run, so this plan changes no capability status. Signed-locator refresh remains execution 0009, and automatic downstream planning remains execution 0010.
+
+执行 0008 是只关闭上述两个离线证据缺口的冻结计划，采用确定性阶段 barrier 与精确“11 种失败 × 3 类落点”矩阵。执行 0008 尚未运行实现或行为验证，因此本计划不改变任何能力状态。签名 locator refresh 仍属于执行 0009，自动下游规划仍属于执行 0010。
 
 Platform-specific DASH/multi-part/subtitle/danmaku and slideshow/mux derivatives, MediaCrawler refresh, per-request HTTP spacing, automatic downstream planning, REST operations, Docker and production operations remain unavailable or deferred implementation scope, not `NOT_RUN` qualification outcomes. The only upstream pacing evidence is configuration of `CRAWLER_MAX_SLEEP_SEC` together with `MAX_CONCURRENCY_NUM=1`; it is not a guarantee for every HTTP request.
 
