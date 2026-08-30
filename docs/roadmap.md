@@ -44,8 +44,8 @@ Build a self-hosted service that can authenticate against all platforms supporte
 
 ### Phase 4 — Scheduler, API and operations / 调度、API 与运维
 
-- Status: not implemented; durable jobs and current CLI application services are prerequisites, not evidence that a scheduler, REST service or production worker is available.
-- 状态：尚未实现；持久任务及当前 CLI 应用服务只是前置条件，不能作为调度器、REST 服务或生产 worker 已可用的证据。
+- Status: execution 0006 freezes the durable scheduler/retry/concurrency/rate-limit plan; implementation has not started at the plan-commit boundary. REST and production packaging remain later executions. Durable Jobs and current CLI services are prerequisites, not evidence that a scheduler, REST service or production worker is already available.
+- 状态：执行 0006 已冻结持久调度/重试/并发/限流计划；在计划提交边界，实现尚未开始。REST 与生产打包留给后续执行。持久 Job 与当前 CLI 服务只是前置条件，不能作为调度器、REST 或生产 worker 已可用的证据。
 
 - Job scheduler, retry/backoff, concurrency and per-platform rate limits.
 - Local REST API and CLI for account, subscription, sync and export operations.
