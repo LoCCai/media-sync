@@ -44,6 +44,7 @@ The user requested a pause before execution 0009 acceptance. The following code 
 - Wired exact Asset/Subscription observation into the same ingestion transaction before checkpoint publication. Wrong run/relation rolls back the entire batch; replay ordering, multi-account replacement and archive-reset eligibility are covered. / 在 checkpoint 发布前把精确 Asset/Subscription observation 接入同一导入事务；错误 run/关系回滚整批，并覆盖重放顺序、多账户替换及 archive reset 资格。
 - Closed fresh, recovered and already-succeeded cleanup behavior, preserved committed success truth and made concurrent disappearance of the exact root converge safely. / 收口 fresh、recovered 与 already-succeeded 清理行为，保留已提交成功事实，并让精确根的并发消失安全收敛。
 - Merged verification: Ruff PASS, strict mypy PASS for 65 source files, and `87 passed, 1 skipped` across migration/ingestion/handler/supervision focused gates. / 合并验证：Ruff 通过、65 个源码文件严格 mypy 通过，migration/ingestion/handler/supervision 专项共 `87 passed, 1 skipped`。
+- Added one automatic re-resolution after an adapter-refresh HTTP 401/403. A second auth failure returns fixed retryable `locator_refresh_auth_expired`; direct locators never invoke refresh. / adapter-refresh HTTP 401/403 后自动重新解析一次；第二次认证失败返回固定可重试 `locator_refresh_auth_expired`，direct locator 绝不触发 refresh。
 
 ## Entry gaps to close / 必须关闭的入口缺口
 
@@ -52,7 +53,7 @@ The user requested a pause before execution 0009 acceptance. The following code 
 | No exact refresh source / 无精确刷新来源 | `0005_asset_refresh_sources`, conservative backfill and same-transaction observations / 新表、保守 backfill 与同事务 observation | `PASS (focused)` — schema, backfill, repository and ingestion wired / schema、回填、repository 与导入已接通 |
 | Context-free refresh port / 无上下文 refresh port | Frozen Asset/Content/Subscription/Account context plus stable-key and fingerprint rechecks / 冻结上下文及 stable-key/fingerprint 复核 | `NOT_RUN` |
 | No private detail protocol / 无私有 detail 协议 | Supervised detail-only child and one bounded non-relayed frame / 受监督 detail-only child 与单条有界不转发帧 | `NOT_RUN` |
-| Short-lived auth URL / 短效认证 URL | Exact one adapter-only 401/403 re-resolution; persistent locator-only partial identity / adapter 专用一次重解析及只持久 locator 的 partial 身份 | `NOT_RUN` |
+| Short-lived auth URL / 短效认证 URL | Exact one adapter-only 401/403 re-resolution; persistent locator-only partial identity / adapter 专用一次重解析及只持久 locator 的 partial 身份 | `PASS (unit)` — functional resolver/CLI still pending / 功能 resolver/CLI 仍待完成 |
 | Post-success truth and roots / 成功后事实与根 | Exact fresh/recovered/restart cleanup; preserve committed truth across result/readback/cleanup/cancel errors; race-safe four states / 精确三路径清理；result/readback/cleanup/cancel 错误下保留已提交事实；竞态安全四状态 | `PASS (focused)` — handler and concurrent cleanup regressions pass / handler 与并发清理回归通过 |
 | Signed data sink risk / 签名数据落点风险 | Injection/transport proof and fail-closed filesystem/SQLite/operator/JUnit scans / 注入/transport 证明与 fail-closed 多落点扫描 | `NOT_RUN` |
 | Configuration/block TOCTOU / 配置与 block 竞态 | Shared account lock; filesystem block recheck outside SQLite before secrets/claim/spawn; transactional DB identity recheck; all block writers share fence / 共用账户锁；SQLite 外二次检查 block 后再解析密钥/claim/spawn；事务复核 DB 身份；block writer 共用 fence | `NOT_RUN` |

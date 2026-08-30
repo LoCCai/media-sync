@@ -20,6 +20,7 @@ from media_sync.domain import AssetKind
 from media_sync.media.archive import ArchivePublisher, hash_file
 from media_sync.media.errors import MediaDownloadError
 from media_sync.media.locator import (
+    AdapterRefreshLocator,
     AssetLocator,
     LocatorRefreshPort,
     locator_fingerprint,
@@ -454,6 +455,8 @@ class SecureMediaDownloader:
         archive = ArchivePublisher(request.archive_root)
         store = _PartStore(work_root, request.asset_id, request.generation)
         locator = resolve_locator(request.locator, self._refresher)
+        can_refresh_auth = isinstance(request.locator, AdapterRefreshLocator) and self._refresher is not None
+        auth_refreshes = 0
         fingerprint = locator_fingerprint(request.locator)
         started = self._monotonic()
         restarts = 0
@@ -470,6 +473,12 @@ class SecureMediaDownloader:
             headers = self._resume_headers(state)
             try:
                 with self._http.stream(locator.url, headers=headers, timeout_seconds=remaining) as (response, _target):
+                    if can_refresh_auth and response.status_code in {401, 403}:
+                        if auth_refreshes >= 1:
+                            raise MediaDownloadError("locator_refresh_auth_expired")
+                        locator = resolve_locator(request.locator, self._refresher)
+                        auth_refreshes += 1
+                        continue
                     outcome = self._consume_response(
                         response,
                         store=store,

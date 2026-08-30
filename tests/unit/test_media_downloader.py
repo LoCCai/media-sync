@@ -734,6 +734,98 @@ def test_adapter_refresh_signed_query_is_ephemeral_but_downloadable(tmp_path: Pa
     assert "never-persist" not in repr(request)
 
 
+class _RotatingSignedRefresh:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def resolve(self, _locator: AdapterRefreshLocator) -> ResolvedLocator:
+        self.calls += 1
+        return ResolvedLocator(f"https://media.test/runtime?signature={self.calls}")
+
+
+def test_adapter_refresh_re_resolves_once_after_auth_failure(tmp_path: Path) -> None:
+    seen: list[str] = []
+    refresher = _RotatingSignedRefresh()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        if request.url.params["signature"] == "1":
+            return httpx.Response(403)
+        return _ok()
+
+    request = DownloadRequest(
+        asset_id=uuid4(),
+        generation=1,
+        locator=AdapterRefreshLocator("mediacrawler", "dy/aweme-1/video/0"),
+        work_root=tmp_path / "jobs",
+        archive_root=tmp_path / "archive",
+        expected_kind=AssetKind.IMAGE,
+    )
+    downloader = SecureMediaDownloader(
+        SafeHttpClient(_Resolver(), transport_factory=lambda _target: httpx.MockTransport(handler)),
+        refresher=refresher,
+    )
+
+    assert downloader.download(request).archive_path.read_bytes() == PNG
+    assert refresher.calls == 2
+    assert seen == [
+        "https://media.test/runtime?signature=1",
+        "https://media.test/runtime?signature=2",
+    ]
+
+
+def test_adapter_refresh_second_auth_failure_is_fixed_retryable_error(tmp_path: Path) -> None:
+    refresher = _RotatingSignedRefresh()
+    requests = 0
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal requests
+        requests += 1
+        return httpx.Response(401)
+
+    request = DownloadRequest(
+        asset_id=uuid4(),
+        generation=1,
+        locator=AdapterRefreshLocator("mediacrawler", "bili/video-1/cover/0"),
+        work_root=tmp_path / "jobs",
+        archive_root=tmp_path / "archive",
+        expected_kind=AssetKind.IMAGE,
+    )
+    downloader = SecureMediaDownloader(
+        SafeHttpClient(_Resolver(), transport_factory=lambda _target: httpx.MockTransport(handler)),
+        refresher=refresher,
+    )
+
+    with pytest.raises(MediaDownloadError) as caught:
+        downloader.download(request)
+    assert caught.value.code == "locator_refresh_auth_expired"
+    assert caught.value.retryable is True
+    assert refresher.calls == 2
+    assert requests == 2
+
+
+def test_direct_locator_never_uses_refresh_on_auth_failure(tmp_path: Path) -> None:
+    refresher = _RotatingSignedRefresh()
+    requests = 0
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal requests
+        requests += 1
+        return httpx.Response(403)
+
+    request = _request(tmp_path)
+    downloader = SecureMediaDownloader(
+        SafeHttpClient(_Resolver(), transport_factory=lambda _target: httpx.MockTransport(handler)),
+        refresher=refresher,
+    )
+
+    with pytest.raises(MediaDownloadError) as caught:
+        downloader.download(request)
+    assert caught.value.code == "download_http_terminal"
+    assert refresher.calls == 0
+    assert requests == 1
+
+
 def test_confined_paths_reject_escape_symlink_and_hardlink(tmp_path: Path) -> None:
     root = tmp_path / "root"
     root.mkdir()
