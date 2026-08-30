@@ -314,7 +314,7 @@ def test_db_init_runs_packaged_migrations_idempotently(tmp_path: Path, monkeypat
             assert "alembic_version" in inspect(database.engine).get_table_names()
             with database.engine.connect() as connection:
                 assert (
-                    connection.scalar(text("SELECT version_num FROM alembic_version")) == "0004_scheduler_control_plane"
+                    connection.scalar(text("SELECT version_num FROM alembic_version")) == "0005_asset_refresh_sources"
                 )
         finally:
             database.dispose()
@@ -364,18 +364,18 @@ def test_db_status_reports_current_complete_schema_without_exposing_target(
         "ok": True,
         "database_driver": "sqlite+pysqlite",
         "reachable": True,
-        "revision": "0004_scheduler_control_plane",
-        "expected_revision": "0004_scheduler_control_plane",
+        "revision": "0005_asset_refresh_sources",
+        "expected_revision": "0005_asset_refresh_sources",
         "revision_current": True,
-        "required_table_count": 11,
-        "present_table_count": 11,
+        "required_table_count": 12,
+        "present_table_count": 12,
         "missing_tables": [],
         "reason": None,
     }
     assert text_result.exit_code == 0
     assert "Database ready:" in text_result.output
-    assert "revision=0004_scheduler_control_plane" in text_result.output
-    assert "tables=11/11" in text_result.output
+    assert "revision=0005_asset_refresh_sources" in text_result.output
+    assert "tables=12/12" in text_result.output
     for output in (json_result.output, text_result.output):
         assert initialized_cli_database not in output
         assert "cli.sqlite3" not in output

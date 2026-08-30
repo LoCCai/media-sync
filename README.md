@@ -6,9 +6,9 @@
 
 ## Current status / 当前状态
 
-The core foundation through execution 0008 remains runnable and offline-qualified as documented. Execution 0009 is paused at a partial local checkpoint: provenance schema/repository work and part of terminal cleanup have landed, but gates fail and manual signed-locator refresh remains unavailable with `locator_refresh_unsupported`. Execution 0010 has not started. Every user-authorized live platform/CDN and Emby/Jellyfin row remains `NOT_RUN`. Requirements, capability truth, progress, and exact verification evidence are tracked in [`docs/`](docs/README.md).
+The core foundation through execution 0008 remains runnable and offline-qualified as documented. Execution 0009 has resumed with function-first priority: migration/backfill, same-transaction provenance ingestion and terminal cleanup focused gates now pass, while manual signed-locator refresh/CLI remains active work and still returns `locator_refresh_unsupported` at this checkpoint. Execution 0010 has not started. Every user-authorized live platform/CDN and Emby/Jellyfin row remains `NOT_RUN`. Requirements, capability truth, progress, and exact verification evidence are tracked in [`docs/`](docs/README.md).
 
-截至执行 0008 的核心基线仍按文档可运行并通过离线验收。执行 0009 已在本地部分检查点暂停：来源 schema/repository 与部分终态清理已落盘，但门禁失败，手工签名 locator refresh 仍不可用并返回 `locator_refresh_unsupported`。执行 0010 尚未开始。全部需要用户授权的真人平台/CDN 与 Emby/Jellyfin 行继续为 `NOT_RUN`。需求、真实能力、进展及准确验证证据均保存在 [`docs/`](docs/README.md)。
+截至执行 0008 的核心基线仍按文档可运行并通过离线验收。执行 0009 已按功能优先恢复：migration/backfill、同事务来源导入及终态清理专项现已通过；手工签名 locator refresh/CLI 仍在推进，本检查点继续返回 `locator_refresh_unsupported`。执行 0010 尚未开始。全部需要用户授权的真人平台/CDN 与 Emby/Jellyfin 行继续为 `NOT_RUN`。需求、真实能力、进展及准确验证证据均保存在 [`docs/`](docs/README.md)。
 
 ## Foundation quickstart / 基线快速开始
 

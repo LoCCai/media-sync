@@ -24,6 +24,9 @@ from media_sync.domain import (
 )
 from media_sync.infrastructure.db import (
     AccountRepository,
+    AssetRefreshSourceRepository,
+    AssetRepository,
+    AssetUpsert,
     AuthorRepository,
     AuthorUpsert,
     Database,
@@ -34,7 +37,7 @@ from media_sync.infrastructure.db import (
     SubscriptionRepository,
     SyncRunRepository,
 )
-from media_sync.infrastructure.db.models import Asset, Content, Subscription, SyncRun
+from media_sync.infrastructure.db.models import Asset, AssetRefreshSource, Content, Subscription, SyncRun
 from media_sync.integrations.mediacrawler.normalizers import NormalizedMediaRecord
 from media_sync.media.locator import AdapterRefreshLocator, locator_fingerprint, parse_locator
 
@@ -73,6 +76,8 @@ def database(tmp_path: Path) -> Iterator[_TrackingDatabase]:
 def _seed_subscription(
     database: Database,
     *,
+    account_name: str = "mediacrawler-ingestion-account",
+    adapter: str = "mediacrawler",
     cursor: dict[str, object] | None = None,
     backfill_cursor: dict[str, object] | None = None,
     next_run_at: datetime | None = None,
@@ -80,7 +85,8 @@ def _seed_subscription(
     with database.session() as session:
         account = AccountRepository(session).create(
             platform=Platform.BILI.value,
-            display_name="mediacrawler-ingestion-account",
+            display_name=account_name,
+            adapter=adapter,
         )
         author = AuthorRepository(session).upsert(
             AuthorUpsert(
@@ -139,6 +145,239 @@ def _record(
         source_url=asset_source_url or f"https://example.invalid/{remote_type}/{remote_id}",
     )
     return NormalizedMediaRecord(author=author, content=content, assets=(asset,))
+
+
+def test_ingestion_records_exact_refresh_source_and_archive_reset_keeps_it_eligible(
+    database: Database,
+) -> None:
+    subscription_id = _seed_subscription(database)
+    run_id = _create_run(database, subscription_id)
+
+    result = MediaCrawlerIngestionService(database).ingest(
+        (_record("provenance", None),),
+        subscription_id=subscription_id,
+        run_id=run_id,
+        expected_revision=0,
+        mode=IngestionMode.FORWARD,
+    )
+    assert result.checkpoint_revision == 1
+
+    with database.session() as session:
+        asset = session.scalar(select(Asset))
+        source = session.scalar(select(AssetRefreshSource))
+        assert asset is not None and source is not None
+        assert source.asset_id == asset.id
+        assert source.subscription_id == subscription_id
+        assert source.last_run_id == run_id
+        assert source.observation_kind == "ingested"
+        assert source.observed_generation == asset.generation == 1
+        assert source.observed_semantic_fingerprint == asset.semantic_fingerprint
+        assert source.observed_locator_fingerprint == asset.locator_fingerprint
+        assert [item.subscription_id for item in AssetRefreshSourceRepository(session).list_eligible(asset.id)] == [
+            subscription_id
+        ]
+
+        asset.status = "verified"
+        asset.local_path = "archive/sha256/aa/provenance.mp4"
+        asset.checksum_sha256 = "a" * 64
+        asset.size_bytes = 17
+        session.flush()
+        reset = AssetRepository(session).reset_verified_archive(
+            asset.id,
+            expected_generation=1,
+            expected_local_path="archive/sha256/aa/provenance.mp4",
+            expected_checksum_sha256="a" * 64,
+            expected_size_bytes=17,
+            error_code="archive_blob_missing",
+            error_message="fixture archive is missing",
+        )
+        assert reset.generation == 2
+        assert source.observed_generation == 1
+        assert [item.subscription_id for item in AssetRefreshSourceRepository(session).list_eligible(asset.id)] == [
+            subscription_id
+        ]
+
+
+def test_invalid_account_relation_rolls_back_asset_observation_and_checkpoint(database: Database) -> None:
+    subscription_id = _seed_subscription(
+        database,
+        account_name="non-mediacrawler-account",
+        adapter="native",
+    )
+    run_id = _create_run(database, subscription_id)
+
+    with pytest.raises(RepositoryError, match="observation relation is not exact"):
+        MediaCrawlerIngestionService(database).ingest(
+            (_record("must-rollback", None),),
+            subscription_id=subscription_id,
+            run_id=run_id,
+            expected_revision=0,
+            mode=IngestionMode.FORWARD,
+        )
+
+    with database.session() as session:
+        subscription = session.get(Subscription, subscription_id)
+        run = session.get(SyncRun, run_id)
+        assert subscription is not None and run is not None
+        assert session.scalar(select(func.count()).select_from(Content)) == 0
+        assert session.scalar(select(func.count()).select_from(Asset)) == 0
+        assert session.scalar(select(func.count()).select_from(AssetRefreshSource)) == 0
+        assert subscription.checkpoint_revision == 0
+        assert run.status == RunStatus.INGESTING.value
+        assert run.checkpoint_revision_after is None
+
+
+def test_wrong_run_is_rejected_before_ingestion_mutation(database: Database) -> None:
+    expected_subscription_id = _seed_subscription(database, account_name="expected-account")
+    other_subscription_id = _seed_subscription(database, account_name="other-account")
+    wrong_run_id = _create_run(database, other_subscription_id)
+
+    with pytest.raises(RepositoryError, match="sync run belongs to a different subscription"):
+        MediaCrawlerIngestionService(database).ingest(
+            (_record("wrong-run", None),),
+            subscription_id=expected_subscription_id,
+            run_id=wrong_run_id,
+            expected_revision=0,
+            mode=IngestionMode.FORWARD,
+        )
+
+    with database.session() as session:
+        assert session.scalar(select(func.count()).select_from(Content)) == 0
+        assert session.scalar(select(func.count()).select_from(Asset)) == 0
+        assert session.scalar(select(func.count()).select_from(AssetRefreshSource)) == 0
+        assert session.get(Subscription, expected_subscription_id).checkpoint_revision == 0  # type: ignore[union-attr]
+        assert session.get(Subscription, other_subscription_id).checkpoint_revision == 0  # type: ignore[union-attr]
+
+
+def test_multi_account_replacement_updates_only_observing_source_and_both_fingerprints_fence_generation(
+    database: Database,
+) -> None:
+    first_subscription_id = _seed_subscription(database, account_name="first-account")
+    second_subscription_id = _seed_subscription(database, account_name="second-account")
+    original = _record(
+        "shared-asset",
+        None,
+        asset_source_url="https://example.invalid/content/shared-original.mp4",
+    )
+
+    for subscription_id in (first_subscription_id, second_subscription_id):
+        MediaCrawlerIngestionService(database).ingest(
+            (original,),
+            subscription_id=subscription_id,
+            run_id=_create_run(database, subscription_id),
+            expected_revision=0,
+            mode=IngestionMode.FORWARD,
+        )
+
+    with database.session() as session:
+        asset = session.scalar(select(Asset))
+        assert asset is not None
+        original_semantic = asset.semantic_fingerprint
+        original_locator = asset.locator_fingerprint
+        assert asset.generation == 1
+        assert {source.subscription_id for source in AssetRefreshSourceRepository(session).list_eligible(asset.id)} == {
+            first_subscription_id,
+            second_subscription_id,
+        }
+
+    replacement_run_id = _create_run(database, first_subscription_id)
+    MediaCrawlerIngestionService(database).ingest(
+        (
+            _record(
+                "shared-asset",
+                None,
+                asset_source_url="https://example.invalid/content/shared-replacement.mp4",
+            ),
+        ),
+        subscription_id=first_subscription_id,
+        run_id=replacement_run_id,
+        expected_revision=1,
+        mode=IngestionMode.FORWARD,
+    )
+
+    with database.session() as session:
+        asset = session.scalar(select(Asset))
+        content = session.scalar(select(Content))
+        assert asset is not None and content is not None
+        assert asset.generation == 2
+        assert asset.semantic_fingerprint != original_semantic
+        assert asset.locator_fingerprint == original_locator
+        sources = {
+            source.subscription_id: source
+            for source in AssetRefreshSourceRepository(session).list_for_asset(asset.id)
+        }
+        assert sources[first_subscription_id].last_run_id == replacement_run_id
+        assert sources[first_subscription_id].observed_generation == 2
+        assert sources[first_subscription_id].observed_semantic_fingerprint == asset.semantic_fingerprint
+        assert sources[second_subscription_id].observed_generation == 1
+        assert sources[second_subscription_id].observed_semantic_fingerprint == original_semantic
+        assert [source.subscription_id for source in AssetRefreshSourceRepository(session).list_eligible(asset.id)] == [
+            first_subscription_id
+        ]
+
+        semantic_before_locator_replacement = asset.semantic_fingerprint
+        locator_replacement = AssetRepository(session).upsert_for_content(
+            content.id,
+            AssetUpsert(
+                platform=Platform.BILI.value,
+                content_remote_type=content.remote_type,
+                content_remote_id=content.remote_id,
+                remote_id=asset.remote_id,
+                kind=asset.kind,
+                position=asset.position,
+                source_url="https://example.invalid/content/shared-replacement.mp4",
+                locator=AdapterRefreshLocator(
+                    adapter="mediacrawler",
+                    asset_key="alternate-persisted-locator",
+                ).as_dict(),
+            ),
+        )
+        assert locator_replacement.generation == 3
+        assert locator_replacement.semantic_fingerprint == semantic_before_locator_replacement
+        assert locator_replacement.locator_fingerprint != original_locator
+        assert AssetRefreshSourceRepository(session).list_eligible(asset.id) == []
+
+
+def test_older_run_replay_never_regresses_refresh_source_run_order_or_seen_time(database: Database) -> None:
+    subscription_id = _seed_subscription(database)
+    initial_run_id = _create_run(database, subscription_id)
+    MediaCrawlerIngestionService(database).ingest(
+        (_record("run-order", None),),
+        subscription_id=subscription_id,
+        run_id=initial_run_id,
+        expected_revision=0,
+        mode=IngestionMode.FORWARD,
+    )
+    run_ids = sorted((_create_run(database, subscription_id), _create_run(database, subscription_id)))
+    older_run_id, newer_run_id = run_ids
+    equal_created_at = datetime(2027, 1, 1, tzinfo=UTC)
+    newer_seen_at = equal_created_at + timedelta(hours=1)
+    older_replay_seen_at = equal_created_at + timedelta(hours=2)
+
+    with database.session() as session:
+        for run_id in run_ids:
+            run = session.get(SyncRun, run_id)
+            assert run is not None
+            run.created_at = equal_created_at
+
+    with database.session() as session:
+        asset = session.scalar(select(Asset))
+        assert asset is not None
+        repository = AssetRefreshSourceRepository(session)
+        repository.upsert_observation(
+            asset_id=asset.id,
+            subscription_id=subscription_id,
+            last_run_id=newer_run_id,
+            seen_at=newer_seen_at,
+        )
+        replayed = repository.upsert_observation(
+            asset_id=asset.id,
+            subscription_id=subscription_id,
+            last_run_id=older_run_id,
+            seen_at=older_replay_seen_at,
+        )
+        assert replayed.last_run_id == newer_run_id
+        assert replayed.last_seen_at == older_replay_seen_at
 
 
 def test_mediacrawler_discovery_replay_preserves_verified_asset_bytes(database: Database) -> None:

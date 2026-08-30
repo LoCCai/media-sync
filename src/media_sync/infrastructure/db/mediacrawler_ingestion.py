@@ -26,6 +26,7 @@ from .base import utc_now
 from .database import Database
 from .models import Asset, Content
 from .repositories import (
+    AssetRefreshSourceRepository,
     AssetRepository,
     AssetUpsert,
     AuthorRepository,
@@ -256,6 +257,47 @@ def _upsert_batch(session: Session, records: Sequence[NormalizedMediaRecord]) ->
     return discovered_count, asset_count
 
 
+def _record_refresh_observations(
+    session: Session,
+    records: Sequence[NormalizedMediaRecord],
+    *,
+    subscription_id: str,
+    run_id: str,
+) -> None:
+    """Bind every authoritative batch Asset to its exact observing run.
+
+    This deliberately runs after discovery upserts but before checkpoint
+    publication in the same caller-owned transaction.  The provenance
+    repository revalidates the full Asset/Content/Author/Subscription/Account
+    chain and the run relationship, so any mismatch rolls the whole batch
+    back instead of leaving either discovery or checkpoint state unbound.
+    """
+
+    repository = AssetRefreshSourceRepository(session)
+    for record in records:
+        content = record.content
+        for asset_snapshot in record.assets:
+            asset = session.scalar(
+                select(Asset)
+                .join(Content, Content.id == Asset.content_id)
+                .where(
+                    Content.platform == content.platform.value,
+                    Content.remote_type == content.remote_type,
+                    Content.remote_id == content.remote_id,
+                    Asset.kind == asset_snapshot.kind.value,
+                    Asset.position == asset_snapshot.position,
+                )
+                .execution_options(populate_existing=True)
+            )
+            if asset is None:  # pragma: no cover - guarded by the preceding upsert
+                raise RepositoryError("ingested asset observation target is missing")
+            repository.upsert_observation(
+                asset_id=asset.id,
+                subscription_id=subscription_id,
+                last_run_id=run_id,
+            )
+
+
 class MediaCrawlerIngestionService:
     """Commit normalized MediaCrawler records in independently fenced batches."""
 
@@ -354,6 +396,12 @@ class MediaCrawlerIngestionService:
                 if ownership_guard is not None:
                     ownership_guard(session)
                 batch_discovered, batch_assets = _upsert_batch(session, batch)
+                _record_refresh_observations(
+                    session,
+                    batch,
+                    subscription_id=database_subscription_id,
+                    run_id=database_run_id,
+                )
                 subscription_repository = SubscriptionRepository(session)
                 publication_arguments: dict[str, Any] = {
                     "expected_revision": current_revision,

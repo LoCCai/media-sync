@@ -1,10 +1,10 @@
 # Execution 0009 plan / 执行 0009 计划
 
-- Status / 状态：Paused — frozen plan with partial implementation checkpoint / 已暂停——冻结计划及部分实现检查点
+- Status / 状态：In progress — resumed, function-first / 推进中——已恢复，功能优先
 - Plan date / 计划日期：2026-08-30
 - Predecessor / 前置执行：Execution 0008 implementation commit `3889539`
 - Network policy / 网络策略：offline fake pinned-upstream modules, local helpers and mock HTTP only / 仅离线 fake 锁定上游模块、本地 helper 与 mock HTTP
-- Resume rule / 恢复规则：finish the open execution 0009 sequence and failing gates before execution 0010; do not treat landed slices as capability / 先完成执行 0009 的剩余序列与失败门禁，再开始执行 0010；不得把已落盘切片视为能力交付
+- Delivery priority / 交付优先级：first make local refresh/download and the end-to-end workflow usable; record exhaustive hardening and authorized live qualification as explicit follow-up work / 先让本地 refresh/download 与端到端流程可用；完整强化矩阵及授权真人验收明确列入后续工作
 
 ## Frozen design / 冻结设计
 

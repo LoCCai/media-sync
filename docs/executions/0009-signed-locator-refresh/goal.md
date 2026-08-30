@@ -1,10 +1,10 @@
 # Execution 0009 goal / 执行 0009 目标
 
-- Status / 状态：Paused — partial implementation checkpoint; acceptance not met / 已暂停——部分实现检查点；未达到验收
+- Status / 状态：In progress — resumed with function-first priority / 推进中——已恢复并以功能优先
 - Started / 开始时间：2026-08-30 20:38 +08:00
 - Predecessor / 前置执行：Execution 0008 implementation commit `3889539`
 - Network boundary / 网络边界：offline fake pinned-upstream modules, local helper processes and mock HTTP only / 仅离线 fake 锁定上游模块、本地 helper process 与 mock HTTP
-- Checkpoint truth / 检查点事实：only provenance schema/repository and part of terminal cleanup have landed; refresh remains unreachable and gates fail / 仅来源 schema/repository 与部分终态清理已落盘；refresh 仍不可达且门禁失败
+- Checkpoint truth / 检查点事实：migration/provenance ingestion and terminal cleanup focused gates now pass; locator refresh/CLI remains the active implementation gap / migration、来源导入及终态清理专项已通过；locator refresh/CLI 仍是当前实现缺口
 
 ## Outcome / 结果目标
 

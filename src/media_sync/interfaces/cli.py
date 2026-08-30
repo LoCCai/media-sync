@@ -143,7 +143,7 @@ app.add_typer(mediacrawler_app, name="mediacrawler")
 app.add_typer(asset_app, name="asset")
 app.add_typer(emby_app, name="emby")
 
-_EXPECTED_DATABASE_REVISION = "0004_scheduler_control_plane"
+_EXPECTED_DATABASE_REVISION = "0005_asset_refresh_sources"
 _REQUIRED_DATABASE_TABLES = frozenset(str(name) for name in Base.metadata.tables)
 
 

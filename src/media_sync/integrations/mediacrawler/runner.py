@@ -810,21 +810,36 @@ def _validated_attempt_root(paths: RunPaths) -> Path | None:
 def _remove_directory_no_follow(root: Path) -> None:
     """Remove one exact attempt-owned entry without traversing links/reparses."""
 
-    root_stat = os.lstat(root)
+    try:
+        root_stat = os.lstat(root)
+    except FileNotFoundError:
+        # A concurrent cleanup of the same deterministic attempt identity is
+        # already the desired result.  The caller still verifies that the
+        # declared root is absent before reporting a clean disposition.
+        return
     if stat.S_ISLNK(root_stat.st_mode) or _is_reparse_point(root_stat):
-        if stat.S_ISDIR(root_stat.st_mode):
-            os.rmdir(root)
-        else:
-            os.unlink(root)
+        try:
+            if stat.S_ISDIR(root_stat.st_mode):
+                os.rmdir(root)
+            else:
+                os.unlink(root)
+        except FileNotFoundError:
+            return
         return
     if not stat.S_ISDIR(root_stat.st_mode):
-        os.unlink(root)
+        try:
+            os.unlink(root)
+        except FileNotFoundError:
+            return
         return
-    with os.scandir(root) as entries:
-        for entry in entries:
-            path = Path(entry.path)
-            _remove_directory_no_follow(path)
-    final_stat = os.lstat(root)
+    try:
+        with os.scandir(root) as entries:
+            for entry in entries:
+                path = Path(entry.path)
+                _remove_directory_no_follow(path)
+        final_stat = os.lstat(root)
+    except FileNotFoundError:
+        return
     if (
         not stat.S_ISDIR(final_stat.st_mode)
         or stat.S_ISLNK(final_stat.st_mode)
@@ -832,7 +847,10 @@ def _remove_directory_no_follow(root: Path) -> None:
         or (final_stat.st_dev, final_stat.st_ino) != (root_stat.st_dev, root_stat.st_ino)
     ):
         raise OSError("attempt cleanup root changed during traversal")
-    os.rmdir(root)
+    try:
+        os.rmdir(root)
+    except FileNotFoundError:
+        return
 
 
 def _cleanup_failed_attempt(spec: MediaCrawlerRunSpec) -> AttemptCleanupStatus:
@@ -902,7 +920,7 @@ def cleanup_attempt_root(paths: RunPaths) -> AttemptCleanupStatus:
         _remove_directory_no_follow(cleanup_root)
     except OSError:
         return AttemptCleanupStatus.QUARANTINED
-    return AttemptCleanupStatus.REMOVED
+    return AttemptCleanupStatus.REMOVED if not os.path.lexists(cleanup_root) else AttemptCleanupStatus.QUARANTINED
 
 
 class MediaCrawlerProcessRunner:

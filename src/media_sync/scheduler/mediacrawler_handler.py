@@ -624,9 +624,7 @@ class MediaCrawlerScheduledHandler:
             run_succeeded = run is not None and run.status == RunStatus.SUCCEEDED.value
             checkpoint_revision = (
                 run.checkpoint_revision_after
-                if run is not None
-                and type(run.checkpoint_revision_after) is int
-                and run.checkpoint_revision_after >= 0
+                if run is not None and type(run.checkpoint_revision_after) is int and run.checkpoint_revision_after >= 0
                 else None
             )
             commit_complete = bool(
@@ -712,23 +710,23 @@ class MediaCrawlerScheduledHandler:
             ):
                 return None
             source_execution = _canonical_uuid(recovered.get("execution_id"))
-            source_run = _canonical_uuid(recovered.get("sync_run_id"))
+            recovered_run_id = _canonical_uuid(recovered.get("sync_run_id"))
             if (
                 source_execution != _attempt_execution_id(context.job_id, source_attempt_value)
-                or source_run is None
-                or source_run == current_run_id
+                or recovered_run_id is None
+                or recovered_run_id == current_run_id
             ):
                 return None
             source_attempt = source_attempt_value
             source_execution_id = source_execution
-            source_run_id = source_run
+            source_run_id = recovered_run_id
 
         with self.database.session() as session:
-            source_run = session.get(SyncRun, str(source_run_id))
+            source_run_record = session.get(SyncRun, str(source_run_id))
             if (
-                source_run is None
-                or source_run.subscription_id != str(context.subscription_id)
-                or source_run.attempt != source_attempt
+                source_run_record is None
+                or source_run_record.subscription_id != str(context.subscription_id)
+                or source_run_record.attempt != source_attempt
             ):
                 return None
             self._guard(context, session)

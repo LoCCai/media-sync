@@ -508,6 +508,24 @@ def test_cleanup_is_unresolved_when_atomic_quarantine_and_direct_removal_both_fa
     assert spec.paths.job_root.is_dir()
 
 
+def test_concurrent_exact_cleanup_disappearance_converges_to_removed(
+    supervision_project: FakeProject,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spec = _bridge().prepare(_request(supervision_project, tmp_path / "runs"))
+    original_remove = runner_module._remove_directory_no_follow
+
+    def concurrent_cleanup(_paths: object, attempt_root: Path) -> Path:
+        original_remove(attempt_root)
+        raise FileNotFoundError("fixture concurrent exact-root cleanup")
+
+    monkeypatch.setattr(runner_module, "_quarantine_attempt_root", concurrent_cleanup)
+
+    assert cleanup_attempt_root(spec.paths) is AttemptCleanupStatus.REMOVED
+    assert not spec.paths.job_root.exists() and not spec.paths.job_root.is_symlink()
+
+
 def test_cleanup_quarantines_when_post_move_scrub_is_denied(
     supervision_project: FakeProject,
     tmp_path: Path,

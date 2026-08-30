@@ -1,10 +1,11 @@
 # Execution 0009 progress / 执行 0009 推进结果
 
-- Status / 状态：Paused — partial implementation checkpoint / 已暂停——部分实现检查点
+- Status / 状态：In progress — resumed, function-first / 推进中——已恢复，功能优先
 - Started / 开始时间：2026-08-30 20:38 +08:00
 - Paused / 暂停时间：2026-08-31 00:06 +08:00
+- Resumed / 恢复时间：2026-08-31 00:39 +08:00
 - Implementation / 实现：`PARTIAL` / 部分实现
-- Verification / 验证：`PARTIAL / FAILING` / 部分验证且门禁失败
+- Verification / 验证：`PARTIAL / PASSING FOCUSED GATES` / 部分验证，当前专项门禁通过
 - Predecessor / 前置执行：Execution 0008 implementation commit `3889539`
 
 ## Planning baseline / 计划基线
@@ -30,23 +31,29 @@ The user requested a pause before execution 0009 acceptance. The following code 
 
 ### Still to implement / 待实现
 
-- Provenance migration/repository focused tests; Alembic upgrade/downgrade/re-upgrade and conservative backfill matrix. / 来源 migration/repository 专项测试；Alembic 升级/降级/再升级及保守回填矩阵。
-- Same-transaction ingestion observation wiring; exact 0/1/N and existing-Job-bound source selection; immutable Job source with `run_id = NULL`. / 同事务导入 observation 接线；精确 0/1/N 与既有 Job 绑定来源选择；`run_id = NULL` 的不可变 Job 来源。
+- Exact 0/1/N and existing-Job-bound source selection; immutable Job source with `run_id = NULL`. / 精确 0/1/N 与既有 Job 绑定来源选择；`run_id = NULL` 的不可变 Job 来源。
 - Shared account lock, filesystem-block second check and TOCTOU barrier before secret resolution/claim/spawn. / 共用账户锁、文件系统 block 二次检查及密钥解析/claim/spawn 前的 TOCTOU barrier。
 - Private refresh protocol, dedicated pipe/handle, detail child and runner; XHS/Douyin/Kuaishou/Bilibili selectors; fixed no-spawn Weibo/Tieba/Zhihu paths. / 私有 refresh 协议、专用 pipe/handle、detail child 与 runner；四个平台 selector；微博/贴吧/知乎固定不 spawn 路径。
 - Context-aware refresh and exact one 401/403 re-resolution; CLI `--enable-mediacrawler`, license and `--subscription-id` wiring. / 有上下文 refresh 与精确一次 401/403 重解析；CLI 启用、许可证及订阅参数接线。
-- Concurrent runner `FileNotFoundError` convergence and the full cleanup cancel/lease-loss/restart/four-state matrix. / runner 并发 `FileNotFoundError` 收敛及完整 cleanup 取消/lease-loss/restart/四状态矩阵。
-- Secret sentinel, full suite, build/wheel/package and one-shot retained gate. Execution 0010 automatic DAG remains not started. / 密钥哨兵、完整套件、构建/wheel/打包及一次性留存门禁；执行 0010 自动 DAG 仍未开始。
+- Functional refresh/download CLI, platform detail selection and automatic workflow integration. / 功能性 refresh/download CLI、平台 detail 选择及自动工作流集成。
+- Full hardening matrix, authorized live rows and retained sentinel are explicitly deferred until the functional path is complete. Execution 0010 automatic DAG remains not started. / 完整强化矩阵、授权真人行与留存哨兵明确后置到功能路径完成之后；执行 0010 自动 DAG 仍未开始。
+
+## Resumed implementation tranche / 恢复后的实现批次
+
+- Promoted `0005_asset_refresh_sources` to the CLI/package head and added `0004 → 0005 → 0004 → 0005` coverage for schema constraints, foreign keys, indexes and conservative 0/1/N legacy backfill. / 将 `0005_asset_refresh_sources` 提升为 CLI/包当前 head，并新增 schema 约束、外键、索引及保守 0/1/N legacy 回填的往返覆盖。
+- Wired exact Asset/Subscription observation into the same ingestion transaction before checkpoint publication. Wrong run/relation rolls back the entire batch; replay ordering, multi-account replacement and archive-reset eligibility are covered. / 在 checkpoint 发布前把精确 Asset/Subscription observation 接入同一导入事务；错误 run/关系回滚整批，并覆盖重放顺序、多账户替换及 archive reset 资格。
+- Closed fresh, recovered and already-succeeded cleanup behavior, preserved committed success truth and made concurrent disappearance of the exact root converge safely. / 收口 fresh、recovered 与 already-succeeded 清理行为，保留已提交成功事实，并让精确根的并发消失安全收敛。
+- Merged verification: Ruff PASS, strict mypy PASS for 65 source files, and `87 passed, 1 skipped` across migration/ingestion/handler/supervision focused gates. / 合并验证：Ruff 通过、65 个源码文件严格 mypy 通过，migration/ingestion/handler/supervision 专项共 `87 passed, 1 skipped`。
 
 ## Entry gaps to close / 必须关闭的入口缺口
 
 | Gap / 缺口 | Planned closure / 计划关闭方式 | Status / 状态 |
 | --- | --- | --- |
-| No exact refresh source / 无精确刷新来源 | `0005_asset_refresh_sources`, conservative backfill and same-transaction observations / 新表、保守 backfill 与同事务 observation | `PARTIAL` — schema/repository landed; ingestion/tests missing / schema/repository 已落盘；导入接线/测试缺失 |
+| No exact refresh source / 无精确刷新来源 | `0005_asset_refresh_sources`, conservative backfill and same-transaction observations / 新表、保守 backfill 与同事务 observation | `PASS (focused)` — schema, backfill, repository and ingestion wired / schema、回填、repository 与导入已接通 |
 | Context-free refresh port / 无上下文 refresh port | Frozen Asset/Content/Subscription/Account context plus stable-key and fingerprint rechecks / 冻结上下文及 stable-key/fingerprint 复核 | `NOT_RUN` |
 | No private detail protocol / 无私有 detail 协议 | Supervised detail-only child and one bounded non-relayed frame / 受监督 detail-only child 与单条有界不转发帧 | `NOT_RUN` |
 | Short-lived auth URL / 短效认证 URL | Exact one adapter-only 401/403 re-resolution; persistent locator-only partial identity / adapter 专用一次重解析及只持久 locator 的 partial 身份 | `NOT_RUN` |
-| Post-success truth and roots / 成功后事实与根 | Exact fresh/recovered/restart cleanup; preserve committed truth across result/readback/cleanup/cancel errors; race-safe four states / 精确三路径清理；result/readback/cleanup/cancel 错误下保留已提交事实；竞态安全四状态 | `PARTIAL` — handler code landed; regression contract and matrix incomplete / handler 代码已落盘；回归契约与矩阵未完成 |
+| Post-success truth and roots / 成功后事实与根 | Exact fresh/recovered/restart cleanup; preserve committed truth across result/readback/cleanup/cancel errors; race-safe four states / 精确三路径清理；result/readback/cleanup/cancel 错误下保留已提交事实；竞态安全四状态 | `PASS (focused)` — handler and concurrent cleanup regressions pass / handler 与并发清理回归通过 |
 | Signed data sink risk / 签名数据落点风险 | Injection/transport proof and fail-closed filesystem/SQLite/operator/JUnit scans / 注入/transport 证明与 fail-closed 多落点扫描 | `NOT_RUN` |
 | Configuration/block TOCTOU / 配置与 block 竞态 | Shared account lock; filesystem block recheck outside SQLite before secrets/claim/spawn; transactional DB identity recheck; all block writers share fence / 共用账户锁；SQLite 外二次检查 block 后再解析密钥/claim/spawn；事务复核 DB 身份；block writer 共用 fence | `NOT_RUN` |
 
@@ -63,10 +70,10 @@ The user requested a pause before execution 0009 acceptance. The following code 
 
 | Scope / 范围 | Status / 状态 | Truth / 真实性说明 |
 | --- | --- | --- |
-| Refresh provenance/migration / 刷新来源/migration | `PARTIAL` | Schema/repository code landed; focused migration gates fail / schema/repository 代码已落盘；migration 专项门禁失败 |
+| Refresh provenance/migration / 刷新来源/migration | `PASS (focused)` | Migration/repository/ingestion focused gates pass / migration/repository/ingestion 专项通过 |
 | Private refresh child / 私有刷新 child | `NOT_RUN` | No protocol or process has run / 尚未运行协议或进程 |
 | Manual signed-locator download / 手工签名 locator 下载 | `NOT_RUN` | Existing CLI still returns `locator_refresh_unsupported` / 既有 CLI 仍返回该 fixed code |
-| Successful/recovery terminal cleanup / 成功/恢复终态清理 | `PARTIAL` | Partial handler repair landed; 9 existing integration expectations fail and full matrix is missing / handler 部分修复已落盘；9 项既有集成预期失败且完整矩阵缺失 |
+| Successful/recovery terminal cleanup / 成功/恢复终态清理 | `PASS (focused)` | Handler `53 passed`; supervision `14 passed, 1 skipped` / handler 53 项通过；supervision 14 项通过、1 项跳过 |
 | Automatic `sync → download → Emby` DAG / 自动 DAG | Unimplemented / 未实现 | Execution 0010 / 执行 0010 |
 | Live login, creator traffic, refresh, CDN and Emby/Jellyfin / 真人登录、作者流量、刷新、CDN 与 Emby/Jellyfin | `NOT_RUN` | No authorized environment supplied / 未提供授权环境 |
 

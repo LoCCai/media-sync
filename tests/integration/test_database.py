@@ -68,6 +68,7 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 ALEMBIC_INI = REPOSITORY_ROOT / "alembic.ini"
 DOMAIN_TABLES = {
     "accounts",
+    "asset_refresh_sources",
     "assets",
     "authors",
     "contents",

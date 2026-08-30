@@ -56,6 +56,7 @@ from media_sync.integrations.mediacrawler.normalizers import (
 from media_sync.integrations.mediacrawler.policies import WatchdogLimits, build_run_paths
 from media_sync.integrations.mediacrawler.receipt import (
     COMPLETION_RECEIPT_SCHEMA_VERSION,
+    ValidatedOutputSnapshot,
     load_validated_output_snapshot,
 )
 from media_sync.integrations.mediacrawler.runner import (
@@ -222,6 +223,7 @@ class _ProtocolRecordingRunner:
     def __init__(self) -> None:
         self.manifests: list[RunnerManifest] = []
         self.results: list[MediaCrawlerProcessResult] = []
+        self.snapshots: list[ValidatedOutputSnapshot] = []
         self._inner = MediaCrawlerProcessRunner()
 
     def run(
@@ -232,6 +234,8 @@ class _ProtocolRecordingRunner:
         self.manifests.append(RunnerManifest.load(spec.paths.manifest_path))
         result = self._inner.run(spec, cancellation)
         self.results.append(result)
+        if result.succeeded:
+            self.snapshots.append(load_validated_output_snapshot(spec.manifest))
         return result
 
 
@@ -808,14 +812,15 @@ async def test_all_platforms_cross_real_v3_v2_process_protocol_retry_and_idempot
     assert second_manifest.execution_id != first_manifest.execution_id
     assert second_manifest.sync_run_id != first_manifest.sync_run_id
     assert second_runner.results[0].status is MediaCrawlerProcessStatus.SUCCEEDED
-    assert RunnerManifest.load(second_manifest.job_root / "runner-manifest.json") == second_manifest
-    snapshot = load_validated_output_snapshot(second_manifest)
+    assert len(second_runner.snapshots) == 1
+    snapshot = second_runner.snapshots[0]
     assert snapshot.receipt.schema_version == COMPLETION_RECEIPT_SCHEMA_VERSION
     assert snapshot.receipt.scheduler_job_id == durable_job_id
     assert snapshot.receipt.attempt == 2
     assert snapshot.receipt.execution_id == second_manifest.execution_id
     assert snapshot.receipt.sync_run_id == second_manifest.sync_run_id
     assert tuple(item.payload for item in snapshot.files) == ((FIXTURE_ROOT / FIXTURES[platform]).read_bytes(),)
+    assert not second_manifest.job_root.exists() and not second_manifest.job_root.is_symlink()
 
     with database.session() as session:
         subscription = session.get(Subscription, subscription_id)
@@ -861,8 +866,10 @@ async def test_all_platforms_cross_real_v3_v2_process_protocol_retry_and_idempot
     assert replay_manifest.schema_version == MANIFEST_SCHEMA_VERSION
     assert replay_manifest.scheduler_job_id != durable_job_id
     assert replay_manifest.attempt == 1
-    replay_snapshot = load_validated_output_snapshot(replay_manifest)
+    assert len(replay_runner.snapshots) == 1
+    replay_snapshot = replay_runner.snapshots[0]
     assert replay_snapshot.receipt.schema_version == COMPLETION_RECEIPT_SCHEMA_VERSION
+    assert not replay_manifest.job_root.exists() and not replay_manifest.job_root.is_symlink()
     with database.session() as session:
         subscription = session.get(Subscription, subscription_id)
         replay_run = session.get(SyncRun, replay.run_id)
@@ -966,8 +973,10 @@ async def test_real_handler_process_wait_keeps_heartbeat_and_independent_sqlite_
 
     assert result.status == "succeeded"
     assert len(protocol_runner.manifests) == 1
-    snapshot = load_validated_output_snapshot(protocol_runner.manifests[0])
+    assert len(protocol_runner.snapshots) == 1
+    snapshot = protocol_runner.snapshots[0]
     assert snapshot.receipt.schema_version == COMPLETION_RECEIPT_SCHEMA_VERSION
+    assert not protocol_runner.manifests[0].job_root.exists()
 
 
 @pytest.mark.asyncio
@@ -1047,7 +1056,10 @@ async def test_transient_job_success_finalize_cannot_replace_committed_run_with_
 ) -> None:
     _seed(database, platform=Platform.XHS)
     original_succeed = SchedulerRepository.succeed
+    original_cleanup = mediacrawler_handler_module._cleanup_exact_attempt
     calls = 0
+    cleanup_observations: list[tuple[Path, AttemptCleanupStatus]] = []
+    ingestion_factories = 0
 
     def fail_once(self: SchedulerRepository, *args: object, **kwargs: object) -> object:
         nonlocal calls
@@ -1056,11 +1068,37 @@ async def test_transient_job_success_finalize_cannot_replace_committed_run_with_
             raise RuntimeError("POST-INGESTION-FINALIZE-SENTINEL-0007")
         return original_succeed(self, *args, **kwargs)  # type: ignore[arg-type]
 
-    monkeypatch.setattr(SchedulerRepository, "succeed", fail_once)
+    def observe_cleanup(paths: policies_module.RunPaths) -> AttemptCleanupStatus:
+        status = original_cleanup(paths)
+        cleanup_observations.append((paths.job_root, status))
+        return status
 
-    result = await _run_worker(database, _handler(database, tmp_path))
+    def ingestion_factory(active_database: Database) -> MediaCrawlerIngestionService:
+        nonlocal ingestion_factories
+        ingestion_factories += 1
+        return MediaCrawlerIngestionService(active_database)
+
+    monkeypatch.setattr(SchedulerRepository, "succeed", fail_once)
+    monkeypatch.setattr(mediacrawler_handler_module, "_cleanup_exact_attempt", observe_cleanup)
+    bridge = _Bridge()
+    runner = _Runner()
+
+    result = await _run_worker(
+        database,
+        _handler(
+            database,
+            tmp_path,
+            bridge=bridge,
+            runner=runner,
+            ingestion_factory=ingestion_factory,
+        ),
+    )
 
     assert calls == 2
+    assert len(bridge.requests) == len(runner.calls) == ingestion_factories == 1
+    source_root = runner.calls[0][0].paths.job_root
+    assert cleanup_observations == [(source_root, AttemptCleanupStatus.REMOVED)]
+    assert not source_root.exists() and not source_root.is_symlink()
     assert (result.status, result.error_code) == ("succeeded", None)  # type: ignore[attr-defined]
     with database.session() as session:
         job = session.scalar(select(Job))
@@ -1070,6 +1108,93 @@ async def test_transient_job_success_finalize_cannot_replace_committed_run_with_
         assert run is not None and run.status == "succeeded"
         assert job.run_id == run.id
         assert subscription is not None and subscription.consecutive_failures == 0
+
+
+@pytest.mark.asyncio
+async def test_already_succeeded_handler_restart_cleans_same_source_without_reingest_or_spawn(
+    database: Database,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _seed(database, platform=Platform.XHS)
+    clock = _Clock()
+    DurableSchedulerService(database, clock=clock).tick(limit=1)
+    with database.session() as session:
+        repository = SchedulerRepository(session)
+        claimed = repository.claim_next(
+            worker_id="terminal-restart-owner",
+            global_capacity=1,
+            lease_seconds=60,
+            now=clock(),
+        )
+        assert claimed is not None
+        started = repository.start(
+            claimed.job_id,
+            worker_id="terminal-restart-owner",
+            lease_token=claimed.lease_token,
+            now=clock(),
+        )
+
+    bridge = _Bridge()
+    runner = _Runner()
+    ingestion_factories = 0
+    cleanup_observations: list[tuple[Path, AttemptCleanupStatus]] = []
+    original_cleanup = mediacrawler_handler_module._cleanup_exact_attempt
+
+    def ingestion_factory(active_database: Database) -> MediaCrawlerIngestionService:
+        nonlocal ingestion_factories
+        ingestion_factories += 1
+        return MediaCrawlerIngestionService(active_database)
+
+    def observe_cleanup(paths: policies_module.RunPaths) -> AttemptCleanupStatus:
+        status = original_cleanup(paths)
+        cleanup_observations.append((paths.job_root, status))
+        return status
+
+    monkeypatch.setattr(mediacrawler_handler_module, "_cleanup_exact_attempt", observe_cleanup)
+    handler = _handler(
+        database,
+        tmp_path,
+        bridge=bridge,
+        runner=runner,
+        clock=clock,
+        ingestion_factory=ingestion_factory,
+    )
+    worker = SubscriptionWorker(
+        database,
+        SubscriptionHandlerRegistry({"mediacrawler": handler}),
+        clock=clock,
+    )
+    first_context, handler_key = worker._load_context(started, worker_id="terminal-restart-owner")
+    assert first_context is not None and handler_key == "mediacrawler"
+
+    first = await handler.run(first_context)
+
+    assert first.succeeded is True and first.run_id is not None
+    with database.session() as session:
+        refreshed = SchedulerRepository(session).heartbeat(
+            started.job_id,
+            worker_id="terminal-restart-owner",
+            lease_token=started.lease_token,
+            lease_seconds=60,
+            now=clock(),
+        )
+    restart_context, handler_key = worker._load_context(refreshed, worker_id="terminal-restart-owner")
+    assert restart_context is not None and handler_key == "mediacrawler"
+
+    restarted = await handler.run(restart_context)
+
+    assert restarted.succeeded is True and restarted.run_id == first.run_id
+    assert len(bridge.requests) == len(runner.calls) == ingestion_factories == 1
+    source_root = runner.calls[0][0].paths.job_root
+    assert cleanup_observations == [
+        (source_root, AttemptCleanupStatus.REMOVED),
+        (source_root, AttemptCleanupStatus.ABSENT),
+    ]
+    assert not source_root.exists() and not source_root.is_symlink()
+    with database.session() as session:
+        run = session.get(SyncRun, str(first.run_id))
+        assert run is not None and run.status == "succeeded"
 
 
 @pytest.mark.asyncio
@@ -2144,7 +2269,7 @@ async def test_prior_attempt_recovery_is_policy_bound_and_cleans_untrusted_roots
     if recovery_case == "valid":
         assert result.succeeded is True
         assert not bridge.requests and not runner.calls
-        assert receipt_path.read_bytes() == receipt_bytes
+        assert not receipt_path.parent.exists() and not receipt_path.parent.is_symlink()
         assert loaded_paths == [receipt_path.parent / "runner-manifest.json"]
         assert checkout_verifications == [recovered_manifest]
     elif recovery_case in {"policy_mismatch", "attempt_mismatch", "checkpoint_mismatch"}:

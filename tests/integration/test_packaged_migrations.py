@@ -32,6 +32,7 @@ from media_sync.application.downloads import (
 from media_sync.application.emby import EmbyExportRequest, EmbyExportService
 from media_sync.exporters.emby import EmbyExporter, ExportError
 from media_sync.infrastructure.db import (
+    AccountRepository,
     Asset,
     AssetRepository,
     AssetUpsert,
@@ -42,9 +43,11 @@ from media_sync.infrastructure.db import (
     ExportRecord,
     Job,
     JobRepository,
+    SubscriptionRepository,
 )
+from media_sync.infrastructure.db.asset_identity import stable_asset_key
 from media_sync.infrastructure.db.migration import MIGRATIONS_PACKAGE, upgrade_database
-from media_sync.media import SafeHttpClient, SecureMediaDownloader, ValidatedTarget
+from media_sync.media import AdapterRefreshLocator, SafeHttpClient, SecureMediaDownloader, ValidatedTarget
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 
@@ -120,7 +123,7 @@ def test_programmatic_upgrade_uses_packaged_resources_and_handles_percent_path(t
     try:
         assert "accounts" in inspect(engine).get_table_names()
         with engine.connect() as connection:
-            assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0004_scheduler_control_plane"
+            assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0005_asset_refresh_sources"
     finally:
         engine.dispose()
 
@@ -152,6 +155,7 @@ def test_built_wheel_contains_and_runs_packaged_migrations(tmp_path: Path) -> No
             "media_sync/infrastructure/db/migrations/versions/0002_checkpoint_fencing.py",
             "media_sync/infrastructure/db/migrations/versions/0003_media_download_emby.py",
             "media_sync/infrastructure/db/migrations/versions/0004_scheduler_control_plane.py",
+            "media_sync/infrastructure/db/migrations/versions/0005_asset_refresh_sources.py",
         }
         assert required_resources <= wheel_names
         wheel.extractall(installed_root)
@@ -177,7 +181,7 @@ try:
     if "accounts" not in inspect(engine).get_table_names():
         raise AssertionError("packaged migration did not create accounts")
     with engine.connect() as connection:
-        if connection.scalar(text("SELECT version_num FROM alembic_version")) != "0004_scheduler_control_plane":
+        if connection.scalar(text("SELECT version_num FROM alembic_version")) != "0005_asset_refresh_sources":
             raise AssertionError("unexpected migration revision")
 finally:
     engine.dispose()
@@ -200,6 +204,160 @@ finally:
         text=True,
     )
     assert smoke.returncode == 0, smoke.stdout + smoke.stderr
+
+
+def test_0005_roundtrip_conservatively_backfills_only_unique_mediacrawler_source(tmp_path: Path) -> None:
+    database_path = tmp_path / "asset-refresh-sources.sqlite3"
+    database_url = f"sqlite+pysqlite:///{database_path.as_posix()}"
+    upgrade_database(database_url, "0004_scheduler_control_plane")
+
+    seeded = Database(database_url)
+    try:
+        with seeded.session() as session:
+            def seed_asset(
+                suffix: str,
+                *,
+                adapters: tuple[str, ...],
+            ) -> tuple[str, list[str], str, str]:
+                author, contents = AuthorRepository(session).upsert_with_contents(
+                    AuthorUpsert(platform="xhs", remote_id=f"author-{suffix}", display_name=f"Author {suffix}"),
+                    [ContentUpsert(remote_id=f"content-{suffix}", kind="image")],
+                )
+                subscription_ids = []
+                for index, adapter in enumerate(adapters):
+                    account = AccountRepository(session).create(
+                        platform="xhs",
+                        adapter=adapter,
+                        display_name=f"account-{suffix}-{index}",
+                    )
+                    subscription = SubscriptionRepository(session).create(
+                        account_id=account.id,
+                        author_id=author.id,
+                    )
+                    subscription_ids.append(subscription.id)
+                content = contents[0]
+                locator = AdapterRefreshLocator(
+                    adapter="mediacrawler",
+                    asset_key=stable_asset_key(
+                        platform="xhs",
+                        content_remote_type=content.remote_type,
+                        content_remote_id=content.remote_id,
+                        kind="image",
+                        position=0,
+                        remote_id=f"asset-{suffix}",
+                    ),
+                )
+                asset = AssetRepository(session).upsert_for_content(
+                    content.id,
+                    AssetUpsert(
+                        platform="xhs",
+                        remote_id=f"asset-{suffix}",
+                        kind="image",
+                        position=0,
+                        locator=locator.as_dict(),
+                    ),
+                )
+                return asset.id, subscription_ids, asset.semantic_fingerprint, asset.locator_fingerprint
+
+            unique_asset_id, unique_subscription_ids, semantic_fingerprint, locator_fingerprint = seed_asset(
+                "unique",
+                adapters=("mediacrawler",),
+            )
+            ambiguous_asset_id, _ambiguous_subscription_ids, _, _ = seed_asset(
+                "ambiguous",
+                adapters=("mediacrawler", "mediacrawler"),
+            )
+            no_candidate_asset_id, _no_candidate_subscription_ids, _, _ = seed_asset(
+                "none",
+                adapters=("native",),
+            )
+    finally:
+        seeded.dispose()
+
+    def assert_head_and_backfill() -> None:
+        engine = create_engine(database_url)
+        try:
+            inspector = inspect(engine)
+            assert inspector.get_pk_constraint("asset_refresh_sources")["constrained_columns"] == [
+                "asset_id",
+                "subscription_id",
+            ]
+            assert {
+                "ck_asset_refresh_sources_observation_kind",
+                "ck_asset_refresh_sources_observed_generation_positive",
+                "ck_asset_refresh_sources_observed_semantic_fingerprint_shape",
+                "ck_asset_refresh_sources_observed_locator_fingerprint_shape",
+                "ck_asset_refresh_sources_seen_at_order",
+            } <= {constraint["name"] for constraint in inspector.get_check_constraints("asset_refresh_sources")}
+            indexes = {index["name"]: index for index in inspector.get_indexes("asset_refresh_sources")}
+            assert indexes["ix_asset_refresh_sources_subscription_id"]["column_names"] == ["subscription_id"]
+            assert indexes["ix_asset_refresh_sources_asset_fingerprints"]["column_names"] == [
+                "asset_id",
+                "observed_semantic_fingerprint",
+                "observed_locator_fingerprint",
+            ]
+            foreign_keys = {
+                tuple(foreign_key["constrained_columns"]): foreign_key["options"].get("ondelete")
+                for foreign_key in inspector.get_foreign_keys("asset_refresh_sources")
+            }
+            assert foreign_keys == {
+                ("asset_id",): "CASCADE",
+                ("subscription_id",): "CASCADE",
+                ("last_run_id",): "SET NULL",
+            }
+            with engine.connect() as connection:
+                assert (
+                    connection.scalar(text("SELECT version_num FROM alembic_version"))
+                    == "0005_asset_refresh_sources"
+                )
+                rows = connection.execute(
+                    text(
+                        "SELECT asset_id, subscription_id, last_run_id, observation_kind, observed_generation, "
+                        "observed_semantic_fingerprint, observed_locator_fingerprint "
+                        "FROM asset_refresh_sources ORDER BY asset_id, subscription_id"
+                    )
+                ).all()
+                assert rows == [
+                    (
+                        unique_asset_id,
+                        unique_subscription_ids[0],
+                        None,
+                        "legacy_unique_inferred",
+                        1,
+                        semantic_fingerprint,
+                        locator_fingerprint,
+                    )
+                ]
+                assert connection.scalar(
+                    text(
+                        "SELECT COUNT(*) FROM asset_refresh_sources "
+                        "WHERE asset_id IN (:ambiguous_asset_id, :no_candidate_asset_id)"
+                    ),
+                    {
+                        "ambiguous_asset_id": ambiguous_asset_id,
+                        "no_candidate_asset_id": no_candidate_asset_id,
+                    },
+                ) == 0
+                assert connection.execute(text("PRAGMA foreign_key_check")).all() == []
+        finally:
+            engine.dispose()
+
+    upgrade_database(database_url)
+    assert_head_and_backfill()
+
+    _downgrade_packaged_database(database_url, "0004_scheduler_control_plane")
+    downgraded = create_engine(database_url)
+    try:
+        assert "asset_refresh_sources" not in inspect(downgraded).get_table_names()
+        with downgraded.connect() as connection:
+            assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0004_scheduler_control_plane"
+            assert connection.scalar(text("SELECT COUNT(*) FROM assets")) == 3
+            assert connection.execute(text("PRAGMA foreign_key_check")).all() == []
+    finally:
+        downgraded.dispose()
+
+    upgrade_database(database_url)
+    assert_head_and_backfill()
 
 
 def test_0003_upgrade_preserves_only_complete_verified_legacy_asset(tmp_path: Path) -> None:
@@ -882,7 +1040,7 @@ def test_0004_real_0003_roundtrip_preserves_0005_evidence_and_releases_sync_iden
     upgraded_engine = create_engine(database_url)
     try:
         with upgraded_engine.begin() as connection:
-            assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0004_scheduler_control_plane"
+            assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0005_asset_refresh_sources"
             assert _execution_0005_job_evidence(connection) == before_jobs
             assert _emby_record_evidence(connection) == before_records
             assert (
@@ -996,7 +1154,7 @@ def test_0004_real_0003_roundtrip_preserves_0005_evidence_and_releases_sync_iden
     reupgraded_engine = create_engine(database_url)
     try:
         with reupgraded_engine.begin() as connection:
-            assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0004_scheduler_control_plane"
+            assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0005_asset_refresh_sources"
             assert (
                 connection.scalar(
                     text("SELECT schedule_revision FROM subscriptions WHERE id = :id"),
