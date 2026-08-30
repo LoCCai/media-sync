@@ -198,24 +198,28 @@ async def main():
         path.write_bytes(b'{"partial":')
         return
     if "mode-raise" in creator:
+        _append(path, {"sentinel": config.COOKIES})
         raise RuntimeError(f"cookie={config.COOKIES} creator={creator}")
     if "mode-bytes" in creator:
-        _append(path, {"pad": "x" * 2048})
+        _append(path, {"sentinel": config.COOKIES, "pad": "x" * 2048})
         return
     if "mode-line" in creator:
-        _append(path, {"line": "y" * 1024})
+        _append(path, {"sentinel": config.COOKIES, "line": "y" * 1024})
         return
     if "mode-items" in creator:
         for index in range(6):
-            _append(path, {"index": index})
+            _append(path, {"index": index, "sentinel": config.COOKIES})
         return
     if "mode-files" in creator:
         for index in range(4):
-            _append(_output_file(f"fixture_{index}.jsonl"), {"index": index})
+            _append(
+                _output_file(f"fixture_{index}.jsonl"),
+                {"index": index, "sentinel": config.COOKIES},
+            )
         return
     if "mode-extension" in creator:
         bad = Path(config.SAVE_DATA_PATH) / "unexpected.txt"
-        bad.write_text("bad", encoding="utf-8")
+        bad.write_text(config.COOKIES, encoding="utf-8")
         return
     if "mode-secret-echo" in creator:
         _append(
@@ -239,6 +243,7 @@ async def main():
         return
     _append(path, probe)
     if "mode-sleep" in creator:
+        _append(path, {"sentinel": config.COOKIES})
         await asyncio.sleep(60)
 
 

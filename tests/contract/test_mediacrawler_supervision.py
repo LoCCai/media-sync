@@ -10,6 +10,7 @@ import sys
 import textwrap
 import threading
 import time
+from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
@@ -20,6 +21,8 @@ import pytest
 
 from media_sync.domain import LoginMethod, Platform
 from media_sync.integrations.mediacrawler import bridge as bridge_module
+from media_sync.integrations.mediacrawler import policies as policies_module
+from media_sync.integrations.mediacrawler import receipt as receipt_module
 from media_sync.integrations.mediacrawler import runner as runner_module
 from media_sync.integrations.mediacrawler.policies import PRIVATE_INPUT_ENV, WatchdogLimits, build_run_paths
 from media_sync.integrations.mediacrawler.runner import (
@@ -67,6 +70,12 @@ poststart_path.write_text("started", encoding="utf-8")
 
 manifest = json.loads(Path(sys.argv[-1]).read_text(encoding="utf-8"))
 output_root = Path(manifest["output_root"])
+if mode == "success":
+    target = output_root / "xhs" / "jsonl" / "success.jsonl"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps({"note_id": "offline-success"}) + "\n", encoding="utf-8")
+    probe_path.write_text(json.dumps({"child_pid": os.getpid()}), encoding="utf-8")
+    raise SystemExit(0)
 if mode == "secret-success":
     private = json.loads(private_payload)
     target = output_root / "xhs" / "jsonl" / "secret.jsonl"
@@ -254,6 +263,91 @@ def test_running_cancel_joins_child_and_grandchild_before_cleanup(
     assert not spec.paths.job_root.exists()
     assert sibling_marker.read_text(encoding="utf-8") == "keep"
     _wait_for_pids_to_exit(pids["child_pid"], pids["grandchild_pid"])
+
+
+def test_cancel_after_successful_tree_join_never_starts_receipt_seal(
+    supervision_project: FakeProject,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    helper = _write_helper(tmp_path / "pre-seal-helper.py")
+    probe = tmp_path / "pre-seal.json"
+    spec = _use_helper(
+        monkeypatch,
+        _bridge().prepare(
+            _request(
+                supervision_project,
+                tmp_path / "runs",
+                limits=WatchdogLimits(max_seconds=10, poll_seconds=0.02),
+            )
+        ),
+        helper,
+        mode="success",
+        probe=probe,
+    )
+    cancellation = threading.Event()
+    tree_joined = threading.Event()
+    final_inspection_started = threading.Event()
+    release_final_inspection = threading.Event()
+    receipt_started = threading.Event()
+    original_close = runner_module._close_process_tree
+    original_inspect = policies_module.inspect_output
+    original_write_receipt = receipt_module.write_completion_receipt
+
+    def observe_tree_join(
+        process: subprocess.Popen[bytes],
+        windows_job: runner_module._WindowsJob | None,
+    ) -> bool:
+        closed = original_close(process, windows_job)
+        assert closed
+        assert process.poll() == 0
+        tree_joined.set()
+        return closed
+
+    def block_final_inspection(
+        root: Path,
+        limits: WatchdogLimits | None = None,
+    ) -> policies_module.OutputStats:
+        if tree_joined.is_set():
+            final_inspection_started.set()
+            assert release_final_inspection.wait(timeout=10)
+        return original_inspect(root, limits)
+
+    def observe_receipt_start(
+        manifest: bridge_module.RunnerManifest,
+        inspected_stats: policies_module.OutputStats,
+        *,
+        known_secrets: Sequence[str | SecretValue],
+    ) -> receipt_module.CompletionReceipt:
+        receipt_started.set()
+        return original_write_receipt(
+            manifest,
+            inspected_stats,
+            known_secrets=known_secrets,
+        )
+
+    monkeypatch.setattr(runner_module, "_close_process_tree", observe_tree_join)
+    monkeypatch.setattr(policies_module, "inspect_output", block_final_inspection)
+    monkeypatch.setattr(receipt_module, "write_completion_receipt", observe_receipt_start)
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(MediaCrawlerProcessRunner().run, spec, cancellation)
+        try:
+            pids = _wait_for_json(probe)
+            assert final_inspection_started.wait(timeout=10)
+            assert tree_joined.is_set()
+            cancellation.set()
+        finally:
+            release_final_inspection.set()
+        result = future.result(timeout=15)
+
+    assert result.status is MediaCrawlerProcessStatus.CANCELLED
+    assert not receipt_started.is_set()
+    assert not spec.paths.job_root.exists()
+    _wait_for_pids_to_exit(pids["child_pid"])
+    account_lock = runner_module._AccountFileLock(spec.paths.account_root)
+    assert account_lock.acquire()
+    account_lock.release()
 
 
 def test_receipt_failure_removes_secret_bytes_but_preserves_profile(

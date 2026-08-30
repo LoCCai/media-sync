@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import subprocess
 import sys
 import textwrap
 from collections.abc import Callable, Iterator
@@ -19,7 +20,7 @@ import pytest
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from media_sync.application.mediacrawler import NormalizedMediaCrawlerOutput
+from media_sync.application.mediacrawler import NormalizedMediaCrawlerOutput, load_normalized_output
 from media_sync.domain import AccountRef, LoginMethod, Platform
 from media_sync.infrastructure.db import (
     AccountRepository,
@@ -34,6 +35,9 @@ from media_sync.infrastructure.db import (
 )
 from media_sync.infrastructure.db.models import Account, Asset, Content, Job, Subscription, SyncRun
 from media_sync.integrations.mediacrawler import bridge as bridge_module
+from media_sync.integrations.mediacrawler import policies as policies_module
+from media_sync.integrations.mediacrawler import receipt as receipt_module
+from media_sync.integrations.mediacrawler import runner as runner_module
 from media_sync.integrations.mediacrawler.bridge import (
     MANIFEST_SCHEMA_VERSION,
     BridgeConfigurationError,
@@ -278,6 +282,8 @@ def _protocol_handler(
     *,
     runner: _ProtocolRecordingRunner,
     clock: Callable[[], datetime],
+    normalizer: Callable[..., NormalizedMediaCrawlerOutput] = load_normalized_output,
+    ingestion_factory: Callable[[Database], object] = MediaCrawlerIngestionService,
 ) -> MediaCrawlerScheduledHandler:
     return MediaCrawlerScheduledHandler(
         database,
@@ -290,7 +296,73 @@ def _protocol_handler(
         bridge=MediaCrawlerBridge(lambda executable: VerifiedPython(executable.expanduser().resolve())),
         runner=runner,
         clock=clock,
+        normalizer=normalizer,  # type: ignore[arg-type]
+        ingestion_factory=ingestion_factory,  # type: ignore[arg-type]
     )
+
+
+class _BlockingPostSealNormalizer:
+    """Pause after validating a sealed snapshot but before returning it."""
+
+    def __init__(self) -> None:
+        self.entered = Event()
+        self.release = Event()
+        self.finished = Event()
+        self.manifests: list[RunnerManifest] = []
+        self.receipt_schema_versions: list[int] = []
+
+    def __call__(
+        self,
+        manifest: RunnerManifest,
+        *,
+        creator_remote_id: str,
+        creator_display_name: str,
+        ingested_at: datetime,
+    ) -> NormalizedMediaCrawlerOutput:
+        output = load_normalized_output(
+            manifest,
+            creator_remote_id=creator_remote_id,
+            creator_display_name=creator_display_name,
+            ingested_at=ingested_at,
+        )
+        snapshot = load_validated_output_snapshot(manifest)
+        self.manifests.append(manifest)
+        self.receipt_schema_versions.append(snapshot.receipt.schema_version)
+        self.entered.set()
+        try:
+            assert self.release.wait(timeout=5)
+            return output
+        finally:
+            self.finished.set()
+
+
+class _IngestionSpy:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def ingest(self, records: object, **kwargs: object) -> MediaCrawlerIngestionResult:
+        del records, kwargs
+        self.calls += 1
+        raise AssertionError("ingestion must not start after post-seal cancellation")
+
+
+class _NoEntryNormalizer:
+    """Fail if a pre-seal cancellation ever crosses into normalization."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def __call__(
+        self,
+        manifest: RunnerManifest,
+        *,
+        creator_remote_id: str,
+        creator_display_name: str,
+        ingested_at: datetime,
+    ) -> NormalizedMediaCrawlerOutput:
+        del manifest, creator_remote_id, creator_display_name, ingested_at
+        self.calls += 1
+        raise AssertionError("normalization must not start after pre-seal cancellation")
 
 
 class _BlockingRunner:
@@ -1429,6 +1501,238 @@ async def test_repeated_task_cancellation_still_joins_runner_before_unwind(
     assert len(runner.specs) == 1
     account_block, incident = attempt_cleanup_incident_paths(runner.specs[0].paths)
     assert account_block.is_file() and incident.is_file()
+
+
+@pytest.mark.asyncio
+async def test_child_exit_pre_seal_cancellation_never_enters_normalization_or_ingestion(
+    database: Database,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    subscription_id = _seed(database, platform=Platform.BILI)
+    runtime_root = (tmp_path / "pre-seal-runtime").resolve()
+    helper = _write_protocol_fixture_child(tmp_path / "pre-seal-protocol-child.py")
+    monkeypatch.setattr(bridge_module, "RUNNER_SCRIPT", helper)
+    tree_joined = Event()
+    final_inspection_started = Event()
+    release_final_inspection = Event()
+    receipt_started = Event()
+    original_close = runner_module._close_process_tree
+    original_inspect = policies_module.inspect_output
+
+    def observe_tree_join(
+        process: subprocess.Popen[bytes],
+        windows_job: runner_module._WindowsJob | None,
+    ) -> bool:
+        closed = original_close(process, windows_job)
+        assert closed
+        assert process.poll() == 0
+        tree_joined.set()
+        return closed
+
+    def block_final_inspection(
+        root: Path,
+        limits: WatchdogLimits | None = None,
+    ) -> policies_module.OutputStats:
+        if tree_joined.is_set():
+            final_inspection_started.set()
+            assert release_final_inspection.wait(timeout=5)
+        return original_inspect(root, limits)
+
+    def forbid_receipt(*args: object, **kwargs: object) -> None:
+        del args, kwargs
+        receipt_started.set()
+        raise AssertionError("receipt publication must not start after pre-seal cancellation")
+
+    monkeypatch.setattr(runner_module, "_close_process_tree", observe_tree_join)
+    monkeypatch.setattr(policies_module, "inspect_output", block_final_inspection)
+    monkeypatch.setattr(receipt_module, "write_completion_receipt", forbid_receipt)
+
+    clock = _Clock()
+    scheduler = DurableSchedulerService(database, clock=clock)
+    assert scheduler.tick(limit=1).materialized_count == 1
+    runner = _ProtocolRecordingRunner()
+    normalizer = _NoEntryNormalizer()
+    ingestion = _IngestionSpy()
+    handler = _protocol_handler(
+        database,
+        runtime_root,
+        runner=runner,
+        clock=clock,
+        normalizer=normalizer,
+        ingestion_factory=lambda _database: ingestion,
+    )
+    worker = SubscriptionWorker(
+        database,
+        SubscriptionHandlerRegistry({"mediacrawler": handler}),
+        clock=clock,
+        random_fraction=lambda: 0.0,
+    )
+    task = asyncio.create_task(worker.run_once(worker_id="pre-seal-cancel"))
+    cancel_requested = False
+
+    try:
+        assert await asyncio.to_thread(final_inspection_started.wait, 5)
+        assert tree_joined.is_set()
+        assert len(runner.manifests) == 1
+        manifest = runner.manifests[0]
+        receipt_path = manifest.job_root / "completion-receipt.json"
+        assert manifest.output_root.is_dir()
+        assert not receipt_path.exists() and not receipt_path.is_symlink()
+        assert normalizer.calls == 0 and ingestion.calls == 0
+
+        task.cancel()
+        cancel_requested = True
+        await asyncio.sleep(0)
+
+        assert not task.done()
+        assert not receipt_started.is_set()
+        assert normalizer.calls == 0 and ingestion.calls == 0
+    finally:
+        if not cancel_requested and not task.done():
+            task.cancel()
+        release_final_inspection.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, timeout=5)
+
+    assert len(runner.results) == 1
+    assert runner.results[0].status is MediaCrawlerProcessStatus.CANCELLED
+    assert not receipt_started.is_set()
+    assert normalizer.calls == 0 and ingestion.calls == 0
+    assert not manifest.job_root.exists() and not manifest.job_root.is_symlink()
+    assert not receipt_path.exists() and not receipt_path.is_symlink()
+    account_lock = runner_module._AccountFileLock(manifest.account_root)
+    assert account_lock.acquire()
+    account_lock.release()
+    with database.session() as session:
+        subscription = session.get(Subscription, subscription_id)
+        run = session.scalar(select(SyncRun).where(SyncRun.subscription_id == subscription_id))
+        job = session.scalar(select(Job).where(Job.subscription_id == subscription_id))
+        assert subscription is not None and subscription.checkpoint_revision == 0
+        assert run is not None and run.status != "succeeded"
+        assert job is not None and job.status != "succeeded"
+        assert session.scalar(select(func.count()).select_from(Content)) == 0
+        assert session.scalar(select(func.count()).select_from(Asset)) == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "repeat_cancel",
+    (False, True),
+    ids=("single-cancel", "repeated-cancel"),
+)
+async def test_post_seal_pre_ingest_cancellation_joins_before_unwind(
+    database: Database,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    repeat_cancel: bool,
+) -> None:
+    subscription_id = _seed(database, platform=Platform.BILI)
+    runtime_root = (tmp_path / "post-seal-runtime").resolve()
+    helper = _write_protocol_fixture_child(tmp_path / "post-seal-protocol-child.py")
+    monkeypatch.setattr(bridge_module, "RUNNER_SCRIPT", helper)
+    clock = _Clock()
+    scheduler = DurableSchedulerService(database, clock=clock)
+    assert scheduler.tick(limit=1).materialized_count == 1
+    runner = _ProtocolRecordingRunner()
+    normalizer = _BlockingPostSealNormalizer()
+    ingestion = _IngestionSpy()
+    handler = _protocol_handler(
+        database,
+        runtime_root,
+        runner=runner,
+        clock=clock,
+        normalizer=normalizer,
+        ingestion_factory=lambda _database: ingestion,
+    )
+    worker = SubscriptionWorker(
+        database,
+        SubscriptionHandlerRegistry({"mediacrawler": handler}),
+        clock=clock,
+        random_fraction=lambda: 0.0,
+    )
+    task = asyncio.create_task(
+        worker.run_once(
+            worker_id=f"post-seal-{'repeated' if repeat_cancel else 'single'}-cancel",
+        )
+    )
+    cancel_requested = False
+
+    try:
+        assert await asyncio.to_thread(normalizer.entered.wait, 5)
+        assert len(runner.manifests) == len(runner.results) == 1
+        assert runner.results[0].status is MediaCrawlerProcessStatus.SUCCEEDED
+        manifest = runner.manifests[0]
+        receipt_path = manifest.job_root / "completion-receipt.json"
+        assert manifest.job_root.is_dir() and receipt_path.is_file()
+        snapshot = load_validated_output_snapshot(manifest)
+        assert snapshot.receipt.schema_version == COMPLETION_RECEIPT_SCHEMA_VERSION
+        assert normalizer.manifests == [manifest]
+        assert normalizer.receipt_schema_versions == [COMPLETION_RECEIPT_SCHEMA_VERSION]
+        assert not normalizer.finished.is_set()
+        assert ingestion.calls == 0
+
+        with database.session() as session:
+            subscription = session.get(Subscription, subscription_id)
+            runs = list(session.scalars(select(SyncRun)).all())
+            job = session.scalar(select(Job).where(Job.subscription_id == subscription_id))
+            assert subscription is not None and subscription.checkpoint_revision == 0
+            state_before_cancel = (
+                subscription.checkpoint_revision,
+                session.scalar(select(func.count()).select_from(Content)),
+                session.scalar(select(func.count()).select_from(Asset)),
+            )
+            assert state_before_cancel == (0, 0, 0)
+            assert len(runs) == 1 and runs[0].status != "succeeded"
+            assert job is not None and job.status != "succeeded"
+
+        task.cancel()
+        cancel_requested = True
+        await asyncio.sleep(0)
+        if repeat_cancel:
+            task.cancel()
+            await asyncio.sleep(0)
+
+        assert not task.done()
+        assert not normalizer.finished.is_set()
+        assert ingestion.calls == 0
+        assert manifest.job_root.is_dir() and receipt_path.is_file()
+        assert load_validated_output_snapshot(manifest).receipt.schema_version == COMPLETION_RECEIPT_SCHEMA_VERSION
+        with database.session() as session:
+            subscription = session.get(Subscription, subscription_id)
+            assert subscription is not None
+            state_while_cancelled = (
+                subscription.checkpoint_revision,
+                session.scalar(select(func.count()).select_from(Content)),
+                session.scalar(select(func.count()).select_from(Asset)),
+            )
+            assert state_while_cancelled == state_before_cancel
+    finally:
+        if not cancel_requested and not task.done():
+            task.cancel()
+        normalizer.release.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, timeout=5)
+
+    assert normalizer.finished.is_set()
+    assert ingestion.calls == 0
+    assert not manifest.job_root.exists() and not manifest.job_root.is_symlink()
+    assert not receipt_path.exists() and not receipt_path.is_symlink()
+    with database.session() as session:
+        subscription = session.get(Subscription, subscription_id)
+        runs = list(session.scalars(select(SyncRun)).all())
+        job = session.scalar(select(Job).where(Job.subscription_id == subscription_id))
+        assert subscription is not None
+        state_after_cancel = (
+            subscription.checkpoint_revision,
+            session.scalar(select(func.count()).select_from(Content)),
+            session.scalar(select(func.count()).select_from(Asset)),
+        )
+        assert state_after_cancel == state_before_cancel
+        assert len(runs) == 1 and runs[0].status != "succeeded"
+        assert job is not None and job.status != "succeeded"
 
 
 @pytest.mark.asyncio

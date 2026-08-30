@@ -1139,6 +1139,13 @@ class MediaCrawlerProcessRunner:
                 returncode=successful_returncode,
                 stats=error.stats,
             )
+        if cancellation is not None and cancellation.is_set():
+            return _parent_result(
+                spec,
+                MediaCrawlerProcessStatus.CANCELLED,
+                returncode=successful_returncode,
+                stats=final_stats,
+            )
         try:
             write_completion_receipt(
                 spec.manifest,

@@ -1,7 +1,8 @@
 # Execution 0008 goal / 执行 0008 目标
 
-- Status / 状态：Planned / 已计划
+- Status / 状态：Complete for the offline acceptance scope / 离线验收范围已完成
 - Started / 开始时间：2026-08-30 15:48 +08:00
+- Completed / 完成时间：2026-08-30
 - Predecessor / 前置执行：Execution 0007 implementation commit `d071618`
 - Network boundary / 网络边界：offline fixtures and repository-owned local helper processes only / 仅离线夹具与仓库自有本地辅助进程
 
