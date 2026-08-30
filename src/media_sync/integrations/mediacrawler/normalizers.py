@@ -8,7 +8,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urlunsplit
 
 from media_sync.domain import (
     AssetKind,
@@ -36,6 +36,7 @@ from .jsonl import (
 _GIT_SHA = re.compile(r"[0-9a-fA-F]{40}\Z")
 _CHINA_TZ = timezone(timedelta(hours=8))
 _BILI_PROGRESSIVE_FIELD = "__media_sync_bili_progressive_url"
+_KS_EPHEMERAL_MEDIA_URL_FIELDS = frozenset({"video_play_url", "video_cover_url"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -167,6 +168,47 @@ def _strip_private_detail_field(value: object) -> object:
     if isinstance(value, Sequence) and not isinstance(value, bytes | bytearray | str):
         return [_strip_private_detail_field(item) for item in value]
     return value
+
+
+def _query_free_media_url(value: object) -> object:
+    """Retain only a canonical HTTP(S) origin/path in durable raw metadata."""
+
+    if isinstance(value, str):
+        normalized = _safe_url(value)
+        if normalized is None:
+            return None
+        parsed = urlsplit(normalized)
+        try:
+            hostname = parsed.hostname
+            port = parsed.port
+            if hostname is None:
+                return None
+            normalized_host = hostname.rstrip(".").encode("idna").decode("ascii").lower()
+        except (UnicodeError, ValueError):
+            return None
+        if not normalized_host or "%" in normalized_host:
+            return None
+        if ":" in normalized_host:
+            normalized_host = f"[{normalized_host}]"
+        scheme = parsed.scheme.lower()
+        default_port = 80 if scheme == "http" else 443
+        authority = normalized_host if port in {None, default_port} else f"{normalized_host}:{port}"
+        return urlunsplit((scheme, authority, parsed.path or "/", "", ""))
+    if isinstance(value, Sequence) and not isinstance(value, bytes | bytearray | str):
+        return [_query_free_media_url(item) for item in value]
+    # The upstream fields are strings (or, defensively, string sequences).
+    # Any other shape is schema drift and must not preserve opaque nested
+    # values that could contain a future signed URL or credential.
+    return None
+
+
+def _strip_ks_media_url_ephemera(record: Mapping[str, object]) -> Mapping[str, object]:
+    """Keep Kuaishou media queries in Asset source URLs, never retained raw."""
+
+    return {
+        key: _query_free_media_url(value) if key in _KS_EPHEMERAL_MEDIA_URL_FIELDS else value
+        for key, value in record.items()
+    }
 
 
 def _number(value: object) -> int | float | None:
@@ -525,6 +567,8 @@ def normalize_record(record: Mapping[str, object], context: NormalizationContext
         sanitized_record = _strip_private_detail_field(record)
         if not isinstance(sanitized_record, Mapping):  # pragma: no cover - record is already a mapping
             raise RecordNormalizationError(QuarantineReason.INVALID_RECORD)
+        if context.platform is Platform.KS:
+            sanitized_record = _strip_ks_media_url_ephemera(sanitized_record)
         envelope = MediaCrawlerEnvelope(
             platform=context.platform,
             upstream_sha=context.upstream_sha,

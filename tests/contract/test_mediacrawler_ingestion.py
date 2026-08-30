@@ -322,10 +322,26 @@ def test_asset_order_ids_and_media_semantics_are_deterministic() -> None:
         "image/jpeg",
     )
 
-    assert tuple(asset.kind for asset in records["ks-video-001"].assets) == (
+    ks_record = records["ks-video-001"]
+    ks_assets = ks_record.assets
+    assert ks_record.content.kind is ContentKind.VIDEO
+    assert ks_record.content.remote_type == "content"
+    assert ks_record.content.canonical_url == "https://www.kuaishou.com/short-video/ks-video-001"
+    assert tuple(asset.kind for asset in ks_assets) == (
         AssetKind.VIDEO,
         AssetKind.COVER,
     )
+    assert tuple(asset.position for asset in ks_assets) == (0, 0)
+    assert tuple(asset.remote_id for asset in ks_assets) == (
+        "ks-video-001:video:0",
+        "ks-video-001:cover:0",
+    )
+    assert tuple(asset.source_url for asset in ks_assets) == (
+        "https://cdn.example.invalid/ks/video.mp4",
+        "https://cdn.example.invalid/ks/cover.jpg",
+    )
+    assert tuple(asset.mime_type for asset in ks_assets) == ("video/mp4", "image/jpeg")
+
     bili_assets = records["987654321"].assets
     assert tuple(asset.kind for asset in bili_assets) == (AssetKind.VIDEO, AssetKind.COVER)
     assert bili_assets[0].remote_id == "987654321:video:0"

@@ -30,6 +30,9 @@ CONTENT_ID = "7525082444551310602"
 SIGNED_URL = f"https://video.example.test/douyin/main.mp4?sign={COOKIE_SENTINEL}"
 BILI_COVER = "https://image.example.test/bili/cover.jpg?token=bili-detail-sentinel"
 BILI_VIDEO_URL = "https://video.example.test/bili/first.mp4?" + "deadline=4102444800&sig=ephemeral-sentinel"
+KS_VIDEO_ID = "3x3zxz4mjrsc8ke"
+KS_VIDEO_URL = "https://video.example.test/ks/main.mp4?auth=ks-video-sentinel"
+KS_COVER_URL = "https://image.example.test/ks/cover.jpg?auth=ks-cover-sentinel"
 _DEFAULT_BILI_VIEW = object()
 _DEFAULT_BILI_PLAY = object()
 
@@ -81,6 +84,62 @@ class CrawlerFactory:
     @staticmethod
     def create_crawler(platform):
         assert platform == "dy"
+        return FakeCrawler()
+
+
+async def main():
+    global crawler
+    crawler = CrawlerFactory.create_crawler(config.PLATFORM)
+    await crawler.start()
+
+
+async def async_cleanup():
+    return None
+"""
+
+_KS_MAIN = r"""
+import json
+import os
+from pathlib import Path
+
+import config
+
+crawler = None
+RECORDS = __KS_RECORDS__
+
+
+class FakeCrawler:
+    async def start(self):
+        assert config.PLATFORM == "ks"
+        assert config.LOGIN_TYPE == "qrcode"
+        assert config.CRAWLER_TYPE == "detail"
+        assert config.KS_SPECIFIED_ID_LIST == ["3x3zxz4mjrsc8ke"]
+        assert config.SAVE_DATA_OPTION == "jsonl"
+        assert config.ENABLE_GET_COMMENTS is False
+        assert config.ENABLE_GET_MEIDAS is False
+        assert config.ENABLE_GET_MEDIAS is False
+        assert config.MAX_CONCURRENCY_NUM == 1
+        assert config.SAVE_LOGIN_STATE is True
+        profile = Path(
+            os.path.join(os.getcwd(), "browser_data", config.USER_DATA_DIR % config.PLATFORM)
+        ).resolve()
+        assert profile.name == "ks_user_data_dir"
+        assert profile.parent.name == "browser_data"
+        profile.mkdir(parents=True, exist_ok=True)
+        (profile / "session.marker").write_text("stable fixture profile", encoding="utf-8")
+        target = Path(config.SAVE_DATA_PATH) / "kuaishou" / "jsonl" / "detail_contents_fixture.jsonl"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        payload = "".join(
+            json.dumps(record, separators=(",", ":")) + "\n"
+            for record in RECORDS
+        )
+        target.write_text(payload, encoding="utf-8")
+
+
+class CrawlerFactory:
+    @staticmethod
+    def create_crawler(platform):
+        assert platform == "ks"
         return FakeCrawler()
 
 
@@ -181,6 +240,28 @@ def _fake_checkout(root: Path) -> Path:
     (checkout / "config").mkdir(parents=True)
     (checkout / "config" / "__init__.py").write_text(textwrap.dedent(_CONFIG).lstrip(), encoding="utf-8")
     (checkout / "main.py").write_text(textwrap.dedent(_MAIN).lstrip(), encoding="utf-8")
+    return checkout.resolve()
+
+
+def _ks_record(*, video_id: str = KS_VIDEO_ID) -> dict[str, str]:
+    return {
+        "video_id": video_id,
+        "video_type": "video",
+        "title": "fixture",
+        "desc": "fixture",
+        "video_url": f"https://www.kuaishou.com/short-video/{video_id}",
+        "video_cover_url": KS_COVER_URL,
+        "video_play_url": KS_VIDEO_URL,
+    }
+
+
+def _fake_ks_checkout(root: Path, *, records: list[dict[str, str]] | None = None) -> Path:
+    checkout = root / "fake-mediacrawler-ks"
+    (checkout / "config").mkdir(parents=True)
+    (checkout / "config" / "__init__.py").write_text(textwrap.dedent(_CONFIG).lstrip(), encoding="utf-8")
+    active_records = [_ks_record()] if records is None else records
+    main_source = textwrap.dedent(_KS_MAIN).lstrip().replace("__KS_RECORDS__", repr(active_records))
+    (checkout / "main.py").write_text(main_source, encoding="utf-8")
     return checkout.resolve()
 
 
@@ -293,6 +374,66 @@ def _bili_video_context() -> MediaCrawlerRefreshContext:
     )
 
 
+def _ks_process_runner(tmp_path: Path, checkout: Path) -> MediaCrawlerDetailProcessRunner:
+    lock_path = tmp_path / "upstreams.lock.json"
+    lock_path.write_text("{}", encoding="utf-8")
+    return MediaCrawlerDetailProcessRunner(
+        lock_path=lock_path,
+        integration_root=tmp_path / "runtime",
+        python_executable=Path(sys.executable),
+        license_acknowledged=True,
+        checkout_verifier=lambda _path, _accepted: VerifiedCheckout(
+            root=checkout,
+            commit=UPSTREAM_SHA,
+            repository="https://github.com/NanmiCoder/MediaCrawler.git",
+            license_name="NON-COMMERCIAL LEARNING LICENSE 1.1",
+            lock_path=lock_path,
+        ),
+        python_verifier=lambda path: VerifiedPython(path),
+    )
+
+
+def _ks_context(kind: AssetKind, signed_url: str) -> MediaCrawlerRefreshContext:
+    remote_id = f"{KS_VIDEO_ID}:{kind.value}:0"
+    locator = AdapterRefreshLocator(
+        adapter="mediacrawler",
+        asset_key=stable_asset_key(
+            platform="ks",
+            content_remote_type="content",
+            content_remote_id=KS_VIDEO_ID,
+            kind=kind.value,
+            position=0,
+            remote_id=remote_id,
+        ),
+    )
+    source_hint = asset_source_hint(signed_url)
+    assert source_hint is not None
+    return MediaCrawlerRefreshContext(
+        asset_id=ASSET_ID,
+        account_id=ACCOUNT_ID,
+        subscription_id=SUBSCRIPTION_ID,
+        platform=Platform.KS,
+        login_method=LoginMethod.QR,
+        content_remote_type="content",
+        content_remote_id=KS_VIDEO_ID,
+        author_remote_id="creator-42",
+        author_display_name="Fixture creator",
+        asset_remote_id=remote_id,
+        asset_kind=kind,
+        asset_position=0,
+        source_hint=source_hint,
+        locator=locator,
+        watchdogs=WatchdogLimits(
+            max_seconds=10,
+            max_output_bytes=64 * 1024,
+            max_output_items=5,
+            max_output_files=2,
+            max_line_bytes=16 * 1024,
+            poll_seconds=0.01,
+        ),
+    )
+
+
 def test_detail_process_runner_uses_detail_mode_and_cleans_signed_jsonl(tmp_path: Path) -> None:
     checkout = _fake_checkout(tmp_path)
     lock_path = tmp_path / "upstreams.lock.json"
@@ -371,6 +512,66 @@ def test_detail_process_runner_uses_detail_mode_and_cleans_signed_jsonl(tmp_path
     assert COOKIE_SENTINEL.encode() not in retained
     profile = integration_root / "accounts" / "dy" / str(ACCOUNT_ID) / "browser_data" / "dy_user_data_dir"
     assert profile.parent.is_dir()
+
+
+def test_kuaishou_detail_refresh_resolves_video_and_cover_without_retaining_signed_urls(tmp_path: Path) -> None:
+    checkout = _fake_ks_checkout(tmp_path)
+    runner = _ks_process_runner(tmp_path, checkout)
+    video_context = _ks_context(AssetKind.VIDEO, KS_VIDEO_URL)
+    cover_context = _ks_context(AssetKind.COVER, KS_COVER_URL)
+
+    video = MediaCrawlerLocatorRefresher(video_context, runner).resolve(video_context.locator)
+    cover = MediaCrawlerLocatorRefresher(cover_context, runner).resolve(cover_context.locator)
+
+    assert video.url == KS_VIDEO_URL
+    assert cover.url == KS_COVER_URL
+    assert video.request_profile is MediaRequestProfile.DEFAULT
+    assert cover.request_profile is MediaRequestProfile.DEFAULT
+    for value in (repr(video_context), repr(cover_context), repr(video), repr(cover)):
+        assert "ks-video-sentinel" not in value
+        assert "ks-cover-sentinel" not in value
+    jobs_root = tmp_path / "runtime" / "jobs"
+    assert jobs_root.is_dir()
+    assert list(jobs_root.iterdir()) == []
+    retained = b"".join(path.read_bytes() for path in (tmp_path / "runtime").rglob("*") if path.is_file())
+    assert KS_VIDEO_URL.encode("utf-8") not in retained
+    assert KS_COVER_URL.encode("utf-8") not in retained
+    profile = tmp_path / "runtime" / "accounts" / "ks" / str(ACCOUNT_ID) / "browser_data" / "ks_user_data_dir"
+    assert profile.is_dir()
+    assert (profile / "session.marker").read_text(encoding="utf-8") == "stable fixture profile"
+
+
+@pytest.mark.parametrize(
+    ("case", "records", "expected"),
+    [
+        ("missing", [], "locator_refresh_asset_not_found"),
+        ("content-id-drift", [_ks_record(video_id="different-video-id")], "locator_refresh_asset_not_found"),
+        ("duplicate", [_ks_record(), _ks_record()], "locator_refresh_asset_mismatch"),
+    ],
+)
+def test_kuaishou_detail_refresh_rejects_missing_drifted_and_duplicate_records(
+    tmp_path: Path,
+    case: str,
+    records: list[dict[str, str]],
+    expected: str,
+) -> None:
+    del case
+    checkout = _fake_ks_checkout(tmp_path, records=records)
+    context = _ks_context(AssetKind.VIDEO, KS_VIDEO_URL)
+
+    with pytest.raises(MediaDownloadError) as caught:
+        MediaCrawlerLocatorRefresher(context, _ks_process_runner(tmp_path, checkout)).resolve(context.locator)
+
+    assert caught.value.code == expected
+    error = str(caught.value)
+    assert "ks-video-sentinel" not in error
+    assert "ks-cover-sentinel" not in error
+    jobs_root = tmp_path / "runtime" / "jobs"
+    assert jobs_root.is_dir()
+    assert list(jobs_root.iterdir()) == []
+    retained = b"".join(path.read_bytes() for path in (tmp_path / "runtime").rglob("*") if path.is_file())
+    assert KS_VIDEO_URL.encode("utf-8") not in retained
+    assert KS_COVER_URL.encode("utf-8") not in retained
 
 
 def test_bilibili_numeric_aid_uses_pinned_client_detail_entry(tmp_path: Path) -> None:

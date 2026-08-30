@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 from sqlalchemy import func, select
@@ -37,8 +39,12 @@ from media_sync.infrastructure.db import (
     SubscriptionRepository,
     SyncRunRepository,
 )
-from media_sync.infrastructure.db.models import Asset, AssetRefreshSource, Content, Subscription, SyncRun
-from media_sync.integrations.mediacrawler.normalizers import NormalizedMediaRecord
+from media_sync.infrastructure.db.models import Asset, AssetRefreshSource, Author, Content, Subscription, SyncRun
+from media_sync.integrations.mediacrawler.normalizers import (
+    NormalizationContext,
+    NormalizedMediaRecord,
+    normalize_jsonl_bytes,
+)
 from media_sync.media.locator import AdapterRefreshLocator, locator_fingerprint, parse_locator
 
 
@@ -78,19 +84,20 @@ def _seed_subscription(
     *,
     account_name: str = "mediacrawler-ingestion-account",
     adapter: str = "mediacrawler",
+    platform: Platform = Platform.BILI,
     cursor: dict[str, object] | None = None,
     backfill_cursor: dict[str, object] | None = None,
     next_run_at: datetime | None = None,
 ) -> str:
     with database.session() as session:
         account = AccountRepository(session).create(
-            platform=Platform.BILI.value,
+            platform=platform.value,
             display_name=account_name,
             adapter=adapter,
         )
         author = AuthorRepository(session).upsert(
             AuthorUpsert(
-                platform=Platform.BILI.value,
+                platform=platform.value,
                 remote_id="creator-001",
                 display_name="Creator One",
             )
@@ -145,6 +152,115 @@ def _record(
         source_url=asset_source_url or f"https://example.invalid/{remote_type}/{remote_id}",
     )
     return NormalizedMediaRecord(author=author, content=content, assets=(asset,))
+
+
+def test_kuaishou_media_queries_are_ephemeral_across_normalization_and_sqlite(
+    database: Database,
+) -> None:
+    known_sentinel = f"KS_KNOWN_QUERY_SENTINEL_{uuid4().hex}"
+    unknown_sentinel = f"KS_UNKNOWN_QUERY_SENTINEL_{uuid4().hex}"
+    fragment_sentinel = f"KS_FRAGMENT_SENTINEL_{uuid4().hex}"
+    username_sentinel = f"KS_USERNAME_SENTINEL_{uuid4().hex}"
+    password_sentinel = f"KS_PASSWORD_SENTINEL_{uuid4().hex}"
+    nested_sentinel = f"KS_NESTED_SHAPE_SENTINEL_{uuid4().hex}"
+    video_url = (
+        f"https://{username_sentinel}:{password_sentinel}@video.kuaishou.test/media/ks-video-001.mp4"
+        f"?auth={known_sentinel}&clientCacheKey={unknown_sentinel}#{fragment_sentinel}"
+    )
+    cover_url = (
+        f"https://{username_sentinel}:{password_sentinel}@image.kuaishou.test/media/ks-video-001.jpg"
+        f"?signature={known_sentinel}&futureProofKey={unknown_sentinel}#{fragment_sentinel}"
+    )
+    record = {
+        "video_id": "ks-video-001",
+        "video_type": "video",
+        "title": "Kuaishou fixture",
+        "desc": "One ordinary video",
+        "create_time": "1767225600",
+        "video_url": "https://www.kuaishou.com/short-video/ks-video-001",
+        "video_play_url": [
+            video_url,
+            {"url": f"https://nested.kuaishou.test/video.mp4?future={nested_sentinel}"},
+        ],
+        "video_cover_url": [
+            cover_url,
+            [{"href": f"https://nested.kuaishou.test/cover.jpg?future={nested_sentinel}"}],
+        ],
+    }
+    batch = normalize_jsonl_bytes(
+        (json.dumps(record, separators=(",", ":")) + "\n").encode(),
+        NormalizationContext(
+            platform=Platform.KS,
+            creator_remote_id="creator-001",
+            creator_display_name="Creator One",
+            upstream_sha="d6f7c5bb906b6dac40ddf343ef9e26438a3de092",
+            ingested_at=datetime(2026, 8, 31, tzinfo=UTC),
+        ),
+    )
+
+    assert not batch.quarantined
+    assert len(batch.records) == 1
+    normalized = batch.records[0]
+    assert tuple(asset.source_url for asset in normalized.assets) == (video_url, cover_url)
+    retained_record = normalized.content.raw["record"]
+    assert retained_record["video_play_url"] == ("https://video.kuaishou.test/media/ks-video-001.mp4", None)
+    assert retained_record["video_cover_url"] == ("https://image.kuaishou.test/media/ks-video-001.jpg", (None,))
+    assert normalized.author.raw == normalized.content.raw
+    assert all(asset.raw == normalized.content.raw for asset in normalized.assets)
+
+    subscription_id = _seed_subscription(database, platform=Platform.KS)
+    result = MediaCrawlerIngestionService(database).ingest(
+        batch.records,
+        subscription_id=subscription_id,
+        run_id=_create_run(database, subscription_id),
+        expected_revision=0,
+        mode=IngestionMode.FORWARD,
+    )
+    assert result.accepted_count == 1
+    assert result.asset_count == 2
+
+    forbidden = (
+        known_sentinel,
+        unknown_sentinel,
+        fragment_sentinel,
+        username_sentinel,
+        password_sentinel,
+        nested_sentinel,
+    )
+    with database.session() as session:
+        author = session.scalar(select(Author).where(Author.platform == Platform.KS.value))
+        content = session.scalar(select(Content).where(Content.platform == Platform.KS.value))
+        assets = tuple(
+            session.scalars(select(Asset).where(Asset.platform == Platform.KS.value).order_by(Asset.kind)).all()
+        )
+        assert author is not None and content is not None and len(assets) == 2
+        retained_values = json.dumps(
+            {
+                "author_raw": author.raw,
+                "content_raw": content.raw,
+                "assets": [
+                    {"source_url": asset.source_url, "locator": asset.locator, "raw": asset.raw} for asset in assets
+                ],
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        assert all(sentinel not in retained_values for sentinel in forbidden)
+        assert {asset.source_url for asset in assets} == {
+            "https://video.kuaishou.test/media/ks-video-001.mp4",
+            "https://image.kuaishou.test/media/ks-video-001.jpg",
+        }
+        for asset in assets:
+            locator = parse_locator(asset.locator)
+            assert isinstance(locator, AdapterRefreshLocator)
+            assert locator.adapter == "mediacrawler"
+
+    database_path_value = make_url(database.url).database
+    assert database_path_value is not None
+    database.dispose()
+    database_path = Path(database_path_value)
+    sqlite_bytes = b"".join(path.read_bytes() for path in database_path.parent.glob(f"{database_path.name}*"))
+    assert all(sentinel.encode() not in sqlite_bytes for sentinel in forbidden)
 
 
 def test_ingestion_records_exact_refresh_source_and_archive_reset_keeps_it_eligible(
