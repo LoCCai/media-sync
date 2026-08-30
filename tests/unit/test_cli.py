@@ -401,7 +401,7 @@ def test_db_status_uninitialized_is_nonzero_read_only_and_redacted(
         assert payload["revision"] is None
         assert payload["revision_current"] is False
         assert payload["present_table_count"] == 0
-        assert len(payload["missing_tables"]) == payload["required_table_count"] == 11
+        assert len(payload["missing_tables"]) == payload["required_table_count"] == 12
         assert payload["reason"] == "database file does not exist"
         assert "sentinel-secret" not in result.output
         assert "Traceback" not in result.output
@@ -453,7 +453,7 @@ def test_db_status_rejects_incomplete_required_table_set(
     payload = json.loads(result.output)
     assert payload["reachable"] is True
     assert payload["revision_current"] is True
-    assert payload["present_table_count"] == 10
+    assert payload["present_table_count"] == 11
     assert payload["missing_tables"] == ["export_records"]
     assert payload["reason"] == "database schema is incomplete"
     assert "Traceback" not in result.output
@@ -1651,6 +1651,140 @@ def test_asset_download_adapter_refresh_preflight_has_zero_sqlite_state_change(
         database.dispose()
     assert after == before
     assert "Traceback" not in result.output
+
+    license_result = runner.invoke(
+        app,
+        [
+            "asset",
+            "download",
+            "--asset-id",
+            str(asset_id),
+            "--enable-mediacrawler",
+            "--json",
+        ],
+    )
+    assert license_result.exit_code == 1
+    assert json.loads(license_result.output)["error_code"] == "license_acknowledgement_required"
+    assert service_calls == []
+
+
+def test_asset_download_explicitly_wires_lazy_mediacrawler_refresh(
+    initialized_cli_database: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    asset_id = UUID("00000000-0000-0000-0000-000000000071")
+    author_id = "00000000-0000-0000-0000-000000000072"
+    content_id = "00000000-0000-0000-0000-000000000073"
+    subscription_id = UUID("00000000-0000-0000-0000-000000000074")
+    database = Database(initialized_cli_database)
+    try:
+        with database.session() as session:
+            session.add_all(
+                [
+                    Author(
+                        id=author_id,
+                        platform="dy",
+                        remote_id="refresh-author",
+                        display_name="Refresh Author",
+                    ),
+                    Content(
+                        id=content_id,
+                        author_id=author_id,
+                        platform="dy",
+                        remote_type="content",
+                        remote_id="refresh-content",
+                        kind="image",
+                    ),
+                    Asset(
+                        id=str(asset_id),
+                        content_id=content_id,
+                        platform="dy",
+                        kind="image",
+                        position=0,
+                        locator={
+                            "version": 1,
+                            "type": "adapter_refresh",
+                            "adapter": "mediacrawler",
+                            "asset_key": "stable-refresh-key",
+                        },
+                        semantic_fingerprint="1" * 64,
+                        locator_fingerprint="2" * 64,
+                        status="discovered",
+                    ),
+                ]
+            )
+    finally:
+        database.dispose()
+
+    captured: dict[str, object] = {}
+
+    class _FakeRefresher:
+        def __init__(self, database: object, **kwargs: object) -> None:
+            captured["refresh_database"] = database
+            captured["refresh_kwargs"] = kwargs
+
+    class _FakeDownloader:
+        def __init__(
+            self,
+            client: object,
+            *,
+            refresher: object,
+            probe: object,
+            limits: object,
+        ) -> None:
+            captured.update(client=client, refresher=refresher, probe=probe, limits=limits)
+
+    class _FakeService:
+        def __init__(self, database: object, downloader: object) -> None:
+            captured.update(database=database, downloader=downloader)
+
+        def run(self, request: object) -> object:
+            captured["request"] = request
+            return SimpleNamespace(
+                asset_id=asset_id,
+                generation=1,
+                job_id=None,
+                status=cli_module.AssetStatus.VERIFIED,
+                disposition="downloaded",
+                archive_path=Path("archive/image.jpg"),
+                checksum_sha256="3" * 64,
+                size_bytes=42,
+                mime_type="image/jpeg",
+            )
+
+    python_executable = tmp_path / "mediacrawler-python"
+    monkeypatch.setenv("MEDIA_SYNC_MEDIACRAWLER_PYTHON_EXECUTABLE", str(python_executable))
+    get_settings.cache_clear()
+    monkeypatch.setattr(cli_module.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(cli_module, "LazyMediaCrawlerLocatorRefresher", _FakeRefresher)
+    monkeypatch.setattr(cli_module, "SecureMediaDownloader", _FakeDownloader)
+    monkeypatch.setattr(cli_module, "AssetDownloadService", _FakeService)
+
+    result = runner.invoke(
+        app,
+        [
+            "asset",
+            "download",
+            "--asset-id",
+            str(asset_id),
+            "--subscription-id",
+            str(subscription_id),
+            "--enable-mediacrawler",
+            "--accept-mediacrawler-license",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)["status"] == "verified"
+    assert isinstance(captured["refresher"], _FakeRefresher)
+    refresh_kwargs = captured["refresh_kwargs"]
+    assert isinstance(refresh_kwargs, dict)
+    assert refresh_kwargs["asset_id"] == asset_id
+    assert refresh_kwargs["subscription_id"] == subscription_id
+    assert refresh_kwargs["python_executable"] == python_executable
+    assert refresh_kwargs["license_acknowledged"] is True
 
 
 @pytest.mark.parametrize(

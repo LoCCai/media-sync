@@ -1,12 +1,14 @@
 # Execution 0009 plan / 执行 0009 计划
 
-- Status / 状态：In progress — resumed, function-first / 推进中——已恢复，功能优先
+- Status / 状态：Function-first MVP implemented; remaining hardening retained as follow-up / 功能优先 MVP 已实现；其余强化保留为后续计划
 - Plan date / 计划日期：2026-08-30
 - Predecessor / 前置执行：Execution 0008 implementation commit `3889539`
 - Network policy / 网络策略：offline fake pinned-upstream modules, local helpers and mock HTTP only / 仅离线 fake 锁定上游模块、本地 helper 与 mock HTTP
 - Delivery priority / 交付优先级：first make local refresh/download and the end-to-end workflow usable; record exhaustive hardening and authorized live qualification as explicit follow-up work / 先让本地 refresh/download 与端到端流程可用；完整强化矩阵及授权真人验收明确列入后续工作
 
 ## Frozen design / 冻结设计
+
+The sections below preserve the original full-hardening design. The implemented MVP deliberately chose a smaller usable path: a lazy exact-current-source selector, a bounded stdout-framed detail helper, explicit XHS note-detail secret input, and existing `asset_download` Job semantics. Immutable Job-bound refresh-source payloads, automatic XHS creator-feed lookup, shared-lock coverage through CDN finalization and exhaustive retained evidence are deferred rather than claimed complete. / 下列章节保留原始完整强化设计。已实现 MVP 有意选择较小且可用的路径：惰性精确当前来源选择、有界 stdout frame detail helper、显式小红书 note-detail 密钥输入，以及既有 `asset_download` Job 语义。不可变 Job 绑定刷新来源 payload、小红书作者 feed 自动查找、覆盖 CDN 收尾的共用锁及完整留存证据均后置，不宣称完成。
 
 ### Delivery slice / 交付切片
 

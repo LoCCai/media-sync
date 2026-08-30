@@ -1,0 +1,268 @@
+"""Context-aware MediaCrawler signed-locator refresh.
+
+Discovery persists only a stable adapter key and a query-free source hint.
+This module binds that identity to an exact account/subscription context,
+runs one detail lookup and selects the refreshed URL in memory using the same
+normalizer as ingestion.  No persistence API is reachable from this layer.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from urllib.parse import parse_qsl, urlsplit
+from uuid import UUID
+
+from media_sync.domain import AssetKind, LoginMethod, Platform
+from media_sync.infrastructure.db.asset_identity import asset_source_hint, stable_asset_key
+from media_sync.media import AdapterRefreshLocator, MediaDownloadError, ResolvedLocator
+from media_sync.security import SecretValue
+
+from .detail_runner import (
+    MediaCrawlerDetailPayloadRunner,
+    MediaCrawlerDetailRequest,
+    MediaCrawlerDetailResult,
+)
+from .normalizers import NormalizationContext, normalize_jsonl_bytes
+from .policies import WatchdogLimits
+
+_SUPPORTED_PLATFORMS = frozenset({Platform.XHS, Platform.DY, Platform.KS, Platform.BILI})
+_NO_ASSET_PLATFORMS = frozenset({Platform.WB, Platform.TIEBA, Platform.ZHIHU})
+
+
+@dataclass(frozen=True, slots=True)
+class MediaCrawlerRefreshContext:
+    """Frozen database/runtime facts needed to refresh exactly one Asset."""
+
+    asset_id: UUID
+    account_id: UUID
+    subscription_id: UUID
+    platform: Platform
+    login_method: LoginMethod
+    content_remote_type: str
+    content_remote_id: str
+    author_remote_id: str
+    author_display_name: str
+    asset_remote_id: str | None
+    asset_kind: AssetKind
+    asset_position: int
+    source_hint: str = field(repr=False)
+    locator: AdapterRefreshLocator = field(repr=False)
+    detail_reference: str | SecretValue | None = field(default=None, repr=False)
+    cookie: SecretValue | None = field(default=None, repr=False)
+    headless: bool = True
+    request_delay_seconds: float = 2.0
+    watchdogs: WatchdogLimits = field(default_factory=WatchdogLimits)
+
+    def __post_init__(self) -> None:
+        if not all(isinstance(value, UUID) for value in (self.asset_id, self.account_id, self.subscription_id)):
+            raise MediaDownloadError("locator_refresh_configuration_invalid")
+        try:
+            platform = Platform(self.platform)
+            login_method = LoginMethod(self.login_method)
+            asset_kind = AssetKind(self.asset_kind)
+        except (TypeError, ValueError) as exc:
+            raise MediaDownloadError("locator_refresh_configuration_invalid") from exc
+        for value in (
+            self.content_remote_type,
+            self.content_remote_id,
+            self.author_remote_id,
+            self.author_display_name,
+        ):
+            _context_text(value)
+        if self.asset_remote_id is not None:
+            _context_text(self.asset_remote_id, maximum=512)
+        if isinstance(self.asset_position, bool) or not isinstance(self.asset_position, int) or self.asset_position < 0:
+            raise MediaDownloadError("locator_refresh_configuration_invalid")
+        if not isinstance(self.locator, AdapterRefreshLocator) or self.locator.adapter != "mediacrawler":
+            raise MediaDownloadError("locator_refresh_configuration_invalid")
+        expected_key = stable_asset_key(
+            platform=platform.value,
+            content_remote_type=self.content_remote_type,
+            content_remote_id=self.content_remote_id,
+            kind=asset_kind.value,
+            position=self.asset_position,
+            remote_id=self.asset_remote_id,
+        )
+        if self.locator.asset_key != expected_key:
+            raise MediaDownloadError("locator_refresh_asset_mismatch")
+        if asset_source_hint(self.source_hint) != self.source_hint:
+            raise MediaDownloadError("locator_refresh_configuration_invalid")
+        if platform in _SUPPORTED_PLATFORMS and asset_kind not in _supported_kinds(platform):
+            raise MediaDownloadError("locator_refresh_unsupported")
+        if platform is Platform.XHS:
+            _validate_xhs_detail_reference(self.detail_reference, self.content_remote_id)
+        if login_method is LoginMethod.PHONE:
+            raise MediaDownloadError("locator_refresh_unsupported")
+        if login_method is LoginMethod.COOKIE and self.cookie is None:
+            raise MediaDownloadError("locator_refresh_configuration_invalid")
+        if login_method is not LoginMethod.COOKIE and self.cookie is not None:
+            raise MediaDownloadError("locator_refresh_configuration_invalid")
+        if not isinstance(self.headless, bool):
+            raise MediaDownloadError("locator_refresh_configuration_invalid")
+        delay = self.request_delay_seconds
+        if isinstance(delay, bool) or not isinstance(delay, int | float) or not 0 < float(delay) <= 60:
+            raise MediaDownloadError("locator_refresh_configuration_invalid")
+        object.__setattr__(self, "platform", platform)
+        object.__setattr__(self, "login_method", login_method)
+        object.__setattr__(self, "asset_kind", asset_kind)
+        object.__setattr__(self, "request_delay_seconds", float(delay))
+
+    def detail_request(self) -> MediaCrawlerDetailRequest:
+        """Project only child/runtime facts; discovery metadata stays parent-side."""
+
+        return MediaCrawlerDetailRequest(
+            account_id=self.account_id,
+            subscription_id=self.subscription_id,
+            platform=self.platform,
+            login_method=self.login_method,
+            content_remote_id=self.content_remote_id,
+            detail_reference=self.detail_reference,
+            cookie=self.cookie,
+            headless=self.headless,
+            request_delay_seconds=self.request_delay_seconds,
+            watchdogs=self.watchdogs,
+        )
+
+
+class MediaCrawlerLocatorRefresher:
+    """A bound ``LocatorRefreshPort`` for one immutable Asset generation."""
+
+    def __init__(
+        self,
+        context: MediaCrawlerRefreshContext,
+        runner: MediaCrawlerDetailPayloadRunner,
+        *,
+        clock: Callable[[], datetime] | None = None,
+    ) -> None:
+        self._context = context
+        self._runner = runner
+        self._clock = clock or (lambda: datetime.now(UTC))
+
+    def resolve(self, locator: AdapterRefreshLocator) -> ResolvedLocator:
+        """Resolve exactly one current candidate without mutating durable state."""
+
+        context = self._context
+        if not isinstance(locator, AdapterRefreshLocator) or locator != context.locator:
+            raise MediaDownloadError("locator_refresh_asset_mismatch")
+        if context.platform in _NO_ASSET_PLATFORMS:
+            # These pinned normalizers emit no Asset, so spawning detail work
+            # cannot produce a valid locator.
+            raise MediaDownloadError("locator_refresh_unsupported")
+        if context.platform not in _SUPPORTED_PLATFORMS:
+            raise MediaDownloadError("locator_refresh_unsupported")
+
+        try:
+            result = self._runner.run(context.detail_request())
+        except MediaDownloadError:
+            raise
+        except Exception as exc:
+            raise MediaDownloadError("locator_refresh_result_invalid") from exc
+        if not isinstance(result, MediaCrawlerDetailResult):
+            raise MediaDownloadError("locator_refresh_result_invalid")
+        try:
+            batch = normalize_jsonl_bytes(
+                result.jsonl,
+                NormalizationContext(
+                    platform=context.platform,
+                    upstream_sha=result.upstream_sha,
+                    creator_remote_id=context.author_remote_id,
+                    creator_display_name=context.author_display_name,
+                    ingested_at=self._clock(),
+                ),
+                max_bytes=context.watchdogs.max_output_bytes,
+                max_line_bytes=context.watchdogs.max_line_bytes,
+                max_records=context.watchdogs.max_output_items,
+            )
+        except Exception as exc:
+            if isinstance(exc, MediaDownloadError):
+                raise
+            raise MediaDownloadError("locator_refresh_result_invalid") from exc
+        if batch.truncated_tail or batch.quarantined:
+            raise MediaDownloadError("locator_refresh_schema_changed")
+        if not batch.records:
+            raise MediaDownloadError("locator_refresh_asset_not_found")
+
+        matching_content = [
+            record
+            for record in batch.records
+            if record.content.platform is context.platform
+            and record.content.remote_type == context.content_remote_type
+            and record.content.remote_id == context.content_remote_id
+        ]
+        if not matching_content:
+            raise MediaDownloadError("locator_refresh_asset_not_found")
+        candidates = [
+            asset
+            for record in matching_content
+            for asset in record.assets
+            if asset.remote_id == context.asset_remote_id
+            and asset.kind is context.asset_kind
+            and asset.position == context.asset_position
+            and asset_source_hint(asset.source_url) == context.source_hint
+        ]
+        if len(candidates) != 1:
+            raise MediaDownloadError("locator_refresh_asset_mismatch")
+        try:
+            return ResolvedLocator(candidates[0].source_url)
+        except MediaDownloadError as exc:
+            raise MediaDownloadError("locator_refresh_result_invalid") from exc
+
+
+def _supported_kinds(platform: Platform) -> frozenset[AssetKind]:
+    return {
+        Platform.XHS: frozenset({AssetKind.IMAGE, AssetKind.VIDEO}),
+        Platform.DY: frozenset({AssetKind.IMAGE, AssetKind.VIDEO, AssetKind.AUDIO, AssetKind.COVER}),
+        Platform.KS: frozenset({AssetKind.VIDEO, AssetKind.COVER}),
+        Platform.BILI: frozenset({AssetKind.COVER}),
+    }.get(platform, frozenset())
+
+
+def _context_text(value: object, *, maximum: int = 255) -> str:
+    if not isinstance(value, str):
+        raise MediaDownloadError("locator_refresh_configuration_invalid")
+    normalized = value.strip()
+    if not normalized or normalized != value or len(normalized) > maximum:
+        raise MediaDownloadError("locator_refresh_configuration_invalid")
+    if any(ord(character) < 0x20 or ord(character) == 0x7F for character in normalized):
+        raise MediaDownloadError("locator_refresh_configuration_invalid")
+    return normalized
+
+
+def _validate_xhs_detail_reference(value: object, content_remote_id: str) -> None:
+    if not isinstance(value, SecretValue):
+        raise MediaDownloadError("locator_refresh_configuration_invalid")
+    raw = value.reveal()
+    try:
+        parsed = urlsplit(raw)
+        port = parsed.port
+        query = parse_qsl(parsed.query, keep_blank_values=True, strict_parsing=True)
+    except ValueError as exc:
+        raise MediaDownloadError("locator_refresh_configuration_invalid") from exc
+    path_parts = parsed.path.rstrip("/").split("/")
+    allowed_path = (
+        len(path_parts) == 3
+        and path_parts[0] == ""
+        and path_parts[1] in {"explore", "discovery"}
+        and path_parts[2] == content_remote_id
+    ) or (len(path_parts) == 4 and path_parts[:3] == ["", "discovery", "item"] and path_parts[3] == content_remote_id)
+    if (
+        parsed.scheme.lower() != "https"
+        or parsed.hostname not in {"xiaohongshu.com", "www.xiaohongshu.com"}
+        or parsed.username is not None
+        or parsed.password is not None
+        or port is not None
+        or parsed.fragment
+        or not allowed_path
+    ):
+        raise MediaDownloadError("locator_refresh_configuration_invalid")
+    values: dict[str, list[str]] = {}
+    for key, item in query:
+        values.setdefault(key, []).append(item)
+    for required in ("xsec_token", "xsec_source"):
+        if len(values.get(required, [])) != 1 or not values[required][0]:
+            raise MediaDownloadError("locator_refresh_configuration_invalid")
+
+
+__all__ = ["MediaCrawlerLocatorRefresher", "MediaCrawlerRefreshContext"]

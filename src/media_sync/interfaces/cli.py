@@ -39,6 +39,7 @@ from media_sync.application.emby import (
     export_error_is_retryable,
 )
 from media_sync.application.mediacrawler import load_normalized_output
+from media_sync.application.mediacrawler_download import LazyMediaCrawlerLocatorRefresher
 from media_sync.config import Settings, get_settings
 from media_sync.domain import AccountRef, AssetStatus, Cursor, DomainError, JobStatus, LoginMethod, Platform, RunStatus
 from media_sync.exporters.emby import EmbyExporter, ExportError
@@ -1276,26 +1277,59 @@ def download_asset(
         int,
         typer.Option(min=1, max=100, help="Maximum attempts for this asset generation."),
     ] = 5,
+    enable_mediacrawler: Annotated[
+        bool,
+        typer.Option(
+            "--enable-mediacrawler",
+            help="Explicitly enable MediaCrawler signed-locator refresh for this download.",
+        ),
+    ] = False,
+    accept_mediacrawler_license: Annotated[
+        bool,
+        typer.Option(
+            "--accept-mediacrawler-license",
+            help="Acknowledge the pinned non-commercial learning license for this download.",
+        ),
+    ] = False,
+    subscription_id: Annotated[
+        UUID | None,
+        typer.Option(help="Select one eligible subscription when an asset has multiple refresh sources."),
+    ] = None,
+    xhs_detail_reference_ref: Annotated[
+        str | None,
+        typer.Option(
+            help="Ephemeral secret-provider reference to this XHS note URL with xsec_token/xsec_source.",
+        ),
+    ] = None,
     json_output: Annotated[bool, typer.Option("--json", help="Emit machine-readable JSON.")] = False,
 ) -> None:
     """Download and archive one asset; ffprobe is required for video/audio assets."""
 
+    if accept_mediacrawler_license and not enable_mediacrawler:
+        raise typer.BadParameter("MediaCrawler license acknowledgement requires --enable-mediacrawler")
+    if xhs_detail_reference_ref is not None and not enable_mediacrawler:
+        raise typer.BadParameter("XHS detail reference requires --enable-mediacrawler")
+    normalized_detail_reference_ref = _credential_reference(xhs_detail_reference_ref)
     settings = get_settings()
     database = Database(settings.resolved_database_url)
     try:
         with database.session() as session:
             asset_preflight = session.execute(
-                select(Asset.status, Asset.kind, Asset.locator).where(Asset.id == str(asset_id))
+                select(Asset.status, Asset.kind, Asset.locator, Asset.platform).where(Asset.id == str(asset_id))
             ).one_or_none()
         asset_status = asset_preflight[0] if asset_preflight is not None else None
         asset_kind = asset_preflight[1] if asset_preflight is not None else None
         asset_locator = asset_preflight[2] if asset_preflight is not None else None
+        asset_platform = asset_preflight[3] if asset_preflight is not None else None
         requires_download = asset_status not in {
             None,
             AssetStatus.VERIFIED.value,
             AssetStatus.FAILED_TERMINAL.value,
         }
-        if requires_download and isinstance(asset_locator, Mapping) and asset_locator.get("type") == "adapter_refresh":
+        adapter_refresh = isinstance(asset_locator, Mapping) and asset_locator.get("type") == "adapter_refresh"
+        adapter_name = asset_locator.get("adapter") if isinstance(asset_locator, Mapping) else None
+        mediacrawler_refresh = adapter_refresh and adapter_name == AdapterName.MEDIACRAWLER.value
+        if requires_download and adapter_refresh and not enable_mediacrawler:
             _emit_record(
                 {
                     "asset_id": str(asset_id),
@@ -1304,6 +1338,67 @@ def download_asset(
                     "persisted_status": asset_status,
                     "error_code": "locator_refresh_unsupported",
                     "retryable": True,
+                },
+                json_output=json_output,
+                label="Asset download",
+            )
+            raise typer.Exit(code=1)
+        if requires_download and adapter_refresh and not mediacrawler_refresh:
+            _emit_record(
+                {
+                    "asset_id": str(asset_id),
+                    "status": "blocked",
+                    "disposition": "not_started",
+                    "persisted_status": asset_status,
+                    "error_code": "locator_refresh_unsupported",
+                    "retryable": True,
+                },
+                json_output=json_output,
+                label="Asset download",
+            )
+            raise typer.Exit(code=1)
+        if requires_download and mediacrawler_refresh and not accept_mediacrawler_license:
+            _emit_record(
+                {
+                    "asset_id": str(asset_id),
+                    "status": "blocked",
+                    "disposition": "not_started",
+                    "persisted_status": asset_status,
+                    "error_code": "license_acknowledgement_required",
+                    "retryable": False,
+                },
+                json_output=json_output,
+                label="Asset download",
+            )
+            raise typer.Exit(code=1)
+        if requires_download and mediacrawler_refresh and settings.mediacrawler_python_executable is None:
+            _emit_record(
+                {
+                    "asset_id": str(asset_id),
+                    "status": "blocked",
+                    "disposition": "not_started",
+                    "persisted_status": asset_status,
+                    "error_code": "locator_refresh_configuration_invalid",
+                    "retryable": False,
+                },
+                json_output=json_output,
+                label="Asset download",
+            )
+            raise typer.Exit(code=1)
+        if (
+            requires_download
+            and mediacrawler_refresh
+            and asset_platform == Platform.XHS.value
+            and normalized_detail_reference_ref is None
+        ):
+            _emit_record(
+                {
+                    "asset_id": str(asset_id),
+                    "status": "blocked",
+                    "disposition": "not_started",
+                    "persisted_status": asset_status,
+                    "error_code": "locator_refresh_configuration_invalid",
+                    "retryable": False,
                 },
                 json_output=json_output,
                 label="Asset download",
@@ -1327,14 +1422,28 @@ def download_asset(
             raise typer.Exit(code=1)
 
         limits = DownloadLimits()
-        downloader = SecureMediaDownloader(
-            SafeHttpClient(
-                SocketAddressResolver(),
-                limits=NetworkLimits(timeout_seconds=min(limits.total_timeout_seconds, 120.0)),
-            ),
-            probe=FFprobeMediaProbe(ffprobe) if ffprobe is not None else None,
-            limits=limits,
+        refresher = None
+        if mediacrawler_refresh and enable_mediacrawler and accept_mediacrawler_license:
+            refresher = LazyMediaCrawlerLocatorRefresher(
+                database,
+                asset_id=asset_id,
+                subscription_id=subscription_id,
+                lock_path=settings.mediacrawler_lock_path,
+                integration_root=settings.resolved_mediacrawler_runtime_dir,
+                python_executable=settings.mediacrawler_python_executable,
+                secret_resolver=SecretResolver.local(file_root=settings.resolved_secret_file_dir),
+                license_acknowledged=True,
+                detail_reference_ref=normalized_detail_reference_ref,
+            )
+        http = SafeHttpClient(
+            SocketAddressResolver(),
+            limits=NetworkLimits(timeout_seconds=min(limits.total_timeout_seconds, 120.0)),
         )
+        probe = FFprobeMediaProbe(ffprobe) if ffprobe is not None else None
+        if refresher is None:
+            downloader = SecureMediaDownloader(http, probe=probe, limits=limits)
+        else:
+            downloader = SecureMediaDownloader(http, refresher=refresher, probe=probe, limits=limits)
         outcome = AssetDownloadService(database, downloader).run(
             AssetDownloadRequest(
                 asset_id=asset_id,

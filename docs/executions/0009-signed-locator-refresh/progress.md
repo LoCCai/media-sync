@@ -1,11 +1,11 @@
 # Execution 0009 progress / 执行 0009 推进结果
 
-- Status / 状态：In progress — resumed, function-first / 推进中——已恢复，功能优先
+- Status / 状态：Function-first MVP implemented locally / 功能优先 MVP 已在本地实现
 - Started / 开始时间：2026-08-30 20:38 +08:00
 - Paused / 暂停时间：2026-08-31 00:06 +08:00
 - Resumed / 恢复时间：2026-08-31 00:39 +08:00
-- Implementation / 实现：`PARTIAL` / 部分实现
-- Verification / 验证：`PARTIAL / PASSING FOCUSED GATES` / 部分验证，当前专项门禁通过
+- Implementation / 实现：`MVP COMPLETE; HARDENING DEFERRED` / MVP 完成，强化后置
+- Verification / 验证：`PASSING OFFLINE FOCUSED GATES` / 离线专项门禁通过
 - Predecessor / 前置执行：Execution 0008 implementation commit `3889539`
 
 ## Planning baseline / 计划基线
@@ -46,14 +46,32 @@ The user requested a pause before execution 0009 acceptance. The following code 
 - Merged verification: Ruff PASS, strict mypy PASS for 65 source files, and `87 passed, 1 skipped` across migration/ingestion/handler/supervision focused gates. / 合并验证：Ruff 通过、65 个源码文件严格 mypy 通过，migration/ingestion/handler/supervision 专项共 `87 passed, 1 skipped`。
 - Added one automatic re-resolution after an adapter-refresh HTTP 401/403. A second auth failure returns fixed retryable `locator_refresh_auth_expired`; direct locators never invoke refresh. / adapter-refresh HTTP 401/403 后自动重新解析一次；第二次认证失败返回固定可重试 `locator_refresh_auth_expired`，direct locator 绝不触发 refresh。
 
+## Function-first delivery completed / 功能优先交付已完成
+
+### Implemented / 已实现
+
+- Added `MediaCrawlerDetailProcessRunner`: it validates the pinned checkout and explicit Python runtime, reuses the exact account profile, runs bounded detail mode, returns content JSONL in memory and removes only the UUID-scoped attempt root. / 新增 detail runner：校验锁定 checkout 与显式 Python，复用精确账户 profile，有界运行 detail 模式，内存返回 content JSONL，并只删除 UUID attempt 根。
+- Added `MediaCrawlerRefreshContext` and `MediaCrawlerLocatorRefresher`: they recompute the stable Asset identity, reuse the normal ingestion normalizer and select exactly one URL by content/type/id, kind, position and query-free source hint. / 新增刷新上下文与 refresher：重算稳定 Asset 身份、复用正常导入 normalizer，并按 content/type/id、kind、position 与无 query 来源提示精确选一。
+- Added `LazyMediaCrawlerLocatorRefresher`: it selects the exact current `AssetRefreshSource`, Subscription and Account only if the downloader actually needs a locator; Cookie secrets remain transient. / 新增惰性 refresher：仅在下载器确需 locator 时选择精确当前来源、Subscription 与 Account；Cookie 密钥保持瞬态。
+- Wired `asset download --enable-mediacrawler --accept-mediacrawler-license [--subscription-id]`. XHS also accepts `--xhs-detail-reference-ref`; missing runtime/license/XHS detail authority is blocked before download orchestration. / 接通资产下载显式开关与可选订阅选择；小红书另支持详情链接密钥引用；缺少 runtime/许可证/XHS 详情权限时在下载编排前拦截。
+- Added fixed source errors for unavailable, ambiguous and mismatched observations plus unavailable credentials. Operator-correctable source errors remain retryable. / 新增来源缺失、歧义、不匹配及凭据不可用固定错误；可由操作员修正的来源错误保持可重试。
+- Offline fake-child, normalizer selection, cleanup and downloader renewal regressions pass; no real platform, CDN, credential or media-server traffic ran. / 离线 fake child、normalizer 选择、清理与下载器续签回归通过；未运行真人平台、CDN、凭据或媒体服务器流量。
+
+### Pending / 待实现
+
+- Execution 0010 automatic `sync → download → Emby` coordinator and worker. / 执行 0010 的自动协调器与 worker。
+- Automatic XHS creator-feed lookup for a fresh note-specific `xsec` detail URL; the MVP uses an ephemeral operator-supplied secret reference. / 自动从小红书作者 feed 获取新的 note 专用 `xsec` 详情链接；MVP 使用操作员一次性密钥引用。
+- Live Cookie/saved-session/QR qualification, real CDN download and real Emby/Jellyfin scan. / 真人 Cookie/保存会话/QR、真实 CDN 下载与真实 Emby/Jellyfin 扫描验收。
+- Exhaustive hardening/retained-sentinel/full-suite/build/wheel/public deployment matrices. / 完整强化、留存哨兵、全套测试、构建/wheel 与公网部署矩阵。
+
 ## Entry gaps to close / 必须关闭的入口缺口
 
 | Gap / 缺口 | Planned closure / 计划关闭方式 | Status / 状态 |
 | --- | --- | --- |
 | No exact refresh source / 无精确刷新来源 | `0005_asset_refresh_sources`, conservative backfill and same-transaction observations / 新表、保守 backfill 与同事务 observation | `PASS (focused)` — schema, backfill, repository and ingestion wired / schema、回填、repository 与导入已接通 |
-| Context-free refresh port / 无上下文 refresh port | Frozen Asset/Content/Subscription/Account context plus stable-key and fingerprint rechecks / 冻结上下文及 stable-key/fingerprint 复核 | `NOT_RUN` |
-| No private detail protocol / 无私有 detail 协议 | Supervised detail-only child and one bounded non-relayed frame / 受监督 detail-only child 与单条有界不转发帧 | `NOT_RUN` |
-| Short-lived auth URL / 短效认证 URL | Exact one adapter-only 401/403 re-resolution; persistent locator-only partial identity / adapter 专用一次重解析及只持久 locator 的 partial 身份 | `PASS (unit)` — functional resolver/CLI still pending / 功能 resolver/CLI 仍待完成 |
+| Context-free refresh port / 无上下文 refresh port | Frozen Asset/Content/Subscription/Account context plus stable-key and fingerprint rechecks / 冻结上下文及 stable-key/fingerprint 复核 | `PASS (offline focused)` |
+| No private detail protocol / 无私有 detail 协议 | Supervised detail-only child and one bounded non-relayed frame / 受监督 detail-only child 与单条有界不转发帧 | `PASS (offline fake child)` |
+| Short-lived auth URL / 短效认证 URL | Exact one adapter-only 401/403 re-resolution; persistent locator-only partial identity / adapter 专用一次重解析及只持久 locator 的 partial 身份 | `PASS (offline focused)` — resolver and CLI wired / resolver 与 CLI 已接通 |
 | Post-success truth and roots / 成功后事实与根 | Exact fresh/recovered/restart cleanup; preserve committed truth across result/readback/cleanup/cancel errors; race-safe four states / 精确三路径清理；result/readback/cleanup/cancel 错误下保留已提交事实；竞态安全四状态 | `PASS (focused)` — handler and concurrent cleanup regressions pass / handler 与并发清理回归通过 |
 | Signed data sink risk / 签名数据落点风险 | Injection/transport proof and fail-closed filesystem/SQLite/operator/JUnit scans / 注入/transport 证明与 fail-closed 多落点扫描 | `NOT_RUN` |
 | Configuration/block TOCTOU / 配置与 block 竞态 | Shared account lock; filesystem block recheck outside SQLite before secrets/claim/spawn; transactional DB identity recheck; all block writers share fence / 共用账户锁；SQLite 外二次检查 block 后再解析密钥/claim/spawn；事务复核 DB 身份；block writer 共用 fence | `NOT_RUN` |
@@ -72,8 +90,8 @@ The user requested a pause before execution 0009 acceptance. The following code 
 | Scope / 范围 | Status / 状态 | Truth / 真实性说明 |
 | --- | --- | --- |
 | Refresh provenance/migration / 刷新来源/migration | `PASS (focused)` | Migration/repository/ingestion focused gates pass / migration/repository/ingestion 专项通过 |
-| Private refresh child / 私有刷新 child | `NOT_RUN` | No protocol or process has run / 尚未运行协议或进程 |
-| Manual signed-locator download / 手工签名 locator 下载 | `NOT_RUN` | Existing CLI still returns `locator_refresh_unsupported` / 既有 CLI 仍返回该 fixed code |
+| Private refresh child / 私有刷新 child | `PASS (offline fake child)` | Detail-mode helper ran against a fake pinned checkout and cleaned its exact attempt root / detail helper 已对 fake 锁定 checkout 运行并清理精确 attempt 根 |
+| Manual signed-locator download / 手工签名 locator 下载 | `PASS (offline wiring)` | Explicit CLI flags construct the lazy exact-source refresher; real traffic remains unqualified / 显式 CLI 开关已构造惰性精确来源 refresher；真实流量未验收 |
 | Successful/recovery terminal cleanup / 成功/恢复终态清理 | `PASS (focused)` | Handler `53 passed`; supervision `14 passed, 1 skipped` / handler 53 项通过；supervision 14 项通过、1 项跳过 |
 | Automatic `sync → download → Emby` DAG / 自动 DAG | Unimplemented / 未实现 | Execution 0010 / 执行 0010 |
 | Live login, creator traffic, refresh, CDN and Emby/Jellyfin / 真人登录、作者流量、刷新、CDN 与 Emby/Jellyfin | `NOT_RUN` | No authorized environment supplied / 未提供授权环境 |

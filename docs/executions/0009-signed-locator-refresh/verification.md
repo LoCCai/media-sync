@@ -1,11 +1,11 @@
 # Execution 0009 verification / 执行 0009 验证
 
-- Verification state / 验证状态：`PARTIAL / PASSING FOCUSED GATES`
+- Verification state / 验证状态：`FUNCTION-FIRST MVP / PASSING OFFLINE FOCUSED GATES`
 - Planning date / 计划日期：2026-08-30
 - Network/account policy / 网络与账户策略：offline fake pinned-upstream modules, repository-owned local helpers and mock HTTP only; no browser connected to a platform, real credential, platform/CDN endpoint or Emby/Jellyfin server / 仅离线 fake 锁定上游模块、仓库自有本地 helper 与 mock HTTP；不使用连接平台的浏览器、真实凭据、平台/CDN 端点或 Emby/Jellyfin 服务器
-- Implementation state / 实现状态：`PARTIAL` — resumed; provenance and cleanup tranche verified / 已恢复；来源与清理批次已验证
+- Implementation state / 实现状态：`MVP IMPLEMENTED` — provenance, cleanup, detail refresh, lazy runtime and CLI wiring verified offline / 来源、清理、detail 刷新、惰性运行时及 CLI 接线已完成离线验证
 
-This file preserves the historical pause evidence and the current resumed results. The earlier failures are resolved for migration, ingestion and terminal cleanup; locator refresh, CLI integration, full-suite/build and live rows remain open. / 本文件同时保留历史暂停证据与当前恢复结果；migration、导入与终态清理的早期失败已解决，locator refresh、CLI 集成、完整套件/构建及真人行仍待完成。
+This file preserves the historical pause evidence and current results. Migration, ingestion, cleanup, functional locator refresh and CLI wiring are implemented; full-suite/build, retained-sentinel and live rows remain open. / 本文件同时保留历史暂停证据与当前结果；migration、导入、清理、功能 locator refresh 及 CLI 接线已实现；完整套件/构建、留存哨兵及真人行仍待完成。
 
 本文件是执行 0009 的冻结验证契约，不是实现证据。计划基线文档检查单独记录；在记录准确命令与结果前，不提升任何 migration、刷新、清理、签名哨兵或真人行。
 
@@ -46,19 +46,32 @@ The full pytest/coverage suite, build, wheel smoke, signed sentinel and authorit
 
 These checks qualify only the resumed provenance/cleanup tranche. They do not claim a working locator refresh, platform traffic, CDN download or Emby scan. / 这些检查只验收恢复后的来源/清理批次，不宣称 locator refresh、平台流量、CDN 下载或 Emby 扫描已可用。
 
+## Function-first refresh checks / 功能优先刷新验证
+
+| Check / 检查 | Exact command / 准确命令 | Result / 结果 |
+| --- | --- | --- |
+| Detail refresher unit + fake-child contract / detail refresher 单元与 fake-child 契约 | `uv run pytest -q tests/unit/test_mediacrawler_refresh.py tests/contract/test_mediacrawler_detail_refresh.py` | PASS — `20 passed` |
+| Locator/normalizer/download regression / locator、normalizer 与下载回归 | `uv run pytest -q tests/unit/test_media_locator.py tests/unit/test_mediacrawler_refresh.py tests/contract/test_mediacrawler_detail_refresh.py tests/contract/test_mediacrawler_ingestion.py tests/integration/test_asset_download_orchestration.py` | PASS — `111 passed` |
+| Lazy exact-source runtime / 惰性精确来源运行时 | `uv run pytest -q tests/integration/test_mediacrawler_download_runtime.py` | PASS — `6 passed`; covers exact 1, 0/N, explicit mismatch, Cookie/policy context and zero-work construction / 覆盖精确单来源、0/N、显式不匹配、Cookie/策略上下文及构造零工作 |
+| CLI asset download wiring / CLI 资产下载接线 | `uv run pytest -q tests/unit/test_cli.py -k "asset_download"` | PASS — `5 passed`; default-off, license block, ffprobe behavior and explicit lazy-refresher construction / 覆盖默认关闭、许可证拦截、ffprobe 行为及显式惰性 refresher 构造 |
+| Changed-code lint / 修改代码 lint | `uv run ruff check src/media_sync/application/mediacrawler_download.py src/media_sync/integrations/mediacrawler/detail_runner.py src/media_sync/integrations/mediacrawler/refresh.py src/media_sync/interfaces/cli.py src/media_sync/media/errors.py tests/unit/test_mediacrawler_refresh.py tests/contract/test_mediacrawler_detail_refresh.py tests/integration/test_mediacrawler_download_runtime.py tests/unit/test_cli.py` | PASS — `All checks passed!` |
+| Strict types / 严格类型 | `uv run mypy src/media_sync` | PASS — `Success: no issues found in 70 source files` |
+
+All rows above are offline. The fake child imports a repository-owned fake checkout; no real platform browser, credential, CDN request, Emby/Jellyfin request or Git network operation occurred. / 上述各行均为离线验证；fake child 只导入仓库测试创建的 fake checkout，未发生真人平台浏览器、真实凭据、CDN、Emby/Jellyfin 或 Git 网络操作。
+
 ## Planned behavior evidence / 计划行为证据
 
 | Scope / 范围 | Required evidence / 必需证据 | Status / 状态 |
 | --- | --- | --- |
 | Migration and backfill / Migration 与 backfill | Head/round-trip/FKs/indexes; exact platform/author/adapter/stable-key unique inference; ambiguous/malformed/corrupt cases unbound; existing recovery identities preserved / head/往返/FK/索引、精确平台/作者/adapter/stable-key 唯一推断、歧义/畸形/损坏不绑定、保留恢复身份 | `PASS (focused)` |
 | Ingestion observation / 导入 observation | Same transaction as Asset/checkpoint; wrong-run/cross-relation rollback; older-run replay cannot regress `(created_at,id)` last-run order/timestamps; multi-account; both replacement kinds advance generation; archive-reset eligibility / 同事务、错误关系回滚、旧 run 重放不回退 last-run 全序/时间、多账户、两类替换推进 generation、归档 reset 资格 | `PASS (focused)` |
-| Source selector / 来源 selector | No-Job 0/1/N; existing-Job authority; explicit mismatch; shared-lock second filesystem-block check catches post-first-read writer before SecretResolver/claim/attach/prepare/spawn; no FS I/O in transaction / 两种来源模式；共用锁二次 block 检查在密钥/claim/attach/prepare/spawn 前拦截首次读取后的 writer；事务无 FS I/O | `NOT_RUN` |
+| Source selector / 来源 selector | No-Job 0/1/N; existing-Job authority; explicit mismatch; shared-lock second filesystem-block check catches post-first-read writer before SecretResolver/claim/attach/prepare/spawn; no FS I/O in transaction / 两种来源模式；共用锁二次 block 检查在密钥/claim/attach/prepare/spawn 前拦截首次读取后的 writer；事务无 FS I/O | `PASS (MVP 0/1/N + explicit)` — immutable existing-Job binding and full TOCTOU hardening deferred / MVP 的 0/1/N 与显式选择通过；既有 Job 不可变绑定及完整 TOCTOU 强化后置 |
 | Recovery ordering / 恢复顺序 | Read-only inspection zero-mutation; valid verified result needs no source/profile/credential; prepared recovery only bound CAS/finalization; both zero child/HTTP/new attempt / inspection 零变更、verified 无来源/profile/凭据、prepared 只做已绑定 CAS/收尾、两者无 child/HTTP/新 attempt | `NOT_RUN` |
 | Job source/config binding / Job 来源与配置绑定 | Existing natural key and `run_id = NULL`; closed ID/platform/fingerprint payload omits observation kind; legacy-to-ingested upgrade preserves retry Job; retry/running/prepared source immutable; transactional config identities exact after secret resolution / 既有 natural key 与空 `run_id`、payload 不含 observation kind、audit kind 升级保留 retry Job、恢复来源不可变、事务复核配置 | `NOT_RUN` |
-| Private child protocol / 私有 child 协议 | Dedicated pipe/handle; strict frame/error matrix; shared account lock spans child-tree join, HTTP/finalization and cleanup; every cleanup-block writer uses same fence; parent death/cancel / 专用 pipe、严格帧/错误矩阵、共用账户锁覆盖 child tree/HTTP/收尾/cleanup、所有 block writer 共用 fence、父死亡/取消 | `NOT_RUN` |
-| Platform selectors / 平台 selector | Exact stored hint required; XHS creator secret/author/token/source, 4 x 30/120-second bound and fixed invalid/expired/not-found/schema/timeout dispositions; DY/KS/Bili shapes; WB/Tieba/Zhihu no spawn / 要求精确 stored hint；XHS authority、数值边界及固定 disposition；其余形状与三个不 spawn 平台 | `NOT_RUN` |
+| Private child protocol / 私有 child 协议 | Dedicated pipe/handle; strict frame/error matrix; shared account lock spans child-tree join, HTTP/finalization and cleanup; every cleanup-block writer uses same fence; parent death/cancel / 专用 pipe、严格帧/错误矩阵、共用账户锁覆盖 child tree/HTTP/收尾/cleanup、所有 block writer 共用 fence、父死亡/取消 | `PASS (MVP fake child)` — bounded stdout frame, cleanup and process supervision pass; dedicated side pipe/full lock matrix deferred / 有界 stdout frame、清理及进程监督通过；专用旁路 pipe 与完整锁矩阵后置 |
+| Platform selectors / 平台 selector | Exact stored hint required; XHS creator secret/author/token/source, 4 x 30/120-second bound and fixed invalid/expired/not-found/schema/timeout dispositions; DY/KS/Bili shapes; WB/Tieba/Zhihu no spawn / 要求精确 stored hint；XHS authority、数值边界及固定 disposition；其余形状与三个不 spawn 平台 | `PASS (MVP shapes)` — DY/KS/Bili and explicit XHS detail URL; automatic XHS feed lookup deferred / DY/KS/Bili 与显式 XHS 详情链接通过；XHS 自动 feed 查找后置 |
 | Candidate identity / 候选身份 | Child validates semantics; full-request fingerprint binds response; query-free hint selects exactly one; same-kind ambiguity and position-only matching fail closed / child 验证语义、完整 request fingerprint 绑定响应、无 query hint 精确选一、同 kind 歧义与仅 position 匹配 fail closed | `NOT_RUN` |
-| Downloader / 下载器 | Signed URL reaches mock HTTP only; one 401/403 re-resolve; direct unchanged; resume safe; metadata/redirect headers unchanged / 签名 URL 只到 mock HTTP、一次重解析、direct 不变、续传安全、metadata/header 不变 | `PASS (unit)` — functional MediaCrawler resolver pending / 功能性 MediaCrawler resolver 待完成 |
+| Downloader / 下载器 | Signed URL reaches mock HTTP only; one 401/403 re-resolve; direct unchanged; resume safe; metadata/redirect headers unchanged / 签名 URL 只到 mock HTTP、一次重解析、direct 不变、续传安全、metadata/header 不变 | `PASS (offline focused)` — functional MediaCrawler resolver wired / 功能性 MediaCrawler resolver 已接通 |
 | Terminal cleanup / 终态清理 | Non-empty fresh/recovered sentinels and exact restart source; after real success commit inject malformed result, readback error/mismatch, all four states, repeated cancel/lease loss/restart and assert zero failure mutation/reingest; deterministic recovery identity and concurrent disappearance / 非空来源哨兵与精确重启；真实成功提交后注入 result/readback/四状态/取消/重启并断言 failure mutation/重复导入为零；确定性恢复身份与并发消失 | `PASS (focused)` — exhaustive retained sentinel deferred / 完整留存哨兵后置 |
 | Secret sinks / 密钥落点 | Private-pipe + mock-request observation, then exact post-cleanup filesystem/SQLite/operator/JUnit zero-match with named negative exclusions / 私有 pipe + mock request 观察，随后清理后多落点精确零匹配及命名负向排除 | `NOT_RUN` |
 
@@ -71,14 +84,14 @@ Exact focused nodes, case counts, timings and retained-sentinel statistics will 
 | Check / 检查 | Planned command or scope / 计划命令或范围 | Status / 状态 |
 | --- | --- | --- |
 | Locked dependencies / 锁定依赖 | `uv sync --all-groups --locked` | `NOT_RUN` |
-| Lint / 代码规范 | `uv run ruff check .` | `PARTIAL` — five modified source files PASS; whole tree `NOT_RUN` / 5 个修改源码文件通过；整树未运行 |
+| Lint / 代码规范 | `uv run ruff check .` | `PARTIAL` — all 0009 changed files PASS; whole tree still `NOT_RUN` / 0009 全部修改文件通过；整树仍未运行 |
 | Format / 格式 | `uv run ruff format --check .` | `NOT_RUN` |
-| Strict types / 严格类型 | `uv run mypy src/media_sync` | PASS — 65 source files / 65 个源码文件 |
+| Strict types / 严格类型 | `uv run mypy src/media_sync` | PASS — 70 source files / 70 个源码文件 |
 | Full branch-aware suite / 完整分支感知套件 | `uv run pytest --cov=media_sync --cov-report=term` | `NOT_RUN` |
-| Focused refresh/cleanup gate / Refresh/清理专项 | Exact unit/contract/integration/migration nodes / 精确 unit/contract/integration/migration 节点 | `PARTIAL / PASSING` — provenance/cleanup pass; refresh pending / 来源/清理通过；refresh 待完成 |
+| Focused refresh/cleanup gate / Refresh/清理专项 | Exact unit/contract/integration/migration nodes / 精确 unit/contract/integration/migration 节点 | `PASS (function-first MVP)` — provenance, cleanup, refresh runtime and CLI wiring / 来源、清理、刷新运行时及 CLI 接线通过 |
 | Build and wheel smoke / 构建与 wheel smoke | `uv build` plus clean wheel install/import/CLI checks / 构建及干净 wheel 安装/import/CLI | `NOT_RUN` |
 | Packaged migrations/resources / 随包迁移/资源 | Head inventory and round-trip tests / head 清单及往返测试 | `PASS (focused)` — `0005` head/resource/round-trip |
-| Documentation / 文档 | `uv run python scripts/check_docs.py` | PASS — 52 Markdown files / 52 个 Markdown 文件 |
+| Documentation / 文档 | `uv run python scripts/check_docs.py` | PASS — 56 Markdown files / 56 个 Markdown 文件 |
 | Pinned upstreams / 锁定上游 | `uv run python scripts/check_upstreams.py` | PASS — 2 locked checkouts / 2 个锁定检出 |
 | Patch whitespace / 补丁空白 | `git diff --check` | PASS |
 | Runtime artifacts untracked / 运行产物未跟踪 | Scoped ignore, `git ls-files` and `git status` checks / 限定 ignore、`git ls-files` 与 `git status` | `NOT_RUN` |

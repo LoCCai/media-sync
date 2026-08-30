@@ -1,16 +1,27 @@
 # Execution 0009 goal / 执行 0009 目标
 
-- Status / 状态：In progress — resumed with function-first priority / 推进中——已恢复并以功能优先
+- Status / 状态：Function-first MVP implemented locally; live qualification and hardening deferred / 功能优先 MVP 已在本地实现；真人验收与强化后置
 - Started / 开始时间：2026-08-30 20:38 +08:00
 - Predecessor / 前置执行：Execution 0008 implementation commit `3889539`
 - Network boundary / 网络边界：offline fake pinned-upstream modules, local helper processes and mock HTTP only / 仅离线 fake 锁定上游模块、本地 helper process 与 mock HTTP
-- Checkpoint truth / 检查点事实：migration/provenance ingestion and terminal cleanup focused gates now pass; locator refresh/CLI remains the active implementation gap / migration、来源导入及终态清理专项已通过；locator refresh/CLI 仍是当前实现缺口
+- Checkpoint truth / 检查点事实：migration/provenance, terminal cleanup, bounded detail refresh, CLI wiring and one-time 401/403 renewal pass offline focused gates / migration/来源、终态清理、有界 detail 刷新、CLI 接线及一次 401/403 续签均通过离线专项门禁
 
 ## Outcome / 结果目标
 
 Deliver an explicit, default-off MediaCrawler signed-locator refresh path for a manually selected existing Asset, while binding refresh authority to the exact Subscription and Account that observed the current asset identity. The refreshed URL may exist only in a private child result channel, trusted-parent memory and the `SafeHttpClient` request boundary; it must never become durable state or operator output. Close the successful/recovered MediaCrawler attempt-artifact boundary by removing or securely isolating the exact source root before outward success.
 
 为手工选择的既有 Asset 交付显式启用、默认关闭的 MediaCrawler 签名 locator 刷新路径，同时把刷新权限绑定到观察到当前资产身份的精确 Subscription 与 Account。刷新 URL 只能存在于私有 child 结果通道、可信父进程内存及 `SafeHttpClient` 请求边界，绝不能进入持久状态或运维输出。在向外返回成功前删除或安全隔离精确来源根，关闭 MediaCrawler 成功/恢复 attempt 产物边界。
+
+## Function-first completion decision / 功能优先完成裁定
+
+The local MVP is accepted against the following implemented boundary. The longer acceptance matrix below remains the original hardening target and is not a claim that every adversarial, retained-artifact or live-account row has run. / 本地 MVP 按以下已实现边界验收。下方更长的验收矩阵继续作为原始强化目标，不代表所有对抗、留存产物或真人账户项目都已执行。
+
+- `media-sync asset download` remains default-off for adapter refresh and requires both `--enable-mediacrawler` and `--accept-mediacrawler-license`. An optional `--subscription-id` resolves multiple current eligible observations. / `media-sync asset download` 的 adapter refresh 默认关闭，必须同时传入两个显式开关；可选 `--subscription-id` 用于选择多个当前合格来源。
+- The lazy runtime binds the selected Asset to its current Content, Author, Subscription and Account, resolves Cookie or saved-session context only when network refresh is actually required, and invokes the pinned MediaCrawler detail child. Verified and prepared-recovery paths can finish without invoking refresh. / 惰性运行时把 Asset 绑定到当前 Content、Author、Subscription 与 Account，仅在确需网络刷新时解析 Cookie/保存会话上下文并调用锁定的 MediaCrawler detail child；已验证及 prepared recovery 路径可不触发刷新直接收尾。
+- Offline supported shapes are XHS image/video, Douyin image/video/audio/cover, Kuaishou video/cover and Bilibili cover. XHS currently requires an ephemeral `--xhs-detail-reference-ref` containing the exact note URL with `xsec_token` and `xsec_source`; automatic creator-feed lookup remains deferred. / 离线支持形状为小红书 image/video、抖音 image/video/audio/cover、快手 video/cover 与 Bilibili cover。小红书当前需要一次性详情链接密钥引用；自动作者 feed 查找继续后置。
+- The detail result is bounded, returned in memory, normalized with the ingestion normalizer, selected by exact content/kind/position/query-free source hint and deleted with its UUID attempt root before return. The signed URL is never written back to SQLite. / detail 结果有界、以内存返回、复用导入 normalizer，并按精确 content/kind/position/无 query 来源提示选择；返回前删除 UUID attempt root，签名 URL 绝不写回 SQLite。
+- Adapter refresh retries resolution once after HTTP 401/403. A second authorization failure returns retryable `locator_refresh_auth_expired`; direct locators never refresh. / adapter refresh 在 HTTP 401/403 后只重新解析一次；第二次认证失败返回可重试固定码，direct locator 绝不刷新。
+- Automatic downstream execution belongs to execution 0010. Live platform, CDN and Emby/Jellyfin qualification, automatic XHS detail bootstrap, exhaustive cancellation/security matrices, retained sentinel, full build/wheel and public/HA operation remain explicit follow-up work. / 自动下游执行属于 0010；真人平台/CDN/Emby 验收、小红书自动详情引导、完整取消/安全矩阵、留存哨兵、完整构建/wheel 及公网/HA 运行均明确后置。
 
 ## Acceptance criteria / 验收标准
 
