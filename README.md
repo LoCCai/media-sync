@@ -6,9 +6,9 @@
 
 ## Current status / 当前状态
 
-The local function-first path is implemented through execution 0012 commit `28655f8`. It now includes explicit QR login, continuing parent control and a post-result guardian for the login child, deadline-fenced abandoned-session recovery, and the foreground `scheduler supervise` chain for stale-login reconciliation, schedule materialization, subscription sync and durable pipeline work. The integrated focused gate passes 283 tests with one skip; the complete suite passes 1156 tests with the same Windows-inapplicable POSIX mode-bit test skipped. No coverage run is claimed. No real QR scan, platform account, creator endpoint, CDN or media server was used, so every live row remains `NOT_RUN`. This is not an auto-restarting daemon, Windows Service/systemd unit, forced synchronous-thread cancellation, cross-host HA or seven-platform complete download. Requirements and exact evidence are tracked in [`docs/`](docs/README.md).
+The local function-first path is implemented through execution 0013 commit `dd6cfec`. In addition to explicit QR/session recovery and the foreground `scheduler supervise` chain, one frozen Bilibili ordinary-upload shape now reaches playable offline output: a logical first-page `<aid>:video:0` Asset with `source_url=NULL`, exact first-CID lookup, exactly one progressive `durl`, ephemeral signed-URL refresh, controlled probe/archive and Emby primary `.mp4`. The execution 0013 focused gate passes 223 tests; the complete suite passes 1199 tests with one Windows-inapplicable POSIX mode-bit test skipped. No coverage run is claimed. No real QR scan, platform account, creator endpoint, CDN or media server was used, so every live row remains `NOT_RUN`. This is not an auto-restarting daemon, Windows Service/systemd unit, forced synchronous-thread cancellation, cross-host HA or seven-platform complete download. Exact evidence is in [`docs/executions/0013-bilibili-playable-video/verification.md`](docs/executions/0013-bilibili-playable-video/verification.md).
 
-本地功能优先链路已实现到执行 0012 提交 `28655f8`。当前已包含显式二维码登录、登录 child 的持续父进程控制与结果 guardian、受截止时间 fencing 保护的遗留会话回收，以及依次运行 stale-login 协调、调度物化、订阅同步和持久 pipeline 的前台 `scheduler supervise` 全链。合并专项门禁通过 283 项并跳过 1 项；完整套件通过 1156 项，跳过的仍是 Windows 不适用的 POSIX mode-bit 测试。不宣称运行过覆盖率。没有使用真人二维码扫码、平台账户、作者端点、CDN 或媒体服务器，因此全部真人行保持 `NOT_RUN`。它不是自动重启 daemon、Windows Service/systemd 服务，不提供同步线程强停、跨主机 HA 或七平台完整下载。需求与准确证据均保存在 [`docs/`](docs/README.md)。
+本地功能优先链路已实现到执行 0013 提交 `dd6cfec`。除显式 QR/会话回收及前台 `scheduler supervise` 全链外，一个冻结的 Bilibili 普通投稿形状现已可产生离线可播放输出：逻辑首 P `<aid>:video:0` Asset、`source_url=NULL`、精确首 CID 查询、精确一个 progressive `durl`、瞬态签名 URL 刷新、受控探测/归档及 Emby 主 `.mp4`。执行 0013 专项门禁通过 223 项；完整套件通过 1199 项，另有一项 Windows 不适用的 POSIX mode-bit 测试跳过。不宣称运行过覆盖率。没有使用真人二维码扫码、平台账户、作者端点、CDN 或媒体服务器，因此全部真人行保持 `NOT_RUN`。它不是自动重启 daemon、Windows Service/systemd 服务，不提供同步线程强停、跨主机 HA 或七平台完整下载。准确证据位于 [`docs/executions/0013-bilibili-playable-video/verification.md`](docs/executions/0013-bilibili-playable-video/verification.md)。
 
 ## Foundation quickstart / 基线快速开始
 
@@ -105,7 +105,10 @@ First run the deterministic offline contract. It uses temporary SQLite/filesyste
 
 ```powershell
 uv run pytest tests/integration/test_offline_media_pipeline.py tests/contract/test_emby_export_contract.py
+uv run pytest -q tests/integration/test_bilibili_playable_pipeline.py
 ```
+
+The second command is the execution 0013 Bilibili composition test. It uses synthetic metadata, a fake detail result, mock transport bytes and a controlled probe; it proves the local pipeline contract, not a real CDN, real FFmpeg against platform media or a running Emby/Jellyfin server. / 第二条命令是执行 0013 的 Bilibili 组合测试。它使用合成元数据、fake detail 结果、mock transport 字节及受控 probe；它证明本地流水线契约，不证明真实 CDN、针对平台媒体的真实 FFmpeg 或运行中的 Emby/Jellyfin 服务器。
 
 For a local database that already contains discovered assets, list redaction-safe IDs, download one eligible asset, and publish one complete author snapshot with:
 
@@ -127,9 +130,9 @@ MediaCrawler-discovered assets persist only the stable, secret-free `adapter_ref
 
 MediaCrawler 发现的资产只持久化稳定且不含密钥的 `adapter_refresh` locator。执行 0009 会在 `asset download` 或 pipeline 同时收到 MediaCrawler 启用/许可证开关时，从精确当前 Subscription 来源惰性解析；手工选择另接受 `--subscription-id`，小红书接受上文所述的单 note 详情引用。在任何 child Job 或 Asset 生命周期写入前，preflight 会验证锁定 lock/checkout/Python runtime 及实际可启动的强制 `ffprobe`；无效但非空的配置也会以零 child 生命周期副作用失败。签名结果只在安全下载器内存中使用，绝不写回 SQLite。
 
-Offline refresh shapes are limited to XHS image/video, Douyin image/video/audio/cover, Kuaishou video/cover and Bilibili cover. Weibo, Tieba and Zhihu currently have no downloadable Asset, and Bilibili playable video/DASH/multi-part/subtitle/danmaku is not implemented. No real login, creator request, signed CDN download or Emby/Jellyfin rescan/playback has run for any platform; all such rows remain `NOT_RUN`.
+Offline refresh shapes are limited to XHS image/video, Douyin image/video/audio/cover, Kuaishou video/cover, Bilibili cover, and one Bilibili ordinary-upload logical-first-page video only when its play response contains exactly one progressive `durl`. Weibo, Tieba and Zhihu currently have no normalized downloadable Asset. Bilibili DASH/mux, FLV remux, multiple segments/pages, subtitles, danmaku, backup failover and bangumi/paid/live media are not implemented. Forward metadata has no CID, so a later first-CID replacement under the same aid cannot automatically invalidate already-verified bytes. No real login, creator request, signed CDN download or Emby/Jellyfin rescan/playback has run for any platform; all such rows remain `NOT_RUN`.
 
-离线刷新形状仅限小红书 image/video、抖音 image/video/audio/cover、快手 video/cover 与 Bilibili cover。微博、贴吧、知乎当前没有可下载 Asset，Bilibili 可播放视频/DASH/多 P/字幕/弹幕也未实现。任何平台都尚未运行真人登录、作者请求、签名 CDN 下载或 Emby/Jellyfin 重扫/播放；这些行全部保持 `NOT_RUN`。
+离线刷新形状仅限小红书 image/video、抖音 image/video/audio/cover、快手 video/cover、Bilibili cover，以及“播放响应精确包含一个 progressive `durl`”时的 Bilibili 普通投稿逻辑首 P 视频。微博、贴吧、知乎当前没有已归一化的可下载 Asset。Bilibili DASH/mux、FLV remux、多段/多 P、字幕、弹幕、备用地址故障切换及番剧/付费/直播媒体尚未实现。forward 元数据没有 CID，因此同 aid 下后续首 CID 替换无法自动使已验证字节失效。任何平台都尚未运行真人登录、作者请求、签名 CDN 下载或 Emby/Jellyfin 重扫/播放；这些行全部保持 `NOT_RUN`。
 
 Secret-sink handling recognizes explicit composite credential keys such as `api_key`, `access_key`, provider-prefixed and camelCase/kebab-case variants, while preserving ordinary fields such as `key`, `public_key` and `key_id`. Credential-marker URL paths such as `/token/<value>/video.mp4`, including percent-encoded and double-encoded forms, are redacted in operator/database sinks and rejected as durable `direct` locators or source hints. Discovery therefore falls back to a stable `adapter_refresh` locator. The `0003` upgrade applies the same path rule while backfilling legacy assets: it clears an unsafe legacy `source_url` and does not copy the credential path into the replacement locator.
 
