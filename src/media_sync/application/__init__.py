@@ -18,6 +18,11 @@ from media_sync.application.emby import (
     emby_export_natural_key,
     export_error_is_retryable,
 )
+from media_sync.application.mediacrawler import (
+    MediaCrawlerOutputRejected,
+    NormalizedMediaCrawlerOutput,
+    load_normalized_output,
+)
 from media_sync.application.sync import SyncRequest, SyncResult, SyncService
 
 __all__ = [
@@ -31,6 +36,8 @@ __all__ = [
     "EmbyExportOutcome",
     "EmbyExportRequest",
     "EmbyExportService",
+    "MediaCrawlerOutputRejected",
+    "NormalizedMediaCrawlerOutput",
     "SyncRequest",
     "SyncResult",
     "SyncService",
@@ -38,4 +45,5 @@ __all__ = [
     "asset_download_natural_key",
     "emby_export_natural_key",
     "export_error_is_retryable",
+    "load_normalized_output",
 ]

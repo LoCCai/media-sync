@@ -8,6 +8,7 @@ from .handlers import (
     SubscriptionHandlerResult,
     SubscriptionJobContext,
 )
+from .mediacrawler_handler import MediaCrawlerScheduledHandler
 from .policy import (
     RETRY_POLICY_SCHEMA_VERSION,
     CircuitClaimDecision,
@@ -61,6 +62,7 @@ __all__ = [
     "LaneScope",
     "LaneSnapshot",
     "MaterializedCycle",
+    "MediaCrawlerScheduledHandler",
     "RetryAfter",
     "RetryPolicy",
     "SchedulerClaim",

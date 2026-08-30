@@ -187,7 +187,9 @@ _TEMPORARY_CODES: Final = frozenset(
     }
 )
 _WAITING_AUTH_CODES: Final = frozenset({"auth_expired", "credentials_unavailable"})
-_WAITING_USER_CODES: Final = frozenset({"captcha_required", "interactive_required", "qr_required"})
+_WAITING_USER_CODES: Final = frozenset(
+    {"captcha_required", "interactive_required", "license_acknowledgement_required", "qr_required"}
+)
 _TERMINAL_CODES: Final = frozenset(
     {"configuration_invalid", "handler_unsupported", "output_security_failed", "schema_invalid"}
 )

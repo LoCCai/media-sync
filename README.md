@@ -6,9 +6,9 @@
 
 ## Current status / 当前状态
 
-The core foundation, credential-safe MediaCrawler bridge, offline-qualified media pipeline, and execution 0006 single-host durable scheduler are runnable. The scheduler materializes bounded batches, with at most one active `sync.subscription` cycle per selected due subscription, applies bounded retry/backoff and persistent platform/account launch lanes, fences worker leases, and exposes redaction-safe CLI controls. Its shipped automatic handler is deliberately Fake-only: MediaCrawler scheduling, automatic download/export DAG planning, per-request HTTP rate limiting, REST/Docker operations, signed-locator refresh, and all user-authorized live platform or Emby/Jellyfin qualification remain outstanding. Execution 0005's media guarantees and execution 0006's scheduler guarantees are proven only with mocks, generated files, fixture rows, temporary filesystems, and independent local SQLite connections. Requirements, capability truth, progress, and exact verification evidence are tracked in [`docs/`](docs/README.md).
+The core foundation, credential-safe MediaCrawler bridge, offline-qualified media pipeline, execution 0006 single-host scheduler, and execution 0007 opt-in MediaCrawler scheduled handler are runnable. New scheduled attempts write manifest v3/receipt v2 artifacts beneath unique attempt roots; sealed legacy manifest v2/receipt v1 evidence remains byte-exact, read-only and available only through strict shared normalization/manual-ingest compatibility, never scheduled restart recovery. The trusted parent owns lease heartbeat and process-tree supervision, and exact owner/token/unexpired guards fence every SyncRun and ingestion/checkpoint transaction. A real local fake-child protocol now proves the complete seven-platform subscribe → tick → write/load → guarded ingest → retry/restart → idempotent replay chain offline. Deterministic cancellation-barrier coverage and the complete failure/secret-sink cross-product remain `PARTIAL`; automatic download/export DAG planning, per-request HTTP spacing, REST/Docker operations, signed-locator refresh, and every user-authorized live platform/CDN or Emby/Jellyfin qualification remain outstanding. Requirements, capability truth, progress, and exact verification evidence are tracked in [`docs/`](docs/README.md).
 
-核心基线、安全凭据的 MediaCrawler 桥接、通过离线验收的媒体流水线，以及执行 0006 的单机持久调度器均已可运行。调度器会有界物化选中的到期订阅，每个订阅最多一个 active `sync.subscription` 周期，并执行有界重试/退避、持久平台/账户启动 lane 与工作器租约 fencing，同时提供脱敏 CLI 控制面。随附的自动 handler 有意仅支持 Fake：MediaCrawler 调度接入、自动下载/导出 DAG、逐 HTTP 请求限流、REST/Docker 运维、签名 locator 刷新，以及全部需要用户授权的真人平台或 Emby/Jellyfin 验收仍待完成。执行 0005 的媒体保证与执行 0006 的调度保证仅由 mock、生成文件、数据库夹具、临时文件系统及独立本地 SQLite 连接证明。需求、真实能力、进展及准确验证证据均保存在 [`docs/`](docs/README.md)。
+核心基线、安全凭据的 MediaCrawler 桥接、通过离线验收的媒体流水线、执行 0006 的单机调度器，以及执行 0007 显式启用的 MediaCrawler 定时 handler 均已可运行。新的定时 attempt 会在唯一 attempt 根下写入 manifest v3/receipt v2；已密封的 legacy manifest v2/receipt v1 证据保持逐字节精确、只读，并且只能通过严格的共享归一化/手工导入兼容路径读取，不能用于定时重启恢复。可信父进程拥有 lease heartbeat 与进程树监督权，每个 SyncRun 及导入/checkpoint 事务都受精确 owner/token/未过期 guard 保护。本地真实 fake-child 协议现已离线证明七个平台完整的“订阅 → tick → 写入/读取 → 受保护导入 → 重试/重启 → 幂等重放”链路。确定性取消 barrier 覆盖与完整失败/密钥落点交叉矩阵仍为 `PARTIAL`；自动下载/导出 DAG、逐 HTTP 请求间隔、REST/Docker 运维、签名 locator 刷新，以及全部需要用户授权的真人平台/CDN 或 Emby/Jellyfin 验收仍待完成。需求、真实能力、进展及准确验证证据均保存在 [`docs/`](docs/README.md)。
 
 ## Foundation quickstart / 基线快速开始
 
@@ -39,11 +39,19 @@ uv run media-sync scheduler job list --subscription-id <SUBSCRIPTION_UUID> --jso
 
 `sync run` 仍可用于显式的一次性 Fake 同步。调度控制还包括 `subscription pause|resume|run-now`、`scheduler job resume|cancel` 与 `scheduler lane list|set|reset`。有界 worker 在空闲时立即返回且不会 sleep；它是本地控制面，不是生产守护进程。
 
-Only opaque secret references such as `env:MEDIA_SYNC_BILI_COOKIE` or `keyring:media-sync/bili-demo` may be passed to `--credential-ref`; raw Cookie/password values are rejected. Run the complete offline test suite with `uv run pytest`; the complete quality gate also includes lint, format, strict types, build/package, documentation, pinned-upstream, patch and secret-sentinel checks. See [`docs/executions/0006-durable-scheduler/verification.md`](docs/executions/0006-durable-scheduler/verification.md) for the scheduler closeout commands and results.
+For an already configured pinned MediaCrawler checkout/runtime and an authorized due subscription, the external handler remains default-off and requires both per-run switches below. This command can launch the crawler; it is not part of the network-free Fake quickstart.
+
+对于已经配置好锁定版 MediaCrawler checkout/runtime、且存在经授权到期订阅的环境，外部 handler 仍默认关闭，并且每次运行都必须同时提供下列两个开关。此命令可能启动爬虫，不属于上方无需网络的 Fake 快速开始。
+
+```powershell
+uv run media-sync scheduler run --max-jobs 1 --enable-mediacrawler --accept-mediacrawler-license --json
+```
+
+Only opaque secret references such as `env:MEDIA_SYNC_BILI_COOKIE` or `keyring:media-sync/bili-demo` may be passed to `--credential-ref`; raw Cookie/password values are rejected. Run the complete offline test suite with `uv run pytest`; the complete quality gate also includes lint, format, strict types, build/package, documentation, pinned-upstream, patch and secret-sentinel checks. See [`docs/executions/0007-mediacrawler-scheduled-handler/verification.md`](docs/executions/0007-mediacrawler-scheduled-handler/verification.md) for the current scheduler/MediaCrawler closeout commands and results.
 
 OS-keyring lookup is optional; install it with `uv sync --extra keyring` before using a `keyring:` reference. Confined `file:<relative-path>` references resolve below `MEDIA_SYNC_SECRET_FILE_DIR` (or the private state-directory default).
 
-`--credential-ref` 只接受 `env:MEDIA_SYNC_BILI_COOKIE`、`keyring:media-sync/bili-demo` 等不透明引用；原始 Cookie/密码会被拒绝。`uv run pytest` 会运行完整离线测试套件；完整质量门禁还包括 lint、格式、严格类型、构建/打包、文档、锁定上游、补丁与密钥哨兵检查。调度器的准确收尾命令及实际结果位于 [`docs/executions/0006-durable-scheduler/verification.md`](docs/executions/0006-durable-scheduler/verification.md)。
+`--credential-ref` 只接受 `env:MEDIA_SYNC_BILI_COOKIE`、`keyring:media-sync/bili-demo` 等不透明引用；原始 Cookie/密码会被拒绝。`uv run pytest` 会运行完整离线测试套件；完整质量门禁还包括 lint、格式、严格类型、构建/打包、文档、锁定上游、补丁与密钥哨兵检查。当前调度器/MediaCrawler 的准确收尾命令及实际结果位于 [`docs/executions/0007-mediacrawler-scheduled-handler/verification.md`](docs/executions/0007-mediacrawler-scheduled-handler/verification.md)。
 
 系统钥匙串是可选能力；使用 `keyring:` 引用前请运行 `uv sync --extra keyring`。`file:<relative-path>` 只会在 `MEDIA_SYNC_SECRET_FILE_DIR` 下解析；未配置时使用私有状态目录中的默认位置。
 
@@ -101,7 +109,7 @@ Schema 往返会主动清理与 generation 绑定的身份。从 `0003` 降级�
 
 - Platforms / 平台: Xiaohongshu, Douyin, Kuaishou, Bilibili, Weibo, Tieba and Zhihu. / 小红书、抖音、快手、哔哩哔哩、微博、百度贴吧、知乎。
 - Authentication / 登录: the current bridge exposes reachable QR, Cookie and saved-browser-session paths from the pinned source; phone login is not claimed. / 当前桥接按锁定源码的可达路径支持二维码、Cookie 与已保存浏览器会话；不宣称手机号登录可用。
-- Subscription / 订阅：stores author identity, policy, incremental watermarks and deduplication state; execution 0006 adds durable scheduled cycles, bounded backoff, explicit waiting recovery and platform/account launch throttles. MediaCrawler scheduling and per-request upstream throttling remain later work. / 保存作者身份、策略、增量水位与去重状态；执行 0006 新增持久定时周期、有界退避、显式等待恢复及平台/账户启动节流。MediaCrawler 调度与逐请求上游限流仍属于后续工作。
+- Subscription / 订阅：stores author identity, incremental watermarks and deduplication state. MediaCrawler accounts additionally persist closed policy v1: `schema_version`, optional `creator_input.secret_ref`, explicit `allow_full_history`, positive `request_delay_seconds` bounded at 300, and `headless`; license acknowledgement is separate, per-worker and default-off. Execution 0007 runs forward scheduled attempts through the opt-in handler. The proven `CRAWLER_MAX_SLEEP_SEC` setting with `MAX_CONCURRENCY_NUM=1` is not a per-request HTTP-spacing guarantee. / 保存作者身份、增量水位与去重状态。MediaCrawler 账户还会持久化封闭 policy v1：`schema_version`、可选 `creator_input.secret_ref`、显式 `allow_full_history`、最大为 300 的正数 `request_delay_seconds`，以及 `headless`；许可证确认独立存在、逐 worker 提供且默认关闭。执行 0007 通过显式启用的 handler 运行 forward 定时 attempt。已证明的 `CRAWLER_MAX_SLEEP_SEC` 配置与 `MAX_CONCURRENCY_NUM=1` 不代表逐 HTTP 请求间隔保证。
 - Content / 内容: normalized posts, videos, images and related metadata. / 归一化图文、视频、图片及相关元数据。
 - Media library / 媒体库: stable directories, media files, posters/covers and Emby/Jellyfin NFO. / 输出稳定目录、媒体文件、海报/封面和 Emby/Jellyfin NFO。
 

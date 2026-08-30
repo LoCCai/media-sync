@@ -142,6 +142,7 @@ def test_retry_rejects_naive_time_and_datetime_overflow() -> None:
         ("account_busy", FailureDisposition.RETRY, False),
         ("auth_expired", FailureDisposition.WAITING_AUTH, True),
         ("captcha_required", FailureDisposition.WAITING_USER, False),
+        ("license_acknowledgement_required", FailureDisposition.WAITING_USER, False),
         ("schema_invalid", FailureDisposition.TERMINAL, True),
         ("unknown-provider-text", FailureDisposition.RETRY, True),
         ("raw exception\nsecret", FailureDisposition.RETRY, True),
@@ -162,6 +163,7 @@ def test_failure_classification_is_fixed_and_redaction_safe(
         "account_busy",
         "auth_expired",
         "captcha_required",
+        "license_acknowledgement_required",
         "schema_invalid",
     }:
         assert classified.code == "unexpected_handler_failure"

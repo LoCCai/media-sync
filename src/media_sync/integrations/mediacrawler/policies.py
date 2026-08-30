@@ -163,7 +163,11 @@ def build_run_paths(
     account_id: UUID,
     job_id: UUID,
 ) -> RunPaths:
-    """Build stable per-account profile and unique per-job output paths."""
+    """Build a stable account profile and one UUID-scoped execution root.
+
+    ``job_id`` retains its legacy parameter name for callers that prepared v2
+    artifacts. Manifest v3 passes its attempt-scoped ``execution_id`` here.
+    """
 
     root = integration_root.expanduser().resolve()
     account_root = confined_path(root, "accounts", platform.value, str(account_id))

@@ -10,14 +10,18 @@ import textwrap
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from uuid import UUID, uuid4
 
 import pytest
 
+from media_sync.application.mediacrawler import load_normalized_output
 from media_sync.domain import LoginMethod, Platform
 from media_sync.integrations.mediacrawler.bridge import (
+    LEGACY_MANIFEST_SCHEMA_VERSION,
+    MANIFEST_SCHEMA_VERSION,
     BridgeConfigurationError,
     BridgeRequest,
     MediaCrawlerBridge,
@@ -26,6 +30,7 @@ from media_sync.integrations.mediacrawler.bridge import (
     RunnerManifest,
 )
 from media_sync.integrations.mediacrawler.checkout import (
+    MEDIACRAWLER_LICENSE,
     MEDIACRAWLER_LICENSE_SHA256,
     CheckoutValidationError,
     LicenseAcknowledgementRequired,
@@ -47,6 +52,8 @@ from media_sync.integrations.mediacrawler.policies import (
 )
 from media_sync.integrations.mediacrawler.receipt import (
     COMPLETION_RECEIPT_NAME,
+    COMPLETION_RECEIPT_SCHEMA_VERSION,
+    LEGACY_COMPLETION_RECEIPT_SCHEMA_VERSION,
     CompletionReceiptError,
     CompletionReceiptErrorCode,
     completion_receipt_path,
@@ -336,14 +343,21 @@ def _request(
     cookie: SecretValue | None = None,
     allow_full_history: bool | None = None,
     limits: WatchdogLimits | None = None,
+    scheduler_job_id: UUID | None = None,
+    schedule_revision: int = 0,
+    attempt: int = 1,
+    execution_id: UUID | None = None,
+    sync_run_id: UUID | None = None,
+    request_delay_seconds: float = 2.0,
 ) -> BridgeRequest:
+    durable_job_id = job_id or uuid4()
     return BridgeRequest(
         lock_path=project.lock_path,
         integration_root=integration_root,
         python_executable=Path(sys.executable),
         account_id=account_id,
         subscription_id=subscription_id or uuid4(),
-        job_id=job_id or uuid4(),
+        job_id=durable_job_id,
         checkpoint_revision_before=checkpoint_revision_before,
         intended_mode=intended_mode,
         platform=platform,
@@ -355,6 +369,12 @@ def _request(
         cookie=cookie,
         max_items=17,
         watchdogs=limits or WatchdogLimits(max_seconds=4, poll_seconds=0.02),
+        scheduler_job_id=scheduler_job_id or durable_job_id,
+        schedule_revision=schedule_revision,
+        attempt=attempt,
+        execution_id=execution_id,
+        sync_run_id=sync_run_id,
+        request_delay_seconds=request_delay_seconds,
     )
 
 
@@ -525,6 +545,100 @@ def test_job_id_reuse_and_manifest_path_tampering_are_rejected(fake_project: Fak
         RunnerManifest.load(spec.paths.manifest_path)
 
 
+def test_manifest_v3_binds_scheduler_and_attempt_identity(fake_project: FakeProject, tmp_path: Path) -> None:
+    scheduler_job_id = uuid4()
+    execution_id = uuid4()
+    sync_run_id = uuid4()
+    spec = _bridge().prepare(
+        _request(
+            fake_project,
+            tmp_path / "runs",
+            job_id=scheduler_job_id,
+            scheduler_job_id=scheduler_job_id,
+            schedule_revision=12,
+            attempt=3,
+            execution_id=execution_id,
+            sync_run_id=sync_run_id,
+            request_delay_seconds=7.5,
+        )
+    )
+
+    payload = spec.manifest.as_payload()
+    assert payload["schema_version"] == MANIFEST_SCHEMA_VERSION
+    assert payload["scheduler_job_id"] == str(scheduler_job_id)
+    assert payload["schedule_revision"] == 12
+    assert payload["attempt"] == 3
+    assert payload["execution_id"] == str(execution_id)
+    assert payload["sync_run_id"] == str(sync_run_id)
+    assert payload["request_delay_seconds"] == 7.5
+    assert payload["license_name"] == MEDIACRAWLER_LICENSE
+    assert payload["license_sha256"] == MEDIACRAWLER_LICENSE_SHA256
+    assert "job_id" not in payload
+    assert spec.paths.job_root.name == str(execution_id)
+    assert RunnerManifest.load(spec.paths.manifest_path) == spec.manifest
+
+
+def test_scheduler_retry_reuses_job_but_not_execution_root(fake_project: FakeProject, tmp_path: Path) -> None:
+    scheduler_job_id = uuid4()
+    first_execution_id = uuid4()
+    second_execution_id = uuid4()
+    first = _bridge().prepare(
+        _request(
+            fake_project,
+            tmp_path / "runs",
+            job_id=scheduler_job_id,
+            schedule_revision=4,
+            attempt=1,
+            execution_id=first_execution_id,
+            sync_run_id=uuid4(),
+        )
+    )
+    second = _bridge().prepare(
+        _request(
+            fake_project,
+            tmp_path / "runs",
+            job_id=scheduler_job_id,
+            schedule_revision=4,
+            attempt=2,
+            execution_id=second_execution_id,
+            sync_run_id=uuid4(),
+        )
+    )
+
+    assert first.manifest.scheduler_job_id == second.manifest.scheduler_job_id == scheduler_job_id
+    assert first.paths.job_root != second.paths.job_root
+    assert first.paths.job_root.name == str(first_execution_id)
+    assert second.paths.job_root.name == str(second_execution_id)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("unexpected", True),
+        ("schedule_revision", -1),
+        ("attempt", 0),
+        ("request_delay_seconds", 0),
+        ("license_sha256", "0" * 64),
+    ],
+)
+def test_manifest_v3_rejects_unknown_or_unqualified_fields(
+    fake_project: FakeProject,
+    tmp_path: Path,
+    field: str,
+    value: object,
+) -> None:
+    spec = _bridge().prepare(_request(fake_project, tmp_path / field))
+    payload = spec.manifest.as_payload()
+    payload[field] = value
+    spec.paths.manifest_path.write_text(
+        json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(BridgeConfigurationError):
+        RunnerManifest.load(spec.paths.manifest_path)
+
+
 def test_signed_creator_and_cookie_never_reach_persistent_or_display_sinks(
     fake_project: FakeProject, tmp_path: Path
 ) -> None:
@@ -657,10 +771,10 @@ def test_parent_rejects_exact_known_secrets_in_ordinary_output_fields(
 
     assert result.status is MediaCrawlerProcessStatus.COMPLETION_FAILED
     assert not completion_receipt_path(spec.paths.job_root).exists()
-    records = _records(spec.paths.output_root)
-    leaked = next(record for record in records if "title" in record)
-    assert cookie.reveal() in str(leaked["title"])
-    assert creator in str(leaked["raw"])
+    assert not spec.paths.job_root.exists()
+    retained_bytes = b"".join(path.read_bytes() for path in spec.paths.integration_root.rglob("*") if path.is_file())
+    assert cookie.reveal().encode("utf-8") not in retained_bytes
+    assert creator.encode("utf-8") not in retained_bytes
     rendered = repr(result) + result.message
     assert cookie.reveal() not in rendered
     assert creator not in rendered
@@ -912,6 +1026,116 @@ def _seal_manual_output(spec: MediaCrawlerRunSpec) -> None:
     )
 
 
+def _legacy_v2_manifest_payload(manifest: RunnerManifest) -> dict[str, object]:
+    payload = manifest.as_payload()
+    return {
+        "schema_version": LEGACY_MANIFEST_SCHEMA_VERSION,
+        "checkout_root": payload["checkout_root"],
+        "lock_path": payload["lock_path"],
+        "python_executable": payload["python_executable"],
+        "integration_root": payload["integration_root"],
+        "account_id": payload["account_id"],
+        "subscription_id": payload["subscription_id"],
+        "job_id": payload["scheduler_job_id"],
+        "checkpoint_revision_before": payload["checkpoint_revision_before"],
+        "intended_mode": payload["intended_mode"],
+        "account_root": payload["account_root"],
+        "profile_root": payload["profile_root"],
+        "job_root": payload["job_root"],
+        "output_root": payload["output_root"],
+        "upstream_sha": payload["upstream_sha"],
+        "platform": payload["platform"],
+        "login_method": payload["login_method"],
+        "author_remote_id_fingerprint_sha256": payload["author_remote_id_fingerprint_sha256"],
+        "creator_fingerprint_sha256": payload["creator_fingerprint_sha256"],
+        "license_acknowledged": payload["license_acknowledged"],
+        "allow_full_history": payload["allow_full_history"],
+        "headless": payload["headless"],
+        "max_items": payload["max_items"],
+        "watchdogs": payload["watchdogs"],
+    }
+
+
+def _write_legacy_v1_receipt(manifest: RunnerManifest, target: Path) -> bytes:
+    manifest_bytes = (manifest.job_root / "runner-manifest.json").read_bytes()
+    relative_path = target.relative_to(manifest.output_root).as_posix()
+    directories = sorted(
+        {
+            parent.relative_to(manifest.output_root).as_posix()
+            for parent in target.parents
+            if parent != manifest.output_root and parent.is_relative_to(manifest.output_root)
+        }
+    )
+    payload = {
+        "schema_version": LEGACY_COMPLETION_RECEIPT_SCHEMA_VERSION,
+        "status": "succeeded",
+        "account_id": str(manifest.account_id),
+        "subscription_id": str(manifest.subscription_id),
+        "job_id": str(manifest.job_id),
+        "checkpoint_revision_before": manifest.checkpoint_revision_before,
+        "platform": manifest.platform.value,
+        "intended_mode": manifest.intended_mode.value,
+        "manifest_sha256": hashlib.sha256(manifest_bytes).hexdigest(),
+        "directories": directories,
+        "files": [
+            {
+                "relative_path": relative_path,
+                "size_bytes": target.stat().st_size,
+                "sha256": hashlib.sha256(target.read_bytes()).hexdigest(),
+            }
+        ],
+    }
+    encoded = (json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8")
+    completion_receipt_path(manifest.job_root).write_bytes(encoded)
+    return encoded
+
+
+def test_sealed_v2_v1_artifacts_round_trip_byte_exact_and_read_only(
+    fake_project: FakeProject,
+    tmp_path: Path,
+) -> None:
+    spec = _bridge().prepare(_request(fake_project, tmp_path / "legacy"))
+    legacy_output_bytes = (PROJECT_ROOT / "tests/fixtures/mediacrawler/xhs/contents.v1.jsonl").read_bytes()
+    target = _write_manual_jsonl(spec, legacy_output_bytes)
+    legacy_payload = _legacy_v2_manifest_payload(spec.manifest)
+    legacy_manifest_bytes = json.dumps(
+        legacy_payload,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    spec.paths.manifest_path.write_bytes(legacy_manifest_bytes)
+
+    legacy_manifest = RunnerManifest.load(spec.paths.manifest_path)
+    assert legacy_manifest.schema_version == LEGACY_MANIFEST_SCHEMA_VERSION
+    assert (
+        json.dumps(legacy_manifest.as_payload(), ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        == legacy_manifest_bytes
+    )
+    with pytest.raises(CompletionReceiptError) as unsealed:
+        write_completion_receipt(
+            legacy_manifest,
+            inspect_output(legacy_manifest.output_root, legacy_manifest.watchdogs),
+            known_secrets=(),
+        )
+    assert unsealed.value.code is CompletionReceiptErrorCode.IDENTITY_MISMATCH
+    assert not completion_receipt_path(legacy_manifest.job_root).exists()
+
+    legacy_receipt_bytes = _write_legacy_v1_receipt(legacy_manifest, target)
+    snapshot = load_validated_output_snapshot(legacy_manifest)
+    assert snapshot.receipt.schema_version == LEGACY_COMPLETION_RECEIPT_SCHEMA_VERSION
+    assert snapshot.files[0].payload == legacy_output_bytes
+    normalized = load_normalized_output(
+        legacy_manifest,
+        creator_remote_id="fixture-creator",
+        creator_display_name="Legacy fixture creator",
+        ingested_at=datetime(2026, 8, 30, tzinfo=UTC),
+    )
+    assert normalized.input_records == len(normalized.records) == 2
+    assert {record.content.remote_id for record in normalized.records} == {"xhs-image-002", "xhs-mixed-001"}
+    assert spec.paths.manifest_path.read_bytes() == legacy_manifest_bytes
+    assert completion_receipt_path(legacy_manifest.job_root).read_bytes() == legacy_receipt_bytes
+
+
 def test_receipt_distinguishes_missing_empty_and_truncated_output(fake_project: FakeProject, tmp_path: Path) -> None:
     missing = _bridge().prepare(_request(fake_project, tmp_path / "missing"))
     with pytest.raises(CompletionReceiptError):
@@ -1029,10 +1253,18 @@ def test_receipt_snapshot_rejects_symlink_or_hardlink_substitution(
 
 
 def test_receipt_is_versioned_strict_relative_and_single_use(fake_project: FakeProject, tmp_path: Path) -> None:
+    scheduler_job_id = uuid4()
+    execution_id = uuid4()
+    sync_run_id = uuid4()
     spec = _bridge().prepare(
         _request(
             fake_project,
             tmp_path / "strict",
+            job_id=scheduler_job_id,
+            schedule_revision=9,
+            attempt=4,
+            execution_id=execution_id,
+            sync_run_id=sync_run_id,
             intended_mode=MediaCrawlerRunMode.BACKFILL,
             checkpoint_revision_before=7,
         )
@@ -1041,8 +1273,14 @@ def test_receipt_is_versioned_strict_relative_and_single_use(fake_project: FakeP
     _seal_manual_output(spec)
     snapshot = load_validated_output_snapshot(spec.manifest)
     receipt_payload = snapshot.receipt.as_payload()
-    assert receipt_payload["schema_version"] == 1
+    assert receipt_payload["schema_version"] == COMPLETION_RECEIPT_SCHEMA_VERSION
     assert receipt_payload["status"] == "succeeded"
+    assert receipt_payload["scheduler_job_id"] == str(scheduler_job_id)
+    assert receipt_payload["schedule_revision"] == 9
+    assert receipt_payload["attempt"] == 4
+    assert receipt_payload["execution_id"] == str(execution_id)
+    assert receipt_payload["sync_run_id"] == str(sync_run_id)
+    assert "job_id" not in receipt_payload
     assert receipt_payload["checkpoint_revision_before"] == 7
     assert receipt_payload["intended_mode"] == "backfill"
     assert all(not Path(item.relative_path).is_absolute() for item in snapshot.receipt.files)
@@ -1050,3 +1288,39 @@ def test_receipt_is_versioned_strict_relative_and_single_use(fake_project: FakeP
     with pytest.raises(CompletionReceiptError) as reused:
         _seal_manual_output(spec)
     assert reused.value.code is CompletionReceiptErrorCode.ALREADY_EXISTS
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["scheduler_job_id", "schedule_revision", "attempt", "execution_id", "sync_run_id"],
+)
+def test_receipt_v2_rejects_every_attempt_identity_mismatch(
+    fake_project: FakeProject,
+    tmp_path: Path,
+    field: str,
+) -> None:
+    spec = _bridge().prepare(
+        _request(
+            fake_project,
+            tmp_path / field,
+            job_id=uuid4(),
+            schedule_revision=8,
+            attempt=2,
+            execution_id=uuid4(),
+            sync_run_id=uuid4(),
+        )
+    )
+    _write_manual_jsonl(spec, b'{"record":true}\n')
+    _seal_manual_output(spec)
+    receipt_path = completion_receipt_path(spec.paths.job_root)
+    payload = json.loads(receipt_path.read_text(encoding="utf-8"))
+    payload[field] = payload[field] + 1 if field in {"schedule_revision", "attempt"} else str(uuid4())
+    receipt_path.write_text(
+        json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+
+    with pytest.raises(CompletionReceiptError) as mismatch:
+        load_validated_output_snapshot(spec.manifest)
+    assert mismatch.value.code is CompletionReceiptErrorCode.IDENTITY_MISMATCH

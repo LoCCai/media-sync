@@ -673,6 +673,41 @@ def test_partial_forward_failure_interleaved_with_newer_run_recovers_missing_old
         assert recovery_run.checkpoint_revision_after == 3
 
 
+def test_ownership_guard_fences_every_ingestion_transaction_before_mutation(database: Database) -> None:
+    subscription_id = _seed_subscription(database)
+    run_id = _create_run(database, subscription_id)
+    base = datetime(2026, 8, 30, 8, 30, tzinfo=UTC)
+    older = _record("guarded-older", base)
+    newer = _record("guarded-newer", base + timedelta(minutes=1))
+    guarded_sessions: list[Session] = []
+
+    def guard(session: Session) -> None:
+        guarded_sessions.append(session)
+        if len(guarded_sessions) == 3:
+            raise RepositoryError("injected ownership loss")
+
+    with pytest.raises(RepositoryError, match="injected ownership loss"):
+        MediaCrawlerIngestionService(database, batch_size=1).ingest(
+            (newer, older),
+            subscription_id=subscription_id,
+            run_id=run_id,
+            expected_revision=0,
+            mode=IngestionMode.FORWARD,
+            ownership_guard=guard,
+        )
+
+    assert len(guarded_sessions) == 3
+    assert len({id(session) for session in guarded_sessions}) == 3
+    with database.session() as session:
+        subscription = session.get(Subscription, subscription_id)
+        run = session.get(SyncRun, run_id)
+        assert subscription is not None and run is not None
+        assert set(session.scalars(select(Content.remote_id))) == {older.content.remote_id}
+        assert subscription.checkpoint_revision == 1
+        assert run.checkpoint_revision_after == 1
+        assert run.status == RunStatus.INGESTING.value
+
+
 def test_omitted_continuation_preserves_forward_and_backfill_cursors(database: Database) -> None:
     subscription_id = _seed_subscription(
         database,

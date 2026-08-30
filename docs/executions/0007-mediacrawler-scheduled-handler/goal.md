@@ -1,9 +1,15 @@
 # Execution 0007 goal / 执行 0007 目标
 
-- Status / 状态：Planned / 已计划
+- Status / 状态：Implemented for the offline scope; acceptance remains `PARTIAL` / 离线范围已实现；验收仍为 `PARTIAL`
 - Started / 开始时间：2026-08-30 12:45 +08:00
 - Predecessor / 前置执行：Execution 0006 implementation commit `674e510`
 - Network boundary / 网络边界：offline fixtures and local helper processes only / 仅离线夹具与本地辅助进程
+
+## Amendment 2026-08-30 / 2026-08-30 修订
+
+Acceptance criterion 13 below is preserved verbatim as the committed planning baseline. Implementation review proved that its whole-runtime zero-secret wording is not attainable in the deliberate scrub-denied negative case without either losing the security evidence or making a false claim. The accepted implementation contract is therefore refined as follows: ordinary active attempt roots must be removed; if atomic isolation succeeds but no-follow scrubbing fails, unsafe evidence may remain only below ignored `.quarantine`; if neither removal nor isolation can be proven, the handler must hard-fence the account and write only durable redacted account/incident markers outside the attempt root. Account browser profiles and deliberate quarantine/unresolved evidence are credential-bearing boundaries below dedicated operator-controlled roots and ancestors. Safe-artifact scans cover SQLite, successful and normally cleaned attempt trees, projections and operator output, and must list every intentionally retained negative case they exclude. No quarantine path or raw cleanup error may enter operator output. For acceptance criterion 3, legacy manifest-v2/receipt-v1 recovery means strict shared-normalization/manual-ingestion read compatibility only; it never establishes scheduler ownership, and scheduled restart/reclaim accepts manifest v3 only.
+
+下方验收标准 13 原文保留，作为已提交计划基线。实现复核证明：在“scrub 被拒绝”的故意负向场景中，若不丢失安全证据或作虚假声明，就无法满足其“整个运行树零密钥”措辞。因此验收契约修订为：正常 active attempt 根必须删除；若原子隔离成功但 no-follow 清理失败，不安全证据只能保留在已忽略的 `.quarantine` 下；若既不能证明删除，也不能证明隔离，handler 必须对账户执行硬 fencing，并在 attempt 根之外只写持久、脱敏的账户/事件标记。账户 browser profile 以及故意保留的 quarantine/unresolved 证据，均属于专用、由操作员控制的根目录及祖先下可能携带凭据的边界。安全产物扫描覆盖 SQLite、成功及正常清理后的 attempt 树、投影和运维输出，并必须逐项列出排除的故意留存负向场景；任何 quarantine 路径或原始清理异常都不得进入运维输出。对于验收标准 3，legacy manifest-v2/receipt-v1 的恢复仅指严格的共享归一化/手工导入读取兼容；它绝不建立 scheduler 所有权，定时重启/reclaim 只接受 manifest v3。
 
 ## Outcome / 结果目标
 

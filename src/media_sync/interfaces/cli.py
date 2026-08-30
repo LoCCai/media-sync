@@ -38,6 +38,7 @@ from media_sync.application.emby import (
     EmbyExportService,
     export_error_is_retryable,
 )
+from media_sync.application.mediacrawler import load_normalized_output
 from media_sync.config import Settings, get_settings
 from media_sync.domain import AccountRef, AssetStatus, Cursor, DomainError, JobStatus, LoginMethod, Platform, RunStatus
 from media_sync.exporters.emby import EmbyExporter, ExportError
@@ -75,17 +76,15 @@ from media_sync.integrations.mediacrawler.checkout import (
     verify_mediacrawler_checkout,
     verify_mediacrawler_python,
 )
-from media_sync.integrations.mediacrawler.normalizers import (
-    NormalizationContext,
-    NormalizedMediaRecord,
-    normalize_jsonl_bytes,
-)
 from media_sync.integrations.mediacrawler.policies import (
     MediaCrawlerPolicyError,
     build_run_paths,
     normalize_creator_reference,
 )
-from media_sync.integrations.mediacrawler.receipt import load_validated_output_snapshot
+from media_sync.integrations.mediacrawler.subscription_policy import (
+    MAX_REQUEST_DELAY_SECONDS,
+    MediaCrawlerSubscriptionPolicy,
+)
 from media_sync.media import (
     DownloadLimits,
     FFprobeMediaProbe,
@@ -96,14 +95,17 @@ from media_sync.media import (
 )
 from media_sync.scheduler import (
     DurableSchedulerService,
+    FakeSubscriptionHandler,
     LanePolicy,
     LaneScope,
     LaneSnapshot,
     MaterializedCycle,
+    MediaCrawlerScheduledHandler,
     SchedulerJobSummary,
     SchedulerRepositoryError,
     SchedulerWorkerResult,
     StaleLaneError,
+    SubscriptionHandler,
     SubscriptionHandlerRegistry,
     SubscriptionSchedule,
     SubscriptionWorker,
@@ -871,6 +873,22 @@ def add_subscription(
     ] = None,
     interval_seconds: Annotated[int, typer.Option(min=60, help="Polling interval in seconds.")] = 21_600,
     max_items: Annotated[int, typer.Option(min=1, max=1_000, help="Maximum items per run.")] = 30,
+    allow_full_history: Annotated[
+        bool,
+        typer.Option(help="Acknowledge MediaCrawler creator modes that can scan full history."),
+    ] = False,
+    request_delay_seconds: Annotated[
+        float,
+        typer.Option(
+            min=0.001,
+            max=MAX_REQUEST_DELAY_SECONDS,
+            help="Positive MediaCrawler upstream crawl-delay setting; not a per-request guarantee.",
+        ),
+    ] = 5.0,
+    headless: Annotated[
+        bool,
+        typer.Option("--headless/--headed", help="Run a scheduled MediaCrawler browser without visible UI."),
+    ] = True,
     json_output: Annotated[bool, typer.Option("--json", help="Emit machine-readable JSON.")] = False,
 ) -> None:
     """Idempotently subscribe an account to one platform creator."""
@@ -896,12 +914,17 @@ def add_subscription(
             )
 
         policy: dict[str, object] = {}
-        if normalized_creator_reference_ref is not None:
+        if account.adapter == AdapterName.MEDIACRAWLER.value:
             policy = {
-                "mediacrawler": {
-                    "creator_input": {"secret_ref": normalized_creator_reference_ref},
-                }
+                "mediacrawler": MediaCrawlerSubscriptionPolicy(
+                    allow_full_history=allow_full_history,
+                    request_delay_seconds=request_delay_seconds,
+                    headless=headless,
+                    creator_secret_ref=normalized_creator_reference_ref,
+                ).to_payload()
             }
+        elif allow_full_history or request_delay_seconds != 5.0 or not headless:
+            raise typer.BadParameter("MediaCrawler scheduling policy options require a MediaCrawler account")
 
         author_repository = AuthorRepository(session)
         author = author_repository.upsert(
@@ -1014,12 +1037,44 @@ def scheduler_run(
         int,
         typer.Option(min=1, max=1_000, help="Maximum queued candidates scanned per claim."),
     ] = 100,
+    enable_mediacrawler: Annotated[
+        bool,
+        typer.Option(
+            "--enable-mediacrawler",
+            help="Explicitly enable the external MediaCrawler handler for this bounded worker run.",
+        ),
+    ] = False,
+    accept_mediacrawler_license: Annotated[
+        bool,
+        typer.Option(
+            "--accept-mediacrawler-license",
+            help="Acknowledge the pinned non-commercial learning license for this worker run.",
+        ),
+    ] = False,
     json_output: Annotated[bool, typer.Option("--json", help="Emit machine-readable JSON.")] = False,
 ) -> None:
-    """Run a bounded Fake-only worker batch and return immediately when idle."""
+    """Run a bounded worker batch; the MediaCrawler handler remains default-off."""
 
+    if accept_mediacrawler_license and not enable_mediacrawler:
+        raise typer.BadParameter("MediaCrawler license acknowledgement requires --enable-mediacrawler")
+    settings = get_settings()
     with _scheduler_runtime() as (database, _service):
-        worker = SubscriptionWorker(database, SubscriptionHandlerRegistry.fake_only(database))
+        handlers: dict[str, SubscriptionHandler] = {"fake": FakeSubscriptionHandler(database)}
+        if enable_mediacrawler:
+            handlers[AdapterName.MEDIACRAWLER.value] = MediaCrawlerScheduledHandler(
+                database,
+                lock_path=settings.mediacrawler_lock_path,
+                integration_root=settings.resolved_mediacrawler_runtime_dir,
+                python_executable=settings.mediacrawler_python_executable,
+                secret_resolver=SecretResolver.local(file_root=settings.resolved_secret_file_dir),
+                enabled=True,
+                license_acknowledged=accept_mediacrawler_license,
+            )
+        worker = SubscriptionWorker(
+            database,
+            SubscriptionHandlerRegistry(handlers),
+            claim_registered_only=True,
+        )
         results = asyncio.run(
             worker.run_bounded(
                 worker_id=f"cli-{uuid4()}",
@@ -1494,38 +1549,16 @@ def ingest_mediacrawler_output(
             ):
                 raise MediaCrawlerPolicyError("runner manifest does not belong to the subscription")
             verify_manifest_checkout(manifest)
-            output_snapshot = load_validated_output_snapshot(manifest)
-            output_fingerprint = hashlib.sha256(
-                json.dumps(
-                    output_snapshot.receipt.as_payload(),
-                    ensure_ascii=False,
-                    sort_keys=True,
-                    separators=(",", ":"),
-                ).encode("utf-8")
-            ).hexdigest()
-            context = NormalizationContext(
-                platform=platform,
+            normalized_output = load_normalized_output(
+                manifest,
                 creator_remote_id=creator_remote_id,
                 creator_display_name=creator_display_name,
-                upstream_sha=manifest.upstream_sha,
                 ingested_at=datetime.now(UTC),
             )
-            normalized_records: list[NormalizedMediaRecord] = []
+            output_fingerprint = normalized_output.output_fingerprint_sha256
+            normalized_records = normalized_output.records
             quarantined_count = 0
             truncated_tail = False
-            for jsonl_file in output_snapshot.files:
-                batch = normalize_jsonl_bytes(
-                    jsonl_file.payload,
-                    context,
-                    max_bytes=manifest.watchdogs.max_output_bytes,
-                    max_records=manifest.watchdogs.max_output_items,
-                    max_line_bytes=manifest.watchdogs.max_line_bytes,
-                )
-                normalized_records.extend(batch.records)
-                quarantined_count += len(batch.quarantined)
-                truncated_tail = truncated_tail or batch.truncated_tail
-            if quarantined_count or truncated_tail:
-                raise MediaCrawlerPolicyError("MediaCrawler output is incomplete or contains quarantined records")
         except (OSError, ValueError, CheckoutValidationError):
             raise typer.BadParameter("MediaCrawler output validation was rejected") from None
 

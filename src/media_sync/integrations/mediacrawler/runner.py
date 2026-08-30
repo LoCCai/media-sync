@@ -11,19 +11,33 @@ import signal
 import stat
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+from uuid import UUID, uuid4
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
     from .bridge import MediaCrawlerRunSpec, RunnerManifest
-    from .policies import OutputStats
+    from .policies import OutputStats, RunPaths
 
 _PRIVATE_INPUT_ENV = "MEDIA_SYNC_MEDIACRAWLER_PRIVATE_INPUT"
+_CONTROL_ENV = "MEDIA_SYNC_MEDIACRAWLER_CONTROL"
+_CONTROL_VERSION = "stdin-v1"
+_CONTROL_START = b"media-sync-start-v1\n"
+_CONTROL_CANCEL = b"media-sync-cancel-v1\n"
+_MAX_CONTROL_BYTES = 64
+_COOPERATIVE_STOP_SECONDS = 0.5
+_TREE_STOP_SECONDS = 5.0
+_CLEANUP_SECURITY_SCHEMA_VERSION = 1
+_CLEANUP_SECURITY_ROOT = ".cleanup-security-v1"
+_CLEANUP_ACCOUNT_BLOCKS = "account-blocks"
+_CLEANUP_INCIDENTS = "incidents"
+_CLEANUP_INCIDENT_CODE = "mediacrawler_attempt_cleanup_unresolved"
 
 EXIT_CONFIGURATION = 20
 EXIT_TIMEOUT = 21
@@ -32,6 +46,7 @@ EXIT_OUTPUT_ITEMS = 23
 EXIT_OUTPUT_FILES = 24
 EXIT_OUTPUT_LINE = 25
 EXIT_OUTPUT_TREE = 26
+EXIT_CANCELLED = 27
 EXIT_UPSTREAM = 30
 
 
@@ -50,6 +65,36 @@ class MediaCrawlerProcessStatus(StrEnum):
     OUTPUT_TREE_INVALID = "output_tree_invalid"
     COMPLETION_FAILED = "completion_failed"
     ACCOUNT_BUSY = "account_busy"
+    CANCELLED = "cancelled"
+
+
+class AttemptCleanupStatus(StrEnum):
+    """Closed outcome for one exact unsealed attempt root."""
+
+    ABSENT = "absent"
+    REMOVED = "removed"
+    QUARANTINED = "quarantined"
+    UNRESOLVED = "unresolved"
+
+    @property
+    def clean(self) -> bool:
+        return self in {AttemptCleanupStatus.ABSENT, AttemptCleanupStatus.REMOVED}
+
+    @property
+    def secured(self) -> bool:
+        return self is not AttemptCleanupStatus.UNRESOLVED
+
+
+class AttemptCleanupError(RuntimeError):
+    """An unsealed attempt could not be cleanly removed after isolation."""
+
+
+@dataclass(frozen=True, slots=True)
+class _AttemptCleanupScope:
+    integration_root: Path
+    platform: str
+    account_id: UUID
+    execution_id: UUID
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,6 +126,7 @@ _STATUS_MESSAGES = {
     MediaCrawlerProcessStatus.OUTPUT_TREE_INVALID: "MediaCrawler child produced an invalid output tree",
     MediaCrawlerProcessStatus.COMPLETION_FAILED: "MediaCrawler child output could not be sealed safely",
     MediaCrawlerProcessStatus.ACCOUNT_BUSY: "MediaCrawler account profile is already in use",
+    MediaCrawlerProcessStatus.CANCELLED: "MediaCrawler child execution was cancelled",
 }
 
 
@@ -138,6 +184,13 @@ class _AccountFileLock:
                 fcntl.__dict__["flock"](descriptor, int(fcntl.__dict__["LOCK_UN"]))
         with contextlib.suppress(OSError):
             os.close(descriptor)
+
+    @property
+    def descriptor(self) -> int:
+        descriptor = self._descriptor
+        if descriptor is None:
+            raise RuntimeError("account lock is not held")
+        return descriptor
 
 
 class _WindowsJob:
@@ -224,6 +277,42 @@ class _WindowsJob:
         except (AttributeError, OSError, TypeError, ValueError):
             return None
 
+    @classmethod
+    def attach_current_process(cls) -> _WindowsJob | None:
+        """Create a child-owned nested Job inherited by future descendants."""
+
+        if os.name != "nt":
+            return None
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel32.GetCurrentProcess.argtypes = ()
+            kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+            current_process: Any = type("_CurrentProcess", (), {})()
+            current_process._handle = kernel32.GetCurrentProcess()
+            return cls.attach(current_process)
+        except (AttributeError, OSError, TypeError, ValueError):
+            return None
+
+    def terminate(self) -> bool:
+        """Terminate all active Job members without first closing the handle."""
+
+        handle = self._handle
+        if not handle or os.name != "nt":
+            return False
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel32.TerminateJobObject.argtypes = (wintypes.HANDLE, wintypes.UINT)
+            kernel32.TerminateJobObject.restype = wintypes.BOOL
+            return bool(kernel32.TerminateJobObject(handle, EXIT_CANCELLED))
+        except (AttributeError, OSError, TypeError, ValueError):
+            return False
+
     def close(self) -> None:
         handle = self._handle
         self._handle = 0
@@ -237,6 +326,71 @@ class _WindowsJob:
             kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
             kernel32.CloseHandle.restype = wintypes.BOOL
             kernel32.CloseHandle(handle)
+
+    def terminate_and_wait(
+        self,
+        process: subprocess.Popen[bytes],
+        *,
+        timeout: float = _TREE_STOP_SECONDS,
+    ) -> bool:
+        """Terminate every Job member and confirm that the Job became empty."""
+
+        handle = self._handle
+        if not handle:
+            return process.poll() is not None
+        stopped = False
+        deadline = time.monotonic() + timeout
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            class _BasicAccounting(ctypes.Structure):
+                _fields_ = [
+                    ("TotalUserTime", ctypes.c_longlong),
+                    ("TotalKernelTime", ctypes.c_longlong),
+                    ("ThisPeriodTotalUserTime", ctypes.c_longlong),
+                    ("ThisPeriodTotalKernelTime", ctypes.c_longlong),
+                    ("TotalPageFaultCount", wintypes.DWORD),
+                    ("TotalProcesses", wintypes.DWORD),
+                    ("ActiveProcesses", wintypes.DWORD),
+                    ("TotalTerminatedProcesses", wintypes.DWORD),
+                ]
+
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel32.TerminateJobObject.argtypes = (wintypes.HANDLE, wintypes.UINT)
+            kernel32.TerminateJobObject.restype = wintypes.BOOL
+            kernel32.QueryInformationJobObject.argtypes = (
+                wintypes.HANDLE,
+                ctypes.c_int,
+                ctypes.c_void_p,
+                wintypes.DWORD,
+                ctypes.c_void_p,
+            )
+            kernel32.QueryInformationJobObject.restype = wintypes.BOOL
+            kernel32.TerminateJobObject(handle, 1)
+            while time.monotonic() < deadline:
+                accounting = _BasicAccounting()
+                queried = kernel32.QueryInformationJobObject(
+                    handle,
+                    1,
+                    ctypes.byref(accounting),
+                    ctypes.sizeof(accounting),
+                    None,
+                )
+                if queried and accounting.ActiveProcesses == 0:
+                    stopped = True
+                    break
+                time.sleep(0.01)
+        except (AttributeError, OSError, TypeError, ValueError):
+            stopped = False
+        finally:
+            # KILL_ON_JOB_CLOSE remains the final fail-safe if a query failed.
+            self.close()
+
+        remaining = max(0.0, deadline - time.monotonic())
+        with contextlib.suppress(OSError, subprocess.TimeoutExpired):
+            process.wait(timeout=remaining)
+        return stopped and process.poll() is not None
 
 
 def _parent_result(
@@ -283,7 +437,74 @@ def _status_for_returncode(returncode: int) -> MediaCrawlerProcessStatus:
         EXIT_OUTPUT_FILES: MediaCrawlerProcessStatus.OUTPUT_FILES_EXCEEDED,
         EXIT_OUTPUT_LINE: MediaCrawlerProcessStatus.OUTPUT_LINE_EXCEEDED,
         EXIT_OUTPUT_TREE: MediaCrawlerProcessStatus.OUTPUT_TREE_INVALID,
+        EXIT_CANCELLED: MediaCrawlerProcessStatus.CANCELLED,
     }.get(returncode, MediaCrawlerProcessStatus.UPSTREAM_FAILED)
+
+
+def _write_control(process: subprocess.Popen[bytes], token: bytes) -> bool:
+    stream = process.stdin
+    if stream is None or process.poll() is not None:
+        return False
+    try:
+        stream.write(token)
+        stream.flush()
+    except (BrokenPipeError, OSError, ValueError):
+        return False
+    return True
+
+
+def _close_control(process: subprocess.Popen[bytes]) -> None:
+    stream = process.stdin
+    if stream is not None:
+        with contextlib.suppress(OSError, ValueError):
+            stream.close()
+
+
+def _spawn_supervised_child(
+    spec: MediaCrawlerRunSpec,
+    child_environment: dict[str, str],
+    lock_descriptor: int,
+) -> subprocess.Popen[bytes]:
+    """Spawn with the account-lock handle inherited until this child exits."""
+
+    if os.name != "nt":
+        return subprocess.Popen(
+            spec.command,
+            cwd=spec.cwd,
+            env=child_environment,
+            shell=False,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+            close_fds=True,
+            pass_fds=(lock_descriptor,),
+        )
+
+    import msvcrt
+
+    lock_handle = msvcrt.get_osfhandle(lock_descriptor)
+    set_handle_inheritable = getattr(os, "set_handle_inheritable", None)
+    if not callable(set_handle_inheritable):  # pragma: no cover - supported Windows runtimes expose it
+        raise OSError("Windows handle inheritance is unavailable")
+    startup_info: Any = subprocess.STARTUPINFO()
+    startup_info.lpAttributeList = {"handle_list": [lock_handle]}
+    set_handle_inheritable(lock_handle, True)
+    try:
+        return subprocess.Popen(
+            spec.command,
+            cwd=spec.cwd,
+            env=child_environment,
+            shell=False,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
+            close_fds=True,
+            startupinfo=startup_info,
+        )
+    finally:
+        set_handle_inheritable(lock_handle, False)
 
 
 def _taskkill_tree(process: subprocess.Popen[bytes]) -> None:
@@ -307,61 +528,432 @@ def _signal_process_group(process_id: int, signal_number: int) -> None:
         killpg(process_id, signal_number)
 
 
-def _stop_child(process: subprocess.Popen[bytes], windows_job: _WindowsJob | None) -> int | None:
-    """Use hard termination only as a parent fallback after child cleanup failed."""
-
+def _process_group_is_alive(process_id: int) -> bool:
     if os.name == "nt":
-        if windows_job is not None:
-            windows_job.close()
-        else:
-            _taskkill_tree(process)
-    else:
-        with contextlib.suppress(OSError):
-            _signal_process_group(process.pid, signal.SIGTERM)
+        return False
     try:
-        return process.wait(timeout=2)
-    except subprocess.TimeoutExpired:
+        _signal_process_group(process_id, 0)
+    except ProcessLookupError:
+        return False
+    except (OSError, PermissionError):
+        return True
+    return True
+
+
+def _wait_for_process_group_exit(process_id: int, deadline: float) -> bool:
+    while _process_group_is_alive(process_id) and time.monotonic() < deadline:
+        time.sleep(0.01)
+    return not _process_group_is_alive(process_id)
+
+
+def _stop_child(process: subprocess.Popen[bytes], windows_job: _WindowsJob | None) -> int | None:
+    """Request cooperative cancellation, then join the complete process tree."""
+
+    _write_control(process, _CONTROL_CANCEL)
+    with contextlib.suppress(subprocess.TimeoutExpired):
+        process.wait(timeout=_COOPERATIVE_STOP_SECONDS)
+    _close_process_tree(process, windows_job)
+    return process.poll()
+
+
+def _close_process_tree(process: subprocess.Popen[bytes], windows_job: _WindowsJob | None) -> bool:
+    """Terminate and join direct child plus descendants before releasing profile ownership."""
+
+    try:
         if os.name == "nt":
+            if windows_job is not None:
+                return windows_job.terminate_and_wait(process)
             _taskkill_tree(process)
-        else:
+            with contextlib.suppress(OSError, subprocess.TimeoutExpired):
+                process.wait(timeout=_TREE_STOP_SECONDS)
+            return process.poll() is not None
+
+        deadline = time.monotonic() + _TREE_STOP_SECONDS
+        if _process_group_is_alive(process.pid):
             with contextlib.suppress(OSError):
-                _signal_process_group(process.pid, int(getattr(signal, "SIGKILL", signal.SIGTERM)))
+                _signal_process_group(process.pid, signal.SIGTERM)
+            cooperative_deadline = min(deadline, time.monotonic() + _COOPERATIVE_STOP_SECONDS)
+            if not _wait_for_process_group_exit(process.pid, cooperative_deadline):
+                with contextlib.suppress(OSError):
+                    _signal_process_group(
+                        process.pid,
+                        int(getattr(signal, "SIGKILL", signal.SIGTERM)),
+                    )
+                _wait_for_process_group_exit(process.pid, deadline)
+        remaining = max(0.0, deadline - time.monotonic())
+        with contextlib.suppress(OSError, subprocess.TimeoutExpired):
+            process.wait(timeout=remaining)
+        return process.poll() is not None and not _process_group_is_alive(process.pid)
+    finally:
+        _close_control(process)
+
+
+def _is_reparse_point(stat_result: os.stat_result) -> bool:
+    attributes = getattr(stat_result, "st_file_attributes", 0)
+    flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    return bool(attributes & flag)
+
+
+def _attempt_cleanup_scope(paths: RunPaths) -> _AttemptCleanupScope | None:
+    """Validate the stable, non-secret scope used by cleanup security markers."""
+
+    from media_sync.domain import Platform
+
+    from .policies import RUNNER_MANIFEST_NAME
+
+    try:
+        integration_root = paths.integration_root.absolute()
+        account_root = paths.account_root.absolute()
+        profile_root = paths.profile_root.absolute()
+        job_root = paths.job_root.absolute()
+        output_root = paths.output_root.absolute()
+        manifest_path = paths.manifest_path.absolute()
+        account_parts = account_root.relative_to(integration_root / "accounts").parts
+        if len(account_parts) != 2:
+            return None
+        platform = Platform(account_parts[0])
+        account_id = UUID(account_parts[1])
+        execution_id = UUID(job_root.name)
+        if (
+            str(account_id) != account_parts[1]
+            or str(execution_id) != job_root.name
+            or job_root.parent != integration_root / "jobs"
+            or output_root != job_root / "output"
+            or manifest_path != job_root / RUNNER_MANIFEST_NAME
+            or profile_root != account_root / "browser_data" / f"{platform.value}_user_data_dir"
+        ):
+            return None
+    except (AttributeError, OSError, RuntimeError, TypeError, ValueError):
+        return None
+    return _AttemptCleanupScope(
+        integration_root=integration_root,
+        platform=platform.value,
+        account_id=account_id,
+        execution_id=execution_id,
+    )
+
+
+def _require_real_directory(path: Path) -> None:
+    directory_stat = os.lstat(path)
+    if (
+        not stat.S_ISDIR(directory_stat.st_mode)
+        or stat.S_ISLNK(directory_stat.st_mode)
+        or _is_reparse_point(directory_stat)
+        or path.resolve(strict=True) != path
+    ):
+        raise OSError("cleanup security directory is not a real directory")
+
+
+def _ensure_private_directory(parent: Path, name: str) -> Path:
+    directory = parent / name
+    with contextlib.suppress(FileExistsError):
+        directory.mkdir(mode=0o700)
+    _require_real_directory(directory)
+    with contextlib.suppress(OSError):
+        directory.chmod(0o700)
+    return directory
+
+
+def _attempt_cleanup_marker_paths(scope: _AttemptCleanupScope) -> tuple[Path, Path]:
+    security_root = scope.integration_root / _CLEANUP_SECURITY_ROOT
+    account_block = security_root / _CLEANUP_ACCOUNT_BLOCKS / scope.platform / f"{scope.account_id}.json"
+    incident = security_root / _CLEANUP_INCIDENTS / f"{scope.execution_id}.json"
+    return account_block, incident
+
+
+def attempt_cleanup_incident_paths(paths: RunPaths) -> tuple[Path, Path]:
+    """Return deterministic account-block and per-attempt incident marker paths."""
+
+    scope = _attempt_cleanup_scope(paths)
+    if scope is None:
+        raise AttemptCleanupError("MediaCrawler cleanup security scope is invalid")
+    return _attempt_cleanup_marker_paths(scope)
+
+
+def _atomic_write_marker(path: Path, payload: bytes) -> None:
+    temporary = path.parent / f".{path.name}.{uuid4()}.tmp"
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    flags |= int(getattr(os, "O_NOFOLLOW", 0))
+    descriptor: int | None = None
+    try:
+        descriptor = os.open(temporary, flags, 0o600)
+        with os.fdopen(descriptor, "wb", closefd=True) as stream:
+            descriptor = None
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        with contextlib.suppress(OSError):
+            path.chmod(0o600)
+    finally:
+        if descriptor is not None:
+            with contextlib.suppress(OSError):
+                os.close(descriptor)
+        with contextlib.suppress(OSError):
+            os.unlink(temporary)
+
+
+def record_attempt_cleanup_incident(paths: RunPaths) -> None:
+    """Atomically block one account after an attempt root cannot be isolated.
+
+    Markers live outside the attempt tree and contain only a fixed code plus
+    stable UUID/platform scope. Raw paths, exception text, credentials and
+    scheduler ownership material are deliberately excluded.
+    """
+
+    scope = _attempt_cleanup_scope(paths)
+    if scope is None:
+        raise AttemptCleanupError("MediaCrawler cleanup security scope is invalid")
+    payload = (
+        json.dumps(
+            {
+                "schema_version": _CLEANUP_SECURITY_SCHEMA_VERSION,
+                "code": _CLEANUP_INCIDENT_CODE,
+                "scope": {
+                    "platform": scope.platform,
+                    "account_id": str(scope.account_id),
+                    "execution_id": str(scope.execution_id),
+                },
+                "summary": {
+                    "attempt_cleanup": AttemptCleanupStatus.UNRESOLVED.value,
+                    "account_access": "blocked",
+                },
+            },
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        + "\n"
+    ).encode("utf-8")
+    account_block, incident = _attempt_cleanup_marker_paths(scope)
+    try:
+        _require_real_directory(scope.integration_root)
+        security_root = _ensure_private_directory(scope.integration_root, _CLEANUP_SECURITY_ROOT)
+        blocks_root = _ensure_private_directory(security_root, _CLEANUP_ACCOUNT_BLOCKS)
+        platform_root = _ensure_private_directory(blocks_root, scope.platform)
+        incidents_root = _ensure_private_directory(security_root, _CLEANUP_INCIDENTS)
+        if account_block.parent != platform_root or incident.parent != incidents_root:
+            raise OSError("cleanup security marker scope changed")
+        # Persist the account block first. If the incident write then fails, a
+        # successor still cannot start, and the caller still hard-stops.
+        _atomic_write_marker(account_block, payload)
+        _atomic_write_marker(incident, payload)
+    except (OSError, RuntimeError, TypeError, ValueError):
+        raise AttemptCleanupError("MediaCrawler cleanup incident persistence failed") from None
+
+
+def is_attempt_cleanup_blocked(paths: RunPaths) -> bool:
+    """Fail closed when a durable cleanup block exists or cannot be inspected."""
+
+    scope = _attempt_cleanup_scope(paths)
+    if scope is None:
+        raise AttemptCleanupError("MediaCrawler cleanup security scope is invalid")
+    account_block, _incident = _attempt_cleanup_marker_paths(scope)
+    try:
+        if not os.path.lexists(scope.integration_root):
+            return False
+        _require_real_directory(scope.integration_root)
+        directories = (
+            scope.integration_root / _CLEANUP_SECURITY_ROOT,
+            scope.integration_root / _CLEANUP_SECURITY_ROOT / _CLEANUP_ACCOUNT_BLOCKS,
+            account_block.parent,
+        )
+        for directory in directories:
+            if not os.path.lexists(directory):
+                return False
+            _require_real_directory(directory)
         try:
-            process.kill()
-            return process.wait(timeout=2)
-        except (OSError, subprocess.TimeoutExpired):
-            return process.poll()
+            os.lstat(account_block)
+        except FileNotFoundError:
+            return False
+        return True
+    except (OSError, RuntimeError, TypeError, ValueError):
+        raise AttemptCleanupError("MediaCrawler cleanup account block inspection failed") from None
 
 
-def _close_process_tree(process: subprocess.Popen[bytes], windows_job: _WindowsJob | None) -> None:
-    """Remove descendants even when the direct child exited without cleaning them."""
+def _validated_attempt_root(paths: RunPaths) -> Path | None:
+    """Return only the exact canonical attempt root described by ``RunPaths``."""
 
-    if os.name == "nt":
-        if windows_job is not None:
-            windows_job.close()
-        elif process.poll() is None:
-            _taskkill_tree(process)
+    from .policies import RUNNER_MANIFEST_NAME
+
+    try:
+        integration_root = paths.integration_root.absolute()
+        account_root = paths.account_root.absolute()
+        profile_root = paths.profile_root.absolute()
+        job_root = paths.job_root.absolute()
+        output_root = paths.output_root.absolute()
+        manifest_path = paths.manifest_path.absolute()
+        jobs_root = integration_root / "jobs"
+        accounts_root = integration_root / "accounts"
+        UUID(job_root.name)
+        if (
+            integration_root.resolve(strict=True) != integration_root
+            or jobs_root.resolve(strict=True) != jobs_root
+            or job_root.parent != jobs_root
+            or output_root != job_root / "output"
+            or manifest_path != job_root / RUNNER_MANIFEST_NAME
+            or not account_root.is_relative_to(accounts_root)
+            or not profile_root.is_relative_to(account_root)
+            or job_root.is_relative_to(account_root)
+            or account_root.is_relative_to(job_root)
+            or profile_root.is_relative_to(job_root)
+        ):
+            return None
+        jobs_stat = os.lstat(jobs_root)
+        if not stat.S_ISDIR(jobs_stat.st_mode) or _is_reparse_point(jobs_stat):
+            return None
+    except (AttributeError, OSError, RuntimeError, TypeError, ValueError):
+        return None
+    return job_root
+
+
+def _remove_directory_no_follow(root: Path) -> None:
+    """Remove one exact attempt-owned entry without traversing links/reparses."""
+
+    root_stat = os.lstat(root)
+    if stat.S_ISLNK(root_stat.st_mode) or _is_reparse_point(root_stat):
+        if stat.S_ISDIR(root_stat.st_mode):
+            os.rmdir(root)
+        else:
+            os.unlink(root)
         return
+    if not stat.S_ISDIR(root_stat.st_mode):
+        os.unlink(root)
+        return
+    with os.scandir(root) as entries:
+        for entry in entries:
+            path = Path(entry.path)
+            _remove_directory_no_follow(path)
+    final_stat = os.lstat(root)
+    if (
+        not stat.S_ISDIR(final_stat.st_mode)
+        or stat.S_ISLNK(final_stat.st_mode)
+        or _is_reparse_point(final_stat)
+        or (final_stat.st_dev, final_stat.st_ino) != (root_stat.st_dev, root_stat.st_ino)
+    ):
+        raise OSError("attempt cleanup root changed during traversal")
+    os.rmdir(root)
+
+
+def _cleanup_failed_attempt(spec: MediaCrawlerRunSpec) -> AttemptCleanupStatus:
+    """Remove only this owned attempt tree, never following links or reparses."""
+
+    paths = spec.paths
+    manifest = spec.manifest
+    try:
+        if any(
+            Path(getattr(manifest, name)).absolute() != expected.absolute()
+            for name, expected in (
+                ("integration_root", paths.integration_root),
+                ("account_root", paths.account_root),
+                ("profile_root", paths.profile_root),
+                ("job_root", paths.job_root),
+                ("output_root", paths.output_root),
+            )
+        ):
+            return AttemptCleanupStatus.UNRESOLVED
+    except (AttributeError, OSError, TypeError, ValueError):
+        return AttemptCleanupStatus.UNRESOLVED
+    return cleanup_attempt_root(paths)
+
+
+def _quarantine_attempt_root(paths: RunPaths, attempt_root: Path) -> Path:
+    quarantine_root = paths.integration_root.absolute() / ".quarantine"
+    quarantine_root.mkdir(mode=0o700, exist_ok=True)
+    quarantine_stat = os.lstat(quarantine_root)
+    if (
+        not stat.S_ISDIR(quarantine_stat.st_mode)
+        or stat.S_ISLNK(quarantine_stat.st_mode)
+        or _is_reparse_point(quarantine_stat)
+        or quarantine_root.resolve(strict=True) != quarantine_root
+    ):
+        raise OSError("attempt quarantine root is not a real directory")
     with contextlib.suppress(OSError):
-        _signal_process_group(process.pid, signal.SIGTERM)
-    time.sleep(0.05)
-    with contextlib.suppress(OSError):
-        _signal_process_group(process.pid, int(getattr(signal, "SIGKILL", signal.SIGTERM)))
+        quarantine_root.chmod(0o700)
+    quarantine_path = quarantine_root / f"{attempt_root.name}.{uuid4()}"
+    os.replace(attempt_root, quarantine_path)
+    return quarantine_path
+
+
+def cleanup_attempt_root(paths: RunPaths) -> AttemptCleanupStatus:
+    """Remove or isolate one exact unsealed attempt root without following links.
+
+    The caller decides whether an artifact is sealed and should be retained.
+    A quarantined tree is no longer visible at its execution identity, but the
+    caller must still surface a fixed security outcome instead of the original
+    retryable result. ``UNRESOLVED`` means neither removal nor isolation could
+    be proven.
+    """
+
+    attempt_root = _validated_attempt_root(paths)
+    if attempt_root is None:
+        return AttemptCleanupStatus.UNRESOLVED
+    if not os.path.lexists(attempt_root):
+        return AttemptCleanupStatus.ABSENT
+    try:
+        cleanup_root = _quarantine_attempt_root(paths, attempt_root)
+    except OSError:
+        try:
+            _remove_directory_no_follow(attempt_root)
+        except OSError:
+            return AttemptCleanupStatus.UNRESOLVED
+        return AttemptCleanupStatus.REMOVED if not os.path.lexists(attempt_root) else AttemptCleanupStatus.UNRESOLVED
+    try:
+        _remove_directory_no_follow(cleanup_root)
+    except OSError:
+        return AttemptCleanupStatus.QUARANTINED
+    return AttemptCleanupStatus.REMOVED
 
 
 class MediaCrawlerProcessRunner:
     """Launch a prepared child without a shell and enforce parent watchdogs."""
 
-    def run(self, spec: MediaCrawlerRunSpec) -> MediaCrawlerProcessResult:
+    def run(
+        self,
+        spec: MediaCrawlerRunSpec,
+        cancellation: threading.Event | None = None,
+    ) -> MediaCrawlerProcessResult:
         account_lock = _AccountFileLock(spec.paths.account_root)
         if not account_lock.acquire():
             return _parent_result(spec, MediaCrawlerProcessStatus.ACCOUNT_BUSY)
         try:
-            return self._run_locked(spec)
+            if cancellation is not None and cancellation.is_set():
+                result = _parent_result(spec, MediaCrawlerProcessStatus.CANCELLED)
+            else:
+                result = self._run_locked(spec, cancellation, account_lock.descriptor)
+            if not result.succeeded:
+                cleanup_status = _cleanup_failed_attempt(spec)
+                if cleanup_status is AttemptCleanupStatus.UNRESOLVED:
+                    with contextlib.suppress(AttemptCleanupError):
+                        record_attempt_cleanup_incident(spec.paths)
+                    raise AttemptCleanupError("MediaCrawler attempt cleanup is unresolved")
+                if cleanup_status is AttemptCleanupStatus.QUARANTINED:
+                    return _parent_result(
+                        spec,
+                        MediaCrawlerProcessStatus.COMPLETION_FAILED,
+                        returncode=result.returncode,
+                    )
+            return result
+        except AttemptCleanupError:
+            raise
+        except BaseException:
+            cleanup_status = _cleanup_failed_attempt(spec)
+            if cleanup_status is AttemptCleanupStatus.UNRESOLVED:
+                with contextlib.suppress(AttemptCleanupError):
+                    record_attempt_cleanup_incident(spec.paths)
+                raise AttemptCleanupError("MediaCrawler attempt cleanup failed") from None
+            if cleanup_status is AttemptCleanupStatus.QUARANTINED:
+                return _parent_result(spec, MediaCrawlerProcessStatus.COMPLETION_FAILED)
+            raise
         finally:
             account_lock.release()
 
-    def _run_locked(self, spec: MediaCrawlerRunSpec) -> MediaCrawlerProcessResult:
+    def _run_locked(
+        self,
+        spec: MediaCrawlerRunSpec,
+        cancellation: threading.Event | None,
+        lock_descriptor: int,
+    ) -> MediaCrawlerProcessResult:
         from .bridge import RUNNER_SCRIPT
         from .policies import PRIVATE_INPUT_ENV, OutputInspectionError, inspect_output
         from .receipt import (
@@ -405,29 +997,44 @@ class MediaCrawlerProcessRunner:
             )
 
         child_environment = dict(spec.environment)
+        child_environment[_CONTROL_ENV] = _CONTROL_VERSION
+        if cancellation is not None and cancellation.is_set():
+            child_environment.pop(PRIVATE_INPUT_ENV, None)
+            child_environment.pop(_CONTROL_ENV, None)
+            return _parent_result(spec, MediaCrawlerProcessStatus.CANCELLED)
         try:
-            process = subprocess.Popen(
-                spec.command,
-                cwd=spec.cwd,
-                env=child_environment,
-                shell=False,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                start_new_session=os.name != "nt",
-                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0,
+            process = _spawn_supervised_child(
+                spec,
+                child_environment,
+                lock_descriptor,
             )
         except OSError:
             return _parent_result(spec, MediaCrawlerProcessStatus.START_FAILED)
         finally:
             child_environment.pop(PRIVATE_INPUT_ENV, None)
+            child_environment.pop(_CONTROL_ENV, None)
 
         windows_job = _WindowsJob.attach(process)
         if os.name == "nt" and windows_job is None:
             _taskkill_tree(process)
             with contextlib.suppress(OSError, subprocess.TimeoutExpired):
                 process.wait(timeout=2)
+            _close_control(process)
             return _parent_result(spec, MediaCrawlerProcessStatus.START_FAILED)
+        if cancellation is not None and cancellation.is_set():
+            returncode = _stop_child(process, windows_job)
+            return _parent_result(
+                spec,
+                MediaCrawlerProcessStatus.CANCELLED,
+                returncode=returncode,
+            )
+        if not _write_control(process, _CONTROL_START):
+            returncode = _stop_child(process, windows_job)
+            return _parent_result(
+                spec,
+                MediaCrawlerProcessStatus.START_FAILED,
+                returncode=returncode,
+            )
 
         started = time.monotonic()
         limits = spec.manifest.watchdogs
@@ -435,10 +1042,25 @@ class MediaCrawlerProcessRunner:
         successful_returncode: int | None = None
         try:
             while True:
+                if cancellation is not None and cancellation.is_set():
+                    returncode = _stop_child(process, windows_job)
+                    return _parent_result(
+                        spec,
+                        MediaCrawlerProcessStatus.CANCELLED,
+                        returncode=returncode,
+                        stats=last_stats,
+                    )
                 try:
                     last_stats = inspect_output(spec.paths.output_root, limits)
                 except OutputInspectionError as error:
                     returncode = _stop_child(process, windows_job)
+                    if cancellation is not None and cancellation.is_set():
+                        return _parent_result(
+                            spec,
+                            MediaCrawlerProcessStatus.CANCELLED,
+                            returncode=returncode,
+                            stats=error.stats,
+                        )
                     return _parent_result(
                         spec,
                         _status_for_output_kind(error.kind),
@@ -446,6 +1068,14 @@ class MediaCrawlerProcessRunner:
                         stats=error.stats,
                     )
 
+                if cancellation is not None and cancellation.is_set():
+                    returncode = _stop_child(process, windows_job)
+                    return _parent_result(
+                        spec,
+                        MediaCrawlerProcessStatus.CANCELLED,
+                        returncode=returncode,
+                        stats=last_stats,
+                    )
                 returncode = process.poll()
                 if returncode is not None:
                     if returncode == 0:
@@ -465,7 +1095,10 @@ class MediaCrawlerProcessRunner:
                         returncode=returncode,
                         stats=last_stats,
                     )
-                time.sleep(limits.poll_seconds)
+                if cancellation is None:
+                    time.sleep(limits.poll_seconds)
+                elif cancellation.wait(limits.poll_seconds):
+                    continue
         finally:
             _close_process_tree(process, windows_job)
 
@@ -473,10 +1106,33 @@ class MediaCrawlerProcessRunner:
         # the entire process tree has been stopped and one final inspection has
         # observed a stable, bounded JSONL tree.
         assert successful_returncode == 0
-        time.sleep(min(5.0, max(0.05, limits.poll_seconds)))
+        if cancellation is not None and cancellation.is_set():
+            return _parent_result(
+                spec,
+                MediaCrawlerProcessStatus.CANCELLED,
+                returncode=successful_returncode,
+                stats=last_stats,
+            )
+        settle_seconds = min(5.0, max(0.05, limits.poll_seconds))
+        if cancellation is None:
+            time.sleep(settle_seconds)
+        elif cancellation.wait(settle_seconds):
+            return _parent_result(
+                spec,
+                MediaCrawlerProcessStatus.CANCELLED,
+                returncode=successful_returncode,
+                stats=last_stats,
+            )
         try:
             final_stats = inspect_output(spec.paths.output_root, limits)
         except OutputInspectionError as error:
+            if cancellation is not None and cancellation.is_set():
+                return _parent_result(
+                    spec,
+                    MediaCrawlerProcessStatus.CANCELLED,
+                    returncode=successful_returncode,
+                    stats=error.stats,
+                )
             return _parent_result(
                 spec,
                 _status_for_output_kind(error.kind),
@@ -490,9 +1146,23 @@ class MediaCrawlerProcessRunner:
                 known_secrets=spec.known_secrets,
             )
         except CompletionReceiptError:
+            if cancellation is not None and cancellation.is_set():
+                return _parent_result(
+                    spec,
+                    MediaCrawlerProcessStatus.CANCELLED,
+                    returncode=successful_returncode,
+                    stats=final_stats,
+                )
             return _parent_result(
                 spec,
                 MediaCrawlerProcessStatus.COMPLETION_FAILED,
+                returncode=successful_returncode,
+                stats=final_stats,
+            )
+        if cancellation is not None and cancellation.is_set():
+            return _parent_result(
+                spec,
+                MediaCrawlerProcessStatus.CANCELLED,
                 returncode=successful_returncode,
                 stats=final_stats,
             )
@@ -508,6 +1178,10 @@ class _ChildWatchdogError(RuntimeError):
     def __init__(self, returncode: int) -> None:
         self.returncode = returncode
         super().__init__("MediaCrawler child watchdog stopped execution")
+
+
+class _ChildCancelledError(RuntimeError):
+    """The one-way parent control channel requested a bounded child stop."""
 
 
 def _returncode_for_output_kind(kind: Any) -> int:
@@ -597,6 +1271,9 @@ def _configure_upstream(config: Any, manifest: RunnerManifest, creator_reference
     config.ENABLE_IP_PROXY = False
     config.STATIC_PROXY_URL = ""
     config.MAX_CONCURRENCY_NUM = 1
+    if manifest.request_delay_seconds is None:
+        raise RuntimeError("legacy manifests are recovery-only")
+    config.CRAWLER_MAX_SLEEP_SEC = manifest.request_delay_seconds
     config.HEADLESS = manifest.headless
     config.CDP_HEADLESS = manifest.headless
     config.AUTO_CLOSE_BROWSER = True
@@ -609,7 +1286,11 @@ def _configure_upstream(config: Any, manifest: RunnerManifest, creator_reference
     setattr(config, CREATOR_CONFIG_ATTRIBUTES[manifest.platform], [creator_reference])
 
 
-async def _watch_upstream(upstream_main: Any, manifest: RunnerManifest) -> None:
+async def _watch_upstream(
+    upstream_main: Any,
+    manifest: RunnerManifest,
+    cancellation: threading.Event | None,
+) -> None:
     from media_sync.integrations.mediacrawler.policies import OutputInspectionError, inspect_output
 
     limits = manifest.watchdogs
@@ -619,6 +1300,8 @@ async def _watch_upstream(upstream_main: Any, manifest: RunnerManifest) -> None:
     task = asyncio.create_task(upstream_main.main())
     try:
         while True:
+            if cancellation is not None and cancellation.is_set():
+                raise _ChildCancelledError
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise _ChildWatchdogError(EXIT_TIMEOUT)
@@ -644,6 +1327,7 @@ async def _execute_child(
     manifest: RunnerManifest,
     creator_reference: str,
     cookie: str | None,
+    cancellation: threading.Event | None,
 ) -> int:
     from media_sync.integrations.mediacrawler.policies import inspect_output
 
@@ -654,6 +1338,10 @@ async def _execute_child(
     try:
         from media_sync.integrations.mediacrawler.bridge import verify_manifest_checkout
 
+        if cancellation is not None and cancellation.is_set():
+            return EXIT_CANCELLED
+        if manifest.request_delay_seconds is None:
+            return EXIT_CONFIGURATION
         verified = verify_manifest_checkout(manifest)
         if Path(sys.executable).resolve() != manifest.python_executable:
             return EXIT_CONFIGURATION
@@ -682,8 +1370,12 @@ async def _execute_child(
             return EXIT_CONFIGURATION
         config.__dict__["COOKIES"] = cookie or ""
         cookie = None
-        await _watch_upstream(upstream_main, manifest)
+        if cancellation is not None and cancellation.is_set():
+            return EXIT_CANCELLED
+        await _watch_upstream(upstream_main, manifest, cancellation)
         return 0
+    except _ChildCancelledError:
+        return EXIT_CANCELLED
     except _ChildWatchdogError as error:
         return error.returncode
     except Exception:
@@ -707,13 +1399,143 @@ def _emit_fixed_status(returncode: int) -> None:
         EXIT_OUTPUT_FILES: "output_files_exceeded",
         EXIT_OUTPUT_LINE: "output_line_exceeded",
         EXIT_OUTPUT_TREE: "output_tree_invalid",
+        EXIT_CANCELLED: "cancelled",
     }.get(returncode, "upstream_failed")
     encoded = json.dumps({"status": status}, separators=(",", ":")).encode("ascii") + b"\n"
     with contextlib.suppress(OSError):
         os.write(1, encoded)
 
 
-def _child_entry(private_payload: str | None) -> int:
+def _read_control_byte() -> bytes | None:
+    if os.name != "nt":
+        try:
+            value = os.read(0, 1)
+        except OSError:
+            return None
+        return value or None
+
+    # A blocking ``os.read(0, ...)`` holds the Windows CRT descriptor lock and
+    # deadlocks any concurrent ``subprocess`` spawn that needs to duplicate the
+    # standard handles. ReadFile operates on the underlying handle directly.
+    try:
+        import ctypes
+        import msvcrt
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.PeekNamedPipe.argtypes = (
+            wintypes.HANDLE,
+            ctypes.c_void_p,
+            wintypes.DWORD,
+            ctypes.c_void_p,
+            ctypes.POINTER(wintypes.DWORD),
+            ctypes.c_void_p,
+        )
+        kernel32.PeekNamedPipe.restype = wintypes.BOOL
+        kernel32.ReadFile.argtypes = (
+            wintypes.HANDLE,
+            ctypes.c_void_p,
+            wintypes.DWORD,
+            ctypes.POINTER(wintypes.DWORD),
+            ctypes.c_void_p,
+        )
+        kernel32.ReadFile.restype = wintypes.BOOL
+        handle = wintypes.HANDLE(msvcrt.get_osfhandle(0))
+        available = wintypes.DWORD()
+        while True:
+            peeked = kernel32.PeekNamedPipe(
+                handle,
+                None,
+                0,
+                None,
+                ctypes.byref(available),
+                None,
+            )
+            if not peeked:
+                return None
+            if available.value:
+                break
+            time.sleep(0.02)
+        buffer = ctypes.create_string_buffer(1)
+        bytes_read = wintypes.DWORD()
+        succeeded = kernel32.ReadFile(
+            handle,
+            buffer,
+            1,
+            ctypes.byref(bytes_read),
+            None,
+        )
+        if not succeeded or bytes_read.value != 1:
+            return None
+        return bytes(buffer.raw)
+    except (AttributeError, OSError, TypeError, ValueError):
+        return None
+
+
+def _read_control_message() -> bytes | None:
+    message = bytearray()
+    while len(message) < _MAX_CONTROL_BYTES:
+        chunk = _read_control_byte()
+        if chunk is None:
+            return None
+        message.extend(chunk)
+        if chunk == b"\n":
+            return bytes(message)
+    return None
+
+
+def _watch_parent_control(
+    cancellation: threading.Event,
+    parent_lost: threading.Event,
+    windows_job: _WindowsJob | None,
+) -> None:
+    message = _read_control_message()
+    cancellation.set()
+    if message == _CONTROL_CANCEL:
+        return
+    parent_lost.set()
+    if os.name == "nt":
+        # The child-owned nested Job is independent from the parent Job and
+        # contains descendants created after the start handshake.
+        if windows_job is not None and windows_job.terminate():
+            time.sleep(_TREE_STOP_SECONDS)
+            os._exit(EXIT_CANCELLED)
+        # Taskkill remains a fail-safe for hosts that reject nested Jobs.
+        with contextlib.suppress(OSError):
+            subprocess.Popen(
+                ("taskkill.exe", "/PID", str(os.getpid()), "/T", "/F"),
+                shell=False,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                close_fds=True,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        # Keep the inherited profile lock alive until taskkill closes the tree.
+        time.sleep(_TREE_STOP_SECONDS)
+        os._exit(EXIT_CANCELLED)
+    get_process_group = getattr(os, "getpgrp", None)
+    if not callable(get_process_group):
+        return
+    process_group = int(get_process_group())
+    if process_group != os.getpid():
+        # Never signal an ambient caller's process group. The production parent
+        # always starts this child as a new session/group leader.
+        return
+    with contextlib.suppress(OSError):
+        _signal_process_group(process_group, signal.SIGTERM)
+    time.sleep(_COOPERATIVE_STOP_SECONDS)
+    with contextlib.suppress(OSError):
+        _signal_process_group(
+            process_group,
+            int(getattr(signal, "SIGKILL", signal.SIGTERM)),
+        )
+
+
+def _child_entry(
+    private_payload: str | None,
+    cancellation: threading.Event | None = None,
+) -> int:
     """Load media-sync only after the private environment envelope was popped."""
 
     source_root = Path(__file__).resolve().parents[3]
@@ -732,7 +1554,14 @@ def _child_entry(private_payload: str | None) -> int:
             cookie = private_inputs.cookie
             del private_inputs
             with _silenced_upstream():
-                returncode = asyncio.run(_execute_child(manifest, creator_reference, cookie))
+                returncode = asyncio.run(
+                    _execute_child(
+                        manifest,
+                        creator_reference,
+                        cookie,
+                        cancellation,
+                    )
+                )
             creator_reference = ""
             cookie = None
     except Exception:
@@ -745,10 +1574,51 @@ def _start_child() -> int:
     # This is deliberately the first non-stdlib runtime action. The full private
     # input disappears before argv/manifest parsing or any media-sync/upstream import.
     private_input = os.environ.pop(_PRIVATE_INPUT_ENV, None)
+    control_version = os.environ.pop(_CONTROL_ENV, None)
+    cancellation: threading.Event | None = None
+    parent_lost: threading.Event | None = None
+    control_thread: threading.Thread | None = None
+    child_windows_job: _WindowsJob | None = None
+    previous_sigterm: Any | None = None
     try:
-        return _child_entry(private_input)
+        if control_version is not None:
+            if control_version != _CONTROL_VERSION or _read_control_message() != _CONTROL_START:
+                _emit_fixed_status(EXIT_CONFIGURATION)
+                return EXIT_CONFIGURATION
+            cancellation = threading.Event()
+            parent_lost = threading.Event()
+
+            if os.name == "nt":
+                child_windows_job = _WindowsJob.attach_current_process()
+                if child_windows_job is None:
+                    _emit_fixed_status(EXIT_CONFIGURATION)
+                    return EXIT_CONFIGURATION
+
+            get_process_group = getattr(os, "getpgrp", None)
+            if os.name != "nt" and callable(get_process_group) and int(get_process_group()) == os.getpid():
+                previous_sigterm = signal.getsignal(signal.SIGTERM)
+
+                def request_cancellation(_number: int, _frame: Any) -> None:
+                    assert cancellation is not None
+                    cancellation.set()
+
+                signal.signal(signal.SIGTERM, request_cancellation)
+
+            control_thread = threading.Thread(
+                target=_watch_parent_control,
+                args=(cancellation, parent_lost, child_windows_job),
+                name="media-sync-parent-control",
+                daemon=True,
+            )
+            control_thread.start()
+        return _child_entry(private_input, cancellation)
     finally:
         private_input = None
+        if parent_lost is not None and parent_lost.is_set() and control_thread is not None:
+            control_thread.join(timeout=_COOPERATIVE_STOP_SECONDS + 1.0)
+        if previous_sigterm is not None:
+            with contextlib.suppress(ValueError):
+                signal.signal(signal.SIGTERM, previous_sigterm)
 
 
 if __name__ == "__main__":
@@ -756,7 +1626,13 @@ if __name__ == "__main__":
 
 
 __all__ = [
+    "AttemptCleanupError",
+    "AttemptCleanupStatus",
     "MediaCrawlerProcessResult",
     "MediaCrawlerProcessRunner",
     "MediaCrawlerProcessStatus",
+    "attempt_cleanup_incident_paths",
+    "cleanup_attempt_root",
+    "is_attempt_cleanup_blocked",
+    "record_attempt_cleanup_incident",
 ]

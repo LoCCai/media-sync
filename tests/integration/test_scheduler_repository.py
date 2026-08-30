@@ -58,11 +58,12 @@ def _seed_subscription(
     enabled: bool = True,
     next_run_at: datetime | None = None,
     interval_seconds: int = 60,
+    adapter: str = "fake",
 ) -> tuple[str, str]:
     with database.session() as session:
         account = AccountRepository(session).create(
             platform=platform,
-            adapter="fake",
+            adapter=adapter,
             display_name=f"account-{remote_id}",
             login_method="qr",
             auth_status="authenticated",
@@ -86,6 +87,40 @@ def _seed_subscription(
         subscription.updated_at = now
         session.flush()
         return account.id, subscription.id
+
+
+def test_claim_adapter_allowlist_skips_unsupported_queue_head_without_mutation(database: Database) -> None:
+    now = datetime(2026, 8, 30, 4, 0, tzinfo=UTC)
+    _mc_account_id, mediacrawler_subscription_id = _seed_subscription(
+        database,
+        platform="xhs",
+        remote_id="allowlist-mediacrawler",
+        now=now - timedelta(minutes=2),
+        next_run_at=now - timedelta(minutes=2),
+        adapter="mediacrawler",
+    )
+    _fake_account_id, fake_subscription_id = _seed_subscription(
+        database,
+        platform="bili",
+        remote_id="allowlist-fake",
+        now=now - timedelta(minutes=1),
+        next_run_at=now - timedelta(minutes=1),
+    )
+    with database.session() as session:
+        repository = SchedulerRepository(session)
+        assert len(repository.materialize_due(limit=10, now=now)) == 2
+        claim = repository.claim_next(
+            worker_id="adapter-allowlist-worker",
+            global_capacity=2,
+            adapter_allowlist=("fake",),
+            now=now,
+        )
+        assert claim is not None and claim.subscription_id == fake_subscription_id
+        mediacrawler_job = session.scalar(select(Job).where(Job.subscription_id == mediacrawler_subscription_id))
+        mediacrawler_subscription = session.get(Subscription, mediacrawler_subscription_id)
+        assert mediacrawler_job is not None
+        assert (mediacrawler_job.status, mediacrawler_job.attempts) == ("queued", 0)
+        assert mediacrawler_subscription is not None and mediacrawler_subscription.consecutive_failures == 0
 
 
 def _materialize_one(database: Database, subscription_id: str, *, now: datetime) -> str:
@@ -138,6 +173,33 @@ def _job_execution_state(job: Job) -> dict[str, object]:
         "last_error_code": job.last_error_code,
         "last_error_message": job.last_error_message,
     }
+
+
+def _attach_succeeded_run(
+    database: Database,
+    *,
+    subscription_id: str,
+    job_id: str,
+    worker_id: str,
+    lease_token: str,
+    now: datetime,
+) -> str:
+    with database.session() as session:
+        runs = SyncRunRepository(session)
+        run = runs.create(subscription_id=subscription_id, attempt=1)
+        runs.set_status(run.id, "claimed", expected_status="queued", at=now)
+        runs.set_status(run.id, "running", expected_status="claimed", at=now)
+        SchedulerRepository(session).attach_run(
+            job_id,
+            worker_id=worker_id,
+            lease_token=lease_token,
+            run_id=run.id,
+            expected_current_run_id=None,
+            now=now,
+        )
+        runs.set_status(run.id, "ingesting", expected_status="running", at=now)
+        runs.set_status(run.id, "succeeded", expected_status="ingesting", at=now)
+        return run.id
 
 
 def test_due_materialization_is_bounded_ordered_closed_and_fixed_delay(database: Database) -> None:
@@ -1097,6 +1159,318 @@ def test_assert_owned_rejects_reclaimed_token_without_mutating_replacement(datab
         replacement_job = session.get(Job, job_id)
         assert replacement_job is not None
         assert _job_execution_state(replacement_job) == before_stale_guard
+
+
+def test_attach_run_requires_exact_lease_scope_and_expected_attachment(database: Database) -> None:
+    now = datetime(2026, 8, 30, 7, 42, tzinfo=UTC)
+    _account_id, subscription_id = _seed_subscription(
+        database,
+        platform="bili",
+        remote_id="attach-run",
+        now=now,
+        next_run_at=None,
+    )
+    _foreign_account_id, foreign_subscription_id = _seed_subscription(
+        database,
+        platform="xhs",
+        remote_id="attach-run-foreign",
+        now=now,
+        enabled=False,
+        next_run_at=None,
+    )
+    _materialize_one(database, subscription_id, now=now)
+    job_id, token = _claim_and_start(database, worker_id="attach-worker", now=now)
+    with database.session() as session:
+        runs = SyncRunRepository(session)
+        first_run_id = runs.create(subscription_id=subscription_id).id
+        second_run_id = runs.create(subscription_id=subscription_id).id
+        foreign_run_id = runs.create(subscription_id=foreign_subscription_id).id
+
+    with database.session() as session:
+        attached = SchedulerRepository(session).attach_run(
+            job_id,
+            worker_id="attach-worker",
+            lease_token=token,
+            run_id=first_run_id,
+            expected_current_run_id=None,
+            now=now + timedelta(seconds=1),
+        )
+        assert attached.run_id == first_run_id
+
+    with database.session() as session, pytest.raises(LeaseLostError, match="attachment changed"):
+        SchedulerRepository(session).attach_run(
+            job_id,
+            worker_id="attach-worker",
+            lease_token=token,
+            run_id=second_run_id,
+            expected_current_run_id=None,
+            now=now + timedelta(seconds=2),
+        )
+    with database.session() as session, pytest.raises(SchedulerRepositoryError, match="scope is invalid"):
+        SchedulerRepository(session).attach_run(
+            job_id,
+            worker_id="attach-worker",
+            lease_token=token,
+            run_id=foreign_run_id,
+            expected_current_run_id=first_run_id,
+            now=now + timedelta(seconds=2),
+        )
+
+    with database.session() as session, pytest.raises(SchedulerRepositoryError, match="not terminal"):
+        SchedulerRepository(session).attach_run(
+            job_id,
+            worker_id="attach-worker",
+            lease_token=token,
+            run_id=second_run_id,
+            expected_current_run_id=first_run_id,
+            now=now + timedelta(seconds=3),
+        )
+    with database.session() as session:
+        SyncRunRepository(session).set_status(
+            first_run_id,
+            "cancelled",
+            expected_status="queued",
+            error_code="scheduler_replaced",
+            at=now + timedelta(seconds=3),
+        )
+        attached = SchedulerRepository(session).attach_run(
+            job_id,
+            worker_id="attach-worker",
+            lease_token=token,
+            run_id=second_run_id,
+            expected_current_run_id=first_run_id,
+            now=now + timedelta(seconds=3),
+        )
+        assert attached.run_id == second_run_id
+    with database.session() as session:
+        job = session.get(Job, job_id)
+        assert job is not None and job.run_id == second_run_id
+        cancelled = SchedulerRepository(session).cancel(job_id, now=now + timedelta(seconds=4))
+        assert cancelled.status == "cancelled"
+    with database.session() as session:
+        attached_run = SyncRunRepository(session).require(second_run_id)
+        assert attached_run.status == "cancelled"
+        assert attached_run.error_code == "scheduler_cancelled"
+
+
+def test_reclaim_cancels_attached_run_before_replacement_attempt(database: Database) -> None:
+    now = datetime(2026, 8, 30, 7, 44, tzinfo=UTC)
+    _account_id, subscription_id = _seed_subscription(
+        database,
+        platform="xhs",
+        remote_id="reclaim-attached-run",
+        now=now,
+        next_run_at=None,
+    )
+    _materialize_one(database, subscription_id, now=now)
+    job_id, stale_token = _claim_and_start(
+        database,
+        worker_id="stale-run-worker",
+        now=now,
+        lease_seconds=1,
+    )
+    with database.session() as session:
+        runs = SyncRunRepository(session)
+        run = runs.create(subscription_id=subscription_id)
+        runs.set_status(run.id, "claimed", expected_status="queued", at=now)
+        runs.set_status(run.id, "running", expected_status="claimed", at=now)
+        SchedulerRepository(session).attach_run(
+            job_id,
+            worker_id="stale-run-worker",
+            lease_token=stale_token,
+            run_id=run.id,
+            expected_current_run_id=None,
+            now=now,
+        )
+        run_id = run.id
+
+    reclaimed_at = now + timedelta(seconds=6)
+    with database.session() as session:
+        replacement = SchedulerRepository(session).claim_next(
+            worker_id="replacement-run-worker",
+            global_capacity=1,
+            lease_seconds=30,
+            now=reclaimed_at,
+        )
+        assert replacement is not None
+        assert replacement.job_id == job_id
+        assert replacement.attempt == 2
+        assert replacement.run_id == run_id
+    with database.session() as session:
+        cancelled_run = SyncRunRepository(session).require(run_id)
+        assert cancelled_run.status == "cancelled"
+        assert cancelled_run.error_code == "scheduler_lease_lost"
+
+    with database.session() as session, pytest.raises(LeaseLostError):
+        SchedulerRepository(session).attach_run(
+            job_id,
+            worker_id="stale-run-worker",
+            lease_token=stale_token,
+            run_id=str(uuid4()),
+            expected_current_run_id=run_id,
+            now=reclaimed_at,
+        )
+
+
+def test_reclaim_reconciles_succeeded_attachment_at_last_attempt(database: Database) -> None:
+    now = datetime(2026, 8, 30, 7, 44, 30, tzinfo=UTC)
+    _account_id, subscription_id = _seed_subscription(
+        database,
+        platform="bili",
+        remote_id="reclaim-succeeded-run",
+        now=now,
+        next_run_at=None,
+    )
+    with database.session() as session:
+        cycles = SchedulerRepository(session).materialize_due(
+            limit=1,
+            retry_policy=RetryPolicy(max_attempts=1),
+            now=now,
+        )
+        assert len(cycles) == 1
+        job_id = cycles[0].job_id
+    worker_id = "last-attempt-success-worker"
+    job_id, lease_token = _claim_and_start(
+        database,
+        worker_id=worker_id,
+        now=now,
+        lease_seconds=1,
+    )
+    run_id = _attach_succeeded_run(
+        database,
+        subscription_id=subscription_id,
+        job_id=job_id,
+        worker_id=worker_id,
+        lease_token=lease_token,
+        now=now,
+    )
+
+    reclaimed_at = now + timedelta(seconds=2)
+    with database.session() as session:
+        replacement = SchedulerRepository(session).claim_next(
+            worker_id="must-not-replace-success",
+            global_capacity=1,
+            lease_seconds=30,
+            now=reclaimed_at,
+        )
+        assert replacement is None
+
+    with database.session() as session:
+        job = session.get(Job, job_id)
+        subscription = session.get(Subscription, subscription_id)
+        run = SyncRunRepository(session).require(run_id)
+        assert job is not None
+        assert (job.status, job.attempts, job.run_id) == ("succeeded", 1, run_id)
+        assert job.lease_owner is None and job.lease_token is None
+        assert job.last_error_code is None
+        assert run.status == "succeeded"
+        assert subscription is not None
+        assert subscription.consecutive_failures == 0
+        assert subscription.last_success_at == reclaimed_at
+        assert subscription.next_run_at == reclaimed_at + timedelta(seconds=60)
+
+
+def test_cancel_reconciles_succeeded_attachment_instead_of_cancelling(database: Database) -> None:
+    now = datetime(2026, 8, 30, 7, 44, 45, tzinfo=UTC)
+    _account_id, subscription_id = _seed_subscription(
+        database,
+        platform="xhs",
+        remote_id="cancel-succeeded-run",
+        now=now,
+        next_run_at=None,
+    )
+    _materialize_one(database, subscription_id, now=now)
+    worker_id = "cancel-authoritative-success-worker"
+    job_id, lease_token = _claim_and_start(database, worker_id=worker_id, now=now)
+    run_id = _attach_succeeded_run(
+        database,
+        subscription_id=subscription_id,
+        job_id=job_id,
+        worker_id=worker_id,
+        lease_token=lease_token,
+        now=now,
+    )
+
+    cancelled_at = now + timedelta(seconds=1)
+    with database.session() as session:
+        reconciled = SchedulerRepository(session).cancel(job_id, now=cancelled_at)
+        assert (reconciled.status, reconciled.run_id) == ("succeeded", run_id)
+
+    with database.session() as session:
+        job = session.get(Job, job_id)
+        subscription = session.get(Subscription, subscription_id)
+        run = SyncRunRepository(session).require(run_id)
+        assert job is not None and job.status == "succeeded"
+        assert job.last_error_code is None
+        assert run.status == "succeeded"
+        assert subscription is not None
+        assert subscription.consecutive_failures == 0
+        assert subscription.last_success_at == cancelled_at
+
+
+@pytest.mark.parametrize("outcome", ["fail", "wait"])
+@pytest.mark.parametrize("pass_run_id", [False, True], ids=["implicit-attachment", "explicit-attachment"])
+def test_failure_finalizers_reject_authoritative_succeeded_attachment(
+    database: Database,
+    outcome: Literal["fail", "wait"],
+    pass_run_id: bool,
+) -> None:
+    now = datetime(2026, 8, 30, 7, 44, 50, tzinfo=UTC)
+    _account_id, subscription_id = _seed_subscription(
+        database,
+        platform="bili",
+        remote_id=f"reject-succeeded-{outcome}-{pass_run_id}",
+        now=now,
+        next_run_at=None,
+    )
+    _materialize_one(database, subscription_id, now=now)
+    worker_id = "reject-succeeded-finalizer-worker"
+    job_id, lease_token = _claim_and_start(database, worker_id=worker_id, now=now)
+    run_id = _attach_succeeded_run(
+        database,
+        subscription_id=subscription_id,
+        job_id=job_id,
+        worker_id=worker_id,
+        lease_token=lease_token,
+        now=now,
+    )
+
+    with (
+        database.session() as session,
+        pytest.raises(
+            SchedulerRepositoryError,
+            match="succeeded attached run",
+        ),
+    ):
+        repository = SchedulerRepository(session)
+        if outcome == "fail":
+            repository.fail(
+                job_id,
+                worker_id=worker_id,
+                lease_token=lease_token,
+                error_code="temporary_upstream",
+                run_id=run_id if pass_run_id else None,
+                now=now + timedelta(seconds=1),
+            )
+        else:
+            repository.wait(
+                job_id,
+                worker_id=worker_id,
+                lease_token=lease_token,
+                status="waiting_auth",
+                error_code="auth_expired",
+                run_id=run_id if pass_run_id else None,
+                now=now + timedelta(seconds=1),
+            )
+
+    with database.session() as session:
+        job = session.get(Job, job_id)
+        subscription = session.get(Subscription, subscription_id)
+        run = SyncRunRepository(session).require(run_id)
+        assert job is not None and job.status == "running"
+        assert job.run_id == run_id and job.lease_token == lease_token
+        assert run.status == "succeeded"
+        assert subscription is not None and subscription.consecutive_failures == 0
 
 
 @pytest.mark.parametrize(

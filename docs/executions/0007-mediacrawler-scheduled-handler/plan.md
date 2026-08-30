@@ -5,6 +5,12 @@
 - Predecessor / 前置执行：Execution 0006 implementation commit `674e510`
 - Network policy / 网络策略：offline fixtures and local helper processes only / 仅离线夹具与本地辅助进程
 
+## Amendment 2026-08-30 / 2026-08-30 修订
+
+The frozen design below remains the original planning record. Security review refined failed-attempt cleanup into four explicit outcomes: `ABSENT`, `REMOVED`, `QUARANTINED` and `UNRESOLVED`. `QUARANTINED` means the exact attempt was atomically moved below ignored `.quarantine` but could not be scrubbed; it is a fixed terminal security result, not a successful whole-tree cleanup. `UNRESOLVED` means neither removal nor isolation was proven; it requires a durable redacted account block and hard fencing before future secret resolution, run attachment, bridge preparation or process spawn. Final whole-tree zero-match gates may cover only safe artifacts and must explicitly exclude quarantine-retention and unresolved-retention negative tests. This amendment narrows no process, database or operator-output safety requirement and does not authorize exposing retained paths.
+
+下方冻结设计继续保留为原始计划记录。安全复核把失败 attempt 清理细化为四种显式结果：`ABSENT`、`REMOVED`、`QUARANTINED` 与 `UNRESOLVED`。`QUARANTINED` 表示精确 attempt 已原子移动到忽略的 `.quarantine` 下，但无法完成清理；它是固定的终态安全结果，不是“整树清理成功”。`UNRESOLVED` 表示既不能证明删除，也不能证明隔离；后续解析密钥、关联 run、准备 bridge 或启动进程前，必须先写入持久脱敏 account block 并执行硬 fencing。最终整树零匹配门禁只能覆盖安全产物，并必须显式排除 quarantine-retention 与 unresolved-retention 负向测试。本修订不降低任何进程、数据库或运维输出安全要求，也不授权暴露留存路径。
+
 ## Frozen design / 冻结设计
 
 ### Trust and authorization / 信任与授权

@@ -8,7 +8,7 @@ download and Emby jobs remain owned by their exact-claim application services.
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal, cast
@@ -24,13 +24,19 @@ from media_sync.infrastructure.db.models import (
     JOB_STATUSES,
     PLATFORMS,
     TERMINAL_JOB_STATUSES,
+    TERMINAL_RUN_STATUSES,
     Account,
     Job,
     SchedulerLane,
     Subscription,
     SyncRun,
 )
-from media_sync.infrastructure.db.repositories import LeaseLostError, NotFoundError, RepositoryError
+from media_sync.infrastructure.db.repositories import (
+    LeaseLostError,
+    NotFoundError,
+    RepositoryError,
+    SyncRunRepository,
+)
 
 from .policy import FailureDisposition, RetryPolicy, classify_failure
 
@@ -42,6 +48,7 @@ _REQUEUE_STATUSES = ("retry_wait", "failed_retryable")
 _WAITING_STATUSES = ("waiting_auth", "waiting_user")
 _PAYLOAD_KEYS = frozenset({"schema_version", "subscription_id", "schedule_revision", "retry_policy"})
 _FIXED_CODE = re.compile(r"[a-z][a-z0-9_]{0,127}\Z")
+_ADAPTER_KEY = re.compile(r"[a-z][a-z0-9_.-]{0,127}\Z")
 _MAX_BATCH = 1_000
 _MAX_LEASE_SECONDS = 86_400
 _MAX_LANE_SECONDS = 604_800
@@ -99,6 +106,22 @@ def _safe_add(value: datetime, seconds: int, *, name: str) -> datetime:
         raise ValueError(f"{name} overflows datetime") from exc
 
 
+def _adapter_allowlist(values: Collection[str] | None) -> tuple[str, ...] | None:
+    if values is None:
+        return None
+    if isinstance(values, (str, bytes)):
+        raise ValueError("adapter_allowlist must be a collection of adapter keys")
+    normalized: set[str] = set()
+    for value in values:
+        if not isinstance(value, str):
+            raise ValueError("adapter_allowlist contains an invalid adapter key")
+        key = value.strip()
+        if _ADAPTER_KEY.fullmatch(key) is None:
+            raise ValueError("adapter_allowlist contains an invalid adapter key")
+        normalized.add(key)
+    return tuple(sorted(normalized))
+
+
 @dataclass(frozen=True, slots=True)
 class MaterializedCycle:
     job_id: str
@@ -115,11 +138,13 @@ class SchedulerClaim:
     subscription_id: str
     account_id: str
     platform: str
+    schedule_revision: int
     attempt: int
     max_attempts: int
     lease_token: str = field(repr=False)
     lease_expires_at: datetime
     retry_policy: RetryPolicy
+    run_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -301,11 +326,13 @@ def _claim(job: Job) -> SchedulerClaim:
         subscription_id=job.subscription_id,
         account_id=job.account_id,
         platform=job.platform,
+        schedule_revision=payload.schedule_revision,
         attempt=job.attempts,
         max_attempts=job.max_attempts,
         lease_token=job.lease_token,
         lease_expires_at=job.lease_expires_at,
         retry_policy=payload.retry_policy,
+        run_id=job.run_id,
     )
 
 
@@ -369,10 +396,94 @@ class SchedulerRepository:
 
         if run_id is None:
             return None
+        if job.run_id is not None and job.run_id != run_id:
+            raise SchedulerRepositoryError("scheduler result run does not match its attachment")
         owning_subscription_id = self.session.scalar(select(SyncRun.subscription_id).where(SyncRun.id == run_id))
         if owning_subscription_id is None or owning_subscription_id != job.subscription_id:
             raise SchedulerRepositoryError("scheduler result run scope is invalid")
         return run_id
+
+    def _cancel_attached_run(self, job: Job, *, now: datetime, error_code: str) -> None:
+        """Terminalize only this subscription Job's currently attached run."""
+
+        if job.run_id is None:
+            return
+        run = self.session.get(SyncRun, job.run_id)
+        if run is None or run.subscription_id != job.subscription_id:
+            raise SchedulerRepositoryError("scheduler attached run scope is invalid")
+        if run.status in TERMINAL_RUN_STATUSES:
+            return
+        SyncRunRepository(self.session).set_status(
+            run.id,
+            "cancelled",
+            expected_status=run.status,
+            error_code=error_code,
+            error_message=None,
+            at=now,
+        )
+
+    def _reconcile_succeeded_attachment(
+        self,
+        job: Job,
+        *,
+        now: datetime,
+        expired_only: bool,
+    ) -> Job | None:
+        """Make an attached succeeded SyncRun authoritative for its scheduler Job.
+
+        Media ingestion and scheduler finalization intentionally commit in
+        separate transactions.  If the latter is unavailable, the succeeded
+        SyncRun is the durable application truth.  Reclaim and operator cancel
+        therefore reconcile the Job, lanes and subscription to success in one
+        writer transaction instead of manufacturing a contradictory outcome.
+        """
+
+        if job.run_id is None:
+            return None
+        run = self.session.get(SyncRun, job.run_id)
+        if run is None or run.subscription_id != job.subscription_id:
+            raise SchedulerRepositoryError("scheduler attached run scope is invalid")
+        if run.status != "succeeded":
+            return None
+
+        conditions: list[Any] = [
+            Job.id == job.id,
+            Job.job_type == SYNC_SUBSCRIPTION_JOB_TYPE,
+            Job.status == job.status,
+            Job.run_id == run.id,
+        ]
+        if expired_only:
+            token_condition = (
+                Job.lease_token.is_(None) if job.lease_token is None else Job.lease_token == job.lease_token
+            )
+            conditions.extend(
+                (
+                    token_condition,
+                    Job.lease_expires_at.is_not(None),
+                    Job.lease_expires_at <= now,
+                )
+            )
+        reconciled = self.session.scalar(
+            update(Job)
+            .where(*conditions)
+            .values(
+                status="succeeded",
+                lease_owner=None,
+                lease_token=None,
+                lease_expires_at=None,
+                finished_at=run.finished_at or now,
+                updated_at=now,
+                last_error_code=None,
+                last_error_message=None,
+            )
+            .returning(Job)
+            .execution_options(synchronize_session="fetch", populate_existing=True)
+        )
+        if reconciled is None:
+            return None
+        self._apply_lane_success(reconciled, now=now)
+        self._finalize_subscription(reconciled, now=now, outcome="success")
+        return reconciled
 
     def materialize_due(
         self,
@@ -725,6 +836,8 @@ class SchedulerRepository:
             .limit(_MAX_BATCH)
         ).all()
         for observed in expired_jobs:
+            if self._reconcile_succeeded_attachment(observed, now=now, expired_only=True) is not None:
+                continue
             is_terminal = observed.attempts >= observed.max_attempts
             expected_token = observed.lease_token
             token_condition = Job.lease_token.is_(None) if expected_token is None else Job.lease_token == expected_token
@@ -755,6 +868,11 @@ class SchedulerRepository:
             )
             if reclaimed is None:
                 continue
+            self._cancel_attached_run(
+                reclaimed,
+                now=now,
+                error_code="scheduler_lease_lost",
+            )
             self._apply_lane_failure(reclaimed, now=now, affects_circuit=True)
             if is_terminal:
                 self._finalize_subscription(reclaimed, now=now, outcome="failure")
@@ -880,6 +998,7 @@ class SchedulerRepository:
         global_capacity: int,
         lease_seconds: int = 60,
         scan_limit: int = 100,
+        adapter_allowlist: Collection[str] | None = None,
         now: datetime | None = None,
     ) -> SchedulerClaim | None:
         """Claim one lane-eligible job while scanning past blocked queue heads."""
@@ -903,6 +1022,7 @@ class SchedulerRepository:
             minimum=1,
             maximum=_MAX_BATCH,
         )
+        allowed_adapters = _adapter_allowlist(adapter_allowlist)
         current = _aware_utc(now)
         self._serialize_sqlite_writer()
         self._reclaim_expired_sync(now=current)
@@ -921,9 +1041,15 @@ class SchedulerRepository:
         if active_count >= capacity:
             return None
 
+        candidate_statement = select(Job)
+        if allowed_adapters is not None:
+            if not allowed_adapters:
+                return None
+            candidate_statement = candidate_statement.join(Account, Account.id == Job.account_id).where(
+                Account.adapter.in_(allowed_adapters)
+            )
         candidates = self.session.scalars(
-            select(Job)
-            .where(
+            candidate_statement.where(
                 Job.job_type == SYNC_SUBSCRIPTION_JOB_TYPE,
                 Job.status == "queued",
                 Job.available_at <= current,
@@ -977,6 +1103,14 @@ class SchedulerRepository:
                 self._reserve_lane(lane, job_id=claimed.id, now=current)
             return _claim(claimed)
         return None
+
+    def _reject_failure_for_succeeded_run(self, job: Job, run_id: str | None) -> None:
+        effective_run_id = run_id or job.run_id
+        if effective_run_id is None:
+            return
+        run = self.session.get(SyncRun, effective_run_id)
+        if run is not None and run.status == "succeeded":
+            raise SchedulerRepositoryError("a succeeded attached run cannot be finalized as a scheduler failure")
 
     def _lease_failure(self, job_id: str, *, worker_id: str) -> SchedulerLeaseLostError:
         current = self.session.get(Job, job_id)
@@ -1102,6 +1236,66 @@ class SchedulerRepository:
             now=current,
         )
         return _claim(guarded)
+
+    def attach_run(
+        self,
+        job_id: str,
+        *,
+        worker_id: str,
+        lease_token: str,
+        run_id: str,
+        expected_current_run_id: str | None,
+        now: datetime | None = None,
+    ) -> SchedulerClaim:
+        """Attach one subscription-owned SyncRun behind the exact active lease.
+
+        ``assert_owned`` obtains the writer slot and row lock before either the
+        current attachment or candidate run is inspected.  The explicit
+        expected attachment prevents an attempt from replacing a successor's
+        run after an ABA reclaim.
+        """
+
+        normalized_id = _required_text(job_id, name="job_id", maximum=36)
+        owner = _required_text(worker_id, name="worker_id", maximum=255)
+        token = _required_text(lease_token, name="lease_token", maximum=36)
+        normalized_run_id = _required_text(run_id, name="run_id", maximum=36)
+        expected_run_id = _optional_identifier(expected_current_run_id, name="expected_current_run_id")
+        current = _aware_utc(now)
+        self.assert_owned(
+            normalized_id,
+            worker_id=owner,
+            lease_token=token,
+            now=current,
+        )
+        job = self._get_sync_job(normalized_id)
+        if job.run_id != expected_run_id:
+            raise SchedulerLeaseLostError("scheduler run attachment changed")
+        run = self.session.get(SyncRun, normalized_run_id)
+        if run is None or run.subscription_id != job.subscription_id:
+            raise SchedulerRepositoryError("scheduler run attachment scope is invalid")
+        if job.run_id is not None and job.run_id != normalized_run_id:
+            previous = self.session.get(SyncRun, job.run_id)
+            if (
+                previous is None
+                or previous.subscription_id != job.subscription_id
+                or previous.status not in TERMINAL_RUN_STATUSES
+            ):
+                raise SchedulerRepositoryError("scheduler current run is not terminal")
+        already_attached = self.session.scalar(
+            select(
+                exists().where(
+                    Job.id != normalized_id,
+                    Job.job_type == SYNC_SUBSCRIPTION_JOB_TYPE,
+                    Job.run_id == normalized_run_id,
+                )
+            )
+        )
+        if already_attached:
+            raise SchedulerRepositoryError("scheduler run is already attached to another job")
+        job.run_id = normalized_run_id
+        job.updated_at = current
+        self.session.flush()
+        return _claim(job)
 
     def _update_lane_values(
         self,
@@ -1368,6 +1562,7 @@ class SchedulerRepository:
         self._serialize_sqlite_writer()
         observed = self._get_sync_job(normalized_id)
         normalized_run_id = self._validated_result_run_id(observed, normalized_run_id)
+        self._reject_failure_for_succeeded_run(observed, normalized_run_id)
         attempts_remain = observed.attempts < observed.max_attempts
         retryable = classification.disposition is FailureDisposition.RETRY and attempts_remain
         status = (
@@ -1457,6 +1652,7 @@ class SchedulerRepository:
         self._serialize_sqlite_writer()
         observed = self._get_sync_job(normalized_id)
         normalized_run_id = self._validated_result_run_id(observed, normalized_run_id)
+        self._reject_failure_for_succeeded_run(observed, normalized_run_id)
         values: dict[str, Any] = {
             "status": status,
             "lease_owner": None,
@@ -1529,6 +1725,9 @@ class SchedulerRepository:
         observed = self._get_sync_job(normalized_id)
         if observed.status in TERMINAL_JOB_STATUSES:
             return _summary(observed)
+        reconciled = self._reconcile_succeeded_attachment(observed, now=current, expired_only=False)
+        if reconciled is not None:
+            return _summary(reconciled)
         cancelled = self.session.scalar(
             update(Job)
             .where(
@@ -1551,6 +1750,11 @@ class SchedulerRepository:
         )
         if cancelled is None:
             return _summary(self._current_sync_job(normalized_id))
+        self._cancel_attached_run(
+            cancelled,
+            now=current,
+            error_code="scheduler_cancelled",
+        )
         self._release_lane_probe(cancelled, now=current, reset_all=False)
         self._finalize_subscription(
             cancelled,

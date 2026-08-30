@@ -54,9 +54,20 @@ class SubscriptionJobContext:
     account: AccountRef
     creator_reference: str = field(repr=False)
     cursor: Cursor | None = field(default=None, repr=False)
+    subscription_policy: Mapping[str, object] = field(
+        default_factory=lambda: MappingProxyType({}),
+        repr=False,
+    )
+    schedule_revision: int = 0
     max_items: int = 30
     attempt: int = 1
+    current_run_id: UUID | None = None
     ownership_guard: Callable[[Session], None] | None = field(default=None, repr=False, compare=False)
+    run_attacher: Callable[[Session, UUID, UUID | None], None] | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
 
     def __post_init__(self) -> None:
         if not isinstance(self.job_id, UUID) or not isinstance(self.subscription_id, UUID):
@@ -65,13 +76,25 @@ class SubscriptionJobContext:
             raise ValueError("account must be an AccountRef")
         if self.cursor is not None and not isinstance(self.cursor, Cursor):
             raise ValueError("cursor must be a Cursor")
+        if not isinstance(self.subscription_policy, Mapping):
+            raise ValueError("subscription_policy must be a mapping")
         if self.ownership_guard is not None and not callable(self.ownership_guard):
             raise ValueError("ownership_guard must be callable")
+        if self.current_run_id is not None and not isinstance(self.current_run_id, UUID):
+            raise ValueError("current_run_id must be a UUID")
+        if self.run_attacher is not None and not callable(self.run_attacher):
+            raise ValueError("run_attacher must be callable")
         object.__setattr__(
             self,
             "creator_reference",
             _required_text(self.creator_reference, name="creator_reference", maximum=2_048),
         )
+        object.__setattr__(
+            self,
+            "subscription_policy",
+            MappingProxyType(dict(self.subscription_policy)),
+        )
+        _bounded_int(self.schedule_revision, name="schedule_revision", minimum=0, maximum=2_147_483_647)
         _bounded_int(self.max_items, name="max_items", minimum=1, maximum=1_000)
         _bounded_int(self.attempt, name="attempt", minimum=1, maximum=100)
 

@@ -1,6 +1,8 @@
 """License-gated external MediaCrawler process integration."""
 
 from .bridge import (
+    LEGACY_MANIFEST_SCHEMA_VERSION,
+    MANIFEST_SCHEMA_VERSION,
     BridgeConfigurationError,
     BridgeRequest,
     MediaCrawlerBridge,
@@ -27,6 +29,8 @@ from .policies import (
     WatchdogLimits,
 )
 from .receipt import (
+    COMPLETION_RECEIPT_SCHEMA_VERSION,
+    LEGACY_COMPLETION_RECEIPT_SCHEMA_VERSION,
     CompletionReceipt,
     CompletionReceiptError,
     CompletionReceiptErrorCode,
@@ -36,9 +40,31 @@ from .receipt import (
     completion_receipt_path,
     load_validated_output_snapshot,
 )
-from .runner import MediaCrawlerProcessResult, MediaCrawlerProcessRunner, MediaCrawlerProcessStatus
+from .runner import (
+    AttemptCleanupError,
+    AttemptCleanupStatus,
+    MediaCrawlerProcessResult,
+    MediaCrawlerProcessRunner,
+    MediaCrawlerProcessStatus,
+    cleanup_attempt_root,
+)
+from .subscription_policy import (
+    MAX_REQUEST_DELAY_SECONDS,
+    SUBSCRIPTION_POLICY_SCHEMA_VERSION,
+    MediaCrawlerSubscriptionPolicy,
+    MediaCrawlerSubscriptionPolicyError,
+    from_subscription_policy,
+)
 
 __all__ = [
+    "COMPLETION_RECEIPT_SCHEMA_VERSION",
+    "LEGACY_COMPLETION_RECEIPT_SCHEMA_VERSION",
+    "LEGACY_MANIFEST_SCHEMA_VERSION",
+    "MANIFEST_SCHEMA_VERSION",
+    "MAX_REQUEST_DELAY_SECONDS",
+    "SUBSCRIPTION_POLICY_SCHEMA_VERSION",
+    "AttemptCleanupError",
+    "AttemptCleanupStatus",
     "BridgeConfigurationError",
     "BridgeRequest",
     "CheckoutValidationError",
@@ -57,6 +83,8 @@ __all__ = [
     "MediaCrawlerProcessStatus",
     "MediaCrawlerRunMode",
     "MediaCrawlerRunSpec",
+    "MediaCrawlerSubscriptionPolicy",
+    "MediaCrawlerSubscriptionPolicyError",
     "OutputInspectionError",
     "OutputLimitKind",
     "OutputStats",
@@ -66,7 +94,9 @@ __all__ = [
     "VerifiedCheckout",
     "VerifiedPython",
     "WatchdogLimits",
+    "cleanup_attempt_root",
     "completion_receipt_path",
+    "from_subscription_policy",
     "load_validated_output_snapshot",
     "verify_mediacrawler_checkout",
     "verify_mediacrawler_python",

@@ -12,6 +12,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any, NoReturn, cast
+from uuid import UUID
 
 from sqlalchemy import and_, case, exists, func, or_, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
@@ -1391,12 +1392,24 @@ class SyncRunRepository:
         self,
         *,
         subscription_id: str,
+        run_id: str | None = None,
         status: str = "queued",
+        attempt: int = 0,
         cursor_before: Mapping[str, Any] | None = None,
         checkpoint_revision_before: int | None = None,
         manifest: Mapping[str, Any] | None = None,
     ) -> SyncRun:
         _require_status(status, RUN_STATUSES, "run")
+        if isinstance(attempt, bool) or not isinstance(attempt, int) or attempt < 0:
+            raise ValueError("run attempt must be a nonnegative integer")
+        normalized_run_id: str | None = None
+        if run_id is not None:
+            try:
+                normalized_run_id = str(UUID(run_id))
+            except (AttributeError, TypeError, ValueError) as error:
+                raise ValueError("run_id must be a canonical UUID") from error
+            if normalized_run_id != run_id:
+                raise ValueError("run_id must be a canonical UUID")
         if checkpoint_revision_before is None:
             checkpoint_revision_before = self.session.scalar(
                 select(Subscription.checkpoint_revision).where(Subscription.id == subscription_id)
@@ -1406,8 +1419,10 @@ class SyncRunRepository:
         if checkpoint_revision_before < 0:
             raise ValueError("checkpoint_revision_before must be nonnegative")
         run = SyncRun(
+            id=normalized_run_id or new_uuid(),
             subscription_id=subscription_id,
             status=status,
+            attempt=attempt,
             cursor_before=_json(cursor_before) if cursor_before is not None else None,
             checkpoint_revision_before=checkpoint_revision_before,
             manifest=_json(manifest),

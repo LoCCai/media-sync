@@ -14,7 +14,17 @@ import media_sync.interfaces.cli as cli_module
 from media_sync import __version__
 from media_sync.config import Settings, get_settings
 from media_sync.domain import DomainError, Platform
-from media_sync.infrastructure.db import Account, Asset, Author, Content, Database, Job, LoginSession, Subscription
+from media_sync.infrastructure.db import (
+    Account,
+    Asset,
+    Author,
+    Content,
+    Database,
+    Job,
+    LoginSession,
+    Subscription,
+    SyncRun,
+)
 from media_sync.integrations.mediacrawler.policies import normalize_creator_reference
 from media_sync.interfaces.cli import app, collect_doctor_report
 
@@ -717,7 +727,13 @@ def test_mediacrawler_subscription_stores_only_secret_creator_reference_locator(
             subscription = session.scalar(select(Subscription))
             assert subscription is not None
             assert subscription.policy == {
-                "mediacrawler": {"creator_input": {"secret_ref": "env:MEDIA_SYNC_XHS_CREATOR_URL"}}
+                "mediacrawler": {
+                    "schema_version": 1,
+                    "allow_full_history": False,
+                    "request_delay_seconds": 5.0,
+                    "headless": True,
+                    "creator_input": {"secret_ref": "env:MEDIA_SYNC_XHS_CREATOR_URL"},
+                }
             }
     finally:
         database.dispose()
@@ -977,6 +993,93 @@ def test_scheduler_controls_are_bounded_and_redact_every_output_sink(
         assert sentinel not in retained_output
     assert initialized_cli_database not in retained_output
     assert "cli.sqlite3" not in retained_output
+
+
+def test_scheduler_mediacrawler_enablement_and_license_are_explicit(
+    initialized_cli_database: str,
+) -> None:
+    acknowledgement_without_enablement = runner.invoke(
+        app,
+        ["scheduler", "run", "--accept-mediacrawler-license"],
+    )
+    assert acknowledgement_without_enablement.exit_code == 2
+    assert "--enable-mediacrawler" in acknowledgement_without_enablement.output
+
+    account = runner.invoke(
+        app,
+        [
+            "account",
+            "add",
+            "--platform",
+            "xhs",
+            "--adapter",
+            "mediacrawler",
+            "--display-name",
+            "Default-off MediaCrawler account",
+            "--login-method",
+            "saved_session",
+            "--json",
+        ],
+    )
+    assert account.exit_code == 0, account.output
+    account_id = json.loads(account.output)["id"]
+    subscription = runner.invoke(
+        app,
+        [
+            "subscription",
+            "add",
+            "--account-id",
+            account_id,
+            "--platform",
+            "xhs",
+            "--creator-remote-id",
+            "creator-default-off",
+            "--display-name",
+            "Default-off creator",
+            "--json",
+        ],
+    )
+    assert subscription.exit_code == 0, subscription.output
+    tick = runner.invoke(app, ["scheduler", "tick", "--json"])
+    assert tick.exit_code == 0, tick.output
+    assert json.loads(tick.output)["materialized_count"] == 1
+
+    runtime_root = get_settings().resolved_mediacrawler_runtime_dir
+    assert not runtime_root.exists()
+    default_off = runner.invoke(app, ["scheduler", "run", "--json"])
+    assert default_off.exit_code == 0, default_off.output
+    assert json.loads(default_off.output) == []
+    database = Database(initialized_cli_database)
+    try:
+        with database.session() as session:
+            untouched = session.scalar(select(Job))
+            untouched_subscription = session.scalar(select(Subscription))
+            assert untouched is not None and (untouched.status, untouched.attempts) == ("queued", 0)
+            assert untouched_subscription is not None and untouched_subscription.consecutive_failures == 0
+    finally:
+        database.dispose()
+
+    worker = runner.invoke(
+        app,
+        ["scheduler", "run", "--enable-mediacrawler", "--json"],
+    )
+    assert worker.exit_code == 0, worker.output
+    result = json.loads(worker.output)
+    assert len(result) == 1
+    assert result[0]["status"] == "waiting_user"
+    assert result[0]["run_id"] is None
+    assert "license_acknowledgement_required" not in worker.output
+    assert not runtime_root.exists()
+
+    database = Database(initialized_cli_database)
+    try:
+        with database.session() as session:
+            job = session.scalar(select(Job))
+            assert job is not None
+            assert job.last_error_code == "license_acknowledgement_required"
+            assert session.scalar(select(func.count()).select_from(SyncRun)) == 0
+    finally:
+        database.dispose()
 
 
 def test_scheduler_lane_controls_enforce_policy_bounds_and_revision_cas(

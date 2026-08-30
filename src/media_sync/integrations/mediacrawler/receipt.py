@@ -18,7 +18,13 @@ from uuid import UUID
 
 from media_sync.security import SecretValue
 
-from .bridge import MAX_MANIFEST_BYTES, MediaCrawlerRunMode, RunnerManifest
+from .bridge import (
+    LEGACY_MANIFEST_SCHEMA_VERSION,
+    MANIFEST_SCHEMA_VERSION,
+    MAX_MANIFEST_BYTES,
+    MediaCrawlerRunMode,
+    RunnerManifest,
+)
 from .policies import (
     RUNNER_MANIFEST_NAME,
     MediaCrawlerPolicyError,
@@ -27,7 +33,8 @@ from .policies import (
 )
 
 COMPLETION_RECEIPT_NAME = "completion-receipt.json"
-COMPLETION_RECEIPT_SCHEMA_VERSION = 1
+LEGACY_COMPLETION_RECEIPT_SCHEMA_VERSION = 1
+COMPLETION_RECEIPT_SCHEMA_VERSION = 2
 MAX_COMPLETION_RECEIPT_BYTES = 1_048_576
 MAX_RELATIVE_PATH_CHARS = 4_096
 _READ_CHUNK_BYTES = 1024 * 1024
@@ -85,14 +92,79 @@ class CompletionReceipt:
     manifest_sha256: str
     directories: tuple[str, ...]
     files: tuple[CompletionReceiptFile, ...]
+    schema_version: int = COMPLETION_RECEIPT_SCHEMA_VERSION
+    schedule_revision: int | None = 0
+    attempt: int | None = 1
+    execution_id: UUID | None = None
+    sync_run_id: UUID | None = None
+
+    def __post_init__(self) -> None:
+        if type(self.schema_version) is not int or self.schema_version not in {
+            LEGACY_COMPLETION_RECEIPT_SCHEMA_VERSION,
+            COMPLETION_RECEIPT_SCHEMA_VERSION,
+        }:
+            raise CompletionReceiptError(CompletionReceiptErrorCode.MALFORMED)
+        if self.schema_version == LEGACY_COMPLETION_RECEIPT_SCHEMA_VERSION:
+            if any(
+                value is not None
+                for value in (
+                    self.schedule_revision,
+                    self.attempt,
+                    self.execution_id,
+                    self.sync_run_id,
+                )
+            ):
+                raise CompletionReceiptError(CompletionReceiptErrorCode.MALFORMED)
+            return
+        execution_id = self.execution_id or self.job_id
+        sync_run_id = self.sync_run_id or self.job_id
+        if type(self.schedule_revision) is not int or self.schedule_revision < 0:
+            raise CompletionReceiptError(CompletionReceiptErrorCode.MALFORMED)
+        if type(self.attempt) is not int or self.attempt < 1:
+            raise CompletionReceiptError(CompletionReceiptErrorCode.MALFORMED)
+        if not isinstance(execution_id, UUID) or not isinstance(sync_run_id, UUID):
+            raise CompletionReceiptError(CompletionReceiptErrorCode.MALFORMED)
+        object.__setattr__(self, "execution_id", execution_id)
+        object.__setattr__(self, "sync_run_id", sync_run_id)
+
+    @property
+    def scheduler_job_id(self) -> UUID:
+        """Return the durable scheduler Job identity (``job_id`` in v1)."""
+
+        return self.job_id
 
     def as_payload(self) -> dict[str, object]:
+        if self.schema_version == LEGACY_COMPLETION_RECEIPT_SCHEMA_VERSION:
+            return {
+                "schema_version": LEGACY_COMPLETION_RECEIPT_SCHEMA_VERSION,
+                "status": "succeeded",
+                "account_id": str(self.account_id),
+                "subscription_id": str(self.subscription_id),
+                "job_id": str(self.job_id),
+                "checkpoint_revision_before": self.checkpoint_revision_before,
+                "platform": self.platform,
+                "intended_mode": self.intended_mode.value,
+                "manifest_sha256": self.manifest_sha256,
+                "directories": list(self.directories),
+                "files": [item.as_payload() for item in self.files],
+            }
+        if (
+            self.schedule_revision is None
+            or self.attempt is None
+            or self.execution_id is None
+            or self.sync_run_id is None
+        ):  # pragma: no cover - construction validates this invariant
+            raise CompletionReceiptError(CompletionReceiptErrorCode.MALFORMED)
         return {
             "schema_version": COMPLETION_RECEIPT_SCHEMA_VERSION,
             "status": "succeeded",
             "account_id": str(self.account_id),
             "subscription_id": str(self.subscription_id),
-            "job_id": str(self.job_id),
+            "scheduler_job_id": str(self.scheduler_job_id),
+            "schedule_revision": self.schedule_revision,
+            "attempt": self.attempt,
+            "execution_id": str(self.execution_id),
+            "sync_run_id": str(self.sync_run_id),
             "checkpoint_revision_before": self.checkpoint_revision_before,
             "platform": self.platform,
             "intended_mode": self.intended_mode.value,
@@ -510,12 +582,11 @@ def _parse_receipt(payload: bytes) -> CompletionReceipt:
         raise
     except (UnicodeError, json.JSONDecodeError) as error:
         raise CompletionReceiptError(CompletionReceiptErrorCode.MALFORMED) from error
-    expected_keys = {
+    common_keys = {
         "schema_version",
         "status",
         "account_id",
         "subscription_id",
-        "job_id",
         "checkpoint_revision_before",
         "platform",
         "intended_mode",
@@ -525,11 +596,23 @@ def _parse_receipt(payload: bytes) -> CompletionReceipt:
     }
     if (
         not isinstance(raw, Mapping)
-        or set(raw) != expected_keys
         or type(raw.get("schema_version")) is not int
-        or raw.get("schema_version") != COMPLETION_RECEIPT_SCHEMA_VERSION
+        or raw.get("schema_version")
+        not in {LEGACY_COMPLETION_RECEIPT_SCHEMA_VERSION, COMPLETION_RECEIPT_SCHEMA_VERSION}
         or raw.get("status") != "succeeded"
     ):
+        raise CompletionReceiptError(CompletionReceiptErrorCode.MALFORMED)
+    schema_version = raw["schema_version"]
+    legacy_keys = common_keys | {"job_id"}
+    v2_keys = common_keys | {
+        "scheduler_job_id",
+        "schedule_revision",
+        "attempt",
+        "execution_id",
+        "sync_run_id",
+    }
+    expected_keys = legacy_keys if schema_version == LEGACY_COMPLETION_RECEIPT_SCHEMA_VERSION else v2_keys
+    if set(raw) != expected_keys:
         raise CompletionReceiptError(CompletionReceiptErrorCode.MALFORMED)
     checkpoint_revision = raw.get("checkpoint_revision_before")
     platform = raw.get("platform")
@@ -546,6 +629,23 @@ def _parse_receipt(payload: bytes) -> CompletionReceipt:
         intended_mode = MediaCrawlerRunMode(raw_mode)
     except ValueError as error:
         raise CompletionReceiptError(CompletionReceiptErrorCode.MALFORMED) from error
+
+    if schema_version == LEGACY_COMPLETION_RECEIPT_SCHEMA_VERSION:
+        job_id = _parse_uuid(raw.get("job_id"))
+        schedule_revision: int | None = None
+        attempt: int | None = None
+        execution_id: UUID | None = None
+        sync_run_id: UUID | None = None
+    else:
+        job_id = _parse_uuid(raw.get("scheduler_job_id"))
+        execution_id = _parse_uuid(raw.get("execution_id"))
+        sync_run_id = _parse_uuid(raw.get("sync_run_id"))
+        schedule_revision = raw.get("schedule_revision")
+        attempt = raw.get("attempt")
+        if type(schedule_revision) is not int or schedule_revision < 0:
+            raise CompletionReceiptError(CompletionReceiptErrorCode.MALFORMED)
+        if type(attempt) is not int or attempt < 1:
+            raise CompletionReceiptError(CompletionReceiptErrorCode.MALFORMED)
 
     raw_directories = raw.get("directories")
     if not isinstance(raw_directories, list):
@@ -584,25 +684,45 @@ def _parse_receipt(payload: bytes) -> CompletionReceipt:
     return CompletionReceipt(
         account_id=_parse_uuid(raw.get("account_id")),
         subscription_id=_parse_uuid(raw.get("subscription_id")),
-        job_id=_parse_uuid(raw.get("job_id")),
+        job_id=job_id,
         checkpoint_revision_before=checkpoint_revision,
         platform=platform,
         intended_mode=intended_mode,
         manifest_sha256=_parse_sha256(raw.get("manifest_sha256")),
         directories=tuple(directories),
         files=tuple(files),
+        schema_version=schema_version,
+        schedule_revision=schedule_revision,
+        attempt=attempt,
+        execution_id=execution_id,
+        sync_run_id=sync_run_id,
     )
 
 
 def _validate_identity(receipt: CompletionReceipt, manifest: RunnerManifest, manifest_bytes: bytes) -> None:
+    versions_match = (
+        receipt.schema_version == LEGACY_COMPLETION_RECEIPT_SCHEMA_VERSION
+        and manifest.schema_version == LEGACY_MANIFEST_SCHEMA_VERSION
+    ) or (
+        receipt.schema_version == COMPLETION_RECEIPT_SCHEMA_VERSION
+        and manifest.schema_version == MANIFEST_SCHEMA_VERSION
+    )
     if (
-        receipt.account_id != manifest.account_id
+        not versions_match
+        or receipt.account_id != manifest.account_id
         or receipt.subscription_id != manifest.subscription_id
         or receipt.job_id != manifest.job_id
         or receipt.checkpoint_revision_before != manifest.checkpoint_revision_before
         or receipt.platform != manifest.platform.value
         or receipt.intended_mode is not manifest.intended_mode
         or not hmac.compare_digest(receipt.manifest_sha256, hashlib.sha256(manifest_bytes).hexdigest())
+    ):
+        raise CompletionReceiptError(CompletionReceiptErrorCode.IDENTITY_MISMATCH)
+    if receipt.schema_version == COMPLETION_RECEIPT_SCHEMA_VERSION and (
+        receipt.schedule_revision != manifest.schedule_revision
+        or receipt.attempt != manifest.attempt
+        or receipt.execution_id != manifest.execution_id
+        or receipt.sync_run_id != manifest.sync_run_id
     ):
         raise CompletionReceiptError(CompletionReceiptErrorCode.IDENTITY_MISMATCH)
 
@@ -652,6 +772,18 @@ def write_completion_receipt(
 ) -> CompletionReceipt:
     """Atomically seal one already-inspected, successful parent-runner output."""
 
+    if manifest.schema_version != MANIFEST_SCHEMA_VERSION:
+        # A legacy manifest may only be trusted when an already-existing v1
+        # receipt authenticates its exact bytes. It must never gain a new seal.
+        raise CompletionReceiptError(CompletionReceiptErrorCode.IDENTITY_MISMATCH)
+    if (
+        manifest.schedule_revision is None
+        or manifest.attempt is None
+        or manifest.execution_id is None
+        or manifest.sync_run_id is None
+    ):  # pragma: no cover - RunnerManifest construction enforces this
+        raise CompletionReceiptError(CompletionReceiptErrorCode.IDENTITY_MISMATCH)
+
     job_root, _output_root, manifest_path, receipt_path = _canonical_layout(manifest)
     require_completion_receipt_absent(manifest)
     snapshots, directories, snapshot_stats = _snapshot_tree(
@@ -671,6 +803,11 @@ def write_completion_receipt(
         manifest_sha256=hashlib.sha256(manifest_bytes).hexdigest(),
         directories=directories,
         files=tuple(CompletionReceiptFile(item.relative_path, item.size_bytes, item.sha256) for item in snapshots),
+        schema_version=COMPLETION_RECEIPT_SCHEMA_VERSION,
+        schedule_revision=manifest.schedule_revision,
+        attempt=manifest.attempt,
+        execution_id=manifest.execution_id,
+        sync_run_id=manifest.sync_run_id,
     )
     encoded = (json.dumps(receipt.as_payload(), ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8")
     if len(encoded) > MAX_COMPLETION_RECEIPT_BYTES:
@@ -735,6 +872,7 @@ def load_validated_output_snapshot(manifest: RunnerManifest) -> ValidatedOutputS
 __all__ = [
     "COMPLETION_RECEIPT_NAME",
     "COMPLETION_RECEIPT_SCHEMA_VERSION",
+    "LEGACY_COMPLETION_RECEIPT_SCHEMA_VERSION",
     "MAX_COMPLETION_RECEIPT_BYTES",
     "CompletionReceipt",
     "CompletionReceiptError",

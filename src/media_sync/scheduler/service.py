@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session, joinedload
 
 from media_sync.domain import AccountRef, Cursor, DomainError, LoginMethod, Platform
 from media_sync.infrastructure.db import Database
-from media_sync.infrastructure.db.models import Subscription, SyncRun
+from media_sync.infrastructure.db.models import Job, Subscription, SyncRun
 
 from .handlers import (
     SubscriptionHandlerRegistry,
@@ -159,11 +159,15 @@ class SubscriptionWorker:
         *,
         clock: Callable[[], datetime] = _utc_now,
         random_fraction: Callable[[], float] = random.random,
+        claim_registered_only: bool = False,
     ) -> None:
+        if type(claim_registered_only) is not bool:
+            raise ValueError("claim_registered_only must be boolean")
         self.database = database
         self.handlers = handlers
         self.clock = clock
         self.random_fraction = random_fraction
+        self.claim_adapter_allowlist = handlers.keys if claim_registered_only else None
 
     @staticmethod
     def _heartbeat_interval(value: float | None, *, lease_seconds: int) -> float:
@@ -235,6 +239,20 @@ class SubscriptionWorker:
                 now=self.clock(),
             )
 
+        def run_attacher(
+            handler_session: Session,
+            run_id: UUID,
+            expected_current_run_id: UUID | None,
+        ) -> None:
+            SchedulerRepository(handler_session).attach_run(
+                claim.job_id,
+                worker_id=worker_id,
+                lease_token=claim.lease_token,
+                run_id=str(run_id),
+                expected_current_run_id=(str(expected_current_run_id) if expected_current_run_id is not None else None),
+                now=self.clock(),
+            )
+
         with self.database.session() as session:
             subscription = session.scalar(
                 select(Subscription)
@@ -257,6 +275,9 @@ class SubscriptionWorker:
                     if not isinstance(cursor_value, str):
                         raise ValueError("subscription cursor is invalid")
                     cursor = Cursor(cursor_value)
+                if not isinstance(subscription.policy, Mapping):
+                    raise ValueError("subscription policy is invalid")
+                current_run_id = UUID(claim.run_id) if claim.run_id is not None else None
                 handler_key = account.adapter
                 context = SubscriptionJobContext(
                     job_id=UUID(claim.job_id),
@@ -270,9 +291,13 @@ class SubscriptionWorker:
                     ),
                     creator_reference=subscription.author.remote_id,
                     cursor=cursor,
+                    subscription_policy=subscription.policy,
+                    schedule_revision=claim.schedule_revision,
                     max_items=subscription.max_items,
                     attempt=claim.attempt,
+                    current_run_id=current_run_id,
                     ownership_guard=ownership_guard,
+                    run_attacher=run_attacher,
                 )
             except (DomainError, TypeError, ValueError):
                 context = None
@@ -417,12 +442,39 @@ class SubscriptionWorker:
         if result.run_id is None:
             return result
         with self.database.session() as session:
-            owning_subscription_id = session.scalar(
-                select(SyncRun.subscription_id).where(SyncRun.id == str(result.run_id))
-            )
-        if owning_subscription_id != claim.subscription_id:
+            run = session.get(SyncRun, str(result.run_id))
+        if run is None or run.subscription_id != claim.subscription_id:
             return SubscriptionHandlerResult.failure("schema_invalid")
+        if run.status == "succeeded":
+            return SubscriptionHandlerResult.success(result.run_id)
         return result
+
+    def _authoritative_success(
+        self,
+        claim: SchedulerClaim,
+        result: SubscriptionHandlerResult | None,
+    ) -> SubscriptionHandlerResult | None:
+        try:
+            with self.database.session() as session:
+                job = session.get(Job, claim.job_id)
+                candidate_run_id = str(result.run_id) if result is not None and result.run_id is not None else None
+                if job is None or job.subscription_id != claim.subscription_id:
+                    return None
+                if candidate_run_id is None:
+                    candidate_run_id = job.run_id
+                elif job.run_id is not None and job.run_id != candidate_run_id:
+                    return None
+                if candidate_run_id is None:
+                    return None
+                run = session.get(SyncRun, candidate_run_id)
+                if run is None or run.subscription_id != claim.subscription_id or run.status != "succeeded":
+                    return None
+            return SubscriptionHandlerResult.success(UUID(candidate_run_id))
+        except Exception:
+            # This probe is advisory.  If storage is unavailable, the caller
+            # must retain the lease for reclaim and return only a fixed fenced
+            # result; raw database failures must never escape operator output.
+            return None
 
     def _finalize(
         self,
@@ -486,7 +538,29 @@ class SubscriptionWorker:
                 now=completed_at,
             )
 
-    def _fail_closed(self, claim: SchedulerClaim, *, worker_id: str) -> SchedulerWorkerResult:
+    def _fail_closed(
+        self,
+        claim: SchedulerClaim,
+        *,
+        worker_id: str,
+        result: SubscriptionHandlerResult | None = None,
+    ) -> SchedulerWorkerResult:
+        authoritative_success = self._authoritative_success(claim, result)
+        if authoritative_success is not None:
+            try:
+                summary = self._finalize(
+                    claim,
+                    worker_id=worker_id,
+                    result=authoritative_success,
+                )
+            except SchedulerLeaseLostError:
+                return self._observed_or_fenced(claim)
+            except Exception:
+                # Once the attached run committed success, never replace that
+                # durable truth with a scheduler failure. Lease reclaim or an
+                # operator retry may safely reconcile the Job later.
+                return self._observed_or_fenced(claim, error_code="schema_invalid")
+            return self._worker_result(summary)
         try:
             fallback_time = self.clock()
             if (
@@ -530,11 +604,13 @@ class SubscriptionWorker:
                 global_capacity=global_capacity,
                 lease_seconds=lease_seconds,
                 scan_limit=scan_limit,
+                adapter_allowlist=self.claim_adapter_allowlist,
                 now=self.clock(),
             )
         if claim is None:
             return SchedulerWorkerResult.idle()
 
+        result: SubscriptionHandlerResult | None = None
         try:
             with self.database.session() as session:
                 started = SchedulerRepository(session).start(
@@ -562,7 +638,7 @@ class SubscriptionWorker:
         except SchedulerLeaseLostError:
             return self._observed_or_fenced(started)
         except Exception:
-            return self._fail_closed(started, worker_id=worker_id)
+            return self._fail_closed(started, worker_id=worker_id, result=result)
         return self._worker_result(summary)
 
     async def run_bounded(

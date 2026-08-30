@@ -29,6 +29,9 @@ jobs/
 secrets/
 browser-profiles/
 .media-sync/
+.quarantine/
+.cleanup-security-v1/
+**/accounts/*/*/profile/
 browser_data/
 cookies.json
 *.part

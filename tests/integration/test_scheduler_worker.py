@@ -39,7 +39,7 @@ from media_sync.scheduler.handlers import (
     SubscriptionJobContext,
 )
 from media_sync.scheduler.policy import RetryPolicy
-from media_sync.scheduler.repository import SchedulerClaim
+from media_sync.scheduler.repository import SchedulerClaim, SchedulerRepository
 from media_sync.scheduler.service import DurableSchedulerService, SubscriptionWorker
 
 NOW = datetime(2026, 8, 30, 5, 0, tzinfo=UTC)
@@ -127,6 +127,22 @@ class _InspectingFakeHandler:
         finally:
             independent.dispose()
         return await self.inner.run(context)
+
+
+class _AttachingFakeHandler:
+    """Model a handler that publishes its run before Job finalization."""
+
+    def __init__(self, database: Database) -> None:
+        self.database = database
+        self.inner = FakeSubscriptionHandler(database)
+
+    async def run(self, context: SubscriptionJobContext) -> SubscriptionHandlerResult:
+        result = await self.inner.run(context)
+        assert result.succeeded and result.run_id is not None
+        assert context.run_attacher is not None
+        with self.database.session() as session:
+            context.run_attacher(session, result.run_id, context.current_run_id)
+        return result
 
 
 class _ResolveFailureAdapter(FakePlatformAdapter):
@@ -902,6 +918,92 @@ async def test_database_outage_after_handler_leaves_fenced_lease_for_reclaim(
     assert recovered.status == "succeeded"
     assert recovered.job_id == cycle.job_id
     assert recovered.attempt == 2
+
+
+@pytest.mark.asyncio
+async def test_persistent_success_finalizer_outage_reconciles_on_lease_expiry(
+    database: Database,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    subscription_id = _seed(database)
+    clock = _Clock()
+    scheduler = DurableSchedulerService(database, clock=clock)
+    cycle = scheduler.tick(limit=1).cycles[0]
+
+    def unavailable_success_finalizer(*_args: object, **_kwargs: object) -> object:
+        raise RuntimeError(f"success finalizer outage contains {SECRET}")
+
+    monkeypatch.setattr(SchedulerRepository, "succeed", unavailable_success_finalizer)
+    fenced = await SubscriptionWorker(
+        database,
+        SubscriptionHandlerRegistry({"fake": _AttachingFakeHandler(database)}),
+        clock=clock,
+    ).run_once(
+        worker_id="persistent-success-finalizer-worker",
+        lease_seconds=1,
+        heartbeat_interval_seconds=0.2,
+    )
+
+    assert (fenced.status, fenced.error_code) == ("fenced", "schema_invalid")
+    assert SECRET not in repr(fenced)
+    with database.session() as session:
+        running = session.get(Job, cycle.job_id)
+        assert running is not None and running.status == "running"
+        assert running.run_id is not None
+        run = session.get(SyncRun, running.run_id)
+        assert run is not None and run.status == "succeeded"
+
+    clock.value = NOW + timedelta(seconds=6)
+    recovered = await SubscriptionWorker(
+        database,
+        SubscriptionHandlerRegistry({"fake": _AttachingFakeHandler(database)}),
+        clock=clock,
+    ).run_once(worker_id="persistent-success-reclaim-worker")
+
+    assert recovered.status == "idle"
+    with database.session() as session:
+        job = session.get(Job, cycle.job_id)
+        subscription = session.get(Subscription, subscription_id)
+        assert job is not None and job.status == "succeeded"
+        assert job.run_id is not None and job.last_error_code is None
+        assert job.lease_owner is None and job.lease_token is None
+        assert subscription is not None and subscription.consecutive_failures == 0
+        assert subscription.next_run_at == clock.value + timedelta(seconds=60)
+
+
+@pytest.mark.asyncio
+async def test_post_commit_cancel_reconciles_authoritative_succeeded_run(
+    database: Database,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    subscription_id = _seed(database)
+    clock = _Clock()
+    scheduler = DurableSchedulerService(database, clock=clock)
+    cycle = scheduler.tick(limit=1).cycles[0]
+
+    def unavailable_success_finalizer(*_args: object, **_kwargs: object) -> object:
+        raise RuntimeError(f"success finalizer outage contains {SECRET}")
+
+    monkeypatch.setattr(SchedulerRepository, "succeed", unavailable_success_finalizer)
+    fenced = await SubscriptionWorker(
+        database,
+        SubscriptionHandlerRegistry({"fake": _AttachingFakeHandler(database)}),
+        clock=clock,
+    ).run_once(worker_id="post-commit-cancel-worker")
+    assert (fenced.status, fenced.error_code) == ("fenced", "schema_invalid")
+
+    reconciled = scheduler.cancel_job(cycle.job_id)
+
+    assert reconciled.status == "succeeded"
+    assert reconciled.last_error_code is None
+    with database.session() as session:
+        job = session.get(Job, cycle.job_id)
+        subscription = session.get(Subscription, subscription_id)
+        assert job is not None and job.status == "succeeded"
+        assert job.run_id is not None
+        run = session.get(SyncRun, job.run_id)
+        assert run is not None and run.status == "succeeded"
+        assert subscription is not None and subscription.consecutive_failures == 0
 
 
 @pytest.mark.asyncio

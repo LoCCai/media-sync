@@ -7,7 +7,7 @@ first database session opens, and every bounded batch gets a fresh transaction.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -275,6 +275,7 @@ class MediaCrawlerIngestionService:
         crawl_revision_before: int | None = None,
         mode: IngestionMode | str,
         continuation: Mapping[str, object] | _ContinuationUnset | None = _CONTINUATION_UNSET,
+        ownership_guard: Callable[[Session], None] | None = None,
     ) -> MediaCrawlerIngestionResult:
         """Materialize outside SQLite, then atomically ingest and fence each batch."""
 
@@ -308,6 +309,7 @@ class MediaCrawlerIngestionService:
             database_subscription_id,
             database_run_id,
             expected_revision,
+            ownership_guard=ownership_guard,
         )
         for record in unique_records:
             if (
@@ -349,6 +351,8 @@ class MediaCrawlerIngestionService:
                 _watermark_boundary(batch) if normalized_mode is IngestionMode.FORWARD else (None, ())
             )
             with self.database.session() as session:
+                if ownership_guard is not None:
+                    ownership_guard(session)
                 batch_discovered, batch_assets = _upsert_batch(session, batch)
                 subscription_repository = SubscriptionRepository(session)
                 publication_arguments: dict[str, Any] = {
@@ -413,8 +417,12 @@ class MediaCrawlerIngestionService:
         subscription_id: str,
         run_id: str,
         expected_revision: int,
+        *,
+        ownership_guard: Callable[[Session], None] | None = None,
     ) -> _StartState:
         with self.database.session() as session:
+            if ownership_guard is not None:
+                ownership_guard(session)
             subscription = SubscriptionRepository(session).get(subscription_id)
             if subscription is None:
                 raise NotFoundError(f"subscription not found: {subscription_id}")

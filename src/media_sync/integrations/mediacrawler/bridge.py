@@ -6,6 +6,7 @@ import contextlib
 import hashlib
 import hmac
 import json
+import math
 import os
 import re
 from collections.abc import Callable, Mapping
@@ -20,6 +21,8 @@ from media_sync.domain import LoginMethod, Platform
 from media_sync.security import SecretValue, redact_text, secret_url_components
 
 from .checkout import (
+    MEDIACRAWLER_LICENSE,
+    MEDIACRAWLER_LICENSE_SHA256,
     VerifiedCheckout,
     VerifiedPython,
     verify_mediacrawler_checkout,
@@ -37,8 +40,10 @@ from .policies import (
     require_full_history_acknowledgement,
     upstream_login_type,
 )
+from .subscription_policy import MAX_REQUEST_DELAY_SECONDS
 
-MANIFEST_SCHEMA_VERSION = 2
+LEGACY_MANIFEST_SCHEMA_VERSION = 2
+MANIFEST_SCHEMA_VERSION = 3
 PRIVATE_INPUT_SCHEMA_VERSION = 1
 MAX_MANIFEST_BYTES = 1_048_576
 RUNNER_SCRIPT = Path(__file__).with_name("runner.py").resolve()
@@ -69,6 +74,20 @@ _CHILD_ENV_ALLOWLIST = frozenset(
         "XDG_RUNTIME_DIR",
     }
 )
+
+
+def _strict_manifest_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise BridgeConfigurationError("runner manifest contains duplicate fields")
+        result[key] = value
+    return result
+
+
+def _reject_manifest_constant(value: str) -> None:
+    del value
+    raise BridgeConfigurationError("runner manifest contains a non-standard number")
 
 
 class BridgeConfigurationError(MediaCrawlerPolicyError):
@@ -104,6 +123,12 @@ class BridgeRequest:
     headless: bool = False
     max_items: int = 30
     watchdogs: WatchdogLimits = field(default_factory=WatchdogLimits)
+    scheduler_job_id: UUID | None = None
+    schedule_revision: int = 0
+    attempt: int = 1
+    execution_id: UUID | None = None
+    sync_run_id: UUID | None = None
+    request_delay_seconds: float = 2.0
 
     def __post_init__(self) -> None:
         try:
@@ -123,6 +148,32 @@ class BridgeRequest:
             raise BridgeConfigurationError("max_items must be between 1 and 1000")
         if not isinstance(self.headless, bool):
             raise BridgeConfigurationError("headless must be boolean")
+        scheduler_job_id = self.scheduler_job_id or self.job_id
+        if not isinstance(scheduler_job_id, UUID) or scheduler_job_id != self.job_id:
+            raise BridgeConfigurationError("scheduler_job_id must match the durable job_id")
+        execution_id = self.execution_id or self.job_id
+        sync_run_id = self.sync_run_id or self.job_id
+        if not isinstance(execution_id, UUID):
+            raise BridgeConfigurationError("execution_id must be a UUID")
+        if not isinstance(sync_run_id, UUID):
+            raise BridgeConfigurationError("sync_run_id must be a UUID")
+        if type(self.schedule_revision) is not int or self.schedule_revision < 0:
+            raise BridgeConfigurationError("schedule_revision must be nonnegative")
+        if type(self.attempt) is not int or self.attempt < 1:
+            raise BridgeConfigurationError("attempt must be positive")
+        if (
+            isinstance(self.request_delay_seconds, bool)
+            or not isinstance(self.request_delay_seconds, int | float)
+            or not math.isfinite(self.request_delay_seconds)
+            or not 0 < self.request_delay_seconds <= MAX_REQUEST_DELAY_SECONDS
+        ):
+            raise BridgeConfigurationError(
+                f"request_delay_seconds must be greater than zero and at most {MAX_REQUEST_DELAY_SECONDS:g}"
+            )
+        object.__setattr__(self, "scheduler_job_id", scheduler_job_id)
+        object.__setattr__(self, "execution_id", execution_id)
+        object.__setattr__(self, "sync_run_id", sync_run_id)
+        object.__setattr__(self, "request_delay_seconds", float(self.request_delay_seconds))
 
 
 @dataclass(frozen=True, slots=True)
@@ -152,8 +203,109 @@ class RunnerManifest:
     headless: bool = False
     max_items: int = 30
     watchdogs: WatchdogLimits = field(default_factory=WatchdogLimits)
+    schema_version: int = MANIFEST_SCHEMA_VERSION
+    schedule_revision: int | None = 0
+    attempt: int | None = 1
+    execution_id: UUID | None = None
+    sync_run_id: UUID | None = None
+    request_delay_seconds: float | None = 2.0
+    license_name: str | None = MEDIACRAWLER_LICENSE
+    license_sha256: str | None = MEDIACRAWLER_LICENSE_SHA256
+
+    def __post_init__(self) -> None:
+        if type(self.schema_version) is not int or self.schema_version not in {
+            LEGACY_MANIFEST_SCHEMA_VERSION,
+            MANIFEST_SCHEMA_VERSION,
+        }:
+            raise BridgeConfigurationError("unsupported runner manifest schema")
+        if self.schema_version == LEGACY_MANIFEST_SCHEMA_VERSION:
+            if any(
+                value is not None
+                for value in (
+                    self.schedule_revision,
+                    self.attempt,
+                    self.execution_id,
+                    self.sync_run_id,
+                    self.request_delay_seconds,
+                    self.license_name,
+                    self.license_sha256,
+                )
+            ):
+                raise BridgeConfigurationError("legacy runner manifests cannot acquire v3 identity")
+            return
+
+        execution_id = self.execution_id or self.job_id
+        sync_run_id = self.sync_run_id or self.job_id
+        if type(self.schedule_revision) is not int or self.schedule_revision < 0:
+            raise BridgeConfigurationError("runner manifest schedule revision is invalid")
+        if type(self.attempt) is not int or self.attempt < 1:
+            raise BridgeConfigurationError("runner manifest attempt is invalid")
+        if not isinstance(execution_id, UUID) or not isinstance(sync_run_id, UUID):
+            raise BridgeConfigurationError("runner manifest execution identity is invalid")
+        if (
+            isinstance(self.request_delay_seconds, bool)
+            or not isinstance(self.request_delay_seconds, int | float)
+            or not math.isfinite(self.request_delay_seconds)
+            or not 0 < self.request_delay_seconds <= MAX_REQUEST_DELAY_SECONDS
+        ):
+            raise BridgeConfigurationError("runner manifest request delay is invalid")
+        if self.license_name != MEDIACRAWLER_LICENSE or self.license_sha256 != MEDIACRAWLER_LICENSE_SHA256:
+            raise BridgeConfigurationError("runner manifest license identity is invalid")
+        object.__setattr__(self, "execution_id", execution_id)
+        object.__setattr__(self, "sync_run_id", sync_run_id)
+        object.__setattr__(self, "request_delay_seconds", float(self.request_delay_seconds))
+
+    @property
+    def scheduler_job_id(self) -> UUID:
+        """Return the durable scheduler identity (called ``job_id`` in v2)."""
+
+        return self.job_id
 
     def as_payload(self) -> dict[str, object]:
+        if self.schema_version == LEGACY_MANIFEST_SCHEMA_VERSION:
+            return {
+                "schema_version": LEGACY_MANIFEST_SCHEMA_VERSION,
+                "checkout_root": str(self.checkout_root),
+                "lock_path": str(self.lock_path),
+                "python_executable": str(self.python_executable),
+                "integration_root": str(self.integration_root),
+                "account_id": str(self.account_id),
+                "subscription_id": str(self.subscription_id),
+                "job_id": str(self.job_id),
+                "checkpoint_revision_before": self.checkpoint_revision_before,
+                "intended_mode": self.intended_mode.value,
+                "account_root": str(self.account_root),
+                "profile_root": str(self.profile_root),
+                "job_root": str(self.job_root),
+                "output_root": str(self.output_root),
+                "upstream_sha": self.upstream_sha,
+                "platform": self.platform.value,
+                "login_method": self.login_method.value,
+                "author_remote_id_fingerprint_sha256": self.author_remote_id_fingerprint_sha256,
+                "creator_fingerprint_sha256": self.creator_fingerprint_sha256,
+                "license_acknowledged": self.license_acknowledged,
+                "allow_full_history": self.allow_full_history,
+                "headless": self.headless,
+                "max_items": self.max_items,
+                "watchdogs": {
+                    "max_seconds": self.watchdogs.max_seconds,
+                    "max_output_bytes": self.watchdogs.max_output_bytes,
+                    "max_output_items": self.watchdogs.max_output_items,
+                    "max_output_files": self.watchdogs.max_output_files,
+                    "max_line_bytes": self.watchdogs.max_line_bytes,
+                    "poll_seconds": self.watchdogs.poll_seconds,
+                },
+            }
+        if (
+            self.schedule_revision is None
+            or self.attempt is None
+            or self.execution_id is None
+            or self.sync_run_id is None
+            or self.request_delay_seconds is None
+            or self.license_name is None
+            or self.license_sha256 is None
+        ):  # pragma: no cover - construction validates this invariant
+            raise BridgeConfigurationError("runner manifest v3 identity is incomplete")
         return {
             "schema_version": MANIFEST_SCHEMA_VERSION,
             "checkout_root": str(self.checkout_root),
@@ -162,7 +314,11 @@ class RunnerManifest:
             "integration_root": str(self.integration_root),
             "account_id": str(self.account_id),
             "subscription_id": str(self.subscription_id),
-            "job_id": str(self.job_id),
+            "scheduler_job_id": str(self.scheduler_job_id),
+            "schedule_revision": self.schedule_revision,
+            "attempt": self.attempt,
+            "execution_id": str(self.execution_id),
+            "sync_run_id": str(self.sync_run_id),
             "checkpoint_revision_before": self.checkpoint_revision_before,
             "intended_mode": self.intended_mode.value,
             "account_root": str(self.account_root),
@@ -170,6 +326,8 @@ class RunnerManifest:
             "job_root": str(self.job_root),
             "output_root": str(self.output_root),
             "upstream_sha": self.upstream_sha,
+            "license_name": self.license_name,
+            "license_sha256": self.license_sha256,
             "platform": self.platform.value,
             "login_method": self.login_method.value,
             "author_remote_id_fingerprint_sha256": self.author_remote_id_fingerprint_sha256,
@@ -178,6 +336,7 @@ class RunnerManifest:
             "allow_full_history": self.allow_full_history,
             "headless": self.headless,
             "max_items": self.max_items,
+            "request_delay_seconds": self.request_delay_seconds,
             "watchdogs": {
                 "max_seconds": self.watchdogs.max_seconds,
                 "max_output_bytes": self.watchdogs.max_output_bytes,
@@ -196,16 +355,21 @@ class RunnerManifest:
         try:
             if not resolved_manifest.is_file() or resolved_manifest.stat().st_size > MAX_MANIFEST_BYTES:
                 raise BridgeConfigurationError("runner manifest is missing or exceeds the size limit")
-            raw = json.loads(resolved_manifest.read_text(encoding="utf-8"))
+            raw = json.loads(
+                resolved_manifest.read_text(encoding="utf-8"),
+                object_pairs_hook=_strict_manifest_object,
+                parse_constant=_reject_manifest_constant,
+            )
         except (OSError, UnicodeError, json.JSONDecodeError) as error:
             raise BridgeConfigurationError("runner manifest could not be read safely") from error
         if (
             not isinstance(raw, Mapping)
             or type(raw.get("schema_version")) is not int
-            or raw.get("schema_version") != MANIFEST_SCHEMA_VERSION
+            or raw.get("schema_version") not in {LEGACY_MANIFEST_SCHEMA_VERSION, MANIFEST_SCHEMA_VERSION}
         ):
             raise BridgeConfigurationError("unsupported runner manifest schema")
-        expected_keys = {
+        schema_version = raw["schema_version"]
+        common_keys = {
             "schema_version",
             "checkout_root",
             "lock_path",
@@ -213,7 +377,6 @@ class RunnerManifest:
             "integration_root",
             "account_id",
             "subscription_id",
-            "job_id",
             "checkpoint_revision_before",
             "intended_mode",
             "account_root",
@@ -231,6 +394,18 @@ class RunnerManifest:
             "max_items",
             "watchdogs",
         }
+        legacy_keys = common_keys | {"job_id"}
+        v3_keys = common_keys | {
+            "scheduler_job_id",
+            "schedule_revision",
+            "attempt",
+            "execution_id",
+            "sync_run_id",
+            "license_name",
+            "license_sha256",
+            "request_delay_seconds",
+        }
+        expected_keys = legacy_keys if schema_version == LEGACY_MANIFEST_SCHEMA_VERSION else v3_keys
         if set(raw) != expected_keys:
             raise BridgeConfigurationError("runner manifest contains unsupported fields")
 
@@ -246,15 +421,58 @@ class RunnerManifest:
                 raise BridgeConfigurationError(f"runner manifest {name} must be boolean")
             return value
 
+        def uuid_value(name: str) -> UUID:
+            value = text_value(name)
+            try:
+                parsed = UUID(value)
+            except ValueError as error:
+                raise BridgeConfigurationError("runner manifest contains an invalid UUID") from error
+            if str(parsed) != value:
+                raise BridgeConfigurationError("runner manifest UUIDs must use canonical lowercase form")
+            return parsed
+
         try:
             account_id = UUID(text_value("account_id"))
             subscription_id = UUID(text_value("subscription_id"))
-            job_id = UUID(text_value("job_id"))
             intended_mode = MediaCrawlerRunMode(text_value("intended_mode"))
             platform = Platform(text_value("platform"))
             login_method = LoginMethod(text_value("login_method"))
         except ValueError as error:
             raise BridgeConfigurationError("runner manifest contains an unsupported identifier or enum") from error
+        if str(account_id) != text_value("account_id") or str(subscription_id) != text_value("subscription_id"):
+            raise BridgeConfigurationError("runner manifest UUIDs must use canonical lowercase form")
+
+        if schema_version == LEGACY_MANIFEST_SCHEMA_VERSION:
+            job_id = uuid_value("job_id")
+            schedule_revision: int | None = None
+            attempt: int | None = None
+            execution_id: UUID | None = None
+            sync_run_id: UUID | None = None
+            request_delay_seconds: float | None = None
+            license_name: str | None = None
+            license_sha256: str | None = None
+        else:
+            job_id = uuid_value("scheduler_job_id")
+            execution_id = uuid_value("execution_id")
+            sync_run_id = uuid_value("sync_run_id")
+            schedule_revision = raw.get("schedule_revision")
+            attempt = raw.get("attempt")
+            request_delay_seconds = raw.get("request_delay_seconds")
+            if type(schedule_revision) is not int or schedule_revision < 0:
+                raise BridgeConfigurationError("runner manifest schedule revision is invalid")
+            if type(attempt) is not int or attempt < 1:
+                raise BridgeConfigurationError("runner manifest attempt is invalid")
+            if (
+                isinstance(request_delay_seconds, bool)
+                or not isinstance(request_delay_seconds, int | float)
+                or not math.isfinite(request_delay_seconds)
+                or not 0 < request_delay_seconds <= MAX_REQUEST_DELAY_SECONDS
+            ):
+                raise BridgeConfigurationError("runner manifest request delay is invalid")
+            license_name = text_value("license_name")
+            license_sha256 = text_value("license_sha256").lower()
+            if license_name != MEDIACRAWLER_LICENSE or license_sha256 != MEDIACRAWLER_LICENSE_SHA256:
+                raise BridgeConfigurationError("runner manifest license identity is invalid")
 
         raw_watchdogs = raw.get("watchdogs")
         if not isinstance(raw_watchdogs, Mapping) or set(raw_watchdogs) != {
@@ -273,14 +491,14 @@ class RunnerManifest:
         if type(checkpoint_revision_before) is not int or checkpoint_revision_before < 0:
             raise BridgeConfigurationError("runner manifest checkpoint revision is invalid")
 
-        def finite_number(name: str) -> float:
+        def finite_number(name: str) -> int | float:
             value = raw_watchdogs.get(name)
             if isinstance(value, bool) or not isinstance(value, int | float):
                 raise BridgeConfigurationError("runner manifest watchdog limits are invalid")
             converted = float(value)
             if not (converted > 0 and converted < float("inf")):
                 raise BridgeConfigurationError("runner manifest watchdog limits are invalid")
-            return converted
+            return value
 
         def positive_integer(name: str) -> int:
             value = raw_watchdogs.get(name)
@@ -301,7 +519,8 @@ class RunnerManifest:
             raise BridgeConfigurationError("runner manifest watchdog limits are invalid") from error
 
         integration_root = Path(text_value("integration_root")).expanduser().resolve()
-        expected_paths = build_run_paths(integration_root, platform, account_id, job_id)
+        path_identity = execution_id if execution_id is not None else job_id
+        expected_paths = build_run_paths(integration_root, platform, account_id, path_identity)
         supplied_paths = {
             "account_root": Path(text_value("account_root")).expanduser().resolve(),
             "profile_root": Path(text_value("profile_root")).expanduser().resolve(),
@@ -357,6 +576,14 @@ class RunnerManifest:
             headless=headless,
             max_items=max_items,
             watchdogs=watchdogs,
+            schema_version=schema_version,
+            schedule_revision=schedule_revision,
+            attempt=attempt,
+            execution_id=execution_id,
+            sync_run_id=sync_run_id,
+            request_delay_seconds=request_delay_seconds,
+            license_name=license_name,
+            license_sha256=license_sha256,
         )
 
 
@@ -553,11 +780,17 @@ class MediaCrawlerBridge:
         if request.login_method is not LoginMethod.COOKIE and request.cookie is not None:
             raise BridgeConfigurationError("resolved Cookie secret is only valid for Cookie login")
 
+        scheduler_job_id = request.scheduler_job_id
+        execution_id = request.execution_id
+        sync_run_id = request.sync_run_id
+        if scheduler_job_id is None or execution_id is None or sync_run_id is None:  # pragma: no cover
+            raise BridgeConfigurationError("bridge request identity is incomplete")
+
         paths = build_run_paths(
             request.integration_root,
             request.platform,
             request.account_id,
-            request.job_id,
+            execution_id,
         )
         if request.login_method is LoginMethod.SAVED_SESSION and (
             not paths.profile_root.is_dir() or not any(paths.profile_root.iterdir())
@@ -585,7 +818,7 @@ class MediaCrawlerBridge:
             integration_root=paths.integration_root,
             account_id=request.account_id,
             subscription_id=request.subscription_id,
-            job_id=request.job_id,
+            job_id=scheduler_job_id,
             checkpoint_revision_before=request.checkpoint_revision_before,
             intended_mode=request.intended_mode,
             account_root=paths.account_root,
@@ -593,6 +826,8 @@ class MediaCrawlerBridge:
             job_root=paths.job_root,
             output_root=paths.output_root,
             upstream_sha=checkout.commit,
+            license_name=checkout.license_name,
+            license_sha256=MEDIACRAWLER_LICENSE_SHA256,
             platform=request.platform,
             login_method=request.login_method,
             author_remote_id_fingerprint_sha256=hashlib.sha256(request.author_remote_id.encode("utf-8")).hexdigest(),
@@ -602,6 +837,12 @@ class MediaCrawlerBridge:
             headless=request.headless,
             max_items=request.max_items,
             watchdogs=request.watchdogs,
+            schema_version=MANIFEST_SCHEMA_VERSION,
+            schedule_revision=request.schedule_revision,
+            attempt=request.attempt,
+            execution_id=execution_id,
+            sync_run_id=sync_run_id,
+            request_delay_seconds=request.request_delay_seconds,
         )
         environment, known_secrets = _child_environment(
             creator_reference,
@@ -641,6 +882,7 @@ def verify_manifest_checkout(manifest: RunnerManifest) -> VerifiedCheckout:
 
 
 __all__ = [
+    "LEGACY_MANIFEST_SCHEMA_VERSION",
     "MANIFEST_SCHEMA_VERSION",
     "MAX_MANIFEST_BYTES",
     "PRIVATE_INPUT_SCHEMA_VERSION",
