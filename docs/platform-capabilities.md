@@ -99,14 +99,14 @@ Composite API/access-key mapping names are redacted across snake_case, kebab-cas
 | Idempotent upsert / 幂等写入 | SQL path does select-then-write / SQL 先查后写 | Database unique constraints and atomic upsert / 唯一约束与原子 upsert |
 | JSONL isolation / JSONL 隔离 | Per-day append / 按日追加 | Unique output root per run / 每任务独立输出根目录 |
 | Multi-account profile / 多账户 profile | Per platform only / 仅按平台 | Per platform and account / 按平台与账户 |
-| Durable scheduling / 持久调度 | In-memory WebUI queue only / 仅内存 WebUI 队列 | Execution 0006 durable due cycles, retry policy and platform/account launch lanes; Fake handler only / 执行 0006 持久到期周期、重试策略与平台/账户启动 lane；仅 Fake handler |
+| Durable scheduling / 持久调度 | In-memory WebUI queue only / 仅内存 WebUI 队列 | Execution 0006 durable due cycles, retry policy and platform/account launch lanes; Fake handler only. Execution 0007 MediaCrawler handler is Planned/`NOT_RUN` / 执行 0006 持久到期周期、重试策略与平台/账户启动 lane；仅 Fake handler。执行 0007 MediaCrawler handler 为 Planned/`NOT_RUN` |
 
 ## Qualification status / 验收状态
 
-No live account or interactive challenge was used through execution 0006. All seven live QR/Cookie/saved-session login, creator-sync and scheduled-run entries are therefore `NOT_RUN`; phone login remains unsupported rather than merely untested. No live signed-locator refresh or CDN retrieval ran, and no Emby/Jellyfin server was started, rescanned or used for playback. Automated bridge/fixture/scheduler/download/export tests prove only offline contracts and cannot promote any live row.
+At the execution 0007 planning baseline, no live account or interactive challenge has been used. All seven live QR/Cookie/saved-session login, creator-sync and scheduled-run entries therefore remain `NOT_RUN`; phone login remains unsupported rather than merely untested. No live signed-locator refresh or CDN retrieval has run, and no Emby/Jellyfin server has been started, rescanned or used for playback. Execution 0007 has no implementation or automated evidence yet, and its plan cannot promote any live or offline capability row.
 
-截至执行 0006 均未使用真人账户，也未进行交互挑战，因此七个平台的真人二维码/Cookie/保存会话登录、作者同步及定时运行均为 `NOT_RUN`；手机号登录仍属于不支持，而非仅仅未测试。没有执行真实签名 locator refresh 或 CDN 下载，也未启动、重扫 Emby/Jellyfin 或进行播放。桥接器、fixture、调度、下载和导出自动测试只能证明离线契约，不能提升任何真人行。
+在执行 0007 计划基线时仍未使用真人账户，也未进行交互挑战，因此七个平台的真人二维码/Cookie/保存会话登录、作者同步及定时运行继续为 `NOT_RUN`；手机号登录仍属于不支持，而非仅仅未测试。没有执行真实签名 locator refresh 或 CDN 下载，也未启动、重扫 Emby/Jellyfin 或进行播放。执行 0007 尚无实现或自动化证据，其计划不能提升任何真人或离线能力行。
 
-Platform-specific DASH/multi-part/subtitle/danmaku and slideshow/mux derivatives, MediaCrawler refresh/scheduled handler, per-request upstream throttling, automatic downstream planning, REST operations, Docker and production operations are unavailable or deferred implementation scope, not `NOT_RUN` qualification outcomes. Execution 0006's implemented Fake/offline scheduler, retry/backoff and launch lanes are not included in that deferred list.
+Platform-specific DASH/multi-part/subtitle/danmaku and slideshow/mux derivatives, MediaCrawler refresh, per-request upstream throttling, automatic downstream planning, REST operations, Docker and production operations remain unavailable or deferred implementation scope, not `NOT_RUN` qualification outcomes. The MediaCrawler scheduled handler is now the explicit execution 0007 Planned scope but remains unavailable with implementation and verification `NOT_RUN`. Execution 0006's implemented Fake/offline scheduler, retry/backoff and launch lanes are unchanged.
 
-平台特有 DASH/多 P/字幕/弹幕及幻灯片/mux 衍生物、MediaCrawler refresh/定时 handler、逐请求上游节流、自动下游规划、REST 运维、Docker 与生产运维属于不可用或延期实现范围，不是 `NOT_RUN` 验收结果；执行 0006 已实现的 Fake/离线调度、重试/退避及启动 lane 不在该延期列表中。
+平台特有 DASH/多 P/字幕/弹幕及幻灯片/mux 衍生物、MediaCrawler refresh、逐请求上游节流、自动下游规划、REST 运维、Docker 与生产运维继续属于不可用或延期实现范围，不是 `NOT_RUN` 验收结果。MediaCrawler 定时 handler 现在是执行 0007 的明确 Planned 范围，但仍不可用，实现与验证均为 `NOT_RUN`；执行 0006 已实现的 Fake/离线调度、重试/退避及启动 lane 保持不变。
