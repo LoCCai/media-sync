@@ -1,14 +1,14 @@
 # Execution 0006 goal / 执行 0006 目标
 
-- Status / 状态：Planned / 已计划
+- Status / 状态：Complete for the offline/Fake scope / 离线/Fake 范围完成
 - Started / 开始时间：2026-08-30 10:48 +08:00
 - Predecessor / 前置执行：Execution 0005 implementation commit `8d5b48a`
 
 ## Outcome / 结果目标
 
-Deliver a restart-safe, multi-process-safe single-host scheduler for creator subscriptions. It must materialize due subscription cycles into durable Jobs, run supported sync handlers with bounded retries, and enforce global worker capacity plus persistent platform/account throttling without weakening the exact-claim download and Emby protocols delivered by execution 0005.
+Deliver a restart-safe, multi-process-safe single-host scheduler for creator subscriptions. It must materialize due subscription cycles into durable Jobs, run supported sync handlers with bounded retries, and enforce global worker capacity plus persistent platform/account launch throttling without weakening the exact-claim download and Emby protocols delivered by execution 0005.
 
-交付可重启、可由多个进程安全竞争的单机作者订阅调度器。它必须把到期订阅周期物化为持久 Job，以有界重试运行受支持的同步 handler，并执行全局 worker 容量及持久平台/账户限流，同时不得削弱执行 0005 已交付的下载与 Emby 精确领取协议。
+交付可重启、可由多个进程安全竞争的单机作者订阅调度器。它必须把到期订阅周期物化为持久 Job，以有界重试运行受支持的同步 handler，并执行全局 worker 容量及持久平台/账户启动节流，同时不得削弱执行 0005 已交付的下载与 Emby 精确领取协议。
 
 ## Acceptance criteria / 验收标准
 

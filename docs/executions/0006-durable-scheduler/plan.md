@@ -1,6 +1,7 @@
 # Execution 0006 plan / 执行 0006 计划
 
 - Status / 状态：Frozen before implementation / 实现前冻结
+- Execution result / 执行结果：Completed by this bilingual closeout commit / 由本次双语收尾提交完成
 - Plan date / 计划日期：2026-08-30
 - Network policy / 网络策略：offline tests only / 仅离线测试
 
@@ -12,13 +13,13 @@
 - Add nullable `jobs.subscription_id`, `jobs.account_id`, `jobs.platform` and `jobs.scheduled_for`, plus claim/scope indexes and a partial unique index allowing only one active `sync.subscription` Job per subscription. Active is frozen as `queued`, `claimed`, `running`, `retry_wait`, `waiting_auth`, `waiting_user` or `failed_retryable`; terminal is only `succeeded`, `failed_terminal` or `cancelled`.
 - Cycle natural key: `subscription:<subscription-id>:schedule:<revision>`.
 - `enabled=true AND next_run_at IS NULL` means immediately due; disabled means paused. Materialization is limited and ordered by null-due first, due time, creation time and ID.
-- Completion uses fixed delay: `next_run_at = finished_at + interval_seconds`. Success resets `consecutive_failures`; one terminal cycle failure increments it once. Downgrade removes scheduler lanes and all `sync.subscription` Jobs before dropping scheduler columns, so a re-upgrade cannot inherit a natural-key poison; existing execution 0005 Jobs remain byte-identical.
+- Completion uses fixed delay: `next_run_at = finished_at + interval_seconds`. Success resets `consecutive_failures`; one terminal cycle failure increments it once. Downgrade removes scheduler lanes and all `sync.subscription` Jobs before dropping scheduler columns, so a re-upgrade cannot inherit a natural-key poison. Execution 0005 Job evidence expressible by `0003` remains field-for-field equal, including JSON storage type; this is not a physical SQLite-byte claim.
 
 - 新增 `subscriptions.schedule_revision INTEGER NOT NULL DEFAULT 0 CHECK >= 0`。
 - 新增可空 `jobs.subscription_id`、`jobs.account_id`、`jobs.platform`、`jobs.scheduled_for`，以及领取/scope 索引与“每个订阅仅一个 active `sync.subscription` Job”的部分唯一索引。active 冻结为 `queued`、`claimed`、`running`、`retry_wait`、`waiting_auth`、`waiting_user`、`failed_retryable`；终态仅为 `succeeded`、`failed_terminal`、`cancelled`。
 - 周期 natural key 为 `subscription:<subscription-id>:schedule:<revision>`。
 - `enabled=true AND next_run_at IS NULL` 表示立即到期；disabled 表示暂停。物化必须有 limit，并按 null-due、到期时间、创建时间、ID 排序。
-- 完成采用 fixed delay：`next_run_at = finished_at + interval_seconds`。成功清零 `consecutive_failures`；一次终态周期失败只增加一次。downgrade 会先删除 scheduler lane 与全部 `sync.subscription` Job，再移除调度列，避免 re-upgrade 继承 natural-key 污染；执行 0005 的既有 Job 保持逐字节一致。
+- 完成采用 fixed delay：`next_run_at = finished_at + interval_seconds`。成功清零 `consecutive_failures`；一次终态周期失败只增加一次。downgrade 会先删除 scheduler lane 与全部 `sync.subscription` Job，再移除调度列，避免 re-upgrade 继承 natural-key 污染。`0003` 可表达的执行 0005 Job 证据保持逐字段一致，包括 JSON 存储类型；这不是 SQLite 物理字节一致声明。
 
 ### Retry and lanes / 重试与 lane
 
@@ -39,12 +40,12 @@
 - Introduce a closed `sync.subscription` handler registry and short-transaction worker lifecycle: claim, start, heartbeat, finalize. Execution 0006 ships the deterministic Fake handler.
 - Reclaim and requeue predicates are Job-type scoped before mutation. `asset_download` and `export.emby` continue to enqueue and exact-claim only inside their execution 0005 services.
 - Fake handler reuses the application sync service. MediaCrawler remains on the execution 0004 manual CLI run/ingest path; its scheduler application handler, manifest v3 and child-process supervision are a separately documented later execution.
-- Secret/credential values, real paths and raw handler errors never enter Job/lane payloads.
+- Secret/credential values, untrusted real paths and raw handler errors never enter `sync.subscription` scheduler Job/lane payloads. Existing asset/export records may intentionally persist validated archive/output paths.
 
 - 新增封闭的 `sync.subscription` handler registry，以及短事务 worker 生命周期：claim、start、heartbeat、finalize；执行 0006 交付确定性 Fake handler。
 - reclaim 与重新排队谓词在变更前按 Job 类型限定。`asset_download` 与 `export.emby` 继续只由执行 0005 服务内部 enqueue 并精确 claim。
 - Fake handler 复用应用同步服务。MediaCrawler 保持执行 0004 的手工 CLI run/ingest 路径；其 scheduler 应用 handler、manifest v3 及子进程监督作为后续独立执行记录。
-- 密钥/凭据值、真实路径及原始 handler 错误不得进入 Job/lane payload。
+- 密钥/凭据值、不可信真实路径及原始 handler 错误不得进入 `sync.subscription` 调度 Job/lane payload；既有资产/导出记录可按设计保存经验证的归档/输出路径。
 
 ## Implementation sequence / 实现顺序
 

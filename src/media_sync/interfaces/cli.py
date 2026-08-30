@@ -39,7 +39,7 @@ from media_sync.application.emby import (
     export_error_is_retryable,
 )
 from media_sync.config import Settings, get_settings
-from media_sync.domain import AccountRef, AssetStatus, Cursor, DomainError, LoginMethod, Platform, RunStatus
+from media_sync.domain import AccountRef, AssetStatus, Cursor, DomainError, JobStatus, LoginMethod, Platform, RunStatus
 from media_sync.exporters.emby import EmbyExporter, ExportError
 from media_sync.infrastructure.db import (
     Account,
@@ -52,6 +52,7 @@ from media_sync.infrastructure.db import (
     Database,
     IngestionMode,
     MediaCrawlerIngestionService,
+    NotFoundError,
     RepositoryError,
     SQLAlchemySyncRepository,
     StaleCheckpointError,
@@ -93,6 +94,20 @@ from media_sync.media import (
     SecureMediaDownloader,
     SocketAddressResolver,
 )
+from media_sync.scheduler import (
+    DurableSchedulerService,
+    LanePolicy,
+    LaneScope,
+    LaneSnapshot,
+    MaterializedCycle,
+    SchedulerJobSummary,
+    SchedulerRepositoryError,
+    SchedulerWorkerResult,
+    StaleLaneError,
+    SubscriptionHandlerRegistry,
+    SubscriptionSchedule,
+    SubscriptionWorker,
+)
 from media_sync.security import (
     InvalidSecretReferenceError,
     SecretError,
@@ -109,6 +124,9 @@ db_app = typer.Typer(help="Database schema and diagnostic commands.")
 account_app = typer.Typer(help="Platform account commands.")
 subscription_app = typer.Typer(help="Creator subscription commands.")
 sync_app = typer.Typer(help="Subscription synchronization commands.")
+scheduler_app = typer.Typer(help="Bounded durable scheduler commands.")
+scheduler_job_app = typer.Typer(help="Redaction-safe scheduler Job controls.")
+scheduler_lane_app = typer.Typer(help="Persistent scheduler lane controls.")
 mediacrawler_app = typer.Typer(help="License-gated external MediaCrawler bridge commands.")
 asset_app = typer.Typer(help="Verified media asset download commands.")
 emby_app = typer.Typer(help="Emby/Jellyfin library export commands.")
@@ -116,11 +134,14 @@ app.add_typer(db_app, name="db")
 app.add_typer(account_app, name="account")
 app.add_typer(subscription_app, name="subscription")
 app.add_typer(sync_app, name="sync")
+app.add_typer(scheduler_app, name="scheduler")
+scheduler_app.add_typer(scheduler_job_app, name="job")
+scheduler_app.add_typer(scheduler_lane_app, name="lane")
 app.add_typer(mediacrawler_app, name="mediacrawler")
 app.add_typer(asset_app, name="asset")
 app.add_typer(emby_app, name="emby")
 
-_EXPECTED_DATABASE_REVISION = "0003_media_download_emby"
+_EXPECTED_DATABASE_REVISION = "0004_scheduler_control_plane"
 _REQUIRED_DATABASE_TABLES = frozenset(str(name) for name in Base.metadata.tables)
 
 
@@ -129,6 +150,13 @@ class AdapterName(StrEnum):
 
     FAKE = "fake"
     MEDIACRAWLER = "mediacrawler"
+
+
+class SchedulerLaneScope(StrEnum):
+    """Closed lane scopes exposed by the local scheduler CLI."""
+
+    PLATFORM = "platform"
+    ACCOUNT = "account"
 
 
 _MEDIACRAWLER_LOGIN_METHODS = frozenset({LoginMethod.QR, LoginMethod.COOKIE, LoginMethod.SAVED_SESSION})
@@ -344,6 +372,83 @@ def _subscription_payload(
     return payload
 
 
+def _scheduler_schedule_payload(schedule: SubscriptionSchedule) -> dict[str, object]:
+    """Project subscription scheduling state without creator/account secrets."""
+
+    return {
+        "subscription_id": schedule.subscription_id,
+        "status": "enabled" if schedule.enabled else "paused",
+        "interval_seconds": schedule.interval_seconds,
+        "next_run_at": _iso_datetime(schedule.next_run_at),
+        "last_run_at": _iso_datetime(schedule.last_run_at),
+        "last_success_at": _iso_datetime(schedule.last_success_at),
+        "schedule_revision": schedule.schedule_revision,
+        "consecutive_failures": schedule.consecutive_failures,
+    }
+
+
+def _scheduler_cycle_payload(cycle: MaterializedCycle) -> dict[str, object]:
+    return {
+        "job_id": cycle.job_id,
+        "subscription_id": cycle.subscription_id,
+        "schedule_revision": cycle.schedule_revision,
+        "scheduled_for": _iso_datetime(cycle.scheduled_for),
+    }
+
+
+def _scheduler_job_payload(job: SchedulerJobSummary) -> dict[str, object]:
+    """Return the closed scheduler Job projection; never serialize Job payloads or leases."""
+
+    return {
+        "job_id": job.job_id,
+        "subscription_id": job.subscription_id,
+        "account_id": job.account_id,
+        "platform": job.platform,
+        "status": job.status,
+        "attempt": job.attempts,
+        "max_attempts": job.max_attempts,
+        "available_at": _iso_datetime(job.available_at),
+        "scheduled_for": _iso_datetime(job.scheduled_for),
+        "run_id": job.run_id,
+        "created_at": _iso_datetime(job.created_at),
+        "updated_at": _iso_datetime(job.updated_at),
+        "started_at": _iso_datetime(job.started_at),
+        "finished_at": _iso_datetime(job.finished_at),
+    }
+
+
+def _scheduler_worker_payload(result: SchedulerWorkerResult) -> dict[str, object]:
+    return {
+        "job_id": result.job_id,
+        "subscription_id": result.subscription_id,
+        "status": result.status,
+        "attempt": result.attempt,
+        "run_id": result.run_id,
+    }
+
+
+def _scheduler_lane_payload(lane: LaneSnapshot) -> dict[str, object]:
+    policy = lane.policy
+    return {
+        "lane_id": lane.lane_id,
+        "scope": policy.scope_type,
+        "platform": policy.platform,
+        "account_id": policy.account_id,
+        "max_concurrency": policy.max_concurrency,
+        "min_start_interval_seconds": policy.min_start_interval_seconds,
+        "failure_threshold": policy.failure_threshold,
+        "cooldown_seconds": policy.cooldown_seconds,
+        "next_start_at": _iso_datetime(lane.next_start_at),
+        "consecutive_failures": lane.consecutive_failures,
+        "circuit_state": lane.circuit_state,
+        "circuit_open_until": _iso_datetime(lane.circuit_open_until),
+        "half_open_job_id": lane.half_open_job_id,
+        "revision": lane.revision,
+        "created_at": _iso_datetime(lane.created_at),
+        "updated_at": _iso_datetime(lane.updated_at),
+    }
+
+
 def _asset_payload(asset: Asset, *, author_id: str) -> dict[str, object]:
     """Return only stable asset discovery and lifecycle fields."""
 
@@ -406,6 +511,39 @@ def _database_session() -> Iterator[Session]:
     finally:
         if database is not None:
             database.dispose()
+
+
+@contextmanager
+def _scheduler_runtime() -> Iterator[tuple[Database, DurableSchedulerService]]:
+    """Own one local scheduler Database while translating failures to fixed CLI messages."""
+
+    database: Database | None = None
+    try:
+        database = Database(get_settings().resolved_database_url)
+        yield database, DurableSchedulerService(database)
+    except StaleLaneError:
+        raise typer.BadParameter("scheduler lane revision conflict; list lanes and retry") from None
+    except NotFoundError:
+        raise typer.BadParameter("scheduler record was not found") from None
+    except IntegrityError:
+        raise typer.BadParameter("scheduler database conflict; retry the bounded operation") from None
+    except OperationalError:
+        raise typer.BadParameter(
+            "scheduler database operation failed; run `media-sync db init` and verify the database is not busy"
+        ) from None
+    except (SchedulerRepositoryError, RepositoryError):
+        raise typer.BadParameter("scheduler operation was rejected; no unsafe details were emitted") from None
+    except SQLAlchemyError:
+        raise typer.BadParameter("scheduler database operation failed; no changes were committed") from None
+    except (TypeError, ValueError):
+        raise typer.BadParameter("scheduler arguments or durable state were rejected") from None
+    finally:
+        if database is not None:
+            database.dispose()
+
+
+def _lane_scope(value: SchedulerLaneScope) -> LaneScope:
+    return "platform" if value is SchedulerLaneScope.PLATFORM else "account"
 
 
 def _required_option(value: str, name: str) -> str:
@@ -807,6 +945,232 @@ def list_subscriptions(
     with _database_session() as session:
         records = [_subscription_payload(subscription) for subscription in SubscriptionRepository(session).list()]
     _emit_list(records, json_output=json_output, label="subscriptions")
+
+
+@subscription_app.command("pause")
+def pause_subscription(
+    subscription_id: Annotated[UUID, typer.Option(help="Subscription UUID to pause.")],
+    json_output: Annotated[bool, typer.Option("--json", help="Emit machine-readable JSON.")] = False,
+) -> None:
+    """Pause future cycle materialization without exposing subscription payload data."""
+
+    with _scheduler_runtime() as (_database, service):
+        schedule = service.pause_subscription(str(subscription_id))
+    _emit_record(_scheduler_schedule_payload(schedule), json_output=json_output, label="Subscription schedule")
+
+
+@subscription_app.command("resume")
+def resume_subscription(
+    subscription_id: Annotated[UUID, typer.Option(help="Subscription UUID to resume.")],
+    json_output: Annotated[bool, typer.Option("--json", help="Emit machine-readable JSON.")] = False,
+) -> None:
+    """Resume future cycle materialization."""
+
+    with _scheduler_runtime() as (_database, service):
+        schedule = service.resume_subscription(str(subscription_id))
+    _emit_record(_scheduler_schedule_payload(schedule), json_output=json_output, label="Subscription schedule")
+
+
+@subscription_app.command("run-now")
+def run_subscription_now(
+    subscription_id: Annotated[UUID, typer.Option(help="Subscription UUID to make immediately due.")],
+    json_output: Annotated[bool, typer.Option("--json", help="Emit machine-readable JSON.")] = False,
+) -> None:
+    """Make a subscription due now; this does not implicitly resume a paused subscription."""
+
+    with _scheduler_runtime() as (_database, service):
+        schedule = service.run_now(str(subscription_id))
+    _emit_record(_scheduler_schedule_payload(schedule), json_output=json_output, label="Subscription schedule")
+
+
+@scheduler_app.command("tick")
+def scheduler_tick(
+    limit: Annotated[int, typer.Option(min=1, max=1_000, help="Maximum due subscriptions to materialize.")] = 100,
+    json_output: Annotated[bool, typer.Option("--json", help="Emit machine-readable JSON.")] = False,
+) -> None:
+    """Materialize a bounded batch of due subscription cycles."""
+
+    with _scheduler_runtime() as (_database, service):
+        result = service.tick(limit=limit)
+    payload: dict[str, object] = {
+        "materialized_count": result.materialized_count,
+        "cycles": [_scheduler_cycle_payload(cycle) for cycle in result.cycles],
+    }
+    _emit_record(payload, json_output=json_output, label="Scheduler tick")
+
+
+@scheduler_app.command("run")
+def scheduler_run(
+    max_jobs: Annotated[int, typer.Option(min=1, max=1_000, help="Maximum Jobs to execute without sleeping.")] = 1,
+    global_capacity: Annotated[
+        int,
+        typer.Option(min=1, max=1_000, help="Maximum concurrent sync Jobs across workers."),
+    ] = 1,
+    lease_seconds: Annotated[
+        int,
+        typer.Option(min=1, max=86_400, help="Lease duration for each claimed Job."),
+    ] = 60,
+    scan_limit: Annotated[
+        int,
+        typer.Option(min=1, max=1_000, help="Maximum queued candidates scanned per claim."),
+    ] = 100,
+    json_output: Annotated[bool, typer.Option("--json", help="Emit machine-readable JSON.")] = False,
+) -> None:
+    """Run a bounded Fake-only worker batch and return immediately when idle."""
+
+    with _scheduler_runtime() as (database, _service):
+        worker = SubscriptionWorker(database, SubscriptionHandlerRegistry.fake_only(database))
+        results = asyncio.run(
+            worker.run_bounded(
+                worker_id=f"cli-{uuid4()}",
+                max_jobs=max_jobs,
+                global_capacity=global_capacity,
+                lease_seconds=lease_seconds,
+                scan_limit=scan_limit,
+            )
+        )
+    _emit_list(
+        [_scheduler_worker_payload(result) for result in results],
+        json_output=json_output,
+        label="scheduler worker results",
+    )
+
+
+@scheduler_job_app.command("list")
+def list_scheduler_jobs(
+    status: Annotated[JobStatus | None, typer.Option(help="Optional scheduler Job status filter.")] = None,
+    subscription_id: Annotated[UUID | None, typer.Option(help="Optional subscription UUID filter.")] = None,
+    limit: Annotated[int, typer.Option(min=1, max=1_000, help="Maximum Jobs returned.")] = 100,
+    json_output: Annotated[bool, typer.Option("--json", help="Emit machine-readable JSON.")] = False,
+) -> None:
+    """List only the redaction-safe projection of sync.subscription Jobs."""
+
+    with _scheduler_runtime() as (_database, service):
+        jobs = service.list_jobs(
+            status=status.value if status is not None else None,
+            subscription_id=str(subscription_id) if subscription_id is not None else None,
+            limit=limit,
+        )
+    _emit_list(
+        [_scheduler_job_payload(job) for job in jobs],
+        json_output=json_output,
+        label="scheduler Jobs",
+    )
+
+
+@scheduler_job_app.command("resume")
+def resume_scheduler_job(
+    job_id: Annotated[UUID, typer.Option(help="Waiting scheduler Job UUID to resume.")],
+    json_output: Annotated[bool, typer.Option("--json", help="Emit machine-readable JSON.")] = False,
+) -> None:
+    """Explicitly resume one waiting_auth or waiting_user Job."""
+
+    with _scheduler_runtime() as (_database, service):
+        job = service.resume_job(str(job_id))
+    _emit_record(_scheduler_job_payload(job), json_output=json_output, label="Scheduler Job")
+
+
+@scheduler_job_app.command("cancel")
+def cancel_scheduler_job(
+    job_id: Annotated[UUID, typer.Option(help="Scheduler Job UUID to cancel.")],
+    json_output: Annotated[bool, typer.Option("--json", help="Emit machine-readable JSON.")] = False,
+) -> None:
+    """Cancel one scheduler-owned sync.subscription Job."""
+
+    with _scheduler_runtime() as (_database, service):
+        job = service.cancel_job(str(job_id))
+    _emit_record(_scheduler_job_payload(job), json_output=json_output, label="Scheduler Job")
+
+
+@scheduler_lane_app.command("list")
+def list_scheduler_lanes(
+    scope: Annotated[SchedulerLaneScope | None, typer.Option("--scope", help="Optional lane scope filter.")] = None,
+    platform: Annotated[Platform | None, typer.Option(help="Optional platform filter.")] = None,
+    account_id: Annotated[UUID | None, typer.Option(help="Optional account UUID filter.")] = None,
+    json_output: Annotated[bool, typer.Option("--json", help="Emit machine-readable JSON.")] = False,
+) -> None:
+    """List persistent platform/account lane policy and circuit state."""
+
+    if scope is SchedulerLaneScope.PLATFORM and account_id is not None:
+        raise typer.BadParameter("platform lane filters cannot include account_id")
+    with _scheduler_runtime() as (_database, service):
+        lanes = service.list_lanes()
+    if scope is not None:
+        scope_value = _lane_scope(scope)
+        lanes = [lane for lane in lanes if lane.policy.scope_type == scope_value]
+    if platform is not None:
+        lanes = [lane for lane in lanes if lane.policy.platform == platform.value]
+    if account_id is not None:
+        normalized_account_id = str(account_id)
+        lanes = [lane for lane in lanes if lane.policy.account_id == normalized_account_id]
+    _emit_list(
+        [_scheduler_lane_payload(lane) for lane in lanes],
+        json_output=json_output,
+        label="scheduler lanes",
+    )
+
+
+@scheduler_lane_app.command("set")
+def set_scheduler_lane(
+    scope: Annotated[SchedulerLaneScope, typer.Option("--scope", help="Lane scope.")],
+    platform: Annotated[Platform, typer.Option(help="Lane platform.")],
+    account_id: Annotated[UUID | None, typer.Option(help="Required only for account lanes.")] = None,
+    max_concurrency: Annotated[int, typer.Option(min=1, max=1_000, help="Lane concurrency limit.")] = 1,
+    min_start_interval_seconds: Annotated[
+        int,
+        typer.Option(min=0, max=604_800, help="Minimum interval between Job starts."),
+    ] = 5,
+    failure_threshold: Annotated[
+        int,
+        typer.Option(min=1, max=2_147_483_647, help="Failures before the circuit opens."),
+    ] = 3,
+    cooldown_seconds: Annotated[
+        int,
+        typer.Option(min=1, max=604_800, help="Open-circuit cooldown."),
+    ] = 900,
+    expected_revision: Annotated[
+        int | None,
+        typer.Option(min=0, max=2_147_483_647, help="Optional compare-and-swap revision."),
+    ] = None,
+    json_output: Annotated[bool, typer.Option("--json", help="Emit machine-readable JSON.")] = False,
+) -> None:
+    """Create or update one bounded lane policy, optionally using revision CAS."""
+
+    with _scheduler_runtime() as (_database, service):
+        policy = LanePolicy(
+            scope_type=_lane_scope(scope),
+            platform=platform.value,
+            account_id=str(account_id) if account_id is not None else None,
+            max_concurrency=max_concurrency,
+            min_start_interval_seconds=min_start_interval_seconds,
+            failure_threshold=failure_threshold,
+            cooldown_seconds=cooldown_seconds,
+        )
+        lane = service.update_lane(policy, expected_revision=expected_revision)
+    _emit_record(_scheduler_lane_payload(lane), json_output=json_output, label="Scheduler lane")
+
+
+@scheduler_lane_app.command("reset")
+def reset_scheduler_lane(
+    scope: Annotated[SchedulerLaneScope, typer.Option("--scope", help="Lane scope.")],
+    platform: Annotated[Platform, typer.Option(help="Lane platform.")],
+    account_id: Annotated[UUID | None, typer.Option(help="Required only for account lanes.")] = None,
+    expected_revision: Annotated[
+        int | None,
+        typer.Option(min=0, max=2_147_483_647, help="Optional compare-and-swap revision."),
+    ] = None,
+    json_output: Annotated[bool, typer.Option("--json", help="Emit machine-readable JSON.")] = False,
+) -> None:
+    """Reset one lane circuit using an optional revision compare-and-swap."""
+
+    with _scheduler_runtime() as (_database, service):
+        lane = service.reset_lane(
+            scope_type=_lane_scope(scope),
+            platform=platform.value,
+            account_id=str(account_id) if account_id is not None else None,
+            expected_revision=expected_revision,
+        )
+    _emit_record(_scheduler_lane_payload(lane), json_output=json_output, label="Scheduler lane")
 
 
 @asset_app.command("list")

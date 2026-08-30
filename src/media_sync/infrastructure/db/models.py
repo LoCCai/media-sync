@@ -68,6 +68,11 @@ JOB_STATUSES = frozenset(
 )
 TERMINAL_RUN_STATUSES = frozenset({"succeeded", "failed_terminal", "cancelled"})
 TERMINAL_JOB_STATUSES = frozenset({"succeeded", "failed_terminal", "cancelled"})
+ACTIVE_SYNC_JOB_STATUSES = frozenset(
+    {"queued", "claimed", "running", "retry_wait", "waiting_auth", "waiting_user", "failed_retryable"}
+)
+SCHEDULER_LANE_SCOPE_TYPES = frozenset({"platform", "account"})
+CIRCUIT_STATES = frozenset({"closed", "open", "half_open"})
 
 
 def _quoted_values(values: frozenset[str]) -> str:
@@ -195,6 +200,7 @@ class Subscription(TimestampMixin, Base):
         CheckConstraint("interval_seconds >= 60", name="interval_seconds_minimum"),
         CheckConstraint("max_items >= 1", name="max_items_positive"),
         CheckConstraint("checkpoint_revision >= 0", name="checkpoint_revision_nonnegative"),
+        CheckConstraint("schedule_revision >= 0", name="schedule_revision_nonnegative"),
         CheckConstraint("consecutive_failures >= 0", name="consecutive_failures_nonnegative"),
         Index("ix_subscriptions_due", "enabled", "next_run_at"),
     )
@@ -217,6 +223,7 @@ class Subscription(TimestampMixin, Base):
     cursor_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
     backfill_cursor: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     checkpoint_revision: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    schedule_revision: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     policy: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict, server_default=text("'{}'"))
     next_run_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     last_run_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
@@ -430,18 +437,43 @@ class RunEvent(Base):
 
 class Job(TimestampMixin, Base):
     __tablename__ = "jobs"
+    _active_sync_predicate = (
+        "job_type = 'sync.subscription' AND subscription_id IS NOT NULL AND status IN ("
+        f"{_quoted_values(ACTIVE_SYNC_JOB_STATUSES)})"
+    )
     __table_args__ = (
         UniqueConstraint("job_type", "natural_key"),
         CheckConstraint(f"status IN ({_quoted_values(JOB_STATUSES)})", name="status"),
         CheckConstraint("attempts >= 0", name="attempts_nonnegative"),
         CheckConstraint("max_attempts >= 1", name="max_attempts_positive"),
+        CheckConstraint(f"platform IS NULL OR platform IN ({_quoted_values(PLATFORMS)})", name="platform"),
         Index("ix_jobs_claimable", "status", "available_at", "priority"),
+        Index("ix_jobs_scheduler_claim", "job_type", "status", "available_at", "priority", "scheduled_for"),
+        Index("ix_jobs_subscription_scope", "subscription_id", "job_type", "status", "scheduled_for"),
+        Index("ix_jobs_account_scope", "account_id", "job_type", "status", "lease_expires_at"),
+        Index("ix_jobs_platform_scope", "platform", "job_type", "status", "lease_expires_at"),
+        Index(
+            "uq_jobs_active_sync_subscription",
+            "subscription_id",
+            unique=True,
+            sqlite_where=text(_active_sync_predicate),
+            postgresql_where=text(_active_sync_predicate),
+        ),
         Index("ix_jobs_lease_expires_at", "lease_expires_at"),
         Index("ix_jobs_run_id", "run_id"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
     run_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("sync_runs.id", ondelete="SET NULL"))
+    subscription_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("subscriptions.id", ondelete="CASCADE"),
+    )
+    account_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("accounts.id", ondelete="CASCADE"),
+    )
+    platform: Mapped[str | None] = mapped_column(String(32))
     job_type: Mapped[str] = mapped_column(String(128), nullable=False)
     natural_key: Mapped[str] = mapped_column(String(512), nullable=False)
     payload: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict, server_default=text("'{}'"))
@@ -450,6 +482,7 @@ class Job(TimestampMixin, Base):
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=5, server_default="5")
     available_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+    scheduled_for: Mapped[datetime | None] = mapped_column(UTCDateTime())
     lease_owner: Mapped[str | None] = mapped_column(String(255))
     lease_token: Mapped[str | None] = mapped_column(String(36))
     lease_expires_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
@@ -459,6 +492,65 @@ class Job(TimestampMixin, Base):
     finished_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
 
     run: Mapped[SyncRun | None] = relationship(back_populates="jobs")
+
+
+class SchedulerLane(TimestampMixin, Base):
+    __tablename__ = "scheduler_lanes"
+    __table_args__ = (
+        CheckConstraint(f"scope_type IN ({_quoted_values(SCHEDULER_LANE_SCOPE_TYPES)})", name="scope_type"),
+        CheckConstraint(
+            "(scope_type = 'platform' AND account_id IS NULL) OR (scope_type = 'account' AND account_id IS NOT NULL)",
+            name="scope_shape",
+        ),
+        CheckConstraint(f"platform IN ({_quoted_values(PLATFORMS)})", name="platform"),
+        CheckConstraint("max_concurrency >= 1", name="max_concurrency_positive"),
+        CheckConstraint(
+            "min_start_interval_seconds >= 0",
+            name="min_start_interval_seconds_nonnegative",
+        ),
+        CheckConstraint("failure_threshold >= 1", name="failure_threshold_positive"),
+        CheckConstraint("cooldown_seconds >= 1", name="cooldown_seconds_positive"),
+        CheckConstraint("consecutive_failures >= 0", name="consecutive_failures_nonnegative"),
+        CheckConstraint(f"circuit_state IN ({_quoted_values(CIRCUIT_STATES)})", name="circuit_state"),
+        CheckConstraint("revision >= 0", name="revision_nonnegative"),
+        Index(
+            "uq_scheduler_lanes_platform",
+            "platform",
+            unique=True,
+            sqlite_where=text("scope_type = 'platform'"),
+            postgresql_where=text("scope_type = 'platform'"),
+        ),
+        Index(
+            "uq_scheduler_lanes_account",
+            "account_id",
+            unique=True,
+            sqlite_where=text("scope_type = 'account'"),
+            postgresql_where=text("scope_type = 'account'"),
+        ),
+        Index("ix_scheduler_lanes_account_id", "account_id"),
+        Index("ix_scheduler_lanes_half_open_job_id", "half_open_job_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    scope_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    platform: Mapped[str] = mapped_column(String(32), nullable=False)
+    account_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("accounts.id", ondelete="CASCADE"),
+    )
+    max_concurrency: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
+    min_start_interval_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=5, server_default="5")
+    failure_threshold: Mapped[int] = mapped_column(Integer, nullable=False, default=3, server_default="3")
+    cooldown_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=900, server_default="900")
+    next_start_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    consecutive_failures: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    circuit_state: Mapped[str] = mapped_column(String(32), nullable=False, default="closed", server_default="closed")
+    circuit_open_until: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    half_open_job_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("jobs.id", ondelete="SET NULL"),
+    )
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
 
 
 class ExportRecord(TimestampMixin, Base):
@@ -488,15 +580,18 @@ class ExportRecord(TimestampMixin, Base):
 
 
 __all__ = [
+    "ACTIVE_SYNC_JOB_STATUSES",
     "ASSET_KINDS",
     "ASSET_STATUSES",
     "AUTH_STATUSES",
+    "CIRCUIT_STATES",
     "CONTENT_KINDS",
     "JOB_STATUSES",
     "LOGIN_METHODS",
     "LOGIN_SESSION_STATUSES",
     "PLATFORMS",
     "RUN_STATUSES",
+    "SCHEDULER_LANE_SCOPE_TYPES",
     "TERMINAL_JOB_STATUSES",
     "TERMINAL_RUN_STATUSES",
     "Account",
@@ -507,6 +602,7 @@ __all__ = [
     "Job",
     "LoginSession",
     "RunEvent",
+    "SchedulerLane",
     "Subscription",
     "SyncRun",
 ]

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
 import os
 import shutil
 import subprocess
@@ -20,6 +21,7 @@ import pytest
 from alembic import command
 from alembic.config import Config
 from sqlalchemy import create_engine, inspect, select, text
+from sqlalchemy.engine import Connection
 
 from media_sync.application.downloads import (
     ASSET_DOWNLOAD_JOB_TYPE,
@@ -79,6 +81,30 @@ def _downgrade_packaged_database(database_url: str, revision: str) -> None:
         command.downgrade(configuration, revision)
 
 
+def _execution_0005_job_evidence(connection: Connection) -> dict[str, dict[str, object]]:
+    rows = connection.execute(
+        text(
+            "SELECT id, run_id, job_type, natural_key, payload, typeof(payload) AS payload_storage_type, "
+            "status, priority, attempts, max_attempts, available_at, lease_owner, lease_token, "
+            "lease_expires_at, last_error_code, last_error_message, started_at, finished_at, "
+            "created_at, updated_at FROM jobs "
+            "WHERE job_type IN ('asset_download', 'export.emby') ORDER BY id"
+        )
+    ).mappings()
+    return {str(row["id"]): dict(row) for row in rows}
+
+
+def _emby_record_evidence(connection: Connection) -> dict[str, dict[str, object]]:
+    rows = connection.execute(
+        text(
+            "SELECT id, content_id, exporter, exporter_version, source_fingerprint, output_path, "
+            "rendered_fingerprint, status, error_message, exported_at, created_at, updated_at "
+            "FROM export_records WHERE exporter = 'emby' ORDER BY id"
+        )
+    ).mappings()
+    return {str(row["id"]): dict(row) for row in rows}
+
+
 def test_programmatic_upgrade_uses_packaged_resources_and_handles_percent_path(tmp_path: Path) -> None:
     migrations = files(MIGRATIONS_PACKAGE)
     assert (migrations / "env.py").is_file()
@@ -94,7 +120,7 @@ def test_programmatic_upgrade_uses_packaged_resources_and_handles_percent_path(t
     try:
         assert "accounts" in inspect(engine).get_table_names()
         with engine.connect() as connection:
-            assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0003_media_download_emby"
+            assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0004_scheduler_control_plane"
     finally:
         engine.dispose()
 
@@ -125,6 +151,7 @@ def test_built_wheel_contains_and_runs_packaged_migrations(tmp_path: Path) -> No
             "media_sync/infrastructure/db/migrations/versions/0001_initial_schema.py",
             "media_sync/infrastructure/db/migrations/versions/0002_checkpoint_fencing.py",
             "media_sync/infrastructure/db/migrations/versions/0003_media_download_emby.py",
+            "media_sync/infrastructure/db/migrations/versions/0004_scheduler_control_plane.py",
         }
         assert required_resources <= wheel_names
         wheel.extractall(installed_root)
@@ -150,7 +177,7 @@ try:
     if "accounts" not in inspect(engine).get_table_names():
         raise AssertionError("packaged migration did not create accounts")
     with engine.connect() as connection:
-        if connection.scalar(text("SELECT version_num FROM alembic_version")) != "0003_media_download_emby":
+        if connection.scalar(text("SELECT version_num FROM alembic_version")) != "0004_scheduler_control_plane":
             raise AssertionError("unexpected migration revision")
 finally:
     engine.dispose()
@@ -674,3 +701,354 @@ def test_0003_roundtrip_preserves_published_emby_intent_for_recovery(
             assert connection.execute(text("PRAGMA foreign_key_check")).all() == []
     finally:
         upgraded.dispose()
+
+
+def test_0004_real_0003_roundtrip_preserves_0005_evidence_and_releases_sync_identity(tmp_path: Path) -> None:
+    database_path = tmp_path / "real-0003-to-0004.sqlite3"
+    database_url = f"sqlite+pysqlite:///{database_path.as_posix()}"
+    upgrade_database(database_url, "0003_media_download_emby")
+
+    observed_at = datetime(2026, 8, 30, 12, 13, 14, tzinfo=UTC)
+    account_id = "10000000-0000-4000-8000-000000000001"
+    author_id = "10000000-0000-4000-8000-000000000002"
+    subscription_id = "10000000-0000-4000-8000-000000000003"
+    content_id = "10000000-0000-4000-8000-000000000004"
+    asset_id = "10000000-0000-4000-8000-000000000005"
+    asset_job_id = "10000000-0000-4000-8000-000000000006"
+    emby_job_id = "10000000-0000-4000-8000-000000000007"
+    export_record_id = "10000000-0000-4000-8000-000000000008"
+    platform_lane_id = "10000000-0000-4000-8000-000000000009"
+    account_lane_id = "10000000-0000-4000-8000-000000000010"
+    sync_job_id = "10000000-0000-4000-8000-000000000011"
+    sync_natural_key = f"subscription:{subscription_id}:schedule:0"
+    source_fingerprint = "a" * 64
+    asset_payload = json.dumps(
+        {
+            "asset_id": asset_id,
+            "generation": 2,
+            "io_scope_fingerprint": "d" * 64,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    emby_payload = json.dumps(
+        {
+            "schema_version": 1,
+            "author_id": author_id,
+            "exporter": "emby",
+            "exporter_version": "emby-jellyfin-v1",
+            "publication_scope": "e" * 64,
+            "output_path": "xhs/real-0003-author",
+            "source_fingerprint": source_fingerprint,
+            "predecessor_job_id": None,
+            "intent": {
+                "schema_version": 1,
+                "source_fingerprint": source_fingerprint,
+                "tree_sha256": "b" * 64,
+                "manifest_sha256": "c" * 64,
+                "managed_file_count": 3,
+                "records": [
+                    {
+                        "record_id": export_record_id,
+                        "content_id": content_id,
+                        "source_fingerprint": source_fingerprint,
+                    }
+                ],
+            },
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+    engine = create_engine(database_url)
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO accounts (id, platform, display_name, created_at, updated_at) "
+                    "VALUES (:id, 'xhs', 'Real 0003 Account', :at, :at)"
+                ),
+                {"id": account_id, "at": observed_at},
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO authors "
+                    "(id, platform, remote_id, display_name, first_seen_at, last_seen_at, created_at, updated_at) "
+                    "VALUES (:id, 'xhs', 'real-0003-author', 'Real 0003 Author', :at, :at, :at, :at)"
+                ),
+                {"id": author_id, "at": observed_at},
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO subscriptions (id, account_id, author_id, created_at, updated_at) "
+                    "VALUES (:id, :account_id, :author_id, :at, :at)"
+                ),
+                {
+                    "id": subscription_id,
+                    "account_id": account_id,
+                    "author_id": author_id,
+                    "at": observed_at,
+                },
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO contents "
+                    "(id, author_id, platform, remote_type, remote_id, kind, first_seen_at, last_seen_at, "
+                    "created_at, updated_at) "
+                    "VALUES (:id, :author_id, 'xhs', 'note', 'real-0003-content', 'image', "
+                    ":at, :at, :at, :at)"
+                ),
+                {"id": content_id, "author_id": author_id, "at": observed_at},
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO jobs "
+                    "(id, run_id, job_type, natural_key, payload, status, priority, attempts, max_attempts, "
+                    "available_at, lease_owner, lease_token, lease_expires_at, last_error_code, "
+                    "last_error_message, started_at, finished_at, created_at, updated_at) VALUES "
+                    "(:asset_job_id, NULL, 'asset_download', :asset_key, :asset_payload, 'running', 7, 2, 5, "
+                    ":at, 'download-worker', :asset_token, :lease_expires_at, 'prepared_result', "
+                    "'download publication awaits database finalization', :at, NULL, :at, :at), "
+                    "(:emby_job_id, NULL, 'export.emby', :emby_key, :emby_payload, 'running', 11, 1, 3, "
+                    ":at, 'emby-worker', :emby_token, :lease_expires_at, 'publication_intent', "
+                    "'Emby tree is published and awaits recovery', :at, NULL, :at, :at)"
+                ),
+                {
+                    "asset_job_id": asset_job_id,
+                    "asset_key": f"{asset_id}:2",
+                    "asset_payload": asset_payload,
+                    "asset_token": "20000000-0000-4000-8000-000000000001",
+                    "emby_job_id": emby_job_id,
+                    "emby_key": f"emby-jellyfin-v1:{'f' * 64}",
+                    "emby_payload": emby_payload,
+                    "emby_token": "20000000-0000-4000-8000-000000000002",
+                    "lease_expires_at": observed_at + timedelta(minutes=5),
+                    "at": observed_at,
+                },
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO assets "
+                    "(id, content_id, platform, remote_id, kind, position, source_url, locator, "
+                    "semantic_fingerprint, locator_fingerprint, generation, download_job_id, queued_at, "
+                    "download_started_at, status, raw, created_at, updated_at) "
+                    "VALUES (:id, :content_id, 'xhs', 'real-0003-asset', 'image', 0, "
+                    "'https://media.example.test/real-0003.png', :locator, :semantic, :locator_fingerprint, "
+                    "2, :download_job_id, :at, :at, 'downloading', '{}', :at, :at)"
+                ),
+                {
+                    "id": asset_id,
+                    "content_id": content_id,
+                    "locator": json.dumps(
+                        {"type": "direct", "url": "https://media.example.test/real-0003.png", "version": 1},
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ),
+                    "semantic": "1" * 64,
+                    "locator_fingerprint": "2" * 64,
+                    "download_job_id": asset_job_id,
+                    "at": observed_at,
+                },
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO export_records "
+                    "(id, content_id, exporter, exporter_version, source_fingerprint, output_path, "
+                    "rendered_fingerprint, status, error_message, exported_at, created_at, updated_at) "
+                    "VALUES (:id, :content_id, 'emby', 'emby-jellyfin-v1', :source_fingerprint, "
+                    "'xhs/real-0003-author', NULL, 'running', 'publication awaits finalization', NULL, :at, :at)"
+                ),
+                {
+                    "id": export_record_id,
+                    "content_id": content_id,
+                    "source_fingerprint": source_fingerprint,
+                    "at": observed_at,
+                },
+            )
+        with engine.connect() as connection:
+            before_jobs = _execution_0005_job_evidence(connection)
+            before_records = _emby_record_evidence(connection)
+            assert (
+                connection.scalar(
+                    text("SELECT download_job_id FROM assets WHERE id = :id"),
+                    {"id": asset_id},
+                )
+                == asset_job_id
+            )
+    finally:
+        engine.dispose()
+
+    upgrade_database(database_url)
+    upgraded_engine = create_engine(database_url)
+    try:
+        with upgraded_engine.begin() as connection:
+            assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0004_scheduler_control_plane"
+            assert _execution_0005_job_evidence(connection) == before_jobs
+            assert _emby_record_evidence(connection) == before_records
+            assert (
+                connection.scalar(
+                    text("SELECT download_job_id FROM assets WHERE id = :id"),
+                    {"id": asset_id},
+                )
+                == asset_job_id
+            )
+            assert (
+                connection.scalar(
+                    text("SELECT schedule_revision FROM subscriptions WHERE id = :id"),
+                    {"id": subscription_id},
+                )
+                == 0
+            )
+            scoped_values = connection.execute(
+                text(
+                    "SELECT subscription_id, account_id, platform, scheduled_for FROM jobs "
+                    "WHERE id IN (:asset_job_id, :emby_job_id) ORDER BY id"
+                ),
+                {"asset_job_id": asset_job_id, "emby_job_id": emby_job_id},
+            ).all()
+            assert scoped_values == [(None, None, None, None), (None, None, None, None)]
+
+            connection.execute(
+                text("UPDATE subscriptions SET schedule_revision = 9 WHERE id = :id"),
+                {"id": subscription_id},
+            )
+            sync_statuses = (
+                "queued",
+                "claimed",
+                "running",
+                "retry_wait",
+                "waiting_auth",
+                "waiting_user",
+                "failed_retryable",
+                "succeeded",
+                "failed_terminal",
+                "cancelled",
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO jobs "
+                    "(id, subscription_id, account_id, platform, scheduled_for, job_type, natural_key, payload, "
+                    "status, available_at, created_at, updated_at) VALUES "
+                    "(:id, :subscription_id, :account_id, :platform, :scheduled_for, 'sync.subscription', "
+                    ":natural_key, :payload, :status, :at, :at, :at)"
+                ),
+                [
+                    {
+                        "id": sync_job_id if status == "queued" else f"30000000-0000-4000-8000-{index:012d}",
+                        "subscription_id": subscription_id if status == "queued" else None,
+                        "account_id": account_id if status == "queued" else None,
+                        "platform": "xhs" if status == "queued" else None,
+                        "scheduled_for": observed_at if status == "queued" else None,
+                        "natural_key": sync_natural_key if status == "queued" else f"unscoped-sync-{status}",
+                        "payload": json.dumps({"schema_version": 1, "status_fixture": status}, sort_keys=True),
+                        "status": status,
+                        "at": observed_at,
+                    }
+                    for index, status in enumerate(sync_statuses, start=1)
+                ],
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO scheduler_lanes "
+                    "(id, scope_type, platform, account_id, circuit_state, half_open_job_id) VALUES "
+                    "(:platform_lane_id, 'platform', 'xhs', NULL, 'closed', NULL), "
+                    "(:account_lane_id, 'account', 'xhs', :account_id, 'half_open', :half_open_job_id)"
+                ),
+                {
+                    "platform_lane_id": platform_lane_id,
+                    "account_lane_id": account_lane_id,
+                    "account_id": account_id,
+                    "half_open_job_id": sync_job_id,
+                },
+            )
+            assert _execution_0005_job_evidence(connection) == before_jobs
+            assert _emby_record_evidence(connection) == before_records
+            assert connection.execute(text("PRAGMA foreign_key_check")).all() == []
+    finally:
+        upgraded_engine.dispose()
+
+    _downgrade_packaged_database(database_url, "0003_media_download_emby")
+    downgraded_engine = create_engine(database_url)
+    try:
+        with downgraded_engine.connect() as connection:
+            assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0003_media_download_emby"
+            assert "scheduler_lanes" not in inspect(connection).get_table_names()
+            assert "schedule_revision" not in {
+                column["name"] for column in inspect(connection).get_columns("subscriptions")
+            }
+            job_columns = {column["name"] for column in inspect(connection).get_columns("jobs")}
+            assert {"subscription_id", "account_id", "platform", "scheduled_for"}.isdisjoint(job_columns)
+            assert connection.scalar(text("SELECT COUNT(*) FROM jobs WHERE job_type = 'sync.subscription'")) == 0
+            assert _execution_0005_job_evidence(connection) == before_jobs
+            assert _emby_record_evidence(connection) == before_records
+            assert (
+                connection.scalar(
+                    text("SELECT download_job_id FROM assets WHERE id = :id"),
+                    {"id": asset_id},
+                )
+                == asset_job_id
+            )
+            assert connection.execute(text("PRAGMA foreign_key_check")).all() == []
+    finally:
+        downgraded_engine.dispose()
+
+    upgrade_database(database_url)
+    reupgraded_engine = create_engine(database_url)
+    try:
+        with reupgraded_engine.begin() as connection:
+            assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0004_scheduler_control_plane"
+            assert (
+                connection.scalar(
+                    text("SELECT schedule_revision FROM subscriptions WHERE id = :id"),
+                    {"id": subscription_id},
+                )
+                == 0
+            )
+            assert _execution_0005_job_evidence(connection) == before_jobs
+            assert _emby_record_evidence(connection) == before_records
+            assert (
+                connection.scalar(
+                    text("SELECT download_job_id FROM assets WHERE id = :id"),
+                    {"id": asset_id},
+                )
+                == asset_job_id
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO jobs "
+                    "(id, subscription_id, account_id, platform, scheduled_for, job_type, natural_key, payload, "
+                    "status, available_at, created_at, updated_at) VALUES "
+                    "(:id, :subscription_id, :account_id, 'xhs', :at, 'sync.subscription', :natural_key, "
+                    "'{}', 'queued', :at, :at, :at)"
+                ),
+                {
+                    "id": sync_job_id,
+                    "subscription_id": subscription_id,
+                    "account_id": account_id,
+                    "natural_key": sync_natural_key,
+                    "at": observed_at,
+                },
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO scheduler_lanes (id, scope_type, platform, account_id) VALUES "
+                    "(:platform_lane_id, 'platform', 'xhs', NULL), "
+                    "(:account_lane_id, 'account', 'xhs', :account_id)"
+                ),
+                {
+                    "platform_lane_id": platform_lane_id,
+                    "account_lane_id": account_lane_id,
+                    "account_id": account_id,
+                },
+            )
+            assert (
+                connection.scalar(
+                    text("SELECT status FROM jobs WHERE id = :id"),
+                    {"id": sync_job_id},
+                )
+                == "queued"
+            )
+            assert connection.scalar(text("SELECT COUNT(*) FROM scheduler_lanes")) == 2
+            assert connection.execute(text("PRAGMA foreign_key_check")).all() == []
+    finally:
+        reupgraded_engine.dispose()

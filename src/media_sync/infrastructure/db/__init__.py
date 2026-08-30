@@ -22,6 +22,7 @@ from .models import (
     Job,
     LoginSession,
     RunEvent,
+    SchedulerLane,
     Subscription,
     SyncRun,
 )
@@ -79,6 +80,7 @@ __all__ = [
     "RepositoryError",
     "RunEvent",
     "SQLAlchemySyncRepository",
+    "SchedulerLane",
     "StaleCheckpointError",
     "Subscription",
     "SubscriptionRepository",

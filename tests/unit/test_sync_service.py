@@ -10,10 +10,12 @@ from media_sync.adapters.fake import FakePlatformAdapter
 from media_sync.application import SyncRequest, SyncService
 from media_sync.domain import (
     AccountRef,
+    AdapterError,
     AssetSnapshot,
     AuthorSnapshot,
     ContentSnapshot,
     Cursor,
+    DomainError,
     DomainValidationError,
     LoginMethod,
     Page,
@@ -21,6 +23,7 @@ from media_sync.domain import (
     RateLimitedError,
     RunStatus,
 )
+from media_sync.infrastructure.db import LeaseLostError
 
 NAMESPACE = UUID("00000000-0000-0000-0000-000000000099")
 ACCOUNT_ID = UUID("00000000-0000-0000-0000-000000000001")
@@ -254,3 +257,223 @@ async def test_repeated_next_cursor_fails_even_when_page_reaches_item_cap() -> N
     assert result.error_code == "domain_validation"
     assert len(repository.contents) == 1
     assert repository.cursor is None
+
+
+@pytest.mark.asyncio
+async def test_short_transaction_hooks_guard_every_mutation_and_external_await() -> None:
+    events: list[str] = []
+
+    class ObservedRepository(MemorySyncRepository):
+        def upsert_author(self, snapshot: AuthorSnapshot) -> UUID:
+            events.append("persist:author")
+            return super().upsert_author(snapshot)
+
+        def upsert_content_with_assets(
+            self,
+            snapshot: ContentSnapshot,
+            assets: Sequence[AssetSnapshot],
+        ) -> UUID:
+            events.append("persist:content")
+            return super().upsert_content_with_assets(snapshot, assets)
+
+        def create_run(self, subscription_id: UUID, manifest: Mapping[str, object] | None = None) -> UUID:
+            events.append("persist:create_run")
+            return super().create_run(subscription_id, manifest)
+
+        def transition_run(
+            self,
+            run_id: UUID,
+            target: RunStatus,
+            *,
+            error_code: str | None = None,
+            error_message: str | None = None,
+        ) -> None:
+            events.append(f"persist:transition:{target.value}")
+            super().transition_run(
+                run_id,
+                target,
+                error_code=error_code,
+                error_message=error_message,
+            )
+
+        def advance_cursor(
+            self,
+            subscription_id: UUID,
+            cursor: Cursor | None,
+            *,
+            watermark: datetime | None = None,
+        ) -> None:
+            events.append("persist:cursor")
+            super().advance_cursor(subscription_id, cursor, watermark=watermark)
+
+    class ObservedAdapter(FakePlatformAdapter):
+        async def ensure_session(self, account: AccountRef, interaction: object | None = None) -> object:
+            events.append("await:ensure_session")
+            return await super().ensure_session(account, interaction)  # type: ignore[arg-type]
+
+        async def resolve_author(self, account: AccountRef, reference: str) -> AuthorSnapshot:
+            events.append("await:resolve_author")
+            return await super().resolve_author(account, reference)
+
+        async def fetch_author_page(
+            self,
+            account: AccountRef,
+            author: AuthorSnapshot,
+            cursor: Cursor | None,
+            *,
+            limit: int,
+        ) -> Page[ContentSnapshot]:
+            events.append("await:fetch_author_page")
+            return await super().fetch_author_page(account, author, cursor, limit=limit)
+
+        async def resolve_assets(
+            self,
+            account: AccountRef,
+            content: ContentSnapshot,
+        ) -> Sequence[AssetSnapshot]:
+            events.append("await:resolve_assets")
+            return await super().resolve_assets(account, content)
+
+    result = await SyncService(ObservedAdapter(), ObservedRepository()).run(
+        SyncRequest(
+            subscription_id=SUBSCRIPTION_ID,
+            account=account(),
+            creator_reference="creator-001",
+            max_items=1,
+            page_size=1,
+        ),
+        persistence_guard=lambda: events.append("guard"),
+        external_io_boundary=lambda: events.append("boundary"),
+    )
+
+    assert result.status is RunStatus.SUCCEEDED
+    persist_indexes = [index for index, event in enumerate(events) if event.startswith("persist:")]
+    await_indexes = [index for index, event in enumerate(events) if event.startswith("await:")]
+    assert len(persist_indexes) == 8
+    assert len(await_indexes) == 4
+    assert all(events[index - 1] == "guard" for index in persist_indexes)
+    assert all(events[index - 1] == "boundary" for index in await_indexes)
+
+
+@pytest.mark.asyncio
+async def test_ownership_guard_loss_escapes_without_a_followup_failure_write() -> None:
+    repository = MemorySyncRepository()
+    guard_calls = 0
+
+    def lose_before_author_persistence() -> None:
+        nonlocal guard_calls
+        guard_calls += 1
+        if guard_calls == 4:
+            raise LeaseLostError("test lease was lost")
+
+    with pytest.raises(LeaseLostError, match="lease was lost"):
+        await SyncService(FakePlatformAdapter(), repository).run(
+            SyncRequest(
+                subscription_id=SUBSCRIPTION_ID,
+                account=account(),
+                creator_reference="creator-001",
+                max_items=1,
+                page_size=1,
+            ),
+            persistence_guard=lose_before_author_persistence,
+        )
+
+    assert guard_calls == 4
+    assert repository.authors == {}
+    assert repository.contents == {}
+    assert [target for _run_id, target in repository.transitions] == [
+        RunStatus.CLAIMED,
+        RunStatus.RUNNING,
+    ]
+
+
+@pytest.mark.asyncio
+async def test_hostile_custom_adapter_error_is_mapped_before_persistence() -> None:
+    sentinel = "SENTINEL-custom-adapter-code-C:/private/cookie.txt"
+
+    class HostileAdapter(FakePlatformAdapter):
+        async def resolve_author(self, account: AccountRef, reference: str) -> AuthorSnapshot:
+            del account, reference
+            raise AdapterError(
+                sentinel,
+                f"raw message {sentinel}",
+                platform="bili",
+                retryable=True,
+            )
+
+    repository = MemorySyncRepository()
+    result = await SyncService(HostileAdapter(), repository).run(
+        SyncRequest(
+            subscription_id=SUBSCRIPTION_ID,
+            account=account(),
+            creator_reference="creator-001",
+        )
+    )
+
+    assert result.status is RunStatus.FAILED_RETRYABLE
+    assert result.error_code == "unexpected_failure"
+    assert sentinel not in repr((result, repository.errors))
+    assert repository.errors[-1] == (
+        "unexpected_failure",
+        "The adapter reported a classified synchronization failure.",
+    )
+
+
+@pytest.mark.asyncio
+async def test_hostile_adapter_code_preserves_fixed_interaction_disposition() -> None:
+    sentinel = "SENTINEL-custom-interaction-code-C:/private/challenge.txt"
+
+    class HostileInteractionAdapter(FakePlatformAdapter):
+        async def resolve_author(self, account: AccountRef, reference: str) -> AuthorSnapshot:
+            del account, reference
+            raise AdapterError(
+                sentinel,
+                f"raw message {sentinel}",
+                platform="bili",
+                retryable=False,
+                requires_interaction=True,
+            )
+
+    repository = MemorySyncRepository()
+    result = await SyncService(HostileInteractionAdapter(), repository).run(
+        SyncRequest(
+            subscription_id=SUBSCRIPTION_ID,
+            account=account(),
+            creator_reference="creator-001",
+        )
+    )
+
+    assert result.status is RunStatus.AWAITING_AUTH
+    assert result.error_code == "interactive_challenge_required"
+    assert sentinel not in repr((result, repository.errors))
+    assert repository.errors[-1] == (
+        "interactive_challenge_required",
+        "The adapter reported a classified synchronization failure.",
+    )
+
+
+@pytest.mark.asyncio
+async def test_hostile_custom_domain_error_is_mapped_before_persistence() -> None:
+    sentinel = "SENTINEL-custom-domain-code-C:/private/session.json"
+
+    class HostileDomainAdapter(FakePlatformAdapter):
+        async def resolve_author(self, account: AccountRef, reference: str) -> AuthorSnapshot:
+            del account, reference
+            raise DomainError(sentinel, f"raw message {sentinel}")
+
+    repository = MemorySyncRepository()
+    result = await SyncService(HostileDomainAdapter(), repository).run(
+        SyncRequest(
+            subscription_id=SUBSCRIPTION_ID,
+            account=account(),
+            creator_reference="creator-001",
+        )
+    )
+
+    assert result.status is RunStatus.FAILED_TERMINAL
+    assert result.error_code == "unexpected_failure"
+    assert sentinel not in repr((result, repository.errors))
+    assert repository.errors[-1] == (
+        "unexpected_failure",
+        "Synchronization stopped after a classified domain failure.",
+    )

@@ -17,6 +17,8 @@
 
 Evidence / 证据：login enum at `cmd_arg/arg.py:52-57`; XHS call site `media_platform/xhs/core.py:103-113` and implementation `media_platform/xhs/login.py:87-224`; Douyin call site `media_platform/douyin/core.py:100-109` and implementation `media_platform/douyin/login.py:53-89,124-169,266-274`; placeholder implementations in each remaining `media_platform/*/login.py`. The upstream WebUI itself exposes only QR and Cookie (`api/main.py:166-187`).
 
+证据位置：登录枚举位于 `cmd_arg/arg.py:52-57`；小红书调用点与实现分别位于 `media_platform/xhs/core.py:103-113`、`media_platform/xhs/login.py:87-224`；抖音调用点与实现分别位于 `media_platform/douyin/core.py:100-109`、`media_platform/douyin/login.py:53-89,124-169,266-274`；其余平台的占位实现位于各自的 `media_platform/*/login.py`。上游 WebUI 本身只开放二维码与 Cookie（`api/main.py:166-187`）。
+
 ### media-sync 0.x exposure / media-sync 0.x 对外能力
 
 The MediaCrawler bridge exposes QR, Cookie and a previously saved per-account browser session. It does **not** claim phone support. A future native adapter may expose phone login only after an interactive end-to-end qualification. This intentionally differs from the overly broad upstream enum.
@@ -36,6 +38,8 @@ MediaCrawler 桥接器只开放二维码、Cookie 和已保存的账户级浏览
 | `zhihu` | `/people/<url_token>` | Answers only by default; article/video calls disabled / 默认只抓回答，文章和视频被关闭 | ❌ ignores cap and traverses answers until end / 忽略上限并遍历全部回答 | ❌ |
 
 Creator-mode dispatch exists for all seven platforms (`media_platform/*/core.py:120-142`). The CLI routes `--creator_id` into six platform lists but omits Zhihu (`cmd_arg/arg.py:388-402`). Most creator stores are deliberately no-ops and content uses an anonymized creator hash (`tools/user_hash.py:11-36`; `store/{xhs,douyin,kuaishou,bilibili,weibo,tieba}/__init__.py`). Zhihu's creator core does not call a creator store, and its JSONL `store_creator` is also a no-op, so no platform in this bridge provides a trustworthy creator profile row.
+
+七个平台均存在 creator-mode 分发（`media_platform/*/core.py:120-142`）。CLI 会把 `--creator_id` 路由到六个平台列表，但遗漏知乎（`cmd_arg/arg.py:388-402`）。多数 creator store 有意为空操作，内容只使用匿名化作者哈希（`tools/user_hash.py:11-36`；`store/{xhs,douyin,kuaishou,bilibili,weibo,tieba}/__init__.py`）。知乎 creator core 不调用 creator store，其 JSONL `store_creator` 也为空操作，因此该桥接中的任何平台都不能提供可信作者资料行。
 
 ### Bridge policy / 桥接策略
 
@@ -65,6 +69,8 @@ Creator-mode dispatch exists for all seven platforms (`media_platform/*/core.py:
 
 Media download is disabled by the misspelled non-CLI switch `ENABLE_GET_MEIDAS` (`config/base_config.py:107-108`). Implementations are under `store/*/*_store_media.py`; current HTTP clients buffer complete responses and lack `.part`, Range resume, MIME/probe and checksum validation.
 
+媒体下载由拼写错误且不对 CLI 开放的开关 `ENABLE_GET_MEIDAS` 禁用（`config/base_config.py:107-108`）。实现位于 `store/*/*_store_media.py`；当前 HTTP 客户端会把完整响应读入内存，并缺少 `.part`、Range 续传、MIME/探测与校验和验证。
+
 ### media-sync downloader/export status / media-sync 下载与导出状态
 
 Execution 0005 implements an offline-qualified, platform-independent downloader and Emby/Jellyfin layout v1. Query-free `direct` locators use per-hop public-DNS validation, address-pinned connections, manual redirects, strict resumable Range semantics, byte/time limits, MIME/container probing, mandatory bounded `ffprobe` structural validation for video/audio, SHA-256 and immutable content-addressed publication. Download orchestration adds a per-asset OS lock, a non-disclosing work/archive scope fingerprint, exact lease/reclaim CAS and restart recovery after archive commit but before database finalization. In 0.x, these filesystem guarantees assume dedicated operator-controlled runtime roots and ancestors; hostile same-permission parent-directory substitution is outside the threat model.
@@ -75,9 +81,9 @@ Export uses deterministic creator/content identities, NFO and allowlisted proven
 
 导出使用稳定作者/内容身份、NFO 与白名单来源、作者锁、staging 及文件系统 manifest/file CAS。受管所有权不由磁盘 manifest 单独决定：succeeded `export.emby` Job result 组成唯一 predecessor chain，并锚定精确 source/tree/manifest 哈希。发布及中断 roll-forward 会在成功或清理 journal 前复核完整 desired 受管树。发布前 intent 支持精确数据库收尾恢复，包括空快照；允许 `A → B → A`，拒绝伪造或意外 manifest，并发 sibling 只留下一个胜者，且不会删除用户修改或非受管文件。
 
-MediaCrawler-discovered assets intentionally persist only a stable `adapter_refresh` locator because platform/CDN URLs may contain expiring signatures. The refresh adapter is not implemented in 0005, so CLI preflight reports `blocked`/`not_started`, the unchanged `persisted_status` and fixed code `locator_refresh_unsupported` without creating a Job or mutating the Asset; this prevents accidental persistence of signed URLs. Real CDN retrieval and an Emby/Jellyfin rescan therefore remain `NOT_RUN` for every platform until an authorized account and refresh path are qualified.
+MediaCrawler-discovered assets intentionally persist only a stable `adapter_refresh` locator because platform/CDN URLs may contain expiring signatures. The refresh adapter remains unimplemented through 0006, so CLI preflight reports `blocked`/`not_started`, the unchanged `persisted_status` and fixed code `locator_refresh_unsupported` without creating a Job or mutating the Asset; this prevents accidental persistence of signed URLs. Real CDN retrieval and an Emby/Jellyfin rescan therefore remain `NOT_RUN` for every platform until an authorized account and refresh path are qualified.
 
-MediaCrawler 发现的资产只持久化稳定的 `adapter_refresh` locator，因为平台/CDN URL 可能包含过期签名。0005 尚未实现 refresh adapter，因此 CLI preflight 返回 `blocked`/`not_started`、未改变的 `persisted_status` 及固定代码 `locator_refresh_unsupported`，不创建 Job、不修改 Asset，避免误存签名 URL。七个平台的真实 CDN 获取及 Emby/Jellyfin 重扫仍保持 `NOT_RUN`，直到在用户授权账户与 refresh 路径上完成验收。
+MediaCrawler 发现的资产只持久化稳定的 `adapter_refresh` locator，因为平台/CDN URL 可能包含过期签名。截至 0006 仍未实现 refresh adapter，因此 CLI preflight 返回 `blocked`/`not_started`、未改变的 `persisted_status` 及固定代码 `locator_refresh_unsupported`，不创建 Job、不修改 Asset，避免误存签名 URL。七个平台的真实 CDN 获取及 Emby/Jellyfin 重扫仍保持 `NOT_RUN`，直到在用户授权账户与 refresh 路径上完成验收。
 
 Composite API/access-key mapping names are redacted across snake_case, kebab-case, camelCase and provider-prefixed forms without erasing ordinary `key`, `public_key` or `key_id` fields. Credential-marker URL paths, including encoded and double-encoded variants, are redacted at sinks and rejected by both `direct` locators and source-hint derivation. Current ingestion and the `0003` legacy backfill therefore persist only a stable `adapter_refresh` identity for such an asset; the legacy unsafe `source_url` is cleared. On downgrade, `0003` also clears all asset download FKs and generation-bound Jobs, removes non-recoverable non-succeeded Emby identities, and preserves the succeeded publication chain plus structurally valid publication-intent recovery state.
 
@@ -93,13 +99,14 @@ Composite API/access-key mapping names are redacted across snake_case, kebab-cas
 | Idempotent upsert / 幂等写入 | SQL path does select-then-write / SQL 先查后写 | Database unique constraints and atomic upsert / 唯一约束与原子 upsert |
 | JSONL isolation / JSONL 隔离 | Per-day append / 按日追加 | Unique output root per run / 每任务独立输出根目录 |
 | Multi-account profile / 多账户 profile | Per platform only / 仅按平台 | Per platform and account / 按平台与账户 |
+| Durable scheduling / 持久调度 | In-memory WebUI queue only / 仅内存 WebUI 队列 | Execution 0006 durable due cycles, retry policy and platform/account launch lanes; Fake handler only / 执行 0006 持久到期周期、重试策略与平台/账户启动 lane；仅 Fake handler |
 
 ## Qualification status / 验收状态
 
-No live account or interactive challenge was used during execution 0005. All seven live QR/Cookie/saved-session login and creator-sync entries are therefore `NOT_RUN`; phone login remains unsupported rather than merely untested. No live signed-locator refresh or CDN retrieval ran, and no Emby/Jellyfin server was started, rescanned or used for playback. Automated bridge/fixture/download/export tests may prove only offline contracts and cannot promote any live row.
+No live account or interactive challenge was used through execution 0006. All seven live QR/Cookie/saved-session login, creator-sync and scheduled-run entries are therefore `NOT_RUN`; phone login remains unsupported rather than merely untested. No live signed-locator refresh or CDN retrieval ran, and no Emby/Jellyfin server was started, rescanned or used for playback. Automated bridge/fixture/scheduler/download/export tests prove only offline contracts and cannot promote any live row.
 
-执行 0005 未使用真人账户，也未进行交互挑战，因此七个平台的真人二维码/Cookie/保存会话登录及作者同步均为 `NOT_RUN`；手机号登录仍属于不支持，而非仅仅未测试。没有执行真实签名 locator refresh 或 CDN 下载，也未启动、重扫 Emby/Jellyfin 或进行播放。桥接器、fixture、下载和导出自动测试只能证明离线契约，不能提升任何真人行。
+截至执行 0006 均未使用真人账户，也未进行交互挑战，因此七个平台的真人二维码/Cookie/保存会话登录、作者同步及定时运行均为 `NOT_RUN`；手机号登录仍属于不支持，而非仅仅未测试。没有执行真实签名 locator refresh 或 CDN 下载，也未启动、重扫 Emby/Jellyfin 或进行播放。桥接器、fixture、调度、下载和导出自动测试只能证明离线契约，不能提升任何真人行。
 
-Platform-specific DASH/multi-part/subtitle/danmaku and slideshow/mux derivatives, MediaCrawler refresh, scheduler/rate-limit/backoff, REST operations, Docker and production operations are unavailable or deferred implementation scope, not `NOT_RUN` qualification outcomes.
+Platform-specific DASH/multi-part/subtitle/danmaku and slideshow/mux derivatives, MediaCrawler refresh/scheduled handler, per-request upstream throttling, automatic downstream planning, REST operations, Docker and production operations are unavailable or deferred implementation scope, not `NOT_RUN` qualification outcomes. Execution 0006's implemented Fake/offline scheduler, retry/backoff and launch lanes are not included in that deferred list.
 
-平台特有 DASH/多 P/字幕/弹幕及幻灯片/mux 衍生物、MediaCrawler refresh、调度/限流/退避、REST 运维、Docker 与生产运维属于不可用或延期实现范围，不是 `NOT_RUN` 验收结果。
+平台特有 DASH/多 P/字幕/弹幕及幻灯片/mux 衍生物、MediaCrawler refresh/定时 handler、逐请求上游节流、自动下游规划、REST 运维、Docker 与生产运维属于不可用或延期实现范围，不是 `NOT_RUN` 验收结果；执行 0006 已实现的 Fake/离线调度、重试/退避及启动 lane 不在该延期列表中。

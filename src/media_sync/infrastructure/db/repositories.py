@@ -1556,6 +1556,25 @@ class JobRepository:
     def __init__(self, session: Session) -> None:
         self.session = session
 
+    @staticmethod
+    def _normalize_job_types(job_types: Sequence[str] | None) -> tuple[str, ...] | None:
+        if job_types is None:
+            return None
+        if isinstance(job_types, str):
+            raise ValueError("job_types must be a non-empty sequence of job type names")
+        requested = tuple(job_types)
+        if not requested:
+            raise ValueError("job_types must not be empty")
+        if any(
+            not isinstance(job_type, str)
+            or not job_type
+            or len(job_type) > 128
+            or any(ord(character) < 0x20 or ord(character) == 0x7F for character in job_type)
+            for job_type in requested
+        ):
+            raise ValueError("job_types contains an invalid job type name")
+        return tuple(dict.fromkeys(requested))
+
     def get(self, job_id: str) -> Job | None:
         return self.session.get(Job, job_id)
 
@@ -1621,7 +1640,14 @@ class JobRepository:
         self.session.flush()
         return job
 
-    def reclaim_expired(self, *, now: datetime | None = None, job_id: str | None = None) -> int:
+    def reclaim_expired(
+        self,
+        *,
+        now: datetime | None = None,
+        job_id: str | None = None,
+        job_types: Sequence[str] | None = None,
+    ) -> int:
+        normalized_job_types = self._normalize_job_types(job_types)
         current = _aware_utc(now)
         expired_conditions: list[Any] = [
             Job.status.in_(("claimed", "running")),
@@ -1630,6 +1656,8 @@ class JobRepository:
         ]
         if job_id is not None:
             expired_conditions.append(Job.id == job_id)
+        if normalized_job_types is not None:
+            expired_conditions.append(Job.job_type.in_(normalized_job_types))
         expired = and_(*expired_conditions)
         terminal_result = cast(
             CursorResult[Any],
@@ -1730,25 +1758,26 @@ class JobRepository:
     ) -> Job | None:
         if lease_seconds < 1:
             raise ValueError("lease_seconds must be positive")
+        normalized_job_types = self._normalize_job_types(job_types)
         current = _aware_utc(now)
-        self.reclaim_expired(now=current)
-        self.session.execute(
-            update(Job)
-            .where(
-                Job.status.in_(("retry_wait", "failed_retryable")),
-                Job.available_at <= current,
-                Job.attempts < Job.max_attempts,
-            )
-            .values(status="queued", updated_at=current)
-        )
-        eligible = and_(
+        self.reclaim_expired(now=current, job_types=normalized_job_types)
+        retryable_conditions: list[Any] = [
+            Job.status.in_(("retry_wait", "failed_retryable")),
+            Job.available_at <= current,
+            Job.attempts < Job.max_attempts,
+        ]
+        if normalized_job_types is not None:
+            retryable_conditions.append(Job.job_type.in_(normalized_job_types))
+        self.session.execute(update(Job).where(*retryable_conditions).values(status="queued", updated_at=current))
+        eligible_conditions: list[Any] = [
             Job.status == "queued",
             Job.available_at <= current,
             Job.attempts < Job.max_attempts,
-        )
+        ]
+        if normalized_job_types is not None:
+            eligible_conditions.append(Job.job_type.in_(normalized_job_types))
+        eligible = and_(*eligible_conditions)
         candidate = select(Job.id).where(eligible)
-        if job_types:
-            candidate = candidate.where(Job.job_type.in_(tuple(job_types)))
         candidate = candidate.order_by(Job.priority.desc(), Job.available_at, Job.created_at, Job.id).limit(1)
 
         statement = (

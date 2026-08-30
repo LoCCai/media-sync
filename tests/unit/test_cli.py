@@ -54,6 +54,47 @@ def _row_count(database_url: str, model: type[Account] | type[LoginSession]) -> 
         database.dispose()
 
 
+def _create_fake_subscription(
+    *,
+    login_method: str = "cookie",
+    creator_remote_id: str = "creator-001",
+) -> tuple[str, str]:
+    account_arguments = [
+        "account",
+        "add",
+        "--platform",
+        "bili",
+        "--display-name",
+        "Scheduler fixture account",
+        "--login-method",
+        login_method,
+    ]
+    account_arguments.extend(["--credential-ref", "env:MEDIA_SYNC_SCHEDULER_SENTINEL"])
+    account_arguments.append("--json")
+    account_result = runner.invoke(app, account_arguments)
+    assert account_result.exit_code == 0, account_result.output
+    account_id = json.loads(account_result.output)["id"]
+
+    subscription_result = runner.invoke(
+        app,
+        [
+            "subscription",
+            "add",
+            "--account-id",
+            account_id,
+            "--platform",
+            "bili",
+            "--creator-remote-id",
+            creator_remote_id,
+            "--display-name",
+            "Scheduler fixture creator",
+            "--json",
+        ],
+    )
+    assert subscription_result.exit_code == 0, subscription_result.output
+    return account_id, json.loads(subscription_result.output)["id"]
+
+
 def test_version_option() -> None:
     result = runner.invoke(app, ["--version"])
 
@@ -262,7 +303,9 @@ def test_db_init_runs_packaged_migrations_idempotently(tmp_path: Path, monkeypat
         try:
             assert "alembic_version" in inspect(database.engine).get_table_names()
             with database.engine.connect() as connection:
-                assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0003_media_download_emby"
+                assert (
+                    connection.scalar(text("SELECT version_num FROM alembic_version")) == "0004_scheduler_control_plane"
+                )
         finally:
             database.dispose()
     finally:
@@ -311,18 +354,18 @@ def test_db_status_reports_current_complete_schema_without_exposing_target(
         "ok": True,
         "database_driver": "sqlite+pysqlite",
         "reachable": True,
-        "revision": "0003_media_download_emby",
-        "expected_revision": "0003_media_download_emby",
+        "revision": "0004_scheduler_control_plane",
+        "expected_revision": "0004_scheduler_control_plane",
         "revision_current": True,
-        "required_table_count": 10,
-        "present_table_count": 10,
+        "required_table_count": 11,
+        "present_table_count": 11,
         "missing_tables": [],
         "reason": None,
     }
     assert text_result.exit_code == 0
     assert "Database ready:" in text_result.output
-    assert "revision=0003_media_download_emby" in text_result.output
-    assert "tables=10/10" in text_result.output
+    assert "revision=0004_scheduler_control_plane" in text_result.output
+    assert "tables=11/11" in text_result.output
     for output in (json_result.output, text_result.output):
         assert initialized_cli_database not in output
         assert "cli.sqlite3" not in output
@@ -348,7 +391,7 @@ def test_db_status_uninitialized_is_nonzero_read_only_and_redacted(
         assert payload["revision"] is None
         assert payload["revision_current"] is False
         assert payload["present_table_count"] == 0
-        assert len(payload["missing_tables"]) == payload["required_table_count"] == 10
+        assert len(payload["missing_tables"]) == payload["required_table_count"] == 11
         assert payload["reason"] == "database file does not exist"
         assert "sentinel-secret" not in result.output
         assert "Traceback" not in result.output
@@ -400,7 +443,7 @@ def test_db_status_rejects_incomplete_required_table_set(
     payload = json.loads(result.output)
     assert payload["reachable"] is True
     assert payload["revision_current"] is True
-    assert payload["present_table_count"] == 9
+    assert payload["present_table_count"] == 10
     assert payload["missing_tables"] == ["export_records"]
     assert payload["reason"] == "database schema is incomplete"
     assert "Traceback" not in result.output
@@ -775,6 +818,350 @@ def test_mediacrawler_subscription_rejects_signed_url_as_persisted_creator_id(
             assert session.scalar(select(Subscription)) is None
     finally:
         database.dispose()
+
+
+def test_scheduler_controls_are_bounded_and_redact_every_output_sink(
+    initialized_cli_database: str,
+) -> None:
+    raw_error_sentinel = "sentinel-raw-scheduler-error"
+    payload_sentinel = "sentinel-private-job-payload"
+    creator_sentinel = "sentinel-private-creator"
+    account_id, subscription_id = _create_fake_subscription(
+        login_method="qr",
+        creator_remote_id=creator_sentinel,
+    )
+    outputs: list[str] = []
+
+    paused = runner.invoke(
+        app,
+        ["subscription", "pause", "--subscription-id", subscription_id, "--json"],
+    )
+    assert paused.exit_code == 0, paused.output
+    outputs.append(paused.output)
+    paused_payload = json.loads(paused.output)
+    assert paused_payload["status"] == "paused"
+    assert set(paused_payload) == {
+        "subscription_id",
+        "status",
+        "interval_seconds",
+        "next_run_at",
+        "last_run_at",
+        "last_success_at",
+        "schedule_revision",
+        "consecutive_failures",
+    }
+    paused_text = runner.invoke(app, ["subscription", "pause", "--subscription-id", subscription_id])
+    assert paused_text.exit_code == 0, paused_text.output
+    outputs.append(paused_text.output)
+
+    run_now = runner.invoke(
+        app,
+        ["subscription", "run-now", "--subscription-id", subscription_id, "--json"],
+    )
+    assert run_now.exit_code == 0, run_now.output
+    outputs.append(run_now.output)
+    assert json.loads(run_now.output)["status"] == "paused"
+    paused_tick = runner.invoke(app, ["scheduler", "tick", "--limit", "5", "--json"])
+    assert paused_tick.exit_code == 0, paused_tick.output
+    outputs.append(paused_tick.output)
+    assert json.loads(paused_tick.output) == {"materialized_count": 0, "cycles": []}
+    paused_tick_text = runner.invoke(app, ["scheduler", "tick", "--limit", "5"])
+    assert paused_tick_text.exit_code == 0, paused_tick_text.output
+    outputs.append(paused_tick_text.output)
+
+    resumed = runner.invoke(
+        app,
+        ["subscription", "resume", "--subscription-id", subscription_id, "--json"],
+    )
+    assert resumed.exit_code == 0, resumed.output
+    outputs.append(resumed.output)
+    assert json.loads(resumed.output)["status"] == "enabled"
+
+    tick = runner.invoke(app, ["scheduler", "tick", "--limit", "5", "--json"])
+    assert tick.exit_code == 0, tick.output
+    outputs.append(tick.output)
+    tick_payload = json.loads(tick.output)
+    assert tick_payload["materialized_count"] == 1
+    assert set(tick_payload["cycles"][0]) == {
+        "job_id",
+        "subscription_id",
+        "schedule_revision",
+        "scheduled_for",
+    }
+    job_id = tick_payload["cycles"][0]["job_id"]
+
+    worker = runner.invoke(
+        app,
+        [
+            "scheduler",
+            "run",
+            "--max-jobs",
+            "5",
+            "--global-capacity",
+            "2",
+            "--lease-seconds",
+            "30",
+            "--scan-limit",
+            "10",
+            "--json",
+        ],
+    )
+    assert worker.exit_code == 0, worker.output
+    outputs.append(worker.output)
+    worker_payload = json.loads(worker.output)
+    assert len(worker_payload) == 1
+    assert worker_payload[0]["status"] == "waiting_user"
+    assert set(worker_payload[0]) == {"job_id", "subscription_id", "status", "attempt", "run_id"}
+    idle_text = runner.invoke(app, ["scheduler", "run", "--max-jobs", "1"])
+    assert idle_text.exit_code == 0, idle_text.output
+    outputs.append(idle_text.output)
+
+    database = Database(initialized_cli_database)
+    try:
+        with database.session() as session:
+            job = session.get(Job, job_id)
+            assert job is not None
+            job.last_error_message = raw_error_sentinel
+            job.payload = {**job.payload, "private": payload_sentinel}
+    finally:
+        database.dispose()
+
+    listed = runner.invoke(
+        app,
+        ["scheduler", "job", "list", "--subscription-id", subscription_id, "--json"],
+    )
+    listed_text = runner.invoke(app, ["scheduler", "job", "list", "--status", "waiting_user"])
+    assert listed.exit_code == listed_text.exit_code == 0
+    outputs.extend([listed.output, listed_text.output])
+    jobs = json.loads(listed.output)
+    assert len(jobs) == 1
+    assert jobs[0]["job_id"] == job_id
+    assert jobs[0]["account_id"] == account_id
+    assert set(jobs[0]) == {
+        "job_id",
+        "subscription_id",
+        "account_id",
+        "platform",
+        "status",
+        "attempt",
+        "max_attempts",
+        "available_at",
+        "scheduled_for",
+        "run_id",
+        "created_at",
+        "updated_at",
+        "started_at",
+        "finished_at",
+    }
+
+    resumed_job = runner.invoke(app, ["scheduler", "job", "resume", "--job-id", job_id, "--json"])
+    cancelled_job = runner.invoke(app, ["scheduler", "job", "cancel", "--job-id", job_id, "--json"])
+    assert resumed_job.exit_code == cancelled_job.exit_code == 0
+    outputs.extend([resumed_job.output, cancelled_job.output])
+    assert json.loads(resumed_job.output)["status"] == "queued"
+    assert json.loads(cancelled_job.output)["status"] == "cancelled"
+
+    retained_output = "\n".join(outputs)
+    for sentinel in (
+        raw_error_sentinel,
+        payload_sentinel,
+        creator_sentinel,
+        "MEDIA_SYNC_SCHEDULER_SENTINEL",
+        "lease_token",
+        "lease_owner",
+        "credential_ref",
+        "creator_reference",
+        "cursor",
+        "locator",
+    ):
+        assert sentinel not in retained_output
+    assert initialized_cli_database not in retained_output
+    assert "cli.sqlite3" not in retained_output
+
+
+def test_scheduler_lane_controls_enforce_policy_bounds_and_revision_cas(
+    initialized_cli_database: str,
+) -> None:
+    account_id, _subscription_id = _create_fake_subscription()
+    create = runner.invoke(
+        app,
+        [
+            "scheduler",
+            "lane",
+            "set",
+            "--scope",
+            "platform",
+            "--platform",
+            "bili",
+            "--max-concurrency",
+            "2",
+            "--min-start-interval-seconds",
+            "0",
+            "--failure-threshold",
+            "4",
+            "--cooldown-seconds",
+            "60",
+            "--expected-revision",
+            "0",
+            "--json",
+        ],
+    )
+    assert create.exit_code == 0, create.output
+    created = json.loads(create.output)
+    assert created["scope"] == "platform"
+    assert created["revision"] == 1
+    assert created["max_concurrency"] == 2
+    assert "MEDIA_SYNC_SCHEDULER_SENTINEL" not in create.output
+
+    stale = runner.invoke(
+        app,
+        [
+            "scheduler",
+            "lane",
+            "set",
+            "--scope",
+            "platform",
+            "--platform",
+            "bili",
+            "--expected-revision",
+            "0",
+        ],
+    )
+    assert stale.exit_code == 2
+    assert "revision conflict" in stale.output
+    assert "Traceback" not in stale.output
+
+    account_lane = runner.invoke(
+        app,
+        [
+            "scheduler",
+            "lane",
+            "set",
+            "--scope",
+            "account",
+            "--platform",
+            "bili",
+            "--account-id",
+            account_id,
+            "--json",
+        ],
+    )
+    assert account_lane.exit_code == 0, account_lane.output
+    assert json.loads(account_lane.output)["account_id"] == account_id
+
+    listed = runner.invoke(
+        app,
+        ["scheduler", "lane", "list", "--scope", "platform", "--platform", "bili", "--json"],
+    )
+    assert listed.exit_code == 0, listed.output
+    lanes = json.loads(listed.output)
+    assert len(lanes) == 1
+    assert set(lanes[0]) == {
+        "lane_id",
+        "scope",
+        "platform",
+        "account_id",
+        "max_concurrency",
+        "min_start_interval_seconds",
+        "failure_threshold",
+        "cooldown_seconds",
+        "next_start_at",
+        "consecutive_failures",
+        "circuit_state",
+        "circuit_open_until",
+        "half_open_job_id",
+        "revision",
+        "created_at",
+        "updated_at",
+    }
+    listed_text = runner.invoke(app, ["scheduler", "lane", "list", "--platform", "bili"])
+    assert listed_text.exit_code == 0, listed_text.output
+    assert "MEDIA_SYNC_SCHEDULER_SENTINEL" not in listed_text.output
+    assert "cli.sqlite3" not in listed_text.output
+
+    reset = runner.invoke(
+        app,
+        [
+            "scheduler",
+            "lane",
+            "reset",
+            "--scope",
+            "platform",
+            "--platform",
+            "bili",
+            "--expected-revision",
+            "1",
+            "--json",
+        ],
+    )
+    assert reset.exit_code == 0, reset.output
+    assert json.loads(reset.output)["revision"] == 2
+    assert json.loads(reset.output)["circuit_state"] == "closed"
+
+    missing_account = runner.invoke(
+        app,
+        ["scheduler", "lane", "set", "--scope", "account", "--platform", "bili"],
+    )
+    invalid_bound = runner.invoke(
+        app,
+        [
+            "scheduler",
+            "lane",
+            "set",
+            "--scope",
+            "platform",
+            "--platform",
+            "bili",
+            "--max-concurrency",
+            "0",
+        ],
+    )
+    assert missing_account.exit_code == invalid_bound.exit_code == 2
+    assert "Traceback" not in missing_account.output
+    assert "Traceback" not in invalid_bound.output
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["scheduler", "tick", "--limit", "0"],
+        ["scheduler", "tick", "--limit", "1001"],
+        ["scheduler", "run", "--max-jobs", "0"],
+        ["scheduler", "run", "--global-capacity", "1001"],
+        ["scheduler", "run", "--lease-seconds", "86401"],
+        ["scheduler", "run", "--scan-limit", "0"],
+        ["scheduler", "lane", "set", "--scope", "platform", "--platform", "bili", "--max-concurrency", "0"],
+        [
+            "scheduler",
+            "lane",
+            "set",
+            "--scope",
+            "platform",
+            "--platform",
+            "bili",
+            "--min-start-interval-seconds",
+            "604801",
+        ],
+        [
+            "scheduler",
+            "lane",
+            "set",
+            "--scope",
+            "platform",
+            "--platform",
+            "bili",
+            "--failure-threshold",
+            "0",
+        ],
+        ["scheduler", "lane", "set", "--scope", "platform", "--platform", "bili", "--cooldown-seconds", "0"],
+    ],
+)
+def test_scheduler_cli_rejects_out_of_bounds_controls(arguments: list[str]) -> None:
+    result = runner.invoke(app, arguments)
+
+    assert result.exit_code == 2
+    assert "Invalid value" in result.output
+    assert "Traceback" not in result.output
 
 
 def test_asset_list_filters_by_author_and_status_with_stable_redacted_output(

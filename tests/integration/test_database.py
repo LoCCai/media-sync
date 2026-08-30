@@ -58,7 +58,9 @@ from media_sync.infrastructure.db.models import (
     Asset,
     Author,
     Content,
+    Job,
     RunEvent,
+    SchedulerLane,
     Subscription,
 )
 
@@ -73,6 +75,7 @@ DOMAIN_TABLES = {
     "jobs",
     "login_sessions",
     "run_events",
+    "scheduler_lanes",
     "subscriptions",
     "sync_runs",
 }
@@ -227,6 +230,205 @@ def test_foreign_keys_uniqueness_and_platform_checks(database: Database) -> None
     for table_name in ("accounts", "authors", "contents", "assets"):
         check_names = {constraint["name"] for constraint in inspector.get_check_constraints(table_name)}
         assert f"ck_{table_name}_platform" in check_names
+
+
+def test_scheduler_control_plane_constraints_partial_uniqueness_and_cascades(database: Database) -> None:
+    inspector = inspect(database.engine)
+    job_indexes = {index["name"]: index for index in inspector.get_indexes("jobs")}
+    assert {
+        "ix_jobs_scheduler_claim",
+        "ix_jobs_subscription_scope",
+        "ix_jobs_account_scope",
+        "ix_jobs_platform_scope",
+        "uq_jobs_active_sync_subscription",
+    } <= job_indexes.keys()
+    assert job_indexes["uq_jobs_active_sync_subscription"]["unique"] == 1
+    lane_indexes = {index["name"]: index for index in inspector.get_indexes("scheduler_lanes")}
+    assert lane_indexes["uq_scheduler_lanes_platform"]["unique"] == 1
+    assert lane_indexes["uq_scheduler_lanes_account"]["unique"] == 1
+    assert "ix_scheduler_lanes_account_id" in lane_indexes
+    assert {
+        "ck_scheduler_lanes_scope_type",
+        "ck_scheduler_lanes_scope_shape",
+        "ck_scheduler_lanes_platform",
+        "ck_scheduler_lanes_max_concurrency_positive",
+        "ck_scheduler_lanes_min_start_interval_seconds_nonnegative",
+        "ck_scheduler_lanes_failure_threshold_positive",
+        "ck_scheduler_lanes_cooldown_seconds_positive",
+        "ck_scheduler_lanes_consecutive_failures_nonnegative",
+        "ck_scheduler_lanes_circuit_state",
+        "ck_scheduler_lanes_revision_nonnegative",
+    } <= {constraint["name"] for constraint in inspector.get_check_constraints("scheduler_lanes")}
+    assert "ck_subscriptions_schedule_revision_nonnegative" in {
+        constraint["name"] for constraint in inspector.get_check_constraints("subscriptions")
+    }
+    assert "ck_jobs_platform" in {constraint["name"] for constraint in inspector.get_check_constraints("jobs")}
+
+    job_foreign_keys = {
+        tuple(foreign_key["constrained_columns"]): foreign_key["options"].get("ondelete")
+        for foreign_key in inspector.get_foreign_keys("jobs")
+    }
+    assert job_foreign_keys[("subscription_id",)] == "CASCADE"
+    assert job_foreign_keys[("account_id",)] == "CASCADE"
+    lane_foreign_keys = {
+        tuple(foreign_key["constrained_columns"]): foreign_key["options"].get("ondelete")
+        for foreign_key in inspector.get_foreign_keys("scheduler_lanes")
+    }
+    assert lane_foreign_keys[("account_id",)] == "CASCADE"
+    assert lane_foreign_keys[("half_open_job_id",)] == "SET NULL"
+
+    now = datetime(2026, 8, 30, 11, tzinfo=UTC)
+    with database.session() as session:
+        account, _author, subscription_id = _seed_subscription(session)
+        subscription = session.get(Subscription, subscription_id)
+        assert subscription is not None and subscription.schedule_revision == 0
+        platform_lane = SchedulerLane(scope_type="platform", platform="xhs")
+        account_lane = SchedulerLane(scope_type="account", platform="xhs", account_id=account.id)
+        active_job = Job(
+            subscription_id=subscription_id,
+            account_id=account.id,
+            platform="xhs",
+            job_type="sync.subscription",
+            natural_key=f"subscription:{subscription_id}:schedule:0",
+            scheduled_for=now,
+            available_at=now,
+        )
+        session.add_all((platform_lane, account_lane, active_job))
+        session.flush()
+        assert (
+            platform_lane.max_concurrency,
+            platform_lane.min_start_interval_seconds,
+            platform_lane.failure_threshold,
+            platform_lane.cooldown_seconds,
+            platform_lane.consecutive_failures,
+            platform_lane.circuit_state,
+            platform_lane.revision,
+        ) == (1, 5, 3, 900, 0, "closed", 0)
+        account_id = account.id
+        account_lane_id = account_lane.id
+        platform_lane_id = platform_lane.id
+        active_job_id = active_job.id
+
+    for index, status in enumerate(
+        ("queued", "claimed", "running", "retry_wait", "waiting_auth", "waiting_user", "failed_retryable"),
+        start=1,
+    ):
+        with pytest.raises(IntegrityError), database.session() as session:
+            session.add(
+                Job(
+                    subscription_id=subscription_id,
+                    account_id=account_id,
+                    platform="xhs",
+                    job_type="sync.subscription",
+                    natural_key=f"subscription:{subscription_id}:schedule:{index}",
+                    status=status,
+                    scheduled_for=now,
+                    available_at=now,
+                )
+            )
+
+    with database.session() as session:
+        terminal_jobs = [
+            Job(
+                subscription_id=subscription_id,
+                account_id=account_id,
+                platform="xhs",
+                job_type="sync.subscription",
+                natural_key=f"subscription:{subscription_id}:schedule:{status}",
+                status=status,
+                scheduled_for=now,
+                available_at=now,
+            )
+            for status in ("succeeded", "failed_terminal", "cancelled")
+        ]
+        unrelated_scoped_job = Job(
+            subscription_id=subscription_id,
+            account_id=account_id,
+            platform="xhs",
+            job_type="maintenance",
+            natural_key=f"subscription:{subscription_id}:maintenance",
+            scheduled_for=now,
+            available_at=now,
+        )
+        session.add_all((*terminal_jobs, unrelated_scoped_job))
+        session.flush()
+        terminal_job_id = terminal_jobs[0].id
+        unrelated_scoped_job_id = unrelated_scoped_job.id
+
+    with pytest.raises(IntegrityError), database.session() as session:
+        session.add(SchedulerLane(scope_type="platform", platform="xhs"))
+    with pytest.raises(IntegrityError), database.session() as session:
+        session.add(SchedulerLane(scope_type="account", platform="xhs", account_id=account_id))
+    with pytest.raises(IntegrityError), database.session() as session:
+        session.add(SchedulerLane(scope_type="platform", platform="bili", account_id=account_id))
+    with pytest.raises(IntegrityError), database.session() as session:
+        session.add(SchedulerLane(scope_type="account", platform="bili"))
+    with pytest.raises(IntegrityError), database.session() as session:
+        session.add(SchedulerLane(scope_type="platform", platform="not-a-platform"))
+    for field, invalid in (
+        ("max_concurrency", 0),
+        ("min_start_interval_seconds", -1),
+        ("failure_threshold", 0),
+        ("cooldown_seconds", 0),
+        ("consecutive_failures", -1),
+        ("revision", -1),
+        ("circuit_state", "invalid"),
+    ):
+        with pytest.raises(IntegrityError), database.session() as session:
+            session.add(SchedulerLane(scope_type="platform", platform="bili", **{field: invalid}))
+    with pytest.raises(IntegrityError), database.session() as session:
+        subscription = session.get(Subscription, subscription_id)
+        assert subscription is not None
+        subscription.schedule_revision = -1
+    with pytest.raises(IntegrityError), database.session() as session:
+        session.add(
+            Job(
+                job_type="maintenance",
+                natural_key="invalid-platform",
+                platform="not-a-platform",
+                available_at=now,
+            )
+        )
+
+    with database.session() as session:
+        lane = session.get(SchedulerLane, account_lane_id)
+        terminal_job = session.get(Job, terminal_job_id)
+        assert lane is not None and terminal_job is not None
+        lane.half_open_job_id = terminal_job.id
+        session.delete(terminal_job)
+        session.flush()
+        session.refresh(lane)
+        assert lane.half_open_job_id is None
+
+    with database.session() as session:
+        subscription = session.get(Subscription, subscription_id)
+        assert subscription is not None
+        session.delete(subscription)
+
+    with database.session() as session:
+        assert session.get(Job, active_job_id) is None
+        assert session.get(Job, unrelated_scoped_job_id) is None
+        assert session.get(SchedulerLane, account_lane_id) is not None
+        account_only_job = Job(
+            account_id=account_id,
+            platform="xhs",
+            job_type="maintenance",
+            natural_key="account-cascade",
+            available_at=now,
+        )
+        session.add(account_only_job)
+        session.flush()
+        account_only_job_id = account_only_job.id
+
+    with database.session() as session:
+        account = session.get(Account, account_id)
+        assert account is not None
+        session.delete(account)
+
+    with database.session() as session:
+        assert session.get(Job, account_only_job_id) is None
+        assert session.get(SchedulerLane, account_lane_id) is None
+        assert session.get(SchedulerLane, platform_lane_id) is not None
 
     with pytest.raises(NotFoundError, match="account not found"), database.session() as session:
         SubscriptionRepository(session).create(account_id="missing", author_id="missing")

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from uuid import UUID
@@ -15,7 +17,56 @@ from media_sync.domain import (
     DomainValidationError,
     RunStatus,
 )
+from media_sync.infrastructure.db import LeaseLostError
 from media_sync.ports import InteractionPort, PlatformAdapter, SyncRepository
+
+_ADAPTER_ERROR_CODES = frozenset(
+    {
+        "auth_expired",
+        "content_not_found",
+        "interactive_challenge_required",
+        "permanent_upstream",
+        "rate_limited",
+        "temporary_upstream",
+        "upstream_schema_changed",
+    }
+)
+_DOMAIN_ERROR_CODES = frozenset(
+    {
+        "domain_validation",
+        "entity_not_found",
+        "invalid_state_transition",
+        "unsupported_capability",
+    }
+)
+_MAX_RETRY_AFTER_SECONDS = 604_800
+
+
+def _closed_error_code(value: object, *, allowed: frozenset[str]) -> str:
+    """Return only a code owned by this application boundary."""
+
+    return value if isinstance(value, str) and value in allowed else "unexpected_failure"
+
+
+def _closed_adapter_error_code(error: AdapterError) -> str:
+    """Retain auth/interaction disposition without trusting an open code."""
+
+    if error.requires_interaction is True:
+        return "interactive_challenge_required"
+    if error.requires_auth is True:
+        return "auth_expired"
+    return _closed_error_code(error.code, allowed=_ADAPTER_ERROR_CODES)
+
+
+def _closed_retry_after(value: object) -> float | None:
+    """Keep scheduler hints numeric, finite and within the public retry bound."""
+
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    seconds = float(value)
+    if not math.isfinite(seconds) or not 0 <= seconds <= _MAX_RETRY_AFTER_SECONDS:
+        return None
+    return seconds
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,7 +118,24 @@ class SyncService:
         request: SyncRequest,
         *,
         interaction: InteractionPort | None = None,
+        persistence_guard: Callable[[], None] | None = None,
+        external_io_boundary: Callable[[], None] | None = None,
     ) -> SyncResult:
+        """Run one sync, with optional short-transaction scheduler hooks.
+
+        Ordinary callers omit both hooks and retain the original single outer
+        transaction.  A durable worker can guard each mutation and commit the
+        current transaction immediately before an adapter await.
+        """
+
+        def guard_persistence() -> None:
+            if persistence_guard is not None:
+                persistence_guard()
+
+        def before_external_io() -> None:
+            if external_io_boundary is not None:
+                external_io_boundary()
+
         capabilities = self.adapter.capabilities()
         if capabilities.platform is not request.account.platform:
             raise DomainValidationError(
@@ -80,6 +148,7 @@ class SyncService:
                 field="account.login_method",
             )
 
+        guard_persistence()
         run_id = self.repository.create_run(
             request.subscription_id,
             {
@@ -89,14 +158,18 @@ class SyncService:
                 "page_size": request.page_size,
             },
         )
+        guard_persistence()
         self.repository.transition_run(run_id, RunStatus.CLAIMED)
 
         try:
+            before_external_io()
             auth = await self.adapter.ensure_session(request.account, interaction)
             if auth.status in {AuthStatus.REQUIRED, AuthStatus.AUTHENTICATING}:
+                guard_persistence()
                 self.repository.transition_run(run_id, RunStatus.AWAITING_AUTH)
                 return SyncResult(run_id=run_id, status=RunStatus.AWAITING_AUTH)
             if auth.status is not AuthStatus.AUTHENTICATED:
+                guard_persistence()
                 self.repository.transition_run(
                     run_id,
                     RunStatus.FAILED_RETRYABLE,
@@ -109,11 +182,15 @@ class SyncService:
                     error_code="authentication_unavailable",
                 )
 
+            guard_persistence()
             self.repository.transition_run(run_id, RunStatus.RUNNING)
+            before_external_io()
             author = await self.adapter.resolve_author(request.account, request.creator_reference)
             if author.platform is not request.account.platform:
                 raise DomainValidationError("resolved author platform mismatch", field="author.platform")
+            guard_persistence()
             self.repository.upsert_author(author)
+            guard_persistence()
             self.repository.transition_run(run_id, RunStatus.INGESTING)
 
             processed_ids: set[str] = set()
@@ -132,6 +209,7 @@ class SyncService:
                     visited_cursors.add(current_cursor.value)
 
                 requested_limit = min(request.page_size, request.max_items - len(processed_ids))
+                before_external_io()
                 page = await self.adapter.fetch_author_page(
                     request.account,
                     author,
@@ -156,6 +234,7 @@ class SyncService:
                             "adapter returned content outside the resolved author",
                             field="content.author_remote_id",
                         )
+                    before_external_io()
                     assets = await self.adapter.resolve_assets(request.account, content)
                     for asset in assets:
                         if asset.content_remote_id != content.remote_id or asset.platform is not content.platform:
@@ -163,6 +242,7 @@ class SyncService:
                                 "adapter returned an asset outside its content",
                                 field="asset.content_remote_id",
                             )
+                    guard_persistence()
                     self.repository.upsert_content_with_assets(content, assets)
                     processed_ids.add(content.remote_id)
                     asset_count += len(assets)
@@ -178,7 +258,9 @@ class SyncService:
             else:
                 raise DomainValidationError("adapter exceeded the maximum page count", field="max_pages")
 
+            guard_persistence()
             self.repository.advance_cursor(request.subscription_id, final_cursor, watermark=watermark)
+            guard_persistence()
             self.repository.transition_run(run_id, RunStatus.SUCCEEDED)
             return SyncResult(
                 run_id=run_id,
@@ -188,40 +270,49 @@ class SyncService:
                 final_cursor=final_cursor,
                 watermark=watermark,
             )
+        except LeaseLostError:
+            # Ownership fencing must escape unchanged; attempting an error
+            # transition would be a second unauthorized persistence attempt.
+            raise
         except AdapterError as error:
-            if error.requires_auth or error.requires_interaction:
+            if error.requires_auth is True or error.requires_interaction is True:
                 target = RunStatus.AWAITING_AUTH
-            elif error.retryable:
+            elif error.retryable is True:
                 target = RunStatus.FAILED_RETRYABLE
             else:
                 target = RunStatus.FAILED_TERMINAL
+            error_code = _closed_adapter_error_code(error)
+            guard_persistence()
             self.repository.transition_run(
                 run_id,
                 target,
-                error_code=error.code,
-                error_message=f"Classified adapter failure: {error.code}",
+                error_code=error_code,
+                error_message="The adapter reported a classified synchronization failure.",
             )
             return SyncResult(
                 run_id=run_id,
                 status=target,
-                error_code=error.code,
-                retry_after_seconds=error.retry_after,
+                error_code=error_code,
+                retry_after_seconds=_closed_retry_after(error.retry_after),
             )
         except DomainError as error:
+            error_code = _closed_error_code(error.code, allowed=_DOMAIN_ERROR_CODES)
+            guard_persistence()
             self.repository.transition_run(
                 run_id,
                 RunStatus.FAILED_TERMINAL,
-                error_code=error.code,
-                error_message=f"Classified domain failure: {error.code}",
+                error_code=error_code,
+                error_message="Synchronization stopped after a classified domain failure.",
             )
             return SyncResult(
                 run_id=run_id,
                 status=RunStatus.FAILED_TERMINAL,
-                error_code=error.code,
+                error_code=error_code,
             )
         except Exception:
             # Raw exceptions may contain Cookie values or signed URLs. Preserve
             # the class for operators, never the untrusted message.
+            guard_persistence()
             self.repository.transition_run(
                 run_id,
                 RunStatus.FAILED_RETRYABLE,
