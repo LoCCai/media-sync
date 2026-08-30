@@ -73,6 +73,7 @@ ACTIVE_SYNC_JOB_STATUSES = frozenset(
 )
 SCHEDULER_LANE_SCOPE_TYPES = frozenset({"platform", "account"})
 CIRCUIT_STATES = frozenset({"closed", "open", "half_open"})
+ASSET_REFRESH_OBSERVATION_KINDS = frozenset({"ingested", "legacy_unique_inferred"})
 
 
 def _quoted_values(values: frozenset[str]) -> str:
@@ -244,6 +245,11 @@ class Subscription(TimestampMixin, Base):
         cascade="all, delete-orphan",
         passive_deletes=True,
     )
+    asset_refresh_sources: Mapped[list[AssetRefreshSource]] = relationship(
+        back_populates="subscription",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
 
 
 class Content(TimestampMixin, Base):
@@ -351,6 +357,11 @@ class Asset(TimestampMixin, Base):
     raw: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict, server_default=text("'{}'"))
 
     content: Mapped[Content] = relationship(back_populates="assets")
+    refresh_sources: Mapped[list[AssetRefreshSource]] = relationship(
+        back_populates="asset",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
 
 
 class SyncRun(TimestampMixin, Base):
@@ -404,6 +415,76 @@ class SyncRun(TimestampMixin, Base):
         order_by="RunEvent.sequence",
     )
     jobs: Mapped[list[Job]] = relationship(back_populates="run", passive_deletes=True)
+    asset_refresh_sources: Mapped[list[AssetRefreshSource]] = relationship(
+        back_populates="last_run",
+        passive_deletes=True,
+    )
+
+
+class AssetRefreshSource(Base):
+    """One account subscription's durable observation of an asset identity."""
+
+    __tablename__ = "asset_refresh_sources"
+    __table_args__ = (
+        CheckConstraint(
+            f"observation_kind IN ({_quoted_values(ASSET_REFRESH_OBSERVATION_KINDS)})",
+            name="observation_kind",
+        ),
+        CheckConstraint("observed_generation >= 1", name="observed_generation_positive"),
+        CheckConstraint(
+            "length(observed_semantic_fingerprint) = 64 "
+            "AND lower(observed_semantic_fingerprint) = observed_semantic_fingerprint",
+            name="observed_semantic_fingerprint_shape",
+        ),
+        CheckConstraint(
+            "length(observed_locator_fingerprint) = 64 "
+            "AND lower(observed_locator_fingerprint) = observed_locator_fingerprint",
+            name="observed_locator_fingerprint_shape",
+        ),
+        CheckConstraint("last_seen_at >= first_seen_at", name="seen_at_order"),
+        Index("ix_asset_refresh_sources_subscription_id", "subscription_id"),
+        Index(
+            "ix_asset_refresh_sources_asset_fingerprints",
+            "asset_id",
+            "observed_semantic_fingerprint",
+            "observed_locator_fingerprint",
+        ),
+    )
+
+    asset_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("assets.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    subscription_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("subscriptions.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    last_run_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("sync_runs.id", ondelete="SET NULL"),
+    )
+    observation_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    observed_generation: Mapped[int] = mapped_column(Integer, nullable=False)
+    observed_semantic_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    observed_locator_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    first_seen_at: Mapped[datetime] = mapped_column(
+        UTCDateTime(),
+        default=utc_now,
+        server_default=text("CURRENT_TIMESTAMP"),
+        nullable=False,
+    )
+    last_seen_at: Mapped[datetime] = mapped_column(
+        UTCDateTime(),
+        default=utc_now,
+        server_default=text("CURRENT_TIMESTAMP"),
+        nullable=False,
+    )
+
+    asset: Mapped[Asset] = relationship(back_populates="refresh_sources")
+    subscription: Mapped[Subscription] = relationship(back_populates="asset_refresh_sources")
+    last_run: Mapped[SyncRun | None] = relationship(back_populates="asset_refresh_sources")
 
 
 class RunEvent(Base):
@@ -582,6 +663,7 @@ class ExportRecord(TimestampMixin, Base):
 __all__ = [
     "ACTIVE_SYNC_JOB_STATUSES",
     "ASSET_KINDS",
+    "ASSET_REFRESH_OBSERVATION_KINDS",
     "ASSET_STATUSES",
     "AUTH_STATUSES",
     "CIRCUIT_STATES",
@@ -596,6 +678,7 @@ __all__ = [
     "TERMINAL_RUN_STATUSES",
     "Account",
     "Asset",
+    "AssetRefreshSource",
     "Author",
     "Content",
     "ExportRecord",

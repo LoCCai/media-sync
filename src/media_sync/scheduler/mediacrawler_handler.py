@@ -11,7 +11,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import NoReturn, Protocol, TypeVar
+from typing import NoReturn, Protocol, TypeVar, cast
 from uuid import UUID, uuid4, uuid5
 
 from sqlalchemy.orm import Session
@@ -24,7 +24,6 @@ from media_sync.application.mediacrawler import (
 from media_sync.domain import LoginMethod, RunStatus
 from media_sync.infrastructure.db import (
     Database,
-    IngestionMode,
     LeaseLostError,
     MediaCrawlerIngestionResult,
     MediaCrawlerIngestionService,
@@ -86,6 +85,37 @@ from media_sync.security import SecretError, SecretResolver, SecretValue
 _RUN_METADATA_SCHEMA_VERSION = 1
 _FINGERPRINT_HEX_LENGTH = 64
 _T = TypeVar("_T")
+
+_RUN_METADATA_BASE_KEYS = frozenset(
+    {
+        "schema_version",
+        "adapter",
+        "scheduler_job_id",
+        "schedule_revision",
+        "attempt",
+        "execution_id",
+        "sync_run_id",
+        "platform",
+        "mode",
+        "crawl_revision_before",
+    }
+)
+_RUN_METADATA_PROVENANCE_KEYS = frozenset(
+    {
+        "artifact_schema_version",
+        "upstream_sha",
+        "output_fingerprint_sha256",
+        "input_records",
+    }
+)
+_RECOVERED_ARTIFACT_KEYS = frozenset(
+    {
+        "schema_version",
+        "attempt",
+        "execution_id",
+        "sync_run_id",
+    }
+)
 
 _PROCESS_FAILURES: Mapping[MediaCrawlerProcessStatus, str] = {
     MediaCrawlerProcessStatus.ACCOUNT_BUSY: "account_busy",
@@ -191,6 +221,16 @@ class _RecoveredOutput:
     manifest: RunnerManifest
     output: NormalizedMediaCrawlerOutput
     source_run_id: UUID
+    source_paths: RunPaths
+
+
+@dataclass(frozen=True, slots=True)
+class _IngestionTruth:
+    """Authoritative durable state observed after the ingestion boundary."""
+
+    run_succeeded: bool
+    commit_complete: bool
+    checkpoint_revision: int | None
 
 
 def _utc_now() -> datetime:
@@ -209,6 +249,16 @@ def _is_sha256(value: object) -> bool:
         and len(value) == _FINGERPRINT_HEX_LENGTH
         and all(character in "0123456789abcdef" for character in value)
     )
+
+
+def _canonical_uuid(value: object) -> UUID | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = UUID(value)
+    except ValueError:
+        return None
+    return parsed if str(parsed) == value else None
 
 
 def _cleanup_exact_attempt(paths: RunPaths) -> AttemptCleanupStatus:
@@ -555,6 +605,179 @@ class MediaCrawlerScheduledHandler:
                 at=self._now(),
             )
 
+    def _read_ingestion_truth(
+        self,
+        context: SubscriptionJobContext,
+        prepared: _PreparedRun,
+    ) -> _IngestionTruth:
+        """Read durable success before interpreting any in-memory summary.
+
+        The ownership check deliberately runs after the read. If ownership was
+        lost after ingestion committed, the caller can still enter the
+        post-commit cleanup fence without attempting a contradictory failure
+        transition.
+        """
+
+        with self.database.session() as session:
+            run = session.get(SyncRun, str(prepared.run_id))
+            subscription = session.get(Subscription, str(context.subscription_id))
+            run_succeeded = run is not None and run.status == RunStatus.SUCCEEDED.value
+            checkpoint_revision = (
+                run.checkpoint_revision_after
+                if run is not None
+                and type(run.checkpoint_revision_after) is int
+                and run.checkpoint_revision_after >= 0
+                else None
+            )
+            commit_complete = bool(
+                run_succeeded
+                and run is not None
+                and run.subscription_id == str(context.subscription_id)
+                and checkpoint_revision is not None
+                and subscription is not None
+                and subscription.checkpoint_revision == checkpoint_revision
+            )
+            self._guard(context, session)
+        return _IngestionTruth(
+            run_succeeded=run_succeeded,
+            commit_complete=commit_complete,
+            checkpoint_revision=checkpoint_revision,
+        )
+
+    def _succeeded_source_paths(
+        self,
+        context: SubscriptionJobContext,
+        scope: _ScopeSnapshot,
+    ) -> RunPaths | None:
+        """Derive one exact terminal source from a closed successful manifest."""
+
+        metadata = scope.current_run_manifest
+        current_run_id = context.current_run_id
+        current_attempt = scope.current_run_attempt
+        if metadata is None or current_run_id is None or type(current_attempt) is not int:
+            return None
+
+        has_recovered_artifact = "recovered_artifact" in metadata
+        expected_keys = _RUN_METADATA_BASE_KEYS | _RUN_METADATA_PROVENANCE_KEYS
+        if has_recovered_artifact:
+            expected_keys = expected_keys | {"recovered_artifact"}
+        if set(metadata) != expected_keys:
+            return None
+
+        expected_values = {
+            "schema_version": _RUN_METADATA_SCHEMA_VERSION,
+            "adapter": "mediacrawler",
+            "scheduler_job_id": str(context.job_id),
+            "schedule_revision": context.schedule_revision,
+            "attempt": current_attempt,
+            "sync_run_id": str(current_run_id),
+            "platform": context.account.platform.value,
+            "mode": MediaCrawlerRunMode.FORWARD.value,
+            "artifact_schema_version": MANIFEST_SCHEMA_VERSION,
+        }
+        if any(metadata.get(key) != value for key, value in expected_values.items()):
+            return None
+        if current_attempt != context.attempt or current_attempt < 1:
+            return None
+        if type(metadata.get("crawl_revision_before")) is not int:
+            return None
+        if type(metadata.get("input_records")) is not int or cast(int, metadata["input_records"]) < 0:
+            return None
+        if not _is_sha256(metadata.get("output_fingerprint_sha256")):
+            return None
+        upstream_sha = metadata.get("upstream_sha")
+        if (
+            not isinstance(upstream_sha, str)
+            or len(upstream_sha) != 40
+            or any(character not in "0123456789abcdef" for character in upstream_sha)
+        ):
+            return None
+
+        execution_id = _canonical_uuid(metadata.get("execution_id"))
+        if execution_id != _attempt_execution_id(context.job_id, current_attempt):
+            return None
+        source_attempt = current_attempt
+        source_execution_id = execution_id
+        source_run_id = current_run_id
+
+        if has_recovered_artifact:
+            recovered = metadata.get("recovered_artifact")
+            if not isinstance(recovered, Mapping) or set(recovered) != _RECOVERED_ARTIFACT_KEYS:
+                return None
+            source_attempt_value = recovered.get("attempt")
+            if (
+                recovered.get("schema_version") != MANIFEST_SCHEMA_VERSION
+                or type(source_attempt_value) is not int
+                or not 1 <= source_attempt_value < current_attempt
+            ):
+                return None
+            source_execution = _canonical_uuid(recovered.get("execution_id"))
+            source_run = _canonical_uuid(recovered.get("sync_run_id"))
+            if (
+                source_execution != _attempt_execution_id(context.job_id, source_attempt_value)
+                or source_run is None
+                or source_run == current_run_id
+            ):
+                return None
+            source_attempt = source_attempt_value
+            source_execution_id = source_execution
+            source_run_id = source_run
+
+        with self.database.session() as session:
+            source_run = session.get(SyncRun, str(source_run_id))
+            if (
+                source_run is None
+                or source_run.subscription_id != str(context.subscription_id)
+                or source_run.attempt != source_attempt
+            ):
+                return None
+            self._guard(context, session)
+        return build_run_paths(
+            self.integration_root,
+            context.account.platform,
+            context.account.account_id,
+            source_execution_id,
+        )
+
+    async def _block_unverifiable_terminal_cleanup(
+        self,
+        context: SubscriptionJobContext,
+        scope: _ScopeSnapshot,
+    ) -> NoReturn:
+        """Hard-fence an account when successful source identity is not closed."""
+
+        attempt = scope.current_run_attempt
+        if type(attempt) is not int or attempt < 1:
+            attempt = context.attempt
+        paths = await self._offload(
+            build_run_paths,
+            self.integration_root,
+            context.account.platform,
+            context.account.account_id,
+            _attempt_execution_id(context.job_id, attempt),
+        )
+        with contextlib.suppress(BaseException):
+            await self._offload(record_attempt_cleanup_incident, paths)
+        raise MediaCrawlerCleanupBlockedError
+
+    async def _finish_durable_success(
+        self,
+        run_id: UUID,
+        paths: RunPaths,
+    ) -> SubscriptionHandlerResult:
+        """Secure one exact source before publishing durable success."""
+
+        await self._secure_durable_source(paths)
+        return SubscriptionHandlerResult.success(run_id)
+
+    async def _secure_durable_source(self, paths: RunPaths) -> AttemptCleanupStatus:
+        """Reach a secured terminal verdict without allowing cancellation gaps."""
+
+        cleanup_status = await self._cleanup_attempt(paths)
+        if cleanup_status is AttemptCleanupStatus.UNRESOLVED:
+            raise MediaCrawlerCleanupBlockedError
+        return cleanup_status
+
     async def _cleanup_attempt_uninterrupted(self, paths: RunPaths) -> AttemptCleanupStatus:
         try:
             cleanup_status = await self._offload(_cleanup_exact_attempt, paths)
@@ -654,7 +877,7 @@ class MediaCrawlerScheduledHandler:
         manifest: RunnerManifest,
         output: NormalizedMediaCrawlerOutput,
         *,
-        attempt_paths: RunPaths | None,
+        attempt_paths: RunPaths,
     ) -> SubscriptionHandlerResult:
         if (
             not isinstance(output, NormalizedMediaCrawlerOutput)
@@ -701,8 +924,9 @@ class MediaCrawlerScheduledHandler:
                 ownership_guard=guarded,
             )
         )
+        ingestion_error_code: str | None = None
         try:
-            result = await self._join_security_task(task, on_cancel=cancellation.set)
+            await self._join_security_task(task, on_cancel=cancellation.set)
         except asyncio.CancelledError:
             await self._cleanup_before_fence(attempt_paths)
             raise
@@ -710,47 +934,41 @@ class MediaCrawlerScheduledHandler:
             await self._cleanup_before_fence(attempt_paths)
             raise
         except StaleCheckpointError:
-            error_code = await self._cleanup_failure_code(attempt_paths, "temporary_upstream")
-            self._set_run_failure(context, prepared.run_id, error_code)
-            return SubscriptionHandlerResult.failure(error_code, run_id=prepared.run_id)
+            ingestion_error_code = "temporary_upstream"
         except (_CancellationObserved, RepositoryError):
-            error_code = await self._cleanup_failure_code(attempt_paths, "unexpected_handler_failure")
-            self._set_run_failure(context, prepared.run_id, error_code)
-            return SubscriptionHandlerResult.failure(
-                error_code,
-                run_id=prepared.run_id,
-            )
+            ingestion_error_code = "unexpected_handler_failure"
+        except Exception:
+            ingestion_error_code = "unexpected_handler_failure"
 
         try:
-            if (
-                not isinstance(result, MediaCrawlerIngestionResult)
-                or result.mode is not IngestionMode.FORWARD
-                or result.input_count != len(output.records)
-                or result.accepted_count + result.skipped_count != result.input_count
-                or result.committed_batches < 1
-                or result.checkpoint_revision != prepared.checkpoint_revision + result.committed_batches
-            ):
-                raise RepositoryError("MediaCrawler ingestion result is invalid")
-            with self.database.session() as session:
-                self._guard(context, session)
-                run = SyncRunRepository(session).require(str(prepared.run_id))
-                subscription = session.get(Subscription, str(context.subscription_id))
-                if (
-                    run.subscription_id != str(context.subscription_id)
-                    or run.status != RunStatus.SUCCEEDED.value
-                    or run.checkpoint_revision_after != result.checkpoint_revision
-                    or subscription is None
-                    or subscription.checkpoint_revision != result.checkpoint_revision
-                ):
-                    raise RepositoryError("MediaCrawler ingestion commit is incomplete")
+            truth = self._read_ingestion_truth(context, prepared)
         except LeaseLostError:
             await self._cleanup_before_fence(attempt_paths)
             raise
-        except RepositoryError:
-            error_code = await self._cleanup_failure_code(attempt_paths, "output_security_failed")
-            self._set_run_failure(context, prepared.run_id, error_code)
-            return SubscriptionHandlerResult.failure(error_code, run_id=prepared.run_id)
-        return SubscriptionHandlerResult.success(prepared.run_id)
+        except Exception:
+            # A readback error cannot prove that the ingestion transaction did
+            # not commit. Secure the source and leave any durable Run truth for
+            # scheduler reconciliation; never manufacture a post-commit
+            # failure transition from an unavailable observation.
+            await self._secure_durable_source(attempt_paths)
+            return SubscriptionHandlerResult.failure(
+                "unexpected_handler_failure",
+                run_id=prepared.run_id,
+            )
+
+        if truth.run_succeeded:
+            await self._secure_durable_source(attempt_paths)
+            if truth.commit_complete:
+                return SubscriptionHandlerResult.success(prepared.run_id)
+            return SubscriptionHandlerResult.failure(
+                "output_security_failed",
+                run_id=prepared.run_id,
+            )
+
+        error_code = ingestion_error_code or "output_security_failed"
+        error_code = await self._cleanup_failure_code(attempt_paths, error_code)
+        self._set_run_failure(context, prepared.run_id, error_code)
+        return SubscriptionHandlerResult.failure(error_code, run_id=prepared.run_id)
 
     @staticmethod
     def _recovery_execution_id(
@@ -900,6 +1118,7 @@ class MediaCrawlerScheduledHandler:
             manifest=manifest,
             output=output,
             source_run_id=context.current_run_id,
+            source_paths=paths,
         )
 
     async def _recover_sealed_output(
@@ -949,7 +1168,15 @@ class MediaCrawlerScheduledHandler:
             return SubscriptionHandlerResult.failure("configuration_invalid")
 
         if scope.current_run_status == RunStatus.SUCCEEDED.value and context.current_run_id is not None:
-            return SubscriptionHandlerResult.success(context.current_run_id)
+            try:
+                source_paths = self._succeeded_source_paths(context, scope)
+            except LeaseLostError:
+                raise
+            except Exception:
+                source_paths = None
+            if source_paths is None:
+                await self._block_unverifiable_terminal_cleanup(context, scope)
+            return await self._finish_durable_success(context.current_run_id, source_paths)
         execution_id = _attempt_execution_id(context.job_id, context.attempt)
         attempt_paths = await self._offload(
             build_run_paths,
@@ -1026,7 +1253,7 @@ class MediaCrawlerScheduledHandler:
                 prepared,
                 recovered.manifest,
                 recovered.output,
-                attempt_paths=None,
+                attempt_paths=recovered.source_paths,
             )
 
         request = BridgeRequest(

@@ -1,11 +1,11 @@
 # Execution 0009 verification / 执行 0009 验证
 
-- Verification state / 验证状态：`NOT_RUN`
+- Verification state / 验证状态：`PARTIAL / FAILING`
 - Planning date / 计划日期：2026-08-30
 - Network/account policy / 网络与账户策略：offline fake pinned-upstream modules, repository-owned local helpers and mock HTTP only; no browser connected to a platform, real credential, platform/CDN endpoint or Emby/Jellyfin server / 仅离线 fake 锁定上游模块、仓库自有本地 helper 与 mock HTTP；不使用连接平台的浏览器、真实凭据、平台/CDN 端点或 Emby/Jellyfin 服务器
-- Implementation state / 实现状态：`NOT_RUN`
+- Implementation state / 实现状态：`PARTIAL` — paused checkpoint, not accepted / 暂停检查点，尚未验收
 
-This file is the frozen verification contract for execution 0009, not implementation evidence. Planning-baseline documentation checks are recorded separately; no migration, refresh, cleanup, signed-sentinel or live row is promoted until its exact command and result are recorded.
+This file now preserves both the frozen verification contract and the executed pause-checkpoint evidence. It is not acceptance evidence: failing gates remain open, and no refresh, signed-sentinel or live row is promoted. / 本文件现同时保留冻结验证契约与已执行的暂停检查点证据；它不是验收证据：失败门禁保持开放，不提升 refresh、签名哨兵或真人行。
 
 本文件是执行 0009 的冻结验证契约，不是实现证据。计划基线文档检查单独记录；在记录准确命令与结果前，不提升任何 migration、刷新、清理、签名哨兵或真人行。
 
@@ -21,11 +21,24 @@ The following rows qualify only the committed goal/plan/progress/verification ba
 | Locked upstreams / 锁定上游 | `uv run python scripts/check_upstreams.py` | PASS — `Upstreams OK (2 locked checkouts verified).` / 通过 |
 | Patch whitespace / 补丁空白 | `git diff --check` | PASS — exit `0`, no output / 通过 — 退出码 `0`，无输出 |
 
+## Executed pause-checkpoint checks / 已执行的暂停检查点验证
+
+| Check / 检查 | Exact command / 准确命令 | Result / 结果 |
+| --- | --- | --- |
+| Modified-source lint / 修改源码 lint | `uv run ruff check src/media_sync/infrastructure/db/__init__.py src/media_sync/infrastructure/db/models.py src/media_sync/infrastructure/db/repositories.py src/media_sync/infrastructure/db/migrations/versions/0005_asset_refresh_sources.py src/media_sync/scheduler/mediacrawler_handler.py` | PASS — `All checks passed!` |
+| Focused cleanup truth / cleanup 事实专项 | `uv run pytest -q tests/integration/test_mediacrawler_scheduler_handler.py::test_empty_normalized_delta_is_a_successful_guarded_checkpoint tests/integration/test_mediacrawler_scheduler_handler.py::test_committed_sync_run_truth_wins_over_invalid_returned_summary` | PASS — `2 passed in 1.21s` |
+| Strict types / 严格类型 | `uv run mypy src/media_sync` | FAIL — 3 errors at handler lines 727/730/731: `SyncRun | None` assigned to `UUID | None`, then UUID accessed as `subscription_id` and `attempt` / 失败，共 3 项 |
+| Migration focused nodes / migration 专项节点 | `uv run pytest -q tests/integration/test_database.py::test_alembic_upgrade_matches_metadata_and_downgrades tests/integration/test_packaged_migrations.py::test_programmatic_upgrade_uses_packaged_resources_and_handles_percent_path` | FAIL — `2 failed`; `DOMAIN_TABLES` omits `asset_refresh_sources`, and tests/CLI still hard-code head `0004_scheduler_control_plane` instead of `0005_asset_refresh_sources` / 失败，共 2 项 |
+| Full handler file / handler 整文件 | `uv run pytest -q tests/integration/test_mediacrawler_scheduler_handler.py` | FAIL — `9 failed, 43 passed in 25.27s`; seven platform cases still expect successful attempt roots retained, heartbeat reads a now-cleaned snapshot, and valid recovery expects the receipt retained / 旧契约尚未同步新清理语义 |
+| Patch whitespace / 补丁空白 | `git diff --check` | PASS — exit `0`, no output / 通过 |
+
+The full pytest/coverage suite, build, wheel smoke, signed sentinel and authoritative retained gate were deliberately not run before pausing. The 0009 retained root was not created; the 0007/0008 retained roots were not touched. / 暂停前有意未运行完整 pytest/coverage、构建、wheel smoke、签名哨兵及权威留存门禁；未创建 0009 留存根，也未触碰 0007/0008 留存根。
+
 ## Planned behavior evidence / 计划行为证据
 
 | Scope / 范围 | Required evidence / 必需证据 | Status / 状态 |
 | --- | --- | --- |
-| Migration and backfill / Migration 与 backfill | Head/round-trip/FKs/indexes; exact platform/author/adapter/stable-key unique inference; ambiguous/malformed/corrupt cases unbound; existing recovery identities preserved / head/往返/FK/索引、精确平台/作者/adapter/stable-key 唯一推断、歧义/畸形/损坏不绑定、保留恢复身份 | `NOT_RUN` |
+| Migration and backfill / Migration 与 backfill | Head/round-trip/FKs/indexes; exact platform/author/adapter/stable-key unique inference; ambiguous/malformed/corrupt cases unbound; existing recovery identities preserved / head/往返/FK/索引、精确平台/作者/adapter/stable-key 唯一推断、歧义/畸形/损坏不绑定、保留恢复身份 | `PARTIAL / FAILING` |
 | Ingestion observation / 导入 observation | Same transaction as Asset/checkpoint; wrong-run/cross-relation rollback; older-run replay cannot regress `(created_at,id)` last-run order/timestamps; multi-account; both replacement kinds advance generation; archive-reset eligibility / 同事务、错误关系回滚、旧 run 重放不回退 last-run 全序/时间、多账户、两类替换推进 generation、归档 reset 资格 | `NOT_RUN` |
 | Source selector / 来源 selector | No-Job 0/1/N; existing-Job authority; explicit mismatch; shared-lock second filesystem-block check catches post-first-read writer before SecretResolver/claim/attach/prepare/spawn; no FS I/O in transaction / 两种来源模式；共用锁二次 block 检查在密钥/claim/attach/prepare/spawn 前拦截首次读取后的 writer；事务无 FS I/O | `NOT_RUN` |
 | Recovery ordering / 恢复顺序 | Read-only inspection zero-mutation; valid verified result needs no source/profile/credential; prepared recovery only bound CAS/finalization; both zero child/HTTP/new attempt / inspection 零变更、verified 无来源/profile/凭据、prepared 只做已绑定 CAS/收尾、两者无 child/HTTP/新 attempt | `NOT_RUN` |
@@ -34,7 +47,7 @@ The following rows qualify only the committed goal/plan/progress/verification ba
 | Platform selectors / 平台 selector | Exact stored hint required; XHS creator secret/author/token/source, 4 x 30/120-second bound and fixed invalid/expired/not-found/schema/timeout dispositions; DY/KS/Bili shapes; WB/Tieba/Zhihu no spawn / 要求精确 stored hint；XHS authority、数值边界及固定 disposition；其余形状与三个不 spawn 平台 | `NOT_RUN` |
 | Candidate identity / 候选身份 | Child validates semantics; full-request fingerprint binds response; query-free hint selects exactly one; same-kind ambiguity and position-only matching fail closed / child 验证语义、完整 request fingerprint 绑定响应、无 query hint 精确选一、同 kind 歧义与仅 position 匹配 fail closed | `NOT_RUN` |
 | Downloader / 下载器 | Signed URL reaches mock HTTP only; one 401/403 re-resolve; direct unchanged; resume safe; metadata/redirect headers unchanged / 签名 URL 只到 mock HTTP、一次重解析、direct 不变、续传安全、metadata/header 不变 | `NOT_RUN` |
-| Terminal cleanup / 终态清理 | Non-empty fresh/recovered sentinels and exact restart source; after real success commit inject malformed result, readback error/mismatch, all four states, repeated cancel/lease loss/restart and assert zero failure mutation/reingest; deterministic recovery identity and concurrent disappearance / 非空来源哨兵与精确重启；真实成功提交后注入 result/readback/四状态/取消/重启并断言 failure mutation/重复导入为零；确定性恢复身份与并发消失 | `NOT_RUN` |
+| Terminal cleanup / 终态清理 | Non-empty fresh/recovered sentinels and exact restart source; after real success commit inject malformed result, readback error/mismatch, all four states, repeated cancel/lease loss/restart and assert zero failure mutation/reingest; deterministic recovery identity and concurrent disappearance / 非空来源哨兵与精确重启；真实成功提交后注入 result/readback/四状态/取消/重启并断言 failure mutation/重复导入为零；确定性恢复身份与并发消失 | `PARTIAL / FAILING` |
 | Secret sinks / 密钥落点 | Private-pipe + mock-request observation, then exact post-cleanup filesystem/SQLite/operator/JUnit zero-match with named negative exclusions / 私有 pipe + mock request 观察，随后清理后多落点精确零匹配及命名负向排除 | `NOT_RUN` |
 
 ## Planned quality gates / 计划质量门禁
@@ -46,16 +59,16 @@ Exact focused nodes, case counts, timings and retained-sentinel statistics will 
 | Check / 检查 | Planned command or scope / 计划命令或范围 | Status / 状态 |
 | --- | --- | --- |
 | Locked dependencies / 锁定依赖 | `uv sync --all-groups --locked` | `NOT_RUN` |
-| Lint / 代码规范 | `uv run ruff check .` | `NOT_RUN` |
+| Lint / 代码规范 | `uv run ruff check .` | `PARTIAL` — five modified source files PASS; whole tree `NOT_RUN` / 5 个修改源码文件通过；整树未运行 |
 | Format / 格式 | `uv run ruff format --check .` | `NOT_RUN` |
-| Strict types / 严格类型 | `uv run mypy src/media_sync` | `NOT_RUN` |
+| Strict types / 严格类型 | `uv run mypy src/media_sync` | `FAIL` — 3 errors / 3 项错误 |
 | Full branch-aware suite / 完整分支感知套件 | `uv run pytest --cov=media_sync --cov-report=term` | `NOT_RUN` |
-| Focused refresh/cleanup gate / Refresh/清理专项 | Exact unit/contract/integration/migration nodes / 精确 unit/contract/integration/migration 节点 | `NOT_RUN` |
+| Focused refresh/cleanup gate / Refresh/清理专项 | Exact unit/contract/integration/migration nodes / 精确 unit/contract/integration/migration 节点 | `PARTIAL / FAILING` |
 | Build and wheel smoke / 构建与 wheel smoke | `uv build` plus clean wheel install/import/CLI checks / 构建及干净 wheel 安装/import/CLI | `NOT_RUN` |
 | Packaged migrations/resources / 随包迁移/资源 | Head inventory and round-trip tests / head 清单及往返测试 | `NOT_RUN` |
-| Documentation / 文档 | `uv run python scripts/check_docs.py` | `NOT_RUN` |
-| Pinned upstreams / 锁定上游 | `uv run python scripts/check_upstreams.py` | `NOT_RUN` |
-| Patch whitespace / 补丁空白 | `git diff --check` | `NOT_RUN` |
+| Documentation / 文档 | `uv run python scripts/check_docs.py` | PASS — 52 Markdown files / 52 个 Markdown 文件 |
+| Pinned upstreams / 锁定上游 | `uv run python scripts/check_upstreams.py` | PASS — 2 locked checkouts / 2 个锁定检出 |
+| Patch whitespace / 补丁空白 | `git diff --check` | PASS |
 | Runtime artifacts untracked / 运行产物未跟踪 | Scoped ignore, `git ls-files` and `git status` checks / 限定 ignore、`git ls-files` 与 `git status` | `NOT_RUN` |
 | Fresh retained sentinel / 全新留存哨兵 | `.media-sync/verification/0009-refresh-sentinel-root` exact allowlist/scans / 精确 allowlist/扫描 | `NOT_RUN` |
 

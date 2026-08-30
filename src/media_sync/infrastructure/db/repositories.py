@@ -28,6 +28,7 @@ from media_sync.security import SecretReference, redact_mapping, redact_text
 from .asset_identity import AssetFingerprints, asset_fingerprints, asset_source_hint, stable_asset_key
 from .base import new_uuid, utc_now
 from .models import (
+    ASSET_REFRESH_OBSERVATION_KINDS,
     ASSET_STATUSES,
     JOB_STATUSES,
     RUN_STATUSES,
@@ -35,6 +36,7 @@ from .models import (
     TERMINAL_RUN_STATUSES,
     Account,
     Asset,
+    AssetRefreshSource,
     Author,
     Content,
     ExportRecord,
@@ -610,13 +612,18 @@ class AssetRepository:
             expected_generation = asset.generation
             expected_status = asset.status
             last_observed = asset.id, expected_generation, expected_status
-            if asset.remote_id == value.remote_id and asset.semantic_fingerprint == fingerprints.semantic:
+            if (
+                asset.remote_id == value.remote_id
+                and asset.semantic_fingerprint == fingerprints.semantic
+                and asset.locator_fingerprint == fingerprints.locator
+            ):
                 update_statement = (
                     update(Asset)
                     .where(
                         Asset.id == asset.id,
                         Asset.generation == expected_generation,
                         Asset.semantic_fingerprint == asset.semantic_fingerprint,
+                        Asset.locator_fingerprint == asset.locator_fingerprint,
                     )
                     .values(**values, updated_at=now)
                     .returning(Asset)
@@ -1189,6 +1196,213 @@ class AssetRepository:
         if value is None:
             return None
         return cls._bounded_text(value, field_name=field_name, max_length=max_length)
+
+
+class AssetRefreshSourceRepository:
+    """Exact subscription observations used to authorize locator refresh."""
+
+    def __init__(self, session: Session) -> None:
+        self.session = session
+
+    def get(self, asset_id: str, subscription_id: str) -> AssetRefreshSource | None:
+        return self.session.get(AssetRefreshSource, (asset_id, subscription_id))
+
+    def list_for_asset(self, asset_id: str) -> list[AssetRefreshSource]:
+        return list(
+            self.session.scalars(
+                select(AssetRefreshSource)
+                .where(AssetRefreshSource.asset_id == asset_id)
+                .order_by(AssetRefreshSource.subscription_id)
+            ).all()
+        )
+
+    def upsert_observation(
+        self,
+        *,
+        asset_id: str,
+        subscription_id: str,
+        observation_kind: str = "ingested",
+        last_run_id: str | None = None,
+        seen_at: datetime | None = None,
+    ) -> AssetRefreshSource:
+        """Record the current identity without allowing an older run to regress it."""
+
+        if observation_kind not in ASSET_REFRESH_OBSERVATION_KINDS:
+            raise ValueError(f"unsupported asset refresh observation kind: {observation_kind!r}")
+        current = _aware_utc(seen_at)
+        asset, _content, _author, _subscription, _account = self._require_exact_context(
+            asset_id,
+            subscription_id,
+        )
+        self._require_sha256(asset.semantic_fingerprint, field_name="asset semantic fingerprint")
+        self._require_sha256(asset.locator_fingerprint, field_name="asset locator fingerprint")
+
+        incoming_run: SyncRun | None = None
+        if last_run_id is not None:
+            incoming_run = self.session.get(SyncRun, last_run_id)
+            if incoming_run is None:
+                raise NotFoundError(f"sync run not found: {last_run_id}")
+            if incoming_run.subscription_id != subscription_id:
+                raise RepositoryError("asset refresh observation run and subscription do not match")
+
+        insert_values = {
+            "asset_id": asset.id,
+            "subscription_id": subscription_id,
+            "last_run_id": incoming_run.id if incoming_run is not None else None,
+            "observation_kind": observation_kind,
+            "observed_generation": asset.generation,
+            "observed_semantic_fingerprint": asset.semantic_fingerprint,
+            "observed_locator_fingerprint": asset.locator_fingerprint,
+            "first_seen_at": current,
+            "last_seen_at": current,
+        }
+        if self.session.get_bind().dialect.name == "sqlite":
+            created = self.session.scalars(
+                sqlite_insert(AssetRefreshSource)
+                .values(**insert_values)
+                .on_conflict_do_nothing(
+                    index_elements=[
+                        AssetRefreshSource.asset_id,
+                        AssetRefreshSource.subscription_id,
+                    ]
+                )
+                .returning(AssetRefreshSource)
+                .execution_options(populate_existing=True)
+            ).one_or_none()
+            if created is not None:
+                return created
+
+        source = self.session.scalar(
+            select(AssetRefreshSource)
+            .where(
+                AssetRefreshSource.asset_id == asset.id,
+                AssetRefreshSource.subscription_id == subscription_id,
+            )
+            .execution_options(populate_existing=True)
+        )
+        if source is None:
+            source = AssetRefreshSource(**insert_values)
+            self.session.add(source)
+            self.session.flush()
+            return source
+
+        existing_run: SyncRun | None = None
+        if source.last_run_id is not None:
+            existing_run = self.session.get(SyncRun, source.last_run_id)
+            if existing_run is None:
+                raise RepositoryError("asset refresh observation references a missing sync run")
+        if self._run_order(incoming_run) >= self._run_order(existing_run):
+            source.observed_generation = asset.generation
+            source.observed_semantic_fingerprint = asset.semantic_fingerprint
+            source.observed_locator_fingerprint = asset.locator_fingerprint
+            if incoming_run is not None:
+                source.last_run_id = incoming_run.id
+        if source.observation_kind == "legacy_unique_inferred" and observation_kind == "ingested":
+            source.observation_kind = "ingested"
+        source.last_seen_at = max(_aware_utc(source.last_seen_at), current)
+        self.session.flush()
+        return source
+
+    def list_eligible(self, asset_id: str) -> list[AssetRefreshSource]:
+        """Return current exact MediaCrawler observations in deterministic order."""
+
+        asset = self.session.scalar(
+            select(Asset)
+            .where(Asset.id == asset_id)
+            .options(joinedload(Asset.content).joinedload(Content.author))
+        )
+        if asset is None:
+            raise NotFoundError(f"asset not found: {asset_id}")
+        content = asset.content
+        author = content.author
+        if not self._asset_identity_is_refreshable(asset, content, author):
+            return []
+        return list(
+            self.session.scalars(
+                select(AssetRefreshSource)
+                .join(
+                    Subscription,
+                    Subscription.id == AssetRefreshSource.subscription_id,
+                )
+                .join(Account, Account.id == Subscription.account_id)
+                .where(
+                    AssetRefreshSource.asset_id == asset.id,
+                    AssetRefreshSource.observed_semantic_fingerprint == asset.semantic_fingerprint,
+                    AssetRefreshSource.observed_locator_fingerprint == asset.locator_fingerprint,
+                    Subscription.author_id == content.author_id,
+                    Account.platform == asset.platform,
+                    Account.adapter == "mediacrawler",
+                )
+                .order_by(AssetRefreshSource.subscription_id)
+            ).all()
+        )
+
+    def list_eligible_for_asset(self, asset_id: str) -> list[AssetRefreshSource]:
+        """Compatibility spelling for callers that make the target explicit."""
+
+        return self.list_eligible(asset_id)
+
+    def _require_exact_context(
+        self,
+        asset_id: str,
+        subscription_id: str,
+    ) -> tuple[Asset, Content, Author, Subscription, Account]:
+        asset = self.session.scalar(
+            select(Asset)
+            .where(Asset.id == asset_id)
+            .options(joinedload(Asset.content).joinedload(Content.author))
+        )
+        if asset is None:
+            raise NotFoundError(f"asset not found: {asset_id}")
+        subscription = self.session.scalar(
+            select(Subscription)
+            .where(Subscription.id == subscription_id)
+            .options(joinedload(Subscription.account), joinedload(Subscription.author))
+        )
+        if subscription is None:
+            raise NotFoundError(f"subscription not found: {subscription_id}")
+        content = asset.content
+        author = content.author
+        account = subscription.account
+        if (
+            subscription.author_id != content.author_id
+            or subscription.author.id != author.id
+            or account.platform != asset.platform
+            or account.adapter != "mediacrawler"
+            or not self._asset_identity_is_refreshable(asset, content, author)
+        ):
+            raise RepositoryError("asset refresh observation relation is not exact")
+        return asset, content, author, subscription, account
+
+    @staticmethod
+    def _asset_identity_is_refreshable(asset: Asset, content: Content, author: Author) -> bool:
+        if asset.platform != content.platform or asset.platform != author.platform:
+            return False
+        try:
+            locator = parse_locator(asset.locator)
+        except MediaDownloadError:
+            return False
+        if not isinstance(locator, AdapterRefreshLocator) or locator.adapter != "mediacrawler":
+            return False
+        return locator.asset_key == stable_asset_key(
+            platform=asset.platform,
+            content_remote_type=content.remote_type,
+            content_remote_id=content.remote_id,
+            kind=asset.kind,
+            position=asset.position,
+            remote_id=asset.remote_id,
+        )
+
+    @staticmethod
+    def _run_order(run: SyncRun | None) -> tuple[datetime, str]:
+        if run is None:
+            return datetime.min.replace(tzinfo=UTC), ""
+        return _aware_utc(run.created_at), run.id
+
+    @staticmethod
+    def _require_sha256(value: str, *, field_name: str) -> None:
+        if len(value) != 64 or any(character not in "0123456789abcdef" for character in value):
+            raise RepositoryError(f"{field_name} is invalid")
 
 
 class SubscriptionRepository:
@@ -2478,6 +2692,7 @@ __all__ = [
     "AccountRepository",
     "AssetConflictError",
     "AssetLeaseLostError",
+    "AssetRefreshSourceRepository",
     "AssetRepository",
     "AssetUpsert",
     "AuthorRepository",
