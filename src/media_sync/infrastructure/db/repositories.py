@@ -210,6 +210,17 @@ class LoginSessionState:
     updated_at: datetime
 
 
+@dataclass(frozen=True, slots=True)
+class ExpiredLoginSessionCandidate:
+    """Public identity fence for one potentially abandoned QR login."""
+
+    login_session_id: str
+    account_id: str
+    platform: str
+    expected_status: str
+    expected_expires_at: datetime
+
+
 class AccountRepository:
     """Persistence operations for platform accounts."""
 
@@ -351,6 +362,174 @@ class LoginSessionRepository:
         if len(active) > 1:
             raise AccountLoginConflictError(account_id)
         return self._state(active[0]) if active else None
+
+    def list_expired_mediacrawler_qr_candidates(
+        self,
+        *,
+        at: datetime | None = None,
+        limit: int = 100,
+        account_id: str | None = None,
+        after: tuple[datetime, str] | None = None,
+    ) -> list[ExpiredLoginSessionCandidate]:
+        """Return a bounded, redaction-safe snapshot of recoverable identities.
+
+        This method is deliberately read-only. Callers must end its transaction,
+        acquire the exact account filesystem lock, and then pass each immutable
+        identity to :meth:`recover_expired_mediacrawler_qr` in a fresh transaction.
+        """
+
+        if type(limit) is not int or not 1 <= limit <= 1_000:
+            raise ValueError("login session recovery limit must be between 1 and 1000")
+        current = _aware_utc(at)
+        cursor: tuple[datetime, str] | None = None
+        if after is not None:
+            if not isinstance(after, tuple) or len(after) != 2:
+                raise ValueError("login session recovery cursor must be an (expires_at, id) tuple")
+            expires_at, login_session_id = after
+            if not isinstance(expires_at, datetime):
+                raise ValueError("login session recovery cursor expiry must be timezone-aware")
+            cursor_expiry = _aware_utc(expires_at)
+            if not isinstance(login_session_id, str):
+                raise ValueError("login session recovery cursor identity must be a canonical UUID")
+            try:
+                parsed_identity = UUID(login_session_id)
+            except ValueError as exc:
+                raise ValueError("login session recovery cursor identity must be a canonical UUID") from exc
+            if str(parsed_identity) != login_session_id:
+                raise ValueError("login session recovery cursor identity must be a canonical UUID")
+            cursor = cursor_expiry, login_session_id
+        sibling = aliased(LoginSession)
+        active_sibling_exists = exists().where(
+            sibling.account_id == LoginSession.account_id,
+            sibling.id != LoginSession.id,
+            sibling.status.in_(self._ACTIVE_STATUSES),
+        )
+        conditions = [
+            LoginSession.method == "qr",
+            LoginSession.challenge_kind == "qr",
+            LoginSession.status.in_(self._ACTIVE_STATUSES),
+            LoginSession.expires_at.is_not(None),
+            LoginSession.expires_at <= current,
+            Account.adapter == "mediacrawler",
+            Account.login_method == "qr",
+            Account.auth_status == "authenticating",
+            Account.credential_ref.is_(None),
+            Account.profile_path.is_(None),
+            ~active_sibling_exists,
+        ]
+        if account_id is not None:
+            conditions.append(LoginSession.account_id == account_id)
+        if cursor is not None:
+            cursor_expiry, cursor_identity = cursor
+            conditions.append(
+                or_(
+                    LoginSession.expires_at > cursor_expiry,
+                    and_(
+                        LoginSession.expires_at == cursor_expiry,
+                        LoginSession.id > cursor_identity,
+                    ),
+                )
+            )
+        rows = self.session.execute(
+            select(
+                LoginSession.id,
+                LoginSession.account_id,
+                Account.platform,
+                LoginSession.status,
+                LoginSession.expires_at,
+            )
+            .join(Account, Account.id == LoginSession.account_id)
+            .where(*conditions)
+            .order_by(LoginSession.expires_at, LoginSession.id)
+            .limit(limit)
+        ).all()
+        return [
+            ExpiredLoginSessionCandidate(
+                login_session_id=row.id,
+                account_id=row.account_id,
+                platform=row.platform,
+                expected_status=row.status,
+                expected_expires_at=row.expires_at,
+            )
+            for row in rows
+        ]
+
+    def recover_expired_mediacrawler_qr(
+        self,
+        candidate: ExpiredLoginSessionCandidate,
+        *,
+        at: datetime | None = None,
+    ) -> LoginSessionState:
+        """Atomically expire one exact abandoned session and release its account.
+
+        Filesystem exclusion is an application responsibility. The immutable
+        candidate fences the exact session status and durable deadline observed
+        before that lock was acquired; every database fact is revalidated here.
+        """
+
+        if not isinstance(candidate, ExpiredLoginSessionCandidate):
+            raise TypeError("candidate must be an ExpiredLoginSessionCandidate")
+        self._require_active_status(candidate.expected_status)
+        current = _aware_utc(at)
+        expected_expiry = _aware_utc(candidate.expected_expires_at)
+        with self.session.begin_nested():
+            updated = self.session.execute(
+                update(LoginSession)
+                .where(
+                    self._current_session_condition(
+                        candidate.login_session_id,
+                        candidate.expected_status,
+                    ),
+                    LoginSession.account_id == candidate.account_id,
+                    LoginSession.expires_at == expected_expiry,
+                    LoginSession.expires_at <= current,
+                )
+                .values(
+                    status="expired",
+                    completed_at=current,
+                    updated_at=current,
+                )
+                .returning(LoginSession)
+                .execution_options(synchronize_session="fetch", populate_existing=True)
+            ).scalar_one_or_none()
+            if updated is None:
+                self._raise_login_session_conflict(
+                    candidate.login_session_id,
+                    candidate.expected_status,
+                )
+
+            active_session_exists = exists().where(
+                LoginSession.account_id == Account.id,
+                LoginSession.status.in_(self._ACTIVE_STATUSES),
+            )
+            account = self.session.execute(
+                update(Account)
+                .where(
+                    Account.id == candidate.account_id,
+                    Account.id == updated.account_id,
+                    Account.platform == candidate.platform,
+                    Account.adapter == "mediacrawler",
+                    Account.login_method == "qr",
+                    Account.auth_status == "authenticating",
+                    Account.credential_ref.is_(None),
+                    Account.profile_path.is_(None),
+                    ~active_session_exists,
+                )
+                .values(
+                    auth_status="required",
+                    auth_updated_at=current,
+                    updated_at=current,
+                )
+                .returning(Account.id)
+                .execution_options(synchronize_session="fetch")
+            ).scalar_one_or_none()
+            if account is None:
+                raise LoginSessionConflictError(
+                    candidate.login_session_id,
+                    candidate.expected_status,
+                )
+            state = self._state(updated)
+        return state
 
     def start_mediacrawler_qr(
         self,
@@ -3077,6 +3256,7 @@ __all__ = [
     "AuthorRepository",
     "AuthorUpsert",
     "ContentUpsert",
+    "ExpiredLoginSessionCandidate",
     "ExportRecordConflictError",
     "ExportRecordRepository",
     "JobRepository",

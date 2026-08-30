@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import threading
 from collections.abc import Callable, Iterator
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -18,6 +19,7 @@ from sqlalchemy import func, select
 from media_sync.application.authentication import (
     AccountLoginError,
     AccountLoginRequest,
+    MediaCrawlerLoginSessionReconciler,
     MediaCrawlerQrLoginService,
 )
 from media_sync.domain import AuthStatus, Platform
@@ -26,8 +28,9 @@ from media_sync.infrastructure.db import (
     Database,
     LoginSessionRepository,
 )
-from media_sync.infrastructure.db.models import LoginSession
+from media_sync.infrastructure.db.models import Account, LoginSession
 from media_sync.integrations.mediacrawler import (
+    MediaCrawlerAccountLock,
     MediaCrawlerLoginMode,
     MediaCrawlerLoginRequest,
     MediaCrawlerLoginResult,
@@ -133,6 +136,22 @@ def _seed_account(
 def _session_count(database: Database) -> int:
     with database.session() as session:
         return int(session.scalar(select(func.count()).select_from(LoginSession)) or 0)
+
+
+def _seed_expired_attempt(database: Database, account_id: UUID, *, expires_at: datetime) -> UUID:
+    with database.session() as session:
+        repository = LoginSessionRepository(session)
+        started = repository.start_mediacrawler_qr(
+            str(account_id),
+            expires_at=expires_at,
+            at=expires_at - timedelta(minutes=1),
+        )
+        waiting = repository.mark_waiting_user(started.id, at=expires_at - timedelta(seconds=30))
+        return UUID(waiting.id)
+
+
+def _prepare_account_root(runtime_root: Path, account_id: UUID) -> None:
+    (runtime_root / "accounts" / Platform.BILI.value / str(account_id)).mkdir(parents=True)
 
 
 @pytest.mark.parametrize(
@@ -573,3 +592,198 @@ def test_account_drift_after_hook_fences_stale_completion_without_half_handoff(d
             drifted_at,
         )
         assert stored is not None and (stored.status, stored.completed_at) == ("waiting_user", None)
+
+
+def test_reconciler_obeys_shared_account_lock_and_is_idempotent(
+    database: Database,
+    tmp_path: Path,
+) -> None:
+    account_id = _seed_account(database)
+    deadline = STARTED_AT + timedelta(minutes=5)
+    login_session_id = _seed_expired_attempt(database, account_id, expires_at=deadline)
+    runtime_root = tmp_path / "runtime"
+    _prepare_account_root(runtime_root, account_id)
+    reconciler = MediaCrawlerLoginSessionReconciler(
+        database,
+        integration_root=runtime_root,
+        clock=lambda: deadline,
+    )
+    held = MediaCrawlerAccountLock(runtime_root, Platform.BILI, account_id)
+    assert held.acquire()
+    try:
+        busy = reconciler.sweep(limit=10)
+    finally:
+        held.release()
+
+    assert (busy.scanned, busy.recovered, busy.busy, busy.conflicted) == (1, 0, 1, 0)
+    with database.session() as session:
+        stored = session.get(LoginSession, str(login_session_id))
+        account = session.get(Account, str(account_id))
+        assert stored is not None and stored.status == "waiting_user"
+        assert account is not None and account.auth_status == "authenticating"
+
+    recovered = reconciler.sweep(limit=10)
+    repeated = reconciler.sweep(limit=10)
+    assert (recovered.scanned, recovered.recovered, recovered.busy, recovered.conflicted) == (1, 1, 0, 0)
+    assert (repeated.scanned, repeated.recovered, repeated.busy, repeated.conflicted) == (0, 0, 0, 0)
+
+
+def test_two_reconcilers_contending_for_one_candidate_have_one_winner(
+    database: Database,
+    tmp_path: Path,
+) -> None:
+    account_id = _seed_account(database)
+    deadline = STARTED_AT + timedelta(minutes=5)
+    _seed_expired_attempt(database, account_id, expires_at=deadline)
+    runtime_root = tmp_path / "runtime"
+    _prepare_account_root(runtime_root, account_id)
+    barrier = threading.Barrier(2)
+
+    def synchronized_lock(root: Path, platform: Platform, identity: UUID) -> MediaCrawlerAccountLock:
+        barrier.wait(timeout=5)
+        return MediaCrawlerAccountLock(root, platform, identity)
+
+    def contend() -> tuple[int, int, int, int]:
+        result = MediaCrawlerLoginSessionReconciler(
+            database,
+            integration_root=runtime_root,
+            clock=lambda: deadline,
+            lock_factory=synchronized_lock,
+        ).sweep(limit=1)
+        return result.scanned, result.recovered, result.busy, result.conflicted
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(lambda _index: contend(), range(2)))
+
+    assert sum(result[0] for result in results) == 2
+    assert sum(result[1] for result in results) == 1
+    assert sum(result[2] + result[3] for result in results) == 1
+
+
+def test_bounded_sweep_rotates_past_missing_runtime_and_wraps_in_the_same_cycle(
+    database: Database,
+    tmp_path: Path,
+) -> None:
+    deadline = STARTED_AT + timedelta(minutes=5)
+    account_ids = [_seed_account(database) for _index in range(2)]
+    for account_id in account_ids:
+        _seed_expired_attempt(database, account_id, expires_at=deadline)
+    with database.session() as session:
+        ordered = LoginSessionRepository(session).list_expired_mediacrawler_qr_candidates(
+            at=deadline,
+            limit=2,
+        )
+    blocked_account_id = UUID(ordered[0].account_id)
+    recoverable_account_id = UUID(ordered[1].account_id)
+    _prepare_account_root(tmp_path / "runtime", recoverable_account_id)
+    reconciler = MediaCrawlerLoginSessionReconciler(
+        database,
+        integration_root=tmp_path / "runtime",
+        clock=lambda: deadline,
+    )
+
+    first = reconciler.sweep(limit=1)
+    second = reconciler.sweep(limit=1)
+    wrapped = reconciler.sweep(limit=1)
+    assert (first.scanned, first.recovered, first.busy) == (1, 0, 1)
+    assert (second.scanned, second.recovered, second.busy) == (1, 1, 0)
+    assert (wrapped.scanned, wrapped.recovered, wrapped.busy) == (1, 0, 1)
+    with database.session() as session:
+        blocked = session.get(Account, str(blocked_account_id))
+        recovered = session.get(Account, str(recoverable_account_id))
+        assert blocked is not None and blocked.auth_status == "authenticating"
+        assert recovered is not None and recovered.auth_status == "required"
+    with pytest.raises(ValueError, match="limit"):
+        reconciler.sweep(limit=0)
+
+
+def test_concurrent_global_sweeps_serialize_cursor_rotation(database: Database, tmp_path: Path) -> None:
+    deadline = STARTED_AT + timedelta(minutes=5)
+    account_ids = [_seed_account(database) for _index in range(2)]
+    for account_id in account_ids:
+        _seed_expired_attempt(database, account_id, expires_at=deadline)
+    with database.session() as session:
+        ordered = LoginSessionRepository(session).list_expired_mediacrawler_qr_candidates(at=deadline, limit=2)
+    _prepare_account_root(tmp_path / "runtime", UUID(ordered[1].account_id))
+    reconciler = MediaCrawlerLoginSessionReconciler(
+        database,
+        integration_root=tmp_path / "runtime",
+        clock=lambda: deadline,
+    )
+    barrier = threading.Barrier(2)
+
+    def contend() -> tuple[int, int, int]:
+        barrier.wait(timeout=5)
+        summary = reconciler.sweep(limit=1)
+        return summary.scanned, summary.recovered, summary.busy
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(lambda _index: contend(), range(2)))
+
+    assert sum(result[0] for result in results) == 2
+    assert sum(result[1] for result in results) == 1
+    assert sum(result[2] for result in results) == 1
+
+
+def test_single_account_reconciliation_does_not_change_global_sweep_cursor(
+    database: Database,
+    tmp_path: Path,
+) -> None:
+    deadline = STARTED_AT + timedelta(minutes=5)
+    account_ids = [_seed_account(database) for _index in range(2)]
+    for account_id in account_ids:
+        _seed_expired_attempt(database, account_id, expires_at=deadline)
+    with database.session() as session:
+        ordered = LoginSessionRepository(session).list_expired_mediacrawler_qr_candidates(at=deadline, limit=2)
+    blocked_account_id = UUID(ordered[0].account_id)
+    recoverable_account_id = UUID(ordered[1].account_id)
+    _prepare_account_root(tmp_path / "runtime", recoverable_account_id)
+    reconciler = MediaCrawlerLoginSessionReconciler(
+        database,
+        integration_root=tmp_path / "runtime",
+        clock=lambda: deadline,
+    )
+
+    first = reconciler.sweep(limit=1)
+    exact = reconciler.reconcile_account(blocked_account_id)
+    second = reconciler.sweep(limit=1)
+
+    assert (first.recovered, first.busy) == (0, 1)
+    assert (exact.recovered, exact.busy) == (0, 1)
+    assert (second.recovered, second.busy) == (1, 0)
+
+
+def test_login_preflight_reconciles_expired_attempt_then_starts_successor(
+    database: Database,
+    tmp_path: Path,
+) -> None:
+    account_id = _seed_account(database)
+    deadline = STARTED_AT + timedelta(minutes=5)
+    old_session_id = _seed_expired_attempt(database, account_id, expires_at=deadline)
+    restart_at = deadline + timedelta(seconds=1)
+    runtime_root = tmp_path / "runtime"
+    _prepare_account_root(runtime_root, account_id)
+    reconciler = MediaCrawlerLoginSessionReconciler(
+        database,
+        integration_root=runtime_root,
+        clock=lambda: restart_at,
+    )
+    runner = _Runner(_result(MediaCrawlerLoginStatus.AUTHENTICATED), invoke_hook=True)
+    service = MediaCrawlerQrLoginService(
+        database,
+        runner,
+        clock=_Clock(restart_at, restart_at + timedelta(seconds=1)),
+        reconciler=reconciler,
+    )
+
+    outcome = service.run(AccountLoginRequest(account_id=account_id, timeout_seconds=60, poll_seconds=1))
+
+    assert outcome.authenticated
+    assert outcome.login_session_id != old_session_id
+    with database.session() as session:
+        repository = LoginSessionRepository(session)
+        sessions = repository.list_for_account(str(account_id))
+        account = session.get(Account, str(account_id))
+        assert {state.status for state in sessions} == {"expired", "succeeded"}
+        assert account is not None
+        assert (account.login_method, account.auth_status) == ("saved_session", "authenticated")

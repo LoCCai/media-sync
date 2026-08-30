@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import contextlib
 import csv
 import json
+import multiprocessing
 import os
 import subprocess
 import sys
@@ -58,9 +60,11 @@ COOKIES = "must-be-cleared"
 
 _MAIN = """
 import importlib
+from pathlib import Path
 
 import config
 
+Path(__file__).with_name("upstream-imported").write_text("imported", encoding="utf-8")
 crawler = None
 PACKAGES = {
     "xhs": "xhs",
@@ -118,6 +122,18 @@ class FakeClient:
         return (profile_root() / "authenticated.state").is_file() and mode() != "expired"
 
     async def update_cookies(self, *args, **kwargs):
+        if mode() == "linger_after_result":
+            grandchild = subprocess.Popen(
+                [sys.executable, "-I", "-c", "import time; time.sleep(60)"],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                close_fds=True,
+            )
+            (ROOT / "pids.json").write_text(
+                json.dumps({{"child": os.getpid(), "grandchild": grandchild.pid}}),
+                encoding="utf-8",
+            )
         return None
 
 
@@ -255,6 +271,164 @@ def _pid_is_alive(process_id: int) -> bool:
     except ProcessLookupError:
         return False
     return True
+
+
+def _wait_for_pids_to_exit(*process_ids: int, timeout: float = 10.0) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline and any(_pid_is_alive(process_id) for process_id in process_ids):
+        time.sleep(0.05)
+    assert all(not _pid_is_alive(process_id) for process_id in process_ids)
+
+
+def _wait_for_json(path: Path, timeout: float = 10.0) -> dict[str, int]:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            time.sleep(0.02)
+            continue
+        if isinstance(value, dict) and all(isinstance(item, int) for item in value.values()):
+            return value
+        time.sleep(0.02)
+    raise AssertionError("login process probe was not written within the deadline")
+
+
+def _parse_result_wire(wire: bytes) -> MediaCrawlerLoginStatus:
+    length_bytes = wire[: runner_module._LOGIN_RESULT_LENGTH_BYTES]
+    assert len(length_bytes) == runner_module._LOGIN_RESULT_LENGTH_BYTES
+    length = int.from_bytes(length_bytes, byteorder="big")
+    payload = wire[runner_module._LOGIN_RESULT_LENGTH_BYTES :]
+    assert len(payload) == length
+    return runner_module._parse_child_frame(payload)
+
+
+def _raw_child_environment() -> dict[str, str]:
+    environment = {
+        name: value for name, value in os.environ.items() if name.upper() in runner_module._CHILD_ENV_ALLOWLIST
+    }
+    environment.update(
+        {
+            runner_module._CONTROL_ENV: runner_module._CONTROL_VERSION,
+            "PYTHONIOENCODING": "utf-8",
+            "PYTHONUTF8": "1",
+            "PYTHONUNBUFFERED": "1",
+        }
+    )
+    return environment
+
+
+def _spawn_raw_login_child(checkout: Path) -> subprocess.Popen[bytes]:
+    command = (
+        sys.executable,
+        "-I",
+        "-u",
+        "-B",
+        str(Path(runner_module.__file__).resolve()),
+        "--child",
+    )
+    common: dict[str, object] = {
+        "cwd": checkout,
+        "env": _raw_child_environment(),
+        "stdin": subprocess.PIPE,
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.DEVNULL,
+        "close_fds": True,
+    }
+    if os.name == "nt":
+        return subprocess.Popen(
+            command,
+            creationflags=(
+                getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            ),
+            **common,  # type: ignore[arg-type]
+        )
+    return subprocess.Popen(command, start_new_session=True, **common)  # type: ignore[arg-type]
+
+
+def _raw_login_payload(checkout: Path, integration_root: Path) -> bytes:
+    verified = VerifiedCheckout(
+        root=checkout,
+        commit=UPSTREAM_SHA,
+        repository="https://github.com/NanmiCoder/MediaCrawler.git",
+        license_name="NON-COMMERCIAL LEARNING LICENSE 1.1",
+        lock_path=checkout / "upstreams.lock.json",
+    )
+    paths = build_run_paths(integration_root, Platform.XHS, ACCOUNT_ID, ACCOUNT_ID)
+    return runner_module._child_payload(
+        _request(Platform.XHS, MediaCrawlerLoginMode.INTERACTIVE_QR, timeout_seconds=60),
+        verified,
+        paths,
+    )
+
+
+def _force_close_raw_tree(process: subprocess.Popen[bytes]) -> None:
+    if process.poll() is not None:
+        return
+    _force_close_pid_tree(process.pid)
+    with contextlib.suppress(OSError, subprocess.TimeoutExpired):
+        process.wait(timeout=5)
+
+
+def _force_close_pid_tree(process_id: int) -> None:
+    if not _pid_is_alive(process_id):
+        return
+    if os.name == "nt":
+        subprocess.run(
+            ("taskkill.exe", "/PID", str(process_id), "/T", "/F"),
+            check=False,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+            shell=False,
+        )
+    else:
+        with contextlib.suppress(OSError):
+            os.killpg(process_id, 9)
+
+
+def _hard_kill_parent(process_id: int) -> None:
+    if os.name == "nt":
+        completed = subprocess.run(
+            ("taskkill.exe", "/PID", str(process_id), "/F"),
+            check=False,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+            shell=False,
+        )
+        assert completed.returncode == 0
+        return
+    os.kill(process_id, 9)
+
+
+def _run_hard_death_login_parent(checkout: Path, integration_root: Path, parent_probe: Path) -> None:
+    parent_probe.write_text(json.dumps({"parent": os.getpid()}), encoding="utf-8")
+    _runner(checkout, integration_root).run(
+        _request(Platform.XHS, MediaCrawlerLoginMode.INTERACTIVE_QR, timeout_seconds=60)
+    )
+
+
+def _run_hard_death_after_login_result(
+    checkout: Path,
+    integration_root: Path,
+    parent_probe: Path,
+    close_probe: Path,
+) -> None:
+    original_close = runner_module._close_control
+
+    def delay_parent_close(process: subprocess.Popen[bytes]) -> None:
+        close_probe.write_text(json.dumps({"parent": os.getpid()}), encoding="utf-8")
+        time.sleep(60)
+        original_close(process)
+
+    runner_module._close_control = delay_parent_close
+    parent_probe.write_text(json.dumps({"parent": os.getpid()}), encoding="utf-8")
+    _runner(checkout, integration_root).run(
+        _request(Platform.XHS, MediaCrawlerLoginMode.INTERACTIVE_QR, timeout_seconds=60)
+    )
 
 
 @pytest.mark.parametrize("platform", list(Platform))
@@ -414,6 +588,316 @@ def test_missing_saved_profile_is_expired_without_hook_or_spawn(
 
 
 @pytest.mark.parametrize(
+    ("request_bytes", "case"),
+    [
+        (b"", "eof"),
+        ((0).to_bytes(runner_module._LOGIN_REQUEST_LENGTH_BYTES, "big"), "empty"),
+        (
+            (runner_module.MAX_LOGIN_REQUEST_BYTES + 1).to_bytes(
+                runner_module._LOGIN_REQUEST_LENGTH_BYTES,
+                "big",
+            ),
+            "oversized",
+        ),
+        ((8).to_bytes(runner_module._LOGIN_REQUEST_LENGTH_BYTES, "big") + b"short", "truncated"),
+    ],
+)
+def test_child_rejects_invalid_request_before_upstream_import(
+    tmp_path: Path,
+    request_bytes: bytes,
+    case: str,
+) -> None:
+    del case
+    checkout = _write_fake_checkout(tmp_path / "upstream")
+    process = _spawn_raw_login_child(checkout)
+    try:
+        assert process.stdin is not None
+        if request_bytes:
+            process.stdin.write(request_bytes)
+            process.stdin.flush()
+        process.stdin.close()
+        assert process.wait(timeout=5) == 20
+        assert process.stdout is not None
+        assert _parse_result_wire(process.stdout.read()) is MediaCrawlerLoginStatus.CONFIGURATION_INVALID
+        assert not (checkout / "upstream-imported").exists()
+    finally:
+        _force_close_raw_tree(process)
+        if process.stdout is not None:
+            process.stdout.close()
+
+
+@pytest.mark.parametrize(
+    ("control", "case"),
+    [(None, "eof"), (b"media-sync-invalid-control-v1\n", "malformed")],
+)
+def test_child_waits_for_start_and_fails_closed_on_prestart_control(
+    tmp_path: Path,
+    control: bytes | None,
+    case: str,
+) -> None:
+    del case
+    checkout = _write_fake_checkout(tmp_path / "upstream")
+    payload = _raw_login_payload(checkout, tmp_path / "runtime")
+    process = _spawn_raw_login_child(checkout)
+    try:
+        assert process.stdin is not None
+        process.stdin.write(runner_module._login_request_frame(payload))
+        process.stdin.flush()
+        time.sleep(0.2)
+        assert process.poll() is None
+        assert not (checkout / "upstream-imported").exists()
+        if control is None:
+            process.stdin.close()
+        else:
+            process.stdin.write(control)
+            process.stdin.flush()
+        assert process.wait(timeout=5) == 20
+        assert process.stdout is not None
+        assert _parse_result_wire(process.stdout.read()) is MediaCrawlerLoginStatus.CONFIGURATION_INVALID
+        assert not (checkout / "upstream-imported").exists()
+    finally:
+        with contextlib.suppress(OSError, ValueError):
+            if process.stdin is not None:
+                process.stdin.close()
+        _force_close_raw_tree(process)
+        if process.stdout is not None:
+            process.stdout.close()
+
+
+@pytest.mark.parametrize(
+    ("control", "case"),
+    [(None, "eof"), (b"media-sync-invalid-control-v1\n", "malformed")],
+)
+def test_running_child_treats_parent_eof_or_invalid_control_as_tree_loss(
+    tmp_path: Path,
+    control: bytes | None,
+    case: str,
+) -> None:
+    del case
+    checkout = _write_fake_checkout(tmp_path / "upstream")
+    (checkout / "mode.txt").write_text("hang", encoding="utf-8")
+    payload = _raw_login_payload(checkout, tmp_path / "runtime")
+    process = _spawn_raw_login_child(checkout)
+    pids: dict[str, int] = {}
+    try:
+        assert process.stdin is not None
+        process.stdin.write(runner_module._login_request_frame(payload))
+        process.stdin.write(runner_module._CONTROL_START)
+        process.stdin.flush()
+        pids = _wait_for_json(checkout / "pids.json")
+        assert process.poll() is None
+        if control is None:
+            process.stdin.close()
+        else:
+            process.stdin.write(control)
+            process.stdin.flush()
+        process.wait(timeout=10)
+        _wait_for_pids_to_exit(*(int(value) for value in pids.values()))
+        assert not (checkout / "content-side-effect").exists()
+    finally:
+        with contextlib.suppress(OSError, ValueError):
+            if process.stdin is not None:
+                process.stdin.close()
+        _force_close_raw_tree(process)
+        for process_id in pids.values():
+            _force_close_pid_tree(int(process_id))
+        if process.stdout is not None:
+            process.stdout.close()
+
+
+def test_start_frame_is_sent_only_after_parent_tree_attachment(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    probe = tmp_path / "handshake"
+    frame = b'{"schema_version":1,"status":"failed"}'
+    result_wire = len(frame).to_bytes(runner_module._LOGIN_RESULT_LENGTH_BYTES, "big") + frame
+
+    def spawn_helper(*_args: object, **_kwargs: object) -> subprocess.Popen[bytes]:
+        code = (
+            "from pathlib import Path; import sys; "
+            f"probe=Path({str(probe)!r}); probe.with_suffix('.prestart').write_text('waiting'); "
+            "size=int.from_bytes(sys.stdin.buffer.read(4),'big'); sys.stdin.buffer.read(size); "
+            f"control=sys.stdin.buffer.readline(64); expected={runner_module._CONTROL_START!r}; "
+            "probe.with_suffix('.poststart').write_text('started') if control == expected else None; "
+            f"sys.stdout.buffer.write({result_wire!r}); sys.stdout.buffer.flush(); raise SystemExit(0)"
+        )
+        common: dict[str, object] = {
+            "stdin": subprocess.PIPE,
+            "stdout": subprocess.PIPE,
+            "stderr": subprocess.DEVNULL,
+            "close_fds": True,
+        }
+        if os.name == "nt":
+            return subprocess.Popen(
+                (sys.executable, "-I", "-u", "-c", code),
+                creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
+                **common,  # type: ignore[arg-type]
+            )
+        return subprocess.Popen(
+            (sys.executable, "-I", "-u", "-c", code),
+            start_new_session=True,
+            **common,  # type: ignore[arg-type]
+        )
+
+    monkeypatch.setattr(runner_module, "_spawn_login_child", spawn_helper)
+    original_attach = runner_module._WindowsJob.attach.__func__
+    observed_prestart = False
+
+    def delayed_attach(
+        cls: type[runner_module._WindowsJob],
+        process: subprocess.Popen[bytes],
+    ) -> runner_module._WindowsJob | None:
+        nonlocal observed_prestart
+        deadline = time.monotonic() + 5
+        while not probe.with_suffix(".prestart").exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        observed_prestart = probe.with_suffix(".prestart").is_file()
+        assert not probe.with_suffix(".poststart").exists()
+        return original_attach(cls, process)
+
+    monkeypatch.setattr(runner_module._WindowsJob, "attach", classmethod(delayed_attach))
+    result = MediaCrawlerLoginProcessRunner._execute(
+        Path(sys.executable),
+        tmp_path,
+        b"{}",
+        _request(Platform.XHS, MediaCrawlerLoginMode.INTERACTIVE_QR),
+        0,
+        None,
+        UPSTREAM_SHA,
+    )
+
+    assert observed_prestart
+    assert probe.with_suffix(".poststart").is_file()
+    assert result.status is MediaCrawlerLoginStatus.FAILED
+
+
+@pytest.mark.skipif(os.name != "nt", reason="outer Job attach failure is Windows-specific")
+def test_windows_outer_job_attach_failure_never_sends_start_or_imports_upstream(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    checkout = _write_fake_checkout(tmp_path / "upstream")
+    monkeypatch.setattr(runner_module._WindowsJob, "attach", classmethod(lambda _cls, _process: None))
+
+    result = _runner(checkout, tmp_path / "runtime").run(_request(Platform.XHS, MediaCrawlerLoginMode.INTERACTIVE_QR))
+
+    assert result.status is MediaCrawlerLoginStatus.START_FAILED
+    assert not (checkout / "upstream-imported").exists()
+
+
+def test_spawn_or_start_write_failure_never_imports_upstream(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    checkout = _write_fake_checkout(tmp_path / "upstream")
+    runner = _runner(checkout, tmp_path / "runtime")
+
+    def fail_spawn(*_args: object, **_kwargs: object) -> subprocess.Popen[bytes]:
+        raise OSError("injected spawn failure")
+
+    monkeypatch.setattr(runner_module, "_spawn_login_child", fail_spawn)
+    spawn_failed = runner.run(_request(Platform.XHS, MediaCrawlerLoginMode.INTERACTIVE_QR))
+    assert spawn_failed.status is MediaCrawlerLoginStatus.START_FAILED
+    assert not (checkout / "upstream-imported").exists()
+
+    monkeypatch.undo()
+    monkeypatch.setattr(runner_module, "_write_login_start", lambda _process, _payload: False)
+    start_failed = runner.run(_request(Platform.XHS, MediaCrawlerLoginMode.INTERACTIVE_QR))
+    assert start_failed.status is MediaCrawlerLoginStatus.START_FAILED
+    assert not (checkout / "upstream-imported").exists()
+
+
+def test_hard_parent_death_stops_login_tree_and_releases_account_lock(tmp_path: Path) -> None:
+    checkout = _write_fake_checkout(tmp_path / "upstream")
+    (checkout / "mode.txt").write_text("hang", encoding="utf-8")
+    integration_root = (tmp_path / "runtime").resolve()
+    parent_probe = tmp_path / "parent.json"
+    context = multiprocessing.get_context("spawn")
+    parent = context.Process(
+        target=_run_hard_death_login_parent,
+        args=(checkout, integration_root, parent_probe),
+    )
+    pids: dict[str, int] = {}
+    parent.start()
+    try:
+        parent_pid = _wait_for_json(parent_probe)["parent"]
+        pids = _wait_for_json(checkout / "pids.json", timeout=20)
+        account_root = build_run_paths(integration_root, Platform.XHS, ACCOUNT_ID, ACCOUNT_ID).account_root
+        contender = _AccountFileLock(account_root)
+        assert not contender.acquire()
+
+        _hard_kill_parent(parent_pid)
+        parent.join(timeout=5)
+        assert parent.exitcode is not None
+        _wait_for_pids_to_exit(*(int(value) for value in pids.values()))
+
+        deadline = time.monotonic() + 5
+        acquired = False
+        while not acquired and time.monotonic() < deadline:
+            acquired = contender.acquire()
+            if not acquired:
+                time.sleep(0.05)
+        assert acquired
+        contender.release()
+    finally:
+        if parent.is_alive():
+            parent.kill()
+            parent.join(timeout=5)
+        for process_id in pids.values():
+            _force_close_pid_tree(int(process_id))
+
+
+def test_hard_parent_death_after_result_frame_stops_guardian_tree_before_lock_release(tmp_path: Path) -> None:
+    checkout = _write_fake_checkout(tmp_path / "upstream")
+    (checkout / "mode.txt").write_text("linger_after_result", encoding="utf-8")
+    integration_root = (tmp_path / "runtime").resolve()
+    parent_probe = tmp_path / "parent.json"
+    close_probe = tmp_path / "parent-close.json"
+    context = multiprocessing.get_context("spawn")
+    parent = context.Process(
+        target=_run_hard_death_after_login_result,
+        args=(checkout, integration_root, parent_probe, close_probe),
+    )
+    pids: dict[str, int] = {}
+    parent.start()
+    try:
+        parent_pid = _wait_for_json(parent_probe)["parent"]
+        pids = _wait_for_json(checkout / "pids.json", timeout=20)
+        assert _wait_for_json(close_probe, timeout=20)["parent"] == parent_pid
+        assert all(_pid_is_alive(int(value)) for value in pids.values())
+
+        account_root = build_run_paths(integration_root, Platform.XHS, ACCOUNT_ID, ACCOUNT_ID).account_root
+        before_kill = _AccountFileLock(account_root)
+        assert not before_kill.acquire()
+
+        _hard_kill_parent(parent_pid)
+        parent.join(timeout=5)
+        assert parent.exitcode is not None
+
+        deadline = time.monotonic() + 10
+        while any(_pid_is_alive(int(value)) for value in pids.values()) and time.monotonic() < deadline:
+            contender = _AccountFileLock(account_root)
+            if contender.acquire():
+                still_alive = any(_pid_is_alive(int(value)) for value in pids.values())
+                contender.release()
+                assert not still_alive, "account lock was reusable while the guarded login tree still lived"
+                break
+            time.sleep(0.02)
+        _wait_for_pids_to_exit(*(int(value) for value in pids.values()))
+
+        released = _AccountFileLock(account_root)
+        assert released.acquire()
+        released.release()
+    finally:
+        if parent.is_alive():
+            parent.kill()
+            parent.join(timeout=5)
+        for process_id in pids.values():
+            _force_close_pid_tree(int(process_id))
+
+
+@pytest.mark.parametrize(
     ("mode", "expected"),
     [
         ("hang", MediaCrawlerLoginStatus.TIMED_OUT),
@@ -429,7 +913,7 @@ def test_timeout_and_cancellation_join_the_complete_process_tree(
     (checkout / "mode.txt").write_text(mode, encoding="utf-8")
     runner = _runner(checkout, tmp_path / "runtime")
     cancellation = threading.Event()
-    timeout = 0.5 if mode == "hang" else 20.0
+    timeout = 2.0 if mode == "hang" else 20.0
     request = _request(Platform.XHS, MediaCrawlerLoginMode.INTERACTIVE_QR, timeout_seconds=timeout)
 
     with ThreadPoolExecutor(max_workers=1) as pool:
@@ -454,7 +938,7 @@ def test_timeout_and_cancellation_join_the_complete_process_tree(
     ("frame", "returncode", "expected"),
     [
         (b'{"schema_version":1,"status":"failed"}', 0, MediaCrawlerLoginStatus.FAILED),
-        (b'{"schema_version":1,"status":"authenticated"}', 20, MediaCrawlerLoginStatus.RESULT_INVALID),
+        (b'{"schema_version":1,"status":"authenticated"}', 20, MediaCrawlerLoginStatus.AUTHENTICATED),
         (
             b'{"schema_version":1,"status":"failed"}{"schema_version":1,"status":"authenticated"}',
             0,
@@ -470,10 +954,13 @@ def test_parent_accepts_only_one_bounded_explicit_result_frame(
     returncode: int,
     expected: MediaCrawlerLoginStatus,
 ) -> None:
+    result_wire = len(frame).to_bytes(runner_module._LOGIN_RESULT_LENGTH_BYTES, "big") + frame
+
     def spawn_helper(*_args: object, **_kwargs: object) -> subprocess.Popen[bytes]:
         code = (
-            "import sys; sys.stdin.buffer.read(); "
-            f"sys.stdout.buffer.write({frame!r}); sys.stdout.buffer.flush(); raise SystemExit({returncode})"
+            "import sys; size=int.from_bytes(sys.stdin.buffer.read(4),'big'); "
+            "sys.stdin.buffer.read(size); sys.stdin.buffer.readline(64); "
+            f"sys.stdout.buffer.write({result_wire!r}); sys.stdout.buffer.flush(); raise SystemExit({returncode})"
         )
         if os.name == "nt":
             return subprocess.Popen(
@@ -507,3 +994,106 @@ def test_parent_accepts_only_one_bounded_explicit_result_frame(
     )
 
     assert result.status is expected
+
+
+@pytest.mark.parametrize(
+    "wire",
+    [
+        b"",
+        (0).to_bytes(runner_module._LOGIN_RESULT_LENGTH_BYTES, "big"),
+        (runner_module.MAX_LOGIN_RESULT_BYTES + 1).to_bytes(runner_module._LOGIN_RESULT_LENGTH_BYTES, "big"),
+        (8).to_bytes(runner_module._LOGIN_RESULT_LENGTH_BYTES, "big") + b"short",
+        (
+            len(b'{"schema_version":1,"status":"failed"}').to_bytes(
+                runner_module._LOGIN_RESULT_LENGTH_BYTES,
+                "big",
+            )
+            + b'{"schema_version":1,"status":"failed"}'
+            + b"trailing"
+        ),
+    ],
+)
+def test_parent_rejects_missing_invalid_or_appended_result_framing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    wire: bytes,
+) -> None:
+    def spawn_helper(*_args: object, **_kwargs: object) -> subprocess.Popen[bytes]:
+        code = (
+            "import sys; size=int.from_bytes(sys.stdin.buffer.read(4),'big'); "
+            "sys.stdin.buffer.read(size); sys.stdin.buffer.readline(64); "
+            f"sys.stdout.buffer.write({wire!r}); sys.stdout.buffer.flush(); raise SystemExit(0)"
+        )
+        common: dict[str, object] = {
+            "stdin": subprocess.PIPE,
+            "stdout": subprocess.PIPE,
+            "stderr": subprocess.DEVNULL,
+            "close_fds": True,
+        }
+        if os.name == "nt":
+            return subprocess.Popen(
+                (sys.executable, "-I", "-u", "-c", code),
+                creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
+                **common,  # type: ignore[arg-type]
+            )
+        return subprocess.Popen(
+            (sys.executable, "-I", "-u", "-c", code),
+            start_new_session=True,
+            **common,  # type: ignore[arg-type]
+        )
+
+    monkeypatch.setattr(runner_module, "_spawn_login_child", spawn_helper)
+    result = MediaCrawlerLoginProcessRunner._execute(
+        Path(sys.executable),
+        tmp_path,
+        b"{}",
+        _request(Platform.XHS, MediaCrawlerLoginMode.INTERACTIVE_QR),
+        0,
+        None,
+        UPSTREAM_SHA,
+    )
+
+    assert result.status is MediaCrawlerLoginStatus.RESULT_INVALID
+
+
+def test_parent_bounds_a_no_frame_child_by_deadline_and_joins_it(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def spawn_helper(*_args: object, **_kwargs: object) -> subprocess.Popen[bytes]:
+        code = (
+            "import os, sys, time; size=int.from_bytes(sys.stdin.buffer.read(4),'big'); "
+            "sys.stdin.buffer.read(size); sys.stdin.buffer.readline(64); os.close(1); time.sleep(60)"
+        )
+        common: dict[str, object] = {
+            "stdin": subprocess.PIPE,
+            "stdout": subprocess.PIPE,
+            "stderr": subprocess.DEVNULL,
+            "close_fds": True,
+        }
+        if os.name == "nt":
+            return subprocess.Popen(
+                (sys.executable, "-I", "-u", "-c", code),
+                creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
+                **common,  # type: ignore[arg-type]
+            )
+        return subprocess.Popen(
+            (sys.executable, "-I", "-u", "-c", code),
+            start_new_session=True,
+            **common,  # type: ignore[arg-type]
+        )
+
+    monkeypatch.setattr(runner_module, "_spawn_login_child", spawn_helper)
+    started = time.monotonic()
+    result = MediaCrawlerLoginProcessRunner._execute(
+        Path(sys.executable),
+        tmp_path,
+        b"{}",
+        _request(Platform.XHS, MediaCrawlerLoginMode.INTERACTIVE_QR, timeout_seconds=0.5),
+        0,
+        None,
+        UPSTREAM_SHA,
+    )
+
+    assert result.status is MediaCrawlerLoginStatus.TIMED_OUT
+    assert time.monotonic() - started < 5

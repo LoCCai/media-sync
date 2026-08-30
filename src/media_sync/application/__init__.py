@@ -4,6 +4,8 @@ from media_sync.application.authentication import (
     AccountLoginError,
     AccountLoginOutcome,
     AccountLoginRequest,
+    LoginSessionReconciliationSummary,
+    MediaCrawlerLoginSessionReconciler,
     MediaCrawlerQrLoginService,
 )
 from media_sync.application.downloads import (
@@ -62,6 +64,8 @@ __all__ = [
     "EmbyExportService",
     "LazyMediaCrawlerLocatorRefresher",
     "LocalPipelineRuntimeConfig",
+    "LoginSessionReconciliationSummary",
+    "MediaCrawlerLoginSessionReconciler",
     "MediaCrawlerOutputRejected",
     "MediaCrawlerQrLoginService",
     "NormalizedMediaCrawlerOutput",

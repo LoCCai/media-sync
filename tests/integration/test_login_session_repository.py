@@ -13,11 +13,13 @@ import pytest
 from alembic import command
 from alembic.config import Config
 from sqlalchemy import func, select, update
+from sqlalchemy.exc import IntegrityError
 
 from media_sync.infrastructure.db import (
     AccountLoginConflictError,
     AccountRepository,
     Database,
+    ExpiredLoginSessionCandidate,
     LoginSessionConflictError,
     LoginSessionRepository,
     LoginSessionState,
@@ -559,3 +561,238 @@ def test_unknown_session_and_account_auth_cas_are_fixed_zero_write_errors(databa
             )
         account = session.get(Account, account_id)
         assert account is not None and (account.auth_status, account.auth_updated_at) == ("required", NOW)
+
+
+@pytest.mark.parametrize("waiting", [False, True], ids=["pending", "waiting-user"])
+def test_expired_recovery_includes_exact_deadline_and_atomically_releases_account(
+    database: Database,
+    waiting: bool,
+) -> None:
+    account_id = _seed_account(database)
+    with database.session() as session:
+        repository = LoginSessionRepository(session)
+        started = repository.start_mediacrawler_qr(account_id, expires_at=EXPIRY, at=NOW)
+        if waiting:
+            started = repository.mark_waiting_user(started.id, at=NOW + timedelta(seconds=1))
+
+    with database.session() as session:
+        repository = LoginSessionRepository(session)
+        assert (
+            repository.list_expired_mediacrawler_qr_candidates(
+                at=EXPIRY - timedelta(microseconds=1),
+            )
+            == []
+        )
+        candidates = repository.list_expired_mediacrawler_qr_candidates(at=EXPIRY)
+        assert candidates == [
+            ExpiredLoginSessionCandidate(
+                login_session_id=started.id,
+                account_id=account_id,
+                platform="bili",
+                expected_status=started.status,
+                expected_expires_at=EXPIRY,
+            )
+        ]
+
+    with database.session() as session:
+        recovered = LoginSessionRepository(session).recover_expired_mediacrawler_qr(
+            candidates[0],
+            at=EXPIRY,
+        )
+        account = session.get(Account, account_id)
+        assert (recovered.status, recovered.completed_at) == ("expired", EXPIRY)
+        assert account is not None
+        assert (account.login_method, account.auth_status, account.auth_updated_at) == (
+            "qr",
+            "required",
+            EXPIRY,
+        )
+
+
+@pytest.mark.parametrize(
+    ("drift", "value"),
+    [
+        ("session_status", "cancelled"),
+        ("session_expiry", EXPIRY + timedelta(seconds=1)),
+        ("account_platform", "xhs"),
+        ("account_status", "required"),
+        ("credential_ref", "env:MEDIA_SYNC_RECOVERY_DRIFT_SENTINEL"),
+        ("profile_path", "legacy-recovery-profile"),
+        ("active_sibling", None),
+    ],
+)
+def test_expired_recovery_exact_candidate_rejects_drift_without_partial_write(
+    database: Database,
+    drift: str,
+    value: object,
+) -> None:
+    account_id = _seed_account(database)
+    login_session_id = _start_and_wait(database, account_id)
+    with database.session() as session:
+        candidate = LoginSessionRepository(session).list_expired_mediacrawler_qr_candidates(at=EXPIRY)[0]
+
+    with database.session() as session:
+        if drift == "session_status":
+            session.execute(
+                update(LoginSession)
+                .where(LoginSession.id == login_session_id)
+                .values(status=value, completed_at=EXPIRY)
+            )
+        elif drift == "session_expiry":
+            session.execute(update(LoginSession).where(LoginSession.id == login_session_id).values(expires_at=value))
+        elif drift in {"account_platform", "account_status"}:
+            field = "platform" if drift == "account_platform" else "auth_status"
+            session.execute(update(Account).where(Account.id == account_id).values(**{field: value}))
+        elif drift in {"credential_ref", "profile_path"}:
+            session.execute(update(Account).where(Account.id == account_id).values(**{drift: value}))
+        else:
+            LoginSessionRepository(session).create(
+                account_id=account_id,
+                method="qr",
+                challenge_kind="qr",
+                expires_at=EXPIRY,
+            )
+
+    with database.session() as session, pytest.raises(LoginSessionConflictError):
+        LoginSessionRepository(session).recover_expired_mediacrawler_qr(candidate, at=EXPIRY)
+
+    with database.session() as session:
+        stored = session.get(LoginSession, login_session_id)
+        account = session.get(Account, account_id)
+        assert stored is not None and account is not None
+        if drift != "session_status":
+            assert stored.status == "waiting_user"
+        if drift != "account_status":
+            assert account.auth_status == "authenticating"
+
+
+def test_expired_recovery_is_idempotently_fenced_and_old_completion_cannot_overwrite_successor(
+    database: Database,
+) -> None:
+    account_id = _seed_account(database)
+    old_session_id = _start_and_wait(database, account_id)
+    with database.session() as session:
+        repository = LoginSessionRepository(session)
+        candidate = repository.list_expired_mediacrawler_qr_candidates(at=EXPIRY)[0]
+        repository.recover_expired_mediacrawler_qr(candidate, at=EXPIRY)
+        with pytest.raises(LoginSessionConflictError):
+            repository.recover_expired_mediacrawler_qr(candidate, at=EXPIRY)
+        successor = repository.start_mediacrawler_qr(
+            account_id,
+            expires_at=EXPIRY + timedelta(minutes=5),
+            at=EXPIRY + timedelta(seconds=1),
+        )
+        with pytest.raises(LoginSessionConflictError):
+            repository.succeed_mediacrawler_qr(old_session_id, at=EXPIRY + timedelta(seconds=2))
+        account = session.get(Account, account_id)
+        old_session = session.get(LoginSession, old_session_id)
+        new_session = session.get(LoginSession, successor.id)
+        assert account is not None and account.auth_status == "authenticating"
+        assert old_session is not None and old_session.status == "expired"
+        assert new_session is not None and new_session.status == "pending"
+
+
+def test_two_recovery_transactions_have_one_cas_winner(database: Database) -> None:
+    account_id = _seed_account(database)
+    _start_and_wait(database, account_id)
+    with database.session() as session:
+        candidate = LoginSessionRepository(session).list_expired_mediacrawler_qr_candidates(at=EXPIRY)[0]
+    barrier = Barrier(2)
+
+    def contend() -> str:
+        barrier.wait(timeout=5)
+        try:
+            with database.session() as session:
+                LoginSessionRepository(session).recover_expired_mediacrawler_qr(candidate, at=EXPIRY)
+            return "recovered"
+        except LoginSessionConflictError:
+            return "conflict"
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        outcomes = list(executor.map(lambda _index: contend(), range(2)))
+    assert sorted(outcomes) == ["conflict", "recovered"]
+
+
+def test_account_update_failure_rolls_back_recovered_session_savepoint(database: Database) -> None:
+    account_id = _seed_account(database)
+    login_session_id = _start_and_wait(database, account_id)
+    with database.session() as session:
+        candidate = LoginSessionRepository(session).list_expired_mediacrawler_qr_candidates(at=EXPIRY)[0]
+        session.connection().exec_driver_sql(
+            """
+            CREATE TRIGGER reject_login_recovery
+            BEFORE UPDATE OF auth_status ON accounts
+            WHEN OLD.auth_status = 'authenticating' AND NEW.auth_status = 'required'
+            BEGIN
+                SELECT RAISE(ABORT, 'recovery rejected');
+            END
+            """
+        )
+
+    with pytest.raises(IntegrityError), database.session() as session:
+        LoginSessionRepository(session).recover_expired_mediacrawler_qr(candidate, at=EXPIRY)
+
+    with database.session() as session:
+        stored = session.get(LoginSession, login_session_id)
+        account = session.get(Account, account_id)
+        assert stored is not None and (stored.status, stored.completed_at) == ("waiting_user", None)
+        assert account is not None and account.auth_status == "authenticating"
+
+
+def test_expired_candidate_cursor_is_a_strict_validated_expiry_and_identity_pair(database: Database) -> None:
+    account_ids = [
+        _seed_account(database, auth_status="unknown"),
+        _seed_account(database, auth_status="required"),
+        _seed_account(database, auth_status="expired"),
+    ]
+    with database.session() as session:
+        repository = LoginSessionRepository(session)
+        repository.start_mediacrawler_qr(account_ids[0], expires_at=EXPIRY, at=NOW)
+        repository.start_mediacrawler_qr(account_ids[1], expires_at=EXPIRY, at=NOW)
+        repository.start_mediacrawler_qr(
+            account_ids[2],
+            expires_at=EXPIRY + timedelta(seconds=1),
+            at=NOW,
+        )
+
+    at = EXPIRY + timedelta(seconds=1)
+    with database.session() as session:
+        repository = LoginSessionRepository(session)
+        candidates = repository.list_expired_mediacrawler_qr_candidates(at=at, limit=10)
+        assert len(candidates) == 3
+        first = candidates[0]
+        after_first = repository.list_expired_mediacrawler_qr_candidates(
+            at=at,
+            limit=10,
+            after=(first.expected_expires_at, first.login_session_id),
+        )
+        assert after_first == candidates[1:]
+        last = candidates[-1]
+        assert (
+            repository.list_expired_mediacrawler_qr_candidates(
+                at=at,
+                after=(last.expected_expires_at, last.login_session_id),
+            )
+            == []
+        )
+
+        with pytest.raises(ValueError, match="timezone-aware"):
+            repository.list_expired_mediacrawler_qr_candidates(
+                at=at,
+                after=(first.expected_expires_at.replace(tzinfo=None), first.login_session_id),
+            )
+        with pytest.raises(ValueError, match="canonical UUID"):
+            repository.list_expired_mediacrawler_qr_candidates(
+                at=at,
+                after=(first.expected_expires_at, "not-a-session-id"),
+            )
+        with pytest.raises(ValueError, match="canonical UUID"):
+            repository.list_expired_mediacrawler_qr_candidates(
+                at=at,
+                after=(first.expected_expires_at, first.login_session_id.upper()),
+            )
+        with pytest.raises(ValueError, match="tuple"):
+            repository.list_expired_mediacrawler_qr_candidates(
+                at=at,
+                after=(first.expected_expires_at,),  # type: ignore[arg-type]
+            )

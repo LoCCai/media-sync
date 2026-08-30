@@ -7,6 +7,8 @@ import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from typing import Protocol
 from uuid import UUID
 
 from media_sync.domain import AuthStatus, Platform
@@ -14,6 +16,7 @@ from media_sync.infrastructure.db import (
     AccountLoginConflictError,
     AccountRepository,
     Database,
+    ExpiredLoginSessionCandidate,
     LoginSessionConflictError,
     LoginSessionRepository,
     LoginSessionState,
@@ -21,6 +24,7 @@ from media_sync.infrastructure.db import (
     RepositoryError,
 )
 from media_sync.integrations.mediacrawler import (
+    MediaCrawlerAccountLock,
     MediaCrawlerLoginMode,
     MediaCrawlerLoginRequest,
     MediaCrawlerLoginResult,
@@ -116,8 +120,168 @@ class _AccountLoginScope:
     platform: Platform
 
 
+@dataclass(frozen=True, slots=True)
+class LoginSessionReconciliationSummary:
+    """Fixed, redaction-safe counts from one bounded reconciliation pass."""
+
+    scanned: int
+    recovered: int
+    busy: int
+    conflicted: int
+
+
+class _AccountLock(Protocol):
+    def acquire(self) -> bool: ...
+
+    def release(self) -> None: ...
+
+
+_AccountLockFactory = Callable[[Path, Platform, UUID], _AccountLock]
+
+
 def _utc_now() -> datetime:
     return datetime.now(UTC)
+
+
+class MediaCrawlerLoginSessionReconciler:
+    """Recover deadline-expired login ownership under the shared profile lock."""
+
+    def __init__(
+        self,
+        database: Database,
+        *,
+        integration_root: Path,
+        clock: Callable[[], datetime] = _utc_now,
+        lock_factory: _AccountLockFactory = MediaCrawlerAccountLock,
+    ) -> None:
+        if not isinstance(database, Database):
+            raise TypeError("database must be a Database")
+        if not isinstance(integration_root, Path):
+            raise TypeError("integration_root must be a Path")
+        if not callable(clock):
+            raise TypeError("clock must be callable")
+        if not callable(lock_factory):
+            raise TypeError("lock_factory must be callable")
+        self._database = database
+        self._integration_root = integration_root.expanduser().resolve()
+        self._clock = clock
+        self._lock_factory = lock_factory
+        self._sweep_lock = threading.Lock()
+        self._sweep_cursor: tuple[datetime, str] | None = None
+
+    def sweep(self, *, limit: int = 100) -> LoginSessionReconciliationSummary:
+        """Reconcile at most ``limit`` public candidate identities."""
+
+        with self._sweep_lock:
+            at = self._now()
+            candidates = self._list_candidates(
+                at=at,
+                limit=limit,
+                account_id=None,
+                after=self._sweep_cursor,
+            )
+            if not candidates and self._sweep_cursor is not None:
+                candidates = self._list_candidates(
+                    at=at,
+                    limit=limit,
+                    account_id=None,
+                    after=None,
+                )
+            summary = self._recover_candidates(candidates, at=at)
+            if candidates:
+                last = candidates[-1]
+                self._sweep_cursor = last.expected_expires_at, last.login_session_id
+            else:
+                self._sweep_cursor = None
+            return summary
+
+    def reconcile_account(self, account_id: UUID) -> LoginSessionReconciliationSummary:
+        """Reconcile the one current expired attempt for an exact account."""
+
+        if not isinstance(account_id, UUID):
+            raise ValueError("account_id must be a UUID")
+        at = self._now()
+        candidates = self._list_candidates(
+            at=at,
+            limit=1,
+            account_id=str(account_id),
+            after=None,
+        )
+        return self._recover_candidates(candidates, at=at)
+
+    def _list_candidates(
+        self,
+        *,
+        at: datetime,
+        limit: int,
+        account_id: str | None,
+        after: tuple[datetime, str] | None,
+    ) -> list[ExpiredLoginSessionCandidate]:
+        # End the read-only enumeration transaction before touching any account
+        # lock. Each identity below receives its own fresh write transaction.
+        with self._database.session() as session:
+            return LoginSessionRepository(session).list_expired_mediacrawler_qr_candidates(
+                at=at,
+                limit=limit,
+                account_id=account_id,
+                after=after,
+            )
+
+    def _recover_candidates(
+        self,
+        candidates: list[ExpiredLoginSessionCandidate],
+        *,
+        at: datetime,
+    ) -> LoginSessionReconciliationSummary:
+        recovered = 0
+        busy = 0
+        conflicted = 0
+        for candidate in candidates:
+            try:
+                platform = Platform(candidate.platform)
+                candidate_account_id = UUID(candidate.account_id)
+                account_lock = self._lock_factory(
+                    self._integration_root,
+                    platform,
+                    candidate_account_id,
+                )
+            except (TypeError, ValueError):
+                conflicted += 1
+                continue
+            if not account_lock.acquire():
+                busy += 1
+                continue
+            try:
+                try:
+                    with self._database.session() as session:
+                        LoginSessionRepository(session).recover_expired_mediacrawler_qr(
+                            candidate,
+                            at=at,
+                        )
+                except (
+                    NotFoundError,
+                    AccountLoginConflictError,
+                    LoginSessionConflictError,
+                    RepositoryError,
+                    ValueError,
+                ):
+                    conflicted += 1
+                else:
+                    recovered += 1
+            finally:
+                account_lock.release()
+        return LoginSessionReconciliationSummary(
+            scanned=len(candidates),
+            recovered=recovered,
+            busy=busy,
+            conflicted=conflicted,
+        )
+
+    def _now(self) -> datetime:
+        value = self._clock()
+        if not isinstance(value, datetime) or value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("clock must return a timezone-aware datetime")
+        return value.astimezone(UTC)
 
 
 class MediaCrawlerQrLoginService:
@@ -129,14 +293,18 @@ class MediaCrawlerQrLoginService:
         runner: MediaCrawlerLoginRunner,
         *,
         clock: Callable[[], datetime] = _utc_now,
+        reconciler: MediaCrawlerLoginSessionReconciler | None = None,
     ) -> None:
         if not callable(runner.run):
             raise TypeError("runner must implement the MediaCrawler login boundary")
         if not callable(clock):
             raise TypeError("clock must be callable")
+        if reconciler is not None and not isinstance(reconciler, MediaCrawlerLoginSessionReconciler):
+            raise TypeError("reconciler must be a MediaCrawlerLoginSessionReconciler")
         self._database = database
         self._runner = runner
         self._clock = clock
+        self._reconciler = reconciler
 
     def run(
         self,
@@ -146,6 +314,10 @@ class MediaCrawlerQrLoginService:
     ) -> AccountLoginOutcome:
         """Run one explicit QR attempt; a session starts only after account lock acquisition."""
 
+        if self._reconciler is not None:
+            reconciliation = self._reconciler.reconcile_account(request.account_id)
+            if reconciliation.busy:
+                raise AccountLoginError("account_login_busy")
         scope = self._load_scope(request.account_id)
         integration_request = MediaCrawlerLoginRequest(
             account_id=scope.account_id,
@@ -350,5 +522,7 @@ __all__ = [
     "AccountLoginError",
     "AccountLoginOutcome",
     "AccountLoginRequest",
+    "LoginSessionReconciliationSummary",
+    "MediaCrawlerLoginSessionReconciler",
     "MediaCrawlerQrLoginService",
 ]

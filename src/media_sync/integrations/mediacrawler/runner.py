@@ -1468,10 +1468,14 @@ def _emit_fixed_status(returncode: int) -> None:
         os.write(1, encoded)
 
 
-def _read_control_byte() -> bytes | None:
+def _read_control_chunk(maximum: int) -> bytes | None:
+    """Read at most ``maximum`` bytes without involving buffered stdin."""
+
+    if type(maximum) is not int or maximum < 1:
+        raise ValueError("control read maximum must be a positive integer")
     if os.name != "nt":
         try:
-            value = os.read(0, 1)
+            value = os.read(0, maximum)
         except OSError:
             return None
         return value or None
@@ -1518,20 +1522,25 @@ def _read_control_byte() -> bytes | None:
             if available.value:
                 break
             time.sleep(0.02)
-        buffer = ctypes.create_string_buffer(1)
+        requested = min(maximum, int(available.value))
+        buffer = ctypes.create_string_buffer(requested)
         bytes_read = wintypes.DWORD()
         succeeded = kernel32.ReadFile(
             handle,
             buffer,
-            1,
+            requested,
             ctypes.byref(bytes_read),
             None,
         )
-        if not succeeded or bytes_read.value != 1:
+        if not succeeded or not 0 < bytes_read.value <= requested:
             return None
-        return bytes(buffer.raw)
+        return bytes(buffer.raw[: bytes_read.value])
     except (AttributeError, OSError, TypeError, ValueError):
         return None
+
+
+def _read_control_byte() -> bytes | None:
+    return _read_control_chunk(1)
 
 
 def _read_control_message() -> bytes | None:
@@ -1550,6 +1559,7 @@ def _watch_parent_control(
     cancellation: threading.Event,
     parent_lost: threading.Event,
     windows_job: _WindowsJob | None,
+    result_complete: threading.Event | None = None,
 ) -> None:
     message = _read_control_message()
     cancellation.set()
@@ -1583,6 +1593,17 @@ def _watch_parent_control(
     if process_group != os.getpid():
         # Never signal an ambient caller's process group. The production parent
         # always starts this child as a new session/group leader.
+        return
+    if result_complete is not None and result_complete.is_set():
+        # A result guardian has already closed its result pipe, so no upstream
+        # cleanup remains to be given a cooperative interval.  Killing the
+        # complete owned group in one syscall closes the parent-death window
+        # without first allowing the guardian (and its inherited lock) to exit.
+        with contextlib.suppress(OSError):
+            _signal_process_group(
+                process_group,
+                int(getattr(signal, "SIGKILL", signal.SIGTERM)),
+            )
         return
     with contextlib.suppress(OSError):
         _signal_process_group(process_group, signal.SIGTERM)

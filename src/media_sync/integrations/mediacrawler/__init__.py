@@ -1,5 +1,6 @@
 """License-gated external MediaCrawler process integration."""
 
+from .account_lock import MediaCrawlerAccountLock
 from .bridge import (
     LEGACY_MANIFEST_SCHEMA_VERSION,
     MANIFEST_SCHEMA_VERSION,
@@ -101,6 +102,7 @@ __all__ = [
     "FullHistoryAcknowledgementRequired",
     "JsonlSnapshotFile",
     "LicenseAcknowledgementRequired",
+    "MediaCrawlerAccountLock",
     "MediaCrawlerBridge",
     "MediaCrawlerDetailPayloadRunner",
     "MediaCrawlerDetailProcessRunner",

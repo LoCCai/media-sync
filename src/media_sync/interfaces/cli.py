@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import hmac
 import json
 import math
+import os
 import platform as runtime_platform
 import re
 import shutil
+import signal
 import sys
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
@@ -30,6 +33,7 @@ from media_sync import __version__
 from media_sync.adapters.fake import FakePlatformAdapter
 from media_sync.application import (
     LocalPipelineRuntimeConfig,
+    MediaCrawlerLoginSessionReconciler,
     SubscriptionPipelineError,
     SubscriptionPipelineExecutor,
     SyncRequest,
@@ -127,6 +131,9 @@ from media_sync.scheduler import (
     PipelineSubscriptionClaim,
     PipelineSubscriptionWorker,
     PipelineWorkerResult,
+    ResidentSchedulerSupervisor,
+    ResidentSupervisorConfig,
+    ResidentSupervisorResult,
     SchedulerJobSummary,
     SchedulerRepositoryError,
     SchedulerWorkerResult,
@@ -152,7 +159,7 @@ db_app = typer.Typer(help="Database schema and diagnostic commands.")
 account_app = typer.Typer(help="Platform account commands.")
 subscription_app = typer.Typer(help="Creator subscription commands.")
 sync_app = typer.Typer(help="Subscription synchronization commands.")
-scheduler_app = typer.Typer(help="Bounded durable scheduler commands.")
+scheduler_app = typer.Typer(help="Durable scheduler controls and foreground supervision.")
 scheduler_job_app = typer.Typer(help="Redaction-safe scheduler Job controls.")
 scheduler_lane_app = typer.Typer(help="Persistent scheduler lane controls.")
 mediacrawler_app = typer.Typer(help="License-gated external MediaCrawler bridge commands.")
@@ -567,6 +574,23 @@ def _pipeline_worker_payload(result: PipelineWorkerResult) -> dict[str, object]:
     }
 
 
+def _resident_supervisor_payload(result: ResidentSupervisorResult) -> dict[str, object]:
+    """Return one fixed final summary without Job, lease, path or handler data."""
+
+    return {
+        "status": "stopped" if result.stopped else "completed",
+        "outcome": result.outcome,
+        "cycles": result.cycles,
+        "login_scanned": result.login_scanned,
+        "login_recovered": result.login_recovered,
+        "login_busy": result.login_busy,
+        "login_conflicted": result.login_conflicted,
+        "materialized": result.materialized,
+        "subscription_attempts": result.subscription_attempts,
+        "pipeline_attempts": result.pipeline_attempts,
+    }
+
+
 def _scheduler_lane_payload(lane: LaneSnapshot) -> dict[str, object]:
     policy = lane.policy
     return {
@@ -680,6 +704,145 @@ def _scheduler_runtime() -> Iterator[tuple[Database, DurableSchedulerService]]:
     finally:
         if database is not None:
             database.dispose()
+
+
+def _build_subscription_worker(
+    database: Database,
+    settings: Settings,
+    *,
+    enable_mediacrawler: bool,
+    accept_mediacrawler_license: bool,
+) -> SubscriptionWorker:
+    """Compose the same closed handler registry for bounded and resident workers."""
+
+    handlers: dict[str, SubscriptionHandler] = {"fake": FakeSubscriptionHandler(database)}
+    if enable_mediacrawler:
+        handlers[AdapterName.MEDIACRAWLER.value] = MediaCrawlerScheduledHandler(
+            database,
+            lock_path=settings.mediacrawler_lock_path,
+            integration_root=settings.resolved_mediacrawler_runtime_dir,
+            python_executable=settings.mediacrawler_python_executable,
+            secret_resolver=SecretResolver.local(file_root=settings.resolved_secret_file_dir),
+            enabled=True,
+            license_acknowledged=accept_mediacrawler_license,
+        )
+    return SubscriptionWorker(
+        database,
+        SubscriptionHandlerRegistry(handlers),
+        claim_registered_only=True,
+    )
+
+
+def _build_pipeline_worker(
+    database: Database,
+    settings: Settings,
+    *,
+    worker_id: str,
+    retry_delay_seconds: int,
+    enable_mediacrawler: bool,
+    accept_mediacrawler_license: bool,
+    xhs_detail_reference_ref: str | None,
+) -> PipelineSubscriptionWorker:
+    """Compose one durable pipeline worker with a fixed, scope-validating handler."""
+
+    executor = SubscriptionPipelineExecutor(
+        database,
+        LocalPipelineRuntimeConfig(
+            work_root=settings.job_dir / "downloads",
+            archive_root=settings.archive_dir,
+            export_root=settings.export_dir,
+            export_staging_root=settings.job_dir / "emby-export",
+            mediacrawler_lock_path=settings.mediacrawler_lock_path,
+            mediacrawler_runtime_root=settings.resolved_mediacrawler_runtime_dir,
+            mediacrawler_python_executable=settings.mediacrawler_python_executable,
+            secret_resolver=SecretResolver.local(file_root=settings.resolved_secret_file_dir),
+            enable_mediacrawler=enable_mediacrawler,
+            accept_mediacrawler_license=accept_mediacrawler_license,
+            xhs_detail_reference_ref=xhs_detail_reference_ref,
+            ffprobe_executable=shutil.which("ffprobe"),
+        ),
+    )
+
+    def handle(claim: PipelineSubscriptionClaim) -> PipelineHandlerResult:
+        try:
+            with database.session() as session:
+                subscription = session.get(Subscription, claim.subscription_id)
+                if (
+                    subscription is None
+                    or subscription.account_id != claim.account_id
+                    or subscription.account.platform != claim.platform
+                ):
+                    return PipelineHandlerResult.failure("pipeline_subscription_invalid")
+            outcome = executor.run(
+                UUID(claim.subscription_id),
+                expected_account_id=UUID(claim.account_id),
+                expected_platform=claim.platform,
+                worker_id=f"{worker_id}:{claim.job_id}",
+            )
+            if (
+                str(outcome.selection.subscription_id) != claim.subscription_id
+                or str(outcome.selection.account_id) != claim.account_id
+                or outcome.selection.platform != claim.platform
+            ):
+                return PipelineHandlerResult.failure("pipeline_subscription_invalid")
+        except SubscriptionPipelineError as error:
+            return PipelineHandlerResult.failure(error.code)
+        except AssetDownloadOrchestrationError as error:
+            return PipelineHandlerResult.failure(
+                "pipeline_download_retryable" if error.retryable else "pipeline_download_terminal"
+            )
+        except ExportError as error:
+            return PipelineHandlerResult.failure(
+                "pipeline_export_retryable" if export_error_is_retryable(error.code) else "pipeline_export_terminal"
+            )
+        except (TypeError, ValueError):
+            return PipelineHandlerResult.failure("pipeline_handler_invalid")
+        return PipelineHandlerResult.success()
+
+    return PipelineSubscriptionWorker(
+        database,
+        handle,
+        retry_delay_seconds=retry_delay_seconds,
+    )
+
+
+@contextmanager
+def _resident_stop_signals(supervisor: ResidentSchedulerSupervisor) -> Iterator[None]:
+    """Cooperate on the first signal and hard-exit on a repeated request."""
+
+    previous: dict[signal.Signals, Any] = {}
+    stop_requested = False
+
+    def request_stop(number: int, _frame: Any) -> None:
+        nonlocal stop_requested
+        if stop_requested:
+            # The first signal starts phase-correct drain. A repeated operator
+            # request is deliberately forceful: durable leases and child
+            # parent-liveness fencing own recovery after this process exits.
+            os._exit(128 + int(number))
+        stop_requested = True
+        supervisor.request_stop()
+
+    candidates = (signal.SIGINT, getattr(signal, "SIGTERM", signal.SIGINT))
+    try:
+        for candidate in dict.fromkeys(candidates):
+            try:
+                previous[candidate] = signal.getsignal(candidate)
+                signal.signal(candidate, request_stop)
+            except (OSError, RuntimeError, ValueError):
+                previous.pop(candidate, None)
+        yield
+    finally:
+        for candidate, handler in previous.items():
+            with contextlib.suppress(OSError, RuntimeError, ValueError):
+                signal.signal(candidate, handler)
+
+
+async def _run_resident_supervisor(supervisor: ResidentSchedulerSupervisor) -> ResidentSupervisorResult:
+    """Own temporary signal handlers for one foreground supervisor run."""
+
+    with _resident_stop_signals(supervisor):
+        return await supervisor.run()
 
 
 def _lane_scope(value: SchedulerLaneScope) -> LaneScope:
@@ -1052,7 +1215,11 @@ def login_account(
             login_runner: Any = _UnavailableMediaCrawlerLoginRunner()
         else:
             login_runner = _DeferredMediaCrawlerLoginRunner(settings)
-        outcome = MediaCrawlerQrLoginService(database, login_runner).run(
+        reconciler = MediaCrawlerLoginSessionReconciler(
+            database,
+            integration_root=settings.resolved_mediacrawler_runtime_dir,
+        )
+        outcome = MediaCrawlerQrLoginService(database, login_runner, reconciler=reconciler).run(
             AccountLoginRequest(
                 account_id=account_id,
                 timeout_seconds=timeout_seconds,
@@ -1093,13 +1260,28 @@ def account_login_status(
 ) -> None:
     """Show Account auth and latest login-session state without challenge data."""
 
-    with _database_session() as session:
-        account = AccountRepository(session).get(str(account_id))
-        if account is None:
-            payload = None
-        else:
-            sessions = LoginSessionRepository(session).list_for_account(account.id)
-            payload = _account_login_status_payload(account, sessions[0] if sessions else None)
+    database: Database | None = None
+    try:
+        settings = get_settings()
+        database = Database(settings.resolved_database_url)
+        MediaCrawlerLoginSessionReconciler(
+            database,
+            integration_root=settings.resolved_mediacrawler_runtime_dir,
+        ).reconcile_account(account_id)
+        with database.session() as session:
+            account = AccountRepository(session).get(str(account_id))
+            if account is None:
+                payload = None
+            else:
+                sessions = LoginSessionRepository(session).list_for_account(account.id)
+                payload = _account_login_status_payload(account, sessions[0] if sessions else None)
+    except (RepositoryError, SQLAlchemyError):
+        raise typer.BadParameter("account login status database operation failed safely") from None
+    except Exception:
+        raise typer.BadParameter("account login status failed safely; no unsafe details were emitted") from None
+    finally:
+        if database is not None:
+            database.dispose()
     if payload is None:
         _emit_record(
             _account_login_error_payload(account_id, "account_login_not_found"),
@@ -1308,21 +1490,11 @@ def scheduler_run(
         raise typer.BadParameter("MediaCrawler license acknowledgement requires --enable-mediacrawler")
     settings = get_settings()
     with _scheduler_runtime() as (database, _service):
-        handlers: dict[str, SubscriptionHandler] = {"fake": FakeSubscriptionHandler(database)}
-        if enable_mediacrawler:
-            handlers[AdapterName.MEDIACRAWLER.value] = MediaCrawlerScheduledHandler(
-                database,
-                lock_path=settings.mediacrawler_lock_path,
-                integration_root=settings.resolved_mediacrawler_runtime_dir,
-                python_executable=settings.mediacrawler_python_executable,
-                secret_resolver=SecretResolver.local(file_root=settings.resolved_secret_file_dir),
-                enabled=True,
-                license_acknowledged=accept_mediacrawler_license,
-            )
-        worker = SubscriptionWorker(
+        worker = _build_subscription_worker(
             database,
-            SubscriptionHandlerRegistry(handlers),
-            claim_registered_only=True,
+            settings,
+            enable_mediacrawler=enable_mediacrawler,
+            accept_mediacrawler_license=accept_mediacrawler_license,
         )
         results = asyncio.run(
             worker.run_bounded(
@@ -1337,6 +1509,164 @@ def scheduler_run(
         [_scheduler_worker_payload(result) for result in results],
         json_output=json_output,
         label="scheduler worker results",
+    )
+
+
+@scheduler_app.command("supervise")
+def scheduler_supervise(
+    idle_interval_seconds: Annotated[
+        float,
+        typer.Option(min=0.001, max=3_600.0, help="Idle wait before the next fair resident cycle."),
+    ] = 1.0,
+    login_sweep_limit: Annotated[
+        int,
+        typer.Option(min=1, max=1_000, help="Maximum expired login candidates inspected per cycle."),
+    ] = 100,
+    materialize_limit: Annotated[
+        int,
+        typer.Option(min=1, max=1_000, help="Maximum due subscriptions materialized per cycle."),
+    ] = 100,
+    subscription_jobs_per_cycle: Annotated[
+        int,
+        typer.Option(min=1, max=1_000, help="Maximum sync attempts before yielding to pipeline work."),
+    ] = 1,
+    pipeline_jobs_per_cycle: Annotated[
+        int,
+        typer.Option(min=1, max=1_000, help="Maximum pipeline attempts before the next scheduler cycle."),
+    ] = 1,
+    global_capacity: Annotated[
+        int,
+        typer.Option(min=1, max=1_000, help="Maximum concurrent sync Jobs across local workers."),
+    ] = 1,
+    subscription_lease_seconds: Annotated[
+        int,
+        typer.Option(min=1, max=86_400, help="Lease duration for each subscription sync attempt."),
+    ] = 60,
+    subscription_scan_limit: Annotated[
+        int,
+        typer.Option(min=1, max=1_000, help="Maximum subscription Job candidates scanned per claim."),
+    ] = 100,
+    subscription_heartbeat_interval_seconds: Annotated[
+        float | None,
+        typer.Option(min=0.001, help="Optional sync heartbeat interval shorter than its lease."),
+    ] = None,
+    pipeline_lease_seconds: Annotated[
+        int,
+        typer.Option(min=1, max=86_400, help="Lease duration for one complete pipeline attempt."),
+    ] = 3_600,
+    pipeline_scan_limit: Annotated[
+        int,
+        typer.Option(min=1, max=1_000, help="Maximum pipeline Job candidates scanned per claim."),
+    ] = 100,
+    pipeline_heartbeat_interval_seconds: Annotated[
+        float | None,
+        typer.Option(min=0.001, help="Optional pipeline heartbeat interval shorter than its lease."),
+    ] = None,
+    pipeline_retry_delay_seconds: Annotated[
+        int,
+        typer.Option(min=1, max=86_400, help="Delay before retrying a retryable pipeline failure."),
+    ] = 30,
+    enable_mediacrawler: Annotated[
+        bool,
+        typer.Option(
+            "--enable-mediacrawler",
+            help="Enable MediaCrawler sync and signed-locator refresh for this resident process.",
+        ),
+    ] = False,
+    accept_mediacrawler_license: Annotated[
+        bool,
+        typer.Option(
+            "--accept-mediacrawler-license",
+            help="Acknowledge the pinned non-commercial learning license for this resident process.",
+        ),
+    ] = False,
+    xhs_detail_reference_ref: Annotated[
+        str | None,
+        typer.Option(help="Optional ephemeral secret reference for one XHS signed detail authority."),
+    ] = None,
+    json_output: Annotated[bool, typer.Option("--json", help="Emit one fixed summary after shutdown.")] = False,
+) -> None:
+    """Run the local scheduler, sync and pipeline chain until cooperatively stopped."""
+
+    if accept_mediacrawler_license and not enable_mediacrawler:
+        raise typer.BadParameter("MediaCrawler license acknowledgement requires --enable-mediacrawler")
+    if xhs_detail_reference_ref is not None and not enable_mediacrawler:
+        raise typer.BadParameter("XHS detail reference requires --enable-mediacrawler")
+    for heartbeat, lease, label in (
+        (
+            subscription_heartbeat_interval_seconds,
+            subscription_lease_seconds,
+            "subscription heartbeat interval",
+        ),
+        (pipeline_heartbeat_interval_seconds, pipeline_lease_seconds, "pipeline heartbeat interval"),
+    ):
+        if heartbeat is not None and (not math.isfinite(heartbeat) or heartbeat <= 0 or heartbeat >= lease):
+            raise typer.BadParameter(f"{label} must be finite, positive, and shorter than its lease")
+
+    normalized_xhs_reference = _credential_reference(xhs_detail_reference_ref)
+    database: Database | None = None
+    try:
+        settings = get_settings()
+        database = Database(settings.resolved_database_url)
+        run_identity = f"resident-{uuid4()}"
+        subscription_worker_id = f"{run_identity}:sync"
+        pipeline_worker_id = f"{run_identity}:pipeline"
+        subscription_worker = _build_subscription_worker(
+            database,
+            settings,
+            enable_mediacrawler=enable_mediacrawler,
+            accept_mediacrawler_license=accept_mediacrawler_license,
+        )
+        pipeline_worker = _build_pipeline_worker(
+            database,
+            settings,
+            worker_id=pipeline_worker_id,
+            retry_delay_seconds=pipeline_retry_delay_seconds,
+            enable_mediacrawler=enable_mediacrawler,
+            accept_mediacrawler_license=accept_mediacrawler_license,
+            xhs_detail_reference_ref=normalized_xhs_reference,
+        )
+        reconciler = MediaCrawlerLoginSessionReconciler(
+            database,
+            integration_root=settings.resolved_mediacrawler_runtime_dir,
+        )
+        supervisor = ResidentSchedulerSupervisor(
+            stale_login_sweep=reconciler.sweep,
+            scheduler=DurableSchedulerService(database),
+            subscription_worker=subscription_worker,
+            pipeline_worker=pipeline_worker,
+            subscription_worker_id=subscription_worker_id,
+            pipeline_worker_id=pipeline_worker_id,
+            config=ResidentSupervisorConfig(
+                idle_interval_seconds=idle_interval_seconds,
+                login_sweep_limit=login_sweep_limit,
+                materialize_limit=materialize_limit,
+                subscription_jobs_per_cycle=subscription_jobs_per_cycle,
+                pipeline_jobs_per_cycle=pipeline_jobs_per_cycle,
+                subscription_global_capacity=global_capacity,
+                subscription_lease_seconds=subscription_lease_seconds,
+                subscription_scan_limit=subscription_scan_limit,
+                subscription_heartbeat_interval_seconds=subscription_heartbeat_interval_seconds,
+                pipeline_lease_seconds=pipeline_lease_seconds,
+                pipeline_scan_limit=pipeline_scan_limit,
+                pipeline_heartbeat_interval_seconds=pipeline_heartbeat_interval_seconds,
+            ),
+        )
+        result = asyncio.run(_run_resident_supervisor(supervisor))
+    except (RepositoryError, SchedulerRepositoryError, SQLAlchemyError):
+        raise typer.BadParameter("resident supervisor database operation failed safely") from None
+    except (TypeError, ValueError):
+        raise typer.BadParameter("resident supervisor arguments or durable state were rejected") from None
+    except Exception:
+        raise typer.BadParameter("resident supervisor failed safely; no unsafe details were emitted") from None
+    finally:
+        if database is not None:
+            database.dispose()
+
+    _emit_record(
+        _resident_supervisor_payload(result),
+        json_output=json_output,
+        label="Scheduler supervisor",
     )
 
 
@@ -1408,66 +1738,17 @@ def pipeline_run(
     settings = get_settings()
     database = Database(settings.resolved_database_url)
     try:
-        executor = SubscriptionPipelineExecutor(
+        worker = _build_pipeline_worker(
             database,
-            LocalPipelineRuntimeConfig(
-                work_root=settings.job_dir / "downloads",
-                archive_root=settings.archive_dir,
-                export_root=settings.export_dir,
-                export_staging_root=settings.job_dir / "emby-export",
-                mediacrawler_lock_path=settings.mediacrawler_lock_path,
-                mediacrawler_runtime_root=settings.resolved_mediacrawler_runtime_dir,
-                mediacrawler_python_executable=settings.mediacrawler_python_executable,
-                secret_resolver=SecretResolver.local(file_root=settings.resolved_secret_file_dir),
-                enable_mediacrawler=enable_mediacrawler,
-                accept_mediacrawler_license=accept_mediacrawler_license,
-                xhs_detail_reference_ref=normalized_xhs_reference,
-                ffprobe_executable=shutil.which("ffprobe"),
-            ),
+            settings,
+            worker_id=normalized_worker_id,
+            retry_delay_seconds=retry_delay_seconds,
+            enable_mediacrawler=enable_mediacrawler,
+            accept_mediacrawler_license=accept_mediacrawler_license,
+            xhs_detail_reference_ref=normalized_xhs_reference,
         )
-
-        def handle(claim: PipelineSubscriptionClaim) -> PipelineHandlerResult:
-            try:
-                with database.session() as session:
-                    subscription = session.get(Subscription, claim.subscription_id)
-                    if (
-                        subscription is None
-                        or subscription.account_id != claim.account_id
-                        or subscription.account.platform != claim.platform
-                    ):
-                        return PipelineHandlerResult.failure("pipeline_subscription_invalid")
-                outcome = executor.run(
-                    UUID(claim.subscription_id),
-                    expected_account_id=UUID(claim.account_id),
-                    expected_platform=claim.platform,
-                    worker_id=f"{normalized_worker_id}:{claim.job_id}",
-                )
-                if (
-                    str(outcome.selection.subscription_id) != claim.subscription_id
-                    or str(outcome.selection.account_id) != claim.account_id
-                    or outcome.selection.platform != claim.platform
-                ):
-                    return PipelineHandlerResult.failure("pipeline_subscription_invalid")
-            except SubscriptionPipelineError as error:
-                return PipelineHandlerResult.failure(error.code)
-            except AssetDownloadOrchestrationError as error:
-                return PipelineHandlerResult.failure(
-                    "pipeline_download_retryable" if error.retryable else "pipeline_download_terminal"
-                )
-            except ExportError as error:
-                return PipelineHandlerResult.failure(
-                    "pipeline_export_retryable" if export_error_is_retryable(error.code) else "pipeline_export_terminal"
-                )
-            except (TypeError, ValueError):
-                return PipelineHandlerResult.failure("pipeline_handler_invalid")
-            return PipelineHandlerResult.success()
-
         results = asyncio.run(
-            PipelineSubscriptionWorker(
-                database,
-                handle,
-                retry_delay_seconds=retry_delay_seconds,
-            ).run_bounded(
+            worker.run_bounded(
                 worker_id=normalized_worker_id,
                 max_jobs=max_jobs,
                 lease_seconds=lease_seconds,

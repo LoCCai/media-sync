@@ -7,6 +7,7 @@ import contextlib
 import importlib
 import json
 import os
+import signal
 import stat
 import subprocess
 import sys
@@ -42,10 +43,18 @@ from media_sync.integrations.mediacrawler.policies import (
     build_run_paths,
 )
 from media_sync.integrations.mediacrawler.runner import (
+    _CONTROL_ENV,
+    _CONTROL_START,
+    _CONTROL_VERSION,
+    _COOPERATIVE_STOP_SECONDS,
     AttemptCleanupStatus,
     _AccountFileLock,
+    _close_control,
     _close_process_tree,
+    _read_control_chunk,
+    _read_control_message,
     _stop_child,
+    _watch_parent_control,
     _WindowsJob,
     cleanup_attempt_root,
 )
@@ -54,6 +63,9 @@ LOGIN_RUNNER_SCHEMA_VERSION = 1
 LOGIN_ONLY_CRAWLER_TYPE = "media_sync_login_only"
 MAX_LOGIN_REQUEST_BYTES = 64 * 1024
 MAX_LOGIN_RESULT_BYTES = 4 * 1024
+_LOGIN_REQUEST_LENGTH_BYTES = 4
+_LOGIN_RESULT_LENGTH_BYTES = 4
+_LOGIN_CONTROL_POLL_SECONDS = 0.02
 
 _CHILD_ENV_ALLOWLIST = frozenset(
     {
@@ -111,6 +123,7 @@ _CONTENT_CONFIG_ATTRIBUTES = (
 _CHILD_STATUSES = frozenset(
     {
         MediaCrawlerLoginStatus.AUTHENTICATED,
+        MediaCrawlerLoginStatus.CANCELLED,
         MediaCrawlerLoginStatus.EXPIRED,
         MediaCrawlerLoginStatus.FAILED,
         MediaCrawlerLoginStatus.CONFIGURATION_INVALID,
@@ -240,11 +253,20 @@ class MediaCrawlerLoginProcessRunner:
     ) -> MediaCrawlerLoginResult:
         command = (str(executable), "-I", "-u", "-B", str(Path(__file__).resolve()), "--child")
         environment = {name: value for name, value in os.environ.items() if name.upper() in _CHILD_ENV_ALLOWLIST}
-        environment.update({"PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1", "PYTHONUNBUFFERED": "1"})
+        environment.update(
+            {
+                _CONTROL_ENV: _CONTROL_VERSION,
+                "PYTHONIOENCODING": "utf-8",
+                "PYTHONUTF8": "1",
+                "PYTHONUNBUFFERED": "1",
+            }
+        )
         try:
             process = _spawn_login_child(command, checkout_root, environment, lock_descriptor)
         except OSError:
             return MediaCrawlerLoginResult(MediaCrawlerLoginStatus.START_FAILED, upstream_sha)
+        finally:
+            environment.pop(_CONTROL_ENV, None)
 
         windows_job = _WindowsJob.attach(process)
         if os.name == "nt" and windows_job is None:
@@ -259,7 +281,19 @@ class MediaCrawlerLoginProcessRunner:
         def read_fixed_frame() -> None:
             stream = process.stdout
             try:
-                output.append(stream.read(MAX_LOGIN_RESULT_BYTES + 1) if stream is not None else None)
+                if stream is None:
+                    output.append(None)
+                else:
+                    length_bytes = stream.read(_LOGIN_RESULT_LENGTH_BYTES)
+                    if len(length_bytes) != _LOGIN_RESULT_LENGTH_BYTES:
+                        output.append(None)
+                    else:
+                        length = int.from_bytes(length_bytes, byteorder="big")
+                        if not 0 < length <= MAX_LOGIN_RESULT_BYTES:
+                            output.append(None)
+                        else:
+                            frame = stream.read(length)
+                            output.append(frame if len(frame) == length else None)
             except OSError:
                 output.append(None)
             finally:
@@ -268,23 +302,16 @@ class MediaCrawlerLoginProcessRunner:
         reader = threading.Thread(target=read_fixed_frame, name="media-sync-login-frame", daemon=True)
         tree_closed = False
         disposition: MediaCrawlerLoginStatus | None = None
+        remainder: bytes | None = None
         try:
-            stream = process.stdin
-            if stream is None:
+            if cancellation is not None and cancellation.is_set():
+                disposition = MediaCrawlerLoginStatus.CANCELLED
+                _stop_child(process, windows_job)
+                tree_closed = _close_process_tree(process, windows_job)
+            elif not _write_login_start(process, payload):
                 disposition = MediaCrawlerLoginStatus.START_FAILED
                 _stop_child(process, windows_job)
                 tree_closed = _close_process_tree(process, windows_job)
-            else:
-                try:
-                    stream.write(payload)
-                    stream.flush()
-                except (BrokenPipeError, OSError, ValueError):
-                    disposition = MediaCrawlerLoginStatus.START_FAILED
-                    _stop_child(process, windows_job)
-                    tree_closed = _close_process_tree(process, windows_job)
-                finally:
-                    with contextlib.suppress(OSError, ValueError):
-                        stream.close()
             payload = b""
             reader.start()
             started = time.monotonic()
@@ -294,17 +321,7 @@ class MediaCrawlerLoginProcessRunner:
                     _stop_child(process, windows_job)
                     tree_closed = _close_process_tree(process, windows_job)
                     break
-                if (
-                    output_complete.is_set()
-                    and output
-                    and output[0] is not None
-                    and len(output[0]) > MAX_LOGIN_RESULT_BYTES
-                ):
-                    disposition = MediaCrawlerLoginStatus.RESULT_INVALID
-                    _stop_child(process, windows_job)
-                    tree_closed = _close_process_tree(process, windows_job)
-                    break
-                if process.poll() is not None and output_complete.is_set():
+                if output_complete.is_set():
                     break
                 if time.monotonic() - started >= request.timeout_seconds:
                     disposition = MediaCrawlerLoginStatus.TIMED_OUT
@@ -317,24 +334,32 @@ class MediaCrawlerLoginProcessRunner:
                     cancellation.wait(request.poll_seconds)
         finally:
             payload = b""
+            # A complete bounded result frame hands the child to its guardian.
+            # Closing control tells that guardian to close its descendant group
+            # before this parent releases profile ownership.
+            _close_control(process)
             if not tree_closed:
                 tree_closed = _close_process_tree(process, windows_job)
             reader.join(timeout=5.0)
             if process.stdout is not None:
-                with contextlib.suppress(OSError):
-                    process.stdout.close()
+                try:
+                    if not reader.is_alive():
+                        remainder = process.stdout.read(MAX_LOGIN_RESULT_BYTES + 1)
+                except OSError:
+                    remainder = None
+                finally:
+                    with contextlib.suppress(OSError):
+                        process.stdout.close()
 
-        if not tree_closed or reader.is_alive():
+        if not tree_closed or reader.is_alive() or remainder != b"":
             return MediaCrawlerLoginResult(MediaCrawlerLoginStatus.RESULT_INVALID, upstream_sha)
         if disposition is not None:
             return MediaCrawlerLoginResult(disposition, upstream_sha)
-        if not output or output[0] is None or len(output[0]) > MAX_LOGIN_RESULT_BYTES:
+        if not output or output[0] is None:
             return MediaCrawlerLoginResult(MediaCrawlerLoginStatus.RESULT_INVALID, upstream_sha)
         try:
             child_status = _parse_child_frame(output[0])
         except ValueError:
-            return MediaCrawlerLoginResult(MediaCrawlerLoginStatus.RESULT_INVALID, upstream_sha)
-        if child_status is MediaCrawlerLoginStatus.AUTHENTICATED and process.returncode != 0:
             return MediaCrawlerLoginResult(MediaCrawlerLoginStatus.RESULT_INVALID, upstream_sha)
         return MediaCrawlerLoginResult(child_status, upstream_sha)
 
@@ -373,6 +398,30 @@ def _child_payload(
     if len(payload) > MAX_LOGIN_REQUEST_BYTES:
         raise ValueError("MediaCrawler login request exceeds its fixed limit")
     return payload
+
+
+def _login_request_frame(payload: bytes) -> bytes:
+    """Encode one exact request without using EOF as its boundary."""
+
+    if not isinstance(payload, bytes) or not 0 < len(payload) <= MAX_LOGIN_REQUEST_BYTES:
+        raise ValueError("MediaCrawler login request has an invalid size")
+    return len(payload).to_bytes(_LOGIN_REQUEST_LENGTH_BYTES, byteorder="big") + payload
+
+
+def _write_login_start(process: subprocess.Popen[bytes], payload: bytes) -> bool:
+    """Send the bounded request and START while retaining parent ownership of stdin."""
+
+    stream = process.stdin
+    if stream is None or process.poll() is not None:
+        return False
+    try:
+        frame = _login_request_frame(payload)
+        if stream.write(frame) != len(frame) or stream.write(_CONTROL_START) != len(_CONTROL_START):
+            return False
+        stream.flush()
+    except (BrokenPipeError, OSError, ValueError):
+        return False
+    return True
 
 
 def _spawn_login_child(
@@ -698,40 +747,189 @@ async def _run_upstream(request: _ChildRequest) -> MediaCrawlerLoginStatus:
 
 
 async def _execute_child(request: _ChildRequest) -> MediaCrawlerLoginStatus:
+    return await _execute_controlled_child(request, None)
+
+
+async def _execute_controlled_child(
+    request: _ChildRequest,
+    cancellation: threading.Event | None,
+) -> MediaCrawlerLoginStatus:
+    task: asyncio.Task[MediaCrawlerLoginStatus] | None = None
+
+    async def guarded_upstream() -> MediaCrawlerLoginStatus:
+        try:
+            return await _run_upstream(request)
+        except SystemExit:
+            # Several pinned login implementations use ``sys.exit()`` (code
+            # zero included) for a failed QR challenge. Keep it inside the
+            # task so asyncio cannot promote it to process success.
+            return MediaCrawlerLoginStatus.FAILED
+
     try:
-        return await _run_upstream(request)
+        if cancellation is not None and cancellation.is_set():
+            return MediaCrawlerLoginStatus.CANCELLED
+        task = asyncio.create_task(guarded_upstream())
+        while True:
+            if cancellation is not None and cancellation.is_set():
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await task
+                return MediaCrawlerLoginStatus.CANCELLED
+            done, _pending = await asyncio.wait(
+                {task},
+                timeout=_LOGIN_CONTROL_POLL_SECONDS,
+            )
+            if task in done:
+                return await task
     except _ChildConfigurationError:
         return MediaCrawlerLoginStatus.CONFIGURATION_INVALID
-    except SystemExit:
-        # Several pinned login implementations use ``sys.exit()`` (code zero)
-        # for a failed QR challenge. Process status is never authentication truth.
-        return MediaCrawlerLoginStatus.FAILED
     except BaseException:
         return MediaCrawlerLoginStatus.FAILED
+    finally:
+        if task is not None and not task.done():
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await task
 
 
 def _emit_child_frame(status: MediaCrawlerLoginStatus) -> None:
-    frame = json.dumps(
+    payload = json.dumps(
         {"schema_version": LOGIN_RUNNER_SCHEMA_VERSION, "status": status.value},
         ensure_ascii=True,
         separators=(",", ":"),
     ).encode("ascii")
-    with contextlib.suppress(OSError):
-        os.write(1, frame)
+    frame = len(payload).to_bytes(_LOGIN_RESULT_LENGTH_BYTES, byteorder="big") + payload
+    try:
+        remaining = memoryview(frame)
+        while remaining:
+            written = os.write(1, remaining)
+            if written <= 0:
+                break
+            remaining = remaining[written:]
+    except OSError:
+        pass
+    finally:
+        # The parent recognizes the length-delimited frame without waiting for
+        # process exit.  Close stdout best-effort while this process deliberately
+        # remains alive to retain the inherited account lock.
+        with contextlib.suppress(OSError):
+            os.close(1)
+
+
+def _guard_completed_login_tree(
+    cancellation: threading.Event,
+    parent_lost: threading.Event,
+    control_thread: threading.Thread,
+    child_windows_job: _WindowsJob | None,
+    result_complete: threading.Event,
+) -> None:
+    """Retain process-tree and lock ownership until the parent closes control."""
+
+    while not parent_lost.is_set():
+        control_thread.join()
+        if parent_lost.is_set():
+            break
+        # An explicit CANCEL makes the one-shot watcher return.  Once cleanup
+        # has produced its fixed result, synchronously resume watching so a
+        # later parent death cannot strand descendants during parent teardown.
+        _watch_parent_control(
+            cancellation,
+            parent_lost,
+            child_windows_job,
+            result_complete,
+        )
+
+
+def _read_exact_login_input(size: int) -> bytes:
+    """Read framing and control through one unbuffered descriptor path."""
+
+    if not 0 <= size <= MAX_LOGIN_REQUEST_BYTES:
+        raise _ChildConfigurationError
+    value = bytearray()
+    while len(value) < size:
+        chunk = _read_control_chunk(size - len(value))
+        if chunk is None:
+            raise _ChildConfigurationError
+        value.extend(chunk)
+    return bytes(value)
+
+
+def _read_login_request() -> bytes:
+    length_bytes = _read_exact_login_input(_LOGIN_REQUEST_LENGTH_BYTES)
+    length = int.from_bytes(length_bytes, byteorder="big")
+    if not 0 < length <= MAX_LOGIN_REQUEST_BYTES:
+        raise _ChildConfigurationError
+    return _read_exact_login_input(length)
 
 
 def _child_entry() -> int:
+    control_version = os.environ.pop(_CONTROL_ENV, None)
+    payload = b""
+    cancellation: threading.Event | None = None
+    parent_lost: threading.Event | None = None
+    control_thread: threading.Thread | None = None
+    child_windows_job: _WindowsJob | None = None
+    result_complete = threading.Event()
+    previous_sigterm: Any | None = None
     try:
-        payload = sys.stdin.buffer.read(MAX_LOGIN_REQUEST_BYTES + 1)
-        if len(payload) > MAX_LOGIN_REQUEST_BYTES:
+        if control_version != _CONTROL_VERSION:
+            raise _ChildConfigurationError
+        payload = _read_login_request()
+        if _read_control_message() != _CONTROL_START:
             raise _ChildConfigurationError
         request = _ChildRequest.load(payload)
         payload = b""
+
+        cancellation = threading.Event()
+        parent_lost = threading.Event()
+        if os.name == "nt":
+            child_windows_job = _WindowsJob.attach_current_process()
+            if child_windows_job is None:
+                raise _ChildConfigurationError
+        else:
+            get_process_group = getattr(os, "getpgrp", None)
+            if not callable(get_process_group) or int(get_process_group()) != os.getpid():
+                raise _ChildConfigurationError
+            previous_sigterm = signal.getsignal(signal.SIGTERM)
+
+            def request_cancellation(_number: int, _frame: Any) -> None:
+                assert cancellation is not None
+                cancellation.set()
+
+            signal.signal(signal.SIGTERM, request_cancellation)
+
+        control_thread = threading.Thread(
+            target=_watch_parent_control,
+            args=(cancellation, parent_lost, child_windows_job, result_complete),
+            name="media-sync-login-parent-control",
+            daemon=True,
+        )
+        control_thread.start()
         with _silenced_upstream():
-            status = asyncio.run(_execute_child(request))
+            status = asyncio.run(_execute_controlled_child(request, cancellation))
     except BaseException:
         status = MediaCrawlerLoginStatus.CONFIGURATION_INVALID
+    finally:
+        payload = b""
+        if parent_lost is not None and parent_lost.is_set() and control_thread is not None:
+            control_thread.join(timeout=_COOPERATIVE_STOP_SECONDS + 1.0)
+    if control_thread is not None:
+        # Publish guardian readiness before exposing the complete result frame.
+        # A later control EOF (or hard parent death) must take the immediate
+        # whole-group path rather than a cooperative child-only exit.
+        result_complete.set()
     _emit_child_frame(status)
+    if cancellation is not None and parent_lost is not None and control_thread is not None:
+        _guard_completed_login_tree(
+            cancellation,
+            parent_lost,
+            control_thread,
+            child_windows_job,
+            result_complete,
+        )
+    if previous_sigterm is not None:
+        with contextlib.suppress(ValueError):
+            signal.signal(signal.SIGTERM, previous_sigterm)
     return 0 if status is MediaCrawlerLoginStatus.AUTHENTICATED else 20
 
 

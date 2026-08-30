@@ -68,6 +68,12 @@ from .service import (
     SchedulerWorkerResult,
     SubscriptionWorker,
 )
+from .supervisor import (
+    ResidentSchedulerSupervisor,
+    ResidentSupervisorConfig,
+    ResidentSupervisorOutcome,
+    ResidentSupervisorResult,
+)
 
 __all__ = [
     "PIPELINE_MAX_ATTEMPTS",
@@ -99,6 +105,10 @@ __all__ = [
     "PipelineSubscriptionPayload",
     "PipelineSubscriptionWorker",
     "PipelineWorkerResult",
+    "ResidentSchedulerSupervisor",
+    "ResidentSupervisorConfig",
+    "ResidentSupervisorOutcome",
+    "ResidentSupervisorResult",
     "RetryAfter",
     "RetryPolicy",
     "SchedulerClaim",
