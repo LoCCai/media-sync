@@ -1,37 +1,44 @@
 # Execution 0016 plan / 执行 0016 计划
 
-- Status / 状态：Planned; implementation pending / 已计划；实现待开始
+- Status / 状态：Complete for the frozen offline delivery sequence / 冻结离线交付序列已完成
 - Plan date / 计划日期：2026-08-31
 - Predecessor / 前置：Execution 0015 closeout commit `b105d00`
-- Plan commit / 计划提交：Pending / 待提交
-- Implementation commit / 实现提交：Pending / 待提交
+- Plan commit / 计划提交：`b7bb818`
+- Implementation commit / 实现提交：`a77ca74`
 
-## Delivery sequence / 交付顺序
+## Executed delivery sequence / 已执行交付顺序
 
-1. **Freeze scope and baseline / 冻结范围与基线**
-   - Record the upstream Weibo/Tieba/Zhihu audit and choose Weibo because raw `mblog.pics` is an existing pinned media input, whereas Tieba requires new HTML extraction and Zhihu exposes no stable media contract. / 记录微博/贴吧/知乎上游审计，并选择微博：原始 `mblog.pics` 是锁定版已有媒体输入；贴吧需要新增 HTML 提取，知乎没有稳定媒体契约。
-   - Create these four bilingual records plus docs journal/roadmap entries before source edits. Record the 272-test predecessor gate. / 在源码编辑前创建四份双语记录及文档日志/路线图条目，并记录 272 项前置门禁。
+1. **Freeze scope and baseline / 冻结范围与基线 — COMPLETE**
+   - Audited the locked Weibo, Tieba and Zhihu paths and selected Weibo because raw `mblog.pics` already reaches creator/detail workflows while the pinned JSONL store discards it. Tieba required new HTML extraction and Zhihu exposed no equivalent stable media contract. / 已审计锁定的微博、贴吧与知乎路径；选择微博是因为原始 `mblog.pics` 已进入 creator/detail 工作流，只是在锁定 JSONL store 被丢弃。贴吧需要新增 HTML 提取，知乎没有等价的稳定媒体契约。
+   - Created the four bilingual execution records before source edits and recorded the predecessor gate: `272 passed in 46.92s`. / 在源码编辑前创建四份双语执行记录，并记录前置门禁：`272 passed in 46.92s`。
 
-2. **Add one shared Weibo media shim / 增加共享微博媒体 shim**
-   - Add an integration-owned helper that validates ordinary original numeric-ID `mblog` records, transforms valid flat `pics` dictionaries using the pinned `i1.wp.com/<host>/large/<file>` rule, preserves order and rejects duplicates or opaque shape drift. / 增加由本集成拥有的 helper：校验普通原创 numeric-ID `mblog`，按锁定的 `i1.wp.com/<host>/large/<file>` 规则转换合法扁平 `pics` 字典、保持顺序，并拒绝重复或不透明形状漂移。
-   - Install the helper in both creator runner and detail runner after verified checkout import. Use task-local capture so concurrent upstream calls cannot cross-contaminate records. Keep `.upstream` clean. / 在已验证 checkout 导入后，分别于 creator runner 与 detail runner 安装 helper；使用 task-local捕获，避免并发上游调用交叉污染记录，并保持 `.upstream` 干净。
+2. **Install one shared Weibo media shim / 安装共享微博媒体 shim — COMPLETE**
+   - Added one integration-owned task-local shim and installed it after verified-checkout import in both creator and detail children. It enriches only the transient contents JSONL boundary and leaves `.upstream` untouched. / 新增一个由集成拥有的 task-local shim，并在 creator 与 detail child 导入已验证 checkout 后安装。它只增强瞬态 contents JSONL 边界，保持 `.upstream` 不变。
+   - Frozen the accepted raw shape to canonical positive numeric original posts, no `retweeted_status`, no media `page_info`, unique ordered `pid` entries, source authority `sinaimg.cn` or a subdomain, and static `jpg/jpeg/png/webp` files. All other shapes fail closed. / 把接受的原始形状冻结为规范正整数原创帖子、无 `retweeted_status`、无媒体 `page_info`、唯一有序 `pid` 项、源站仅 `sinaimg.cn` 或其子域，以及静态 `jpg/jpeg/png/webp` 文件；其他形状全部关闭失败。
 
-3. **Normalize and refresh exact image Assets / 归一化并刷新精确图片 Asset**
-   - Parse only the private v1 image field; map one image to `IMAGE`, multiple to `GALLERY`, and generate ordered position-based image Assets. Strip every integration-private field recursively before durable raw is built. / 只解析私有 v1 图片字段；单图映射为 `IMAGE`，多图映射为 `GALLERY`，并生成按 position 排序的图片 Asset；构建持久 raw 前递归移除全部集成私有字段。
-   - Add WB to detail/refresh support for image kind only. Require numeric exact detail IDs and retain exact Account, Subscription, Asset identity and query-free source-hint matching. / 仅为 image kind 把 WB 加入 detail/refresh 支持；要求 numeric 精确 detail ID，并保持精确 Account、Subscription、Asset identity 与无 query source-hint 匹配。
+3. **Normalize and refresh exact image Assets / 归一化并刷新精确图片 Asset — COMPLETE**
+   - Parsed only the private v1 image field, mapped one image to `IMAGE`, multiple images to `GALLERY`, and generated ordered position-based IMAGE Assets. All media-sync private fields are recursively removed before durable raw is built. / 只解析私有 v1 图片字段，把单图映射为 `IMAGE`、多图映射为 `GALLERY`，并生成按 position 排序的 IMAGE Asset；构建持久 raw 前递归移除全部 media-sync 私有字段。
+   - Added WB image-only detail/refresh support. Request construction, resolved reference and child loading require the same canonical plain numeric ID, while refresh retains exact Account, Subscription, content, Asset identity, order and query-free source-hint matching. / 增加 WB 仅 image 的 detail/refresh 支持；请求构造、引用解析与 child 加载都要求同一个规范纯 numeric ID，同时刷新保留精确 Account、Subscription、content、Asset identity、顺序及无 query source-hint 匹配。
 
-4. **Compose the real production path offline / 离线组合真实生产路径**
-   - Extend fake-checkout contracts for creator and detail installation/configuration/cleanup, then prove normalize→SQLite creates Assets and refresh provenance. / 扩展 fake checkout 契约以覆盖 creator/detail 安装、配置与清理，再证明 normalize→SQLite 创建 Asset 与刷新来源。
-   - Add a Weibo-specific E2E using the real application/runtime wiring, fake detail payload, mock public DNS/HTTP, deterministic PNG/JPEG bytes and real controlled image probing. Prove archive plus Emby poster/backdrop/gallery/NFO/source output and zero-work replay. / 新增微博专项 E2E：使用真实 application/runtime 接线、fake detail payload、mock 公网 DNS/HTTP、确定性 PNG/JPEG 字节与真实受控图片探测；证明归档、Emby poster/backdrop/gallery/NFO/source 输出及零工作重放。
+4. **Compose the production path offline / 离线组合生产路径 — COMPLETE**
+   - Extended isolated fake-checkout contracts for creator/detail installation, concurrency isolation, configuration, framing and normal-success cleanup. Normalization plus SQLite proves ordered Assets and exact `AssetRefreshSource` provenance. / 扩展隔离 fake checkout 契约，覆盖 creator/detail 安装、并发隔离、配置、framing 与正常成功清理；归一化加 SQLite 证明有序 Asset 与精确 `AssetRefreshSource` 来源。
+   - Expanded the platform composition E2E to two pictures. Each Asset independently performs exact detail refresh, default-profile public-DNS/HTTP transfer and SHA-256 archive publication; Emby layout receives first-image poster, second-image backdrop, two ordered gallery files, NFO and allowlisted source metadata. Replay performs zero additional work. / 把平台组合 E2E 扩展为双图；每个 Asset 分别执行精确 detail 刷新、默认 profile 公网 DNS/HTTP 传输与 SHA-256 归档发布；Emby 布局接收首图 poster、次图 backdrop、两个有序 gallery 文件、NFO 与白名单 source 元数据；重放不产生额外工作。
 
-5. **Verify, document, commit and push / 验证、记录、提交并推送**
-   - Run focused tests, full pytest, Ruff lint/format, strict mypy, docs/upstream checks, build, diff and retained-artifact audits. / 运行专项测试、完整 pytest、Ruff lint/格式、严格 mypy、文档/上游检查、构建、diff 与保留产物审计。
-   - Update implemented/remaining truth in the execution records, README, roadmap, capability matrix and architecture; keep all live rows `NOT_RUN`. / 在执行记录、README、路线图、能力矩阵与架构中更新已实现/待实现真值；全部真人行保持 `NOT_RUN`。
-   - Create separate bilingual plan, implementation and closeout commits; push `main` and compare local, `origin/main` and GitHub SHAs. / 分别创建双语计划、实现与收尾提交；推送 `main` 并比对本地、`origin/main` 与 GitHub SHA。
+5. **Review and repair / 审查与修复 — COMPLETE**
+   - Independent review found and closed three boundary defects: arbitrary embedded proxy host acceptance, non-static/unknown extension acceptance, and different-but-valid WB numeric detail references. / 独立审查发现并关闭三项边界缺陷：任意代理内嵌源站、非静态/未知扩展名，以及不同但合法的 WB numeric detail reference。
+   - The same review found the one-picture composition evidence too weak for a Gallery claim; the E2E now proves two distinct Assets, downloads, archives and gallery outputs. / 同一审查发现单图组合证据不足以支持 Gallery 声明；E2E 现已证明两个不同 Asset、下载、归档与 gallery 输出。
 
-## Risks and rollback points / 风险与回退点
+6. **Verify implementation / 验证实现 — COMPLETE**
+   - Combined 15-file focused gate: `388 passed in 125.73s`. / 合并 15 文件专项门禁：`388 passed in 125.73s`。
+   - Complete suite: `1251 passed, 1 skipped in 359.38s`; the skip is the Windows-inapplicable POSIX mode-bit case. / 完整套件：`1251 passed, 1 skipped in 359.38s`；跳过项是 Windows 不适用的 POSIX mode-bit 用例。
+   - Ruff check passes; all 228 files are formatted; strict mypy passes 78 source files; both pinned upstream entries verify; `uv build` produces the wheel and source distribution; diff checks pass. / Ruff 静态检查通过；228 个文件格式正确；严格 mypy 通过 78 个源码文件；两个锁定上游条目校验通过；`uv build` 产生 wheel 与源码分发包；diff 检查通过。
 
-- The pinned upstream uses a third-party WordPress image proxy. Offline acceptance proves URL construction and the closed request profile, not proxy uptime, rate limits or service terms. / 锁定上游使用第三方 WordPress 图片代理；离线验收只证明 URL 构造与封闭请求 profile，不证明代理 uptime、限流或服务条款。
-- Creator mode walks full history. Do not weaken the existing explicit acknowledgement or watchdog boundaries. / creator 模式遍历完整历史；不得弱化现有显式确认与 watchdog 边界。
-- A reordered picture list changes position-based identity. Preserve pinned order and record same-note reorder/version-aware replacement as future work. / 图片列表重排会改变基于 position 的 identity；本轮保持锁定顺序，并把同帖重排/版本感知替换记录为后续工作。
-- If the composition exposes a shared defect, repair the smallest common contract and rerun Bilibili/Kuaishou/Douyin regressions; do not expand into Weibo video or live qualification. / 若组合暴露共享缺陷，只修复最小公共契约并重跑 Bilibili/快手/抖音回归；不得扩展到微博视频或真人验收。
+7. **Close out for delivery / 完成交付收尾 — COMPLETE**
+   - Finalized the bilingual truth documents, reran documentation/build/diff checks, audited retained artifacts and prepared the separate bilingual closeout commit. Pushing that commit and reconciling local, `origin/main` and GitHub SHAs are post-commit delivery actions reported in the task handoff. / 已定稿双语真值文档，重跑文档/构建/diff 检查，审计保留产物，并准备独立双语收尾提交。推送该提交并核对本地、`origin/main` 与 GitHub SHA 属于提交后的交付动作，由任务交接结果报告。
+
+## Deferred scope and risks / 延期范围与风险
+
+- Weibo video, GIF/animated-image semantics, long-image handling, media `page_info`, retweets and restricted/live media remain outside this slice. / 微博视频、GIF/动图语义、长图处理、媒体 `page_info`、转发及受限/直播媒体仍不属于本切片。
+- Creator mode still walks full history; explicit `allow_full_history` and outer watchdogs remain mandatory because bounded creator pagination is not implemented. / creator 模式仍遍历完整历史；由于尚未实现有界 creator 分页，显式 `allow_full_history` 与外层 watchdog 仍为强制要求。
+- Offline acceptance proves deterministic proxy URL construction and the closed request profile, not third-party proxy availability, rate limits, service terms or a Sina-direct profile. / 离线验收证明确定性代理 URL 构造与封闭请求 profile，不证明第三方代理可用性、限流、服务条款或新浪直连 profile。
+- Same-ID media replacement detection, injected cleanup-failure quarantine and all live platform/CDN/media-server qualification remain deferred or `NOT_RUN`. / 同 ID 媒体替换检测、注入清理失败 quarantine 及全部真人平台/CDN/媒体服务器验收继续延期或保持 `NOT_RUN`。
