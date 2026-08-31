@@ -1,8 +1,11 @@
 # Execution 0015 plan / 执行 0015 计划
 
-- Status / 状态：Frozen before implementation / 实现前已冻结
+- Status / 状态：Executed within the frozen offline boundary / 已在冻结的离线边界内执行完成
 - Plan date / 计划日期：2026-08-31
+- Completion date / 完成日期：2026-08-31
 - Predecessor / 前置：Execution 0014 closeout commit `6098923`
+- Plan commit / 计划提交：`76b1973`
+- Implementation commit / 实现提交：`95d314d`
 
 ## Delivery sequence / 交付顺序
 
