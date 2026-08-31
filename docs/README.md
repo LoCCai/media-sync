@@ -80,6 +80,8 @@ Execution 0015 is complete for one frozen offline Douyin shape in implementation
 
 Douyin galleries, associated-music Asset semantics, multiple video/cover URLs, bounded creator pagination, special CDN headers, same-ID/same-origin/path byte replacement, cleanup-failure quarantine and every real login/creator/detail/CDN/Emby row remain deferred or `NOT_RUN` as appropriate. See [`executions/0015-douyin-playable-video/`](executions/0015-douyin-playable-video/). / 抖音图集、关联音乐 Asset 语义、多视频/封面 URL、有界作者分页、专用 CDN header、同 ID/同 origin/path 字节替换、清理失败 quarantine 及全部真人登录/作者/detail/CDN/Emby 行，分别继续延期或保持 `NOT_RUN`。详见 [`executions/0015-douyin-playable-video/`](executions/0015-douyin-playable-video/)。
 
+Execution 0016 is planned and baselined for one ordinary original Weibo image-post shape. It will add the missing creator-side `mblog.pics` discovery boundary as well as exact detail refresh, then compose image probe/archive and Emby poster/backdrop/gallery publication. Weibo video, retweets, `page_info`, bounded creator pagination and every live row remain excluded or `NOT_RUN`. See [`executions/0016-weibo-image-gallery/`](executions/0016-weibo-image-gallery/). / 执行 0016 已为一个普通原创微博图片帖形状完成计划与基线。它将同时补齐 creator 侧缺失的 `mblog.pics` 发现边界与精确 detail 刷新，再组合图片探测/归档及 Emby poster/backdrop/gallery 发布。微博视频、转发、`page_info`、有界 creator 分页及全部真人行继续排除或保持 `NOT_RUN`。详见 [`executions/0016-weibo-image-gallery/`](executions/0016-weibo-image-gallery/)。
+
 ## Documentation rule / 文档规则
 
 Before a milestone starts, create its `goal.md` and `plan.md`. During implementation, update `progress.md`. Before committing, record exact commands, exit codes and important output in `verification.md`. Secrets, cookies and personal account data must never be copied into these records.
