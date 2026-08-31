@@ -263,6 +263,214 @@ def test_kuaishou_media_queries_are_ephemeral_across_normalization_and_sqlite(
     assert all(sentinel.encode() not in sqlite_bytes for sentinel in forbidden)
 
 
+def test_douyin_media_url_ephemera_are_removed_across_normalization_and_sqlite(
+    database: Database,
+) -> None:
+    known_sentinel = f"DY_KNOWN_QUERY_SENTINEL_{uuid4().hex}"
+    unknown_sentinel = f"DY_UNKNOWN_QUERY_SENTINEL_{uuid4().hex}"
+    fragment_sentinel = f"DY_FRAGMENT_SENTINEL_{uuid4().hex}"
+    username_sentinel = f"DY_USERNAME_SENTINEL_{uuid4().hex}"
+    password_sentinel = f"DY_PASSWORD_SENTINEL_{uuid4().hex}"
+    nested_sentinel = f"DY_NESTED_SHAPE_SENTINEL_{uuid4().hex}"
+    comma_drift_sentinel = f"DY_COMMA_DRIFT_SENTINEL_{uuid4().hex}"
+
+    def ephemeral_url(host: str, path: str, label: str) -> str:
+        return (
+            f"https://{username_sentinel}:{password_sentinel}@{host}{path}"
+            f"?signature={known_sentinel}-{label}&futureProofKey={unknown_sentinel}-{label}"
+            f"#{fragment_sentinel}-{label}"
+        )
+
+    video_url = ephemeral_url("video.douyin.test", "/media/dy-video-001.mp4", "video")
+    cover_url = ephemeral_url("image.douyin.test", "/media/dy-video-001.jpg", "cover")
+    audio_url = ephemeral_url("audio.douyin.test", "/media/dy-video-001.mp3", "audio")
+    image_urls = (
+        ephemeral_url("image.douyin.test", "/media/dy-gallery-001-0.jpg", "gallery-0"),
+        ephemeral_url("image.douyin.test", "/media/dy-gallery-001-1.jpg", "gallery-1"),
+    )
+    sequence_image_url = ephemeral_url(
+        "image.douyin.test",
+        "/media/dy-image-001.jpg",
+        "sequence-image",
+    )
+    comma_drift_url = (
+        "https://first.douyin.test/media/first.jpg,"
+        f"https://{username_sentinel}:{password_sentinel}@second.douyin.test/media/second.jpg"
+        f"?signature={comma_drift_sentinel}#{fragment_sentinel}-comma-drift"
+    )
+    records = (
+        {
+            "aweme_id": "dy-video-001",
+            "aweme_type": "video",
+            "title": "Douyin video fixture",
+            "desc": "One ordinary video",
+            "create_time": "1767225600",
+            "aweme_url": "https://www.douyin.com/video/dy-video-001",
+            "video_download_url": [
+                video_url,
+                comma_drift_url,
+                {"url": f"https://nested.douyin.test/video.mp4?future={nested_sentinel}"},
+                [f"https://nested.douyin.test/video.mp4?future={nested_sentinel}"],
+            ],
+            "cover_url": cover_url,
+            "music_download_url": [
+                audio_url,
+                {"url": f"https://nested.douyin.test/audio.mp3?future={nested_sentinel}"},
+                [f"https://nested.douyin.test/audio.mp3?future={nested_sentinel}"],
+            ],
+        },
+        {
+            "aweme_id": "dy-gallery-001",
+            "aweme_type": "note",
+            "title": "Douyin gallery fixture",
+            "desc": "A comma-delimited gallery",
+            "create_time": "1767225601",
+            "aweme_url": "https://www.douyin.com/note/dy-gallery-001",
+            "note_download_url": f" {image_urls[0]}, {image_urls[1]} ",
+        },
+        {
+            "aweme_id": "dy-image-001",
+            "aweme_type": "note",
+            "title": "Douyin image fixture",
+            "desc": "A sequence-shaped image field",
+            "create_time": "1767225602",
+            "aweme_url": "https://www.douyin.com/note/dy-image-001",
+            "note_download_url": [
+                sequence_image_url,
+                comma_drift_url,
+                {"url": f"https://nested.douyin.test/image.jpg?future={nested_sentinel}"},
+                [f"https://nested.douyin.test/image.jpg?future={nested_sentinel}"],
+            ],
+        },
+        {
+            "aweme_id": "dy-scalar-drift-001",
+            "aweme_type": "video",
+            "title": "Douyin scalar drift fixture",
+            "desc": "A non-gallery scalar must not smuggle a second URL",
+            "create_time": "1767225603",
+            "aweme_url": "https://www.douyin.com/video/dy-scalar-drift-001",
+            "video_download_url": comma_drift_url,
+        },
+    )
+    payload = b"".join((json.dumps(record, separators=(",", ":")) + "\n").encode() for record in records)
+    batch = normalize_jsonl_bytes(
+        payload,
+        NormalizationContext(
+            platform=Platform.DY,
+            creator_remote_id="creator-001",
+            creator_display_name="Creator One",
+            upstream_sha="d6f7c5bb906b6dac40ddf343ef9e26438a3de092",
+            ingested_at=datetime(2026, 8, 31, tzinfo=UTC),
+        ),
+    )
+
+    assert not batch.quarantined
+    assert len(batch.records) == 4
+    video, gallery, image, scalar_drift = batch.records
+    assert tuple(asset.source_url for asset in video.assets) == (video_url, audio_url, cover_url)
+    assert tuple(asset.source_url for asset in gallery.assets) == image_urls
+    assert tuple(asset.source_url for asset in image.assets) == (sequence_image_url,)
+    assert scalar_drift.assets == ()
+    video_record = video.content.raw["record"]
+    gallery_record = gallery.content.raw["record"]
+    image_record = image.content.raw["record"]
+    scalar_drift_record = scalar_drift.content.raw["record"]
+    assert video_record["video_download_url"] == (
+        "https://video.douyin.test/media/dy-video-001.mp4",
+        None,
+        None,
+        None,
+    )
+    assert video_record["cover_url"] == "https://image.douyin.test/media/dy-video-001.jpg"
+    assert video_record["music_download_url"] == (
+        "https://audio.douyin.test/media/dy-video-001.mp3",
+        None,
+        None,
+    )
+    assert gallery_record["note_download_url"] == (
+        "https://image.douyin.test/media/dy-gallery-001-0.jpg",
+        "https://image.douyin.test/media/dy-gallery-001-1.jpg",
+    )
+    assert image_record["note_download_url"] == (
+        "https://image.douyin.test/media/dy-image-001.jpg",
+        None,
+        None,
+        None,
+    )
+    assert scalar_drift_record["video_download_url"] is None
+    for normalized in batch.records:
+        assert normalized.author.raw == normalized.content.raw
+        assert all(asset.raw == normalized.content.raw for asset in normalized.assets)
+
+    forbidden = (
+        known_sentinel,
+        unknown_sentinel,
+        fragment_sentinel,
+        username_sentinel,
+        password_sentinel,
+        nested_sentinel,
+        comma_drift_sentinel,
+    )
+    assert all(
+        sentinel not in repr(snapshot.raw)
+        for sentinel in forbidden
+        for normalized in batch.records
+        for snapshot in (normalized.author, normalized.content, *normalized.assets)
+    )
+
+    subscription_id = _seed_subscription(database, platform=Platform.DY)
+    result = MediaCrawlerIngestionService(database).ingest(
+        batch.records,
+        subscription_id=subscription_id,
+        run_id=_create_run(database, subscription_id),
+        expected_revision=0,
+        mode=IngestionMode.FORWARD,
+    )
+    assert result.accepted_count == 4
+    assert result.asset_count == 6
+
+    with database.session() as session:
+        author = session.scalar(select(Author).where(Author.platform == Platform.DY.value))
+        contents = tuple(
+            session.scalars(select(Content).where(Content.platform == Platform.DY.value).order_by(Content.remote_id))
+        )
+        assets = tuple(
+            session.scalars(select(Asset).where(Asset.platform == Platform.DY.value).order_by(Asset.remote_id)).all()
+        )
+        assert author is not None and len(contents) == 4 and len(assets) == 6
+        retained_values = json.dumps(
+            {
+                "author_raw": author.raw,
+                "content_raw": [content.raw for content in contents],
+                "assets": [
+                    {"source_url": asset.source_url, "locator": asset.locator, "raw": asset.raw} for asset in assets
+                ],
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        assert all(sentinel not in retained_values for sentinel in forbidden)
+        assert {asset.source_url for asset in assets} == {
+            "https://video.douyin.test/media/dy-video-001.mp4",
+            "https://image.douyin.test/media/dy-video-001.jpg",
+            "https://audio.douyin.test/media/dy-video-001.mp3",
+            "https://image.douyin.test/media/dy-gallery-001-0.jpg",
+            "https://image.douyin.test/media/dy-gallery-001-1.jpg",
+            "https://image.douyin.test/media/dy-image-001.jpg",
+        }
+        for asset in assets:
+            locator = parse_locator(asset.locator)
+            assert isinstance(locator, AdapterRefreshLocator)
+            assert locator.adapter == "mediacrawler"
+
+    database_path_value = make_url(database.url).database
+    assert database_path_value is not None
+    database.dispose()
+    database_path = Path(database_path_value)
+    sqlite_bytes = b"".join(path.read_bytes() for path in database_path.parent.glob(f"{database_path.name}*"))
+    assert all(sentinel.encode() not in sqlite_bytes for sentinel in forbidden)
+
+
 def test_ingestion_records_exact_refresh_source_and_archive_reset_keeps_it_eligible(
     database: Database,
 ) -> None:

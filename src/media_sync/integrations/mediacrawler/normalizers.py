@@ -36,6 +36,8 @@ from .jsonl import (
 _GIT_SHA = re.compile(r"[0-9a-fA-F]{40}\Z")
 _CHINA_TZ = timezone(timedelta(hours=8))
 _BILI_PROGRESSIVE_FIELD = "__media_sync_bili_progressive_url"
+_DY_EPHEMERAL_MEDIA_URL_FIELDS = frozenset({"video_download_url", "cover_url", "music_download_url"})
+_DY_NOTE_MEDIA_URL_FIELD = "note_download_url"
 _KS_EPHEMERAL_MEDIA_URL_FIELDS = frozenset({"video_play_url", "video_cover_url"})
 
 
@@ -160,6 +162,31 @@ def _url_list(value: object) -> tuple[str, ...]:
     return tuple(result)
 
 
+def _dy_url_list(value: object, *, allow_scalar_commas: bool) -> tuple[str, ...]:
+    """Parse one Douyin media field while rejecting ambiguous sequence drift."""
+
+    if isinstance(value, str):
+        if "," in value and not allow_scalar_commas:
+            return ()
+        candidates: Sequence[object] = value.split(",") if allow_scalar_commas else (value,)
+    elif isinstance(value, Sequence) and not isinstance(value, bytes | bytearray | str):
+        candidates = value
+    else:
+        return ()
+    result: list[str] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        # A comma inside an already-sequenced item can smuggle a second URL into
+        # the first URL's path.  It is schema drift, not another list boundary.
+        if not isinstance(candidate, str) or "," in candidate:
+            continue
+        url = _safe_url(candidate)
+        if url is not None and url not in seen:
+            result.append(url)
+            seen.add(url)
+    return tuple(result)
+
+
 def _strip_private_detail_field(value: object) -> object:
     """Copy JSON-shaped input while removing the closed detail-only field."""
 
@@ -209,6 +236,37 @@ def _strip_ks_media_url_ephemera(record: Mapping[str, object]) -> Mapping[str, o
         key: _query_free_media_url(value) if key in _KS_EPHEMERAL_MEDIA_URL_FIELDS else value
         for key, value in record.items()
     }
+
+
+def _query_free_flat_media_urls(value: object, *, allow_scalar_commas: bool) -> object:
+    """Sanitize one URL or a flat URL sequence without retaining opaque children."""
+
+    if isinstance(value, str):
+        if "," in value:
+            if not allow_scalar_commas:
+                return None
+            candidates: Sequence[object] = value.split(",")
+        else:
+            return _query_free_media_url(value)
+    elif isinstance(value, Sequence) and not isinstance(value, bytes | bytearray | str):
+        candidates = value
+    else:
+        return None
+    return [_query_free_media_url(item) if isinstance(item, str) and "," not in item else None for item in candidates]
+
+
+def _strip_dy_media_url_ephemera(record: Mapping[str, object]) -> Mapping[str, object]:
+    """Keep Douyin signed media URLs transient while retaining auditable raw shape."""
+
+    sanitized: dict[str, object] = {}
+    for key, value in record.items():
+        if key == _DY_NOTE_MEDIA_URL_FIELD:
+            sanitized[key] = _query_free_flat_media_urls(value, allow_scalar_commas=True)
+        elif key in _DY_EPHEMERAL_MEDIA_URL_FIELDS:
+            sanitized[key] = _query_free_flat_media_urls(value, allow_scalar_commas=False)
+        else:
+            sanitized[key] = value
+    return sanitized
 
 
 def _number(value: object) -> int | float | None:
@@ -313,10 +371,10 @@ def _normalize_xhs(record: Mapping[str, object]) -> _ContentParts:
 
 def _normalize_dy(record: Mapping[str, object]) -> _ContentParts:
     remote_id = _required_id(record, "aweme_id")
-    images = _url_list(record.get("note_download_url"))
-    video = _url_list(record.get("video_download_url"))
-    audio = _url_list(record.get("music_download_url"))
-    cover = _url_list(record.get("cover_url"))
+    images = _dy_url_list(record.get("note_download_url"), allow_scalar_commas=True)
+    video = _dy_url_list(record.get("video_download_url"), allow_scalar_commas=False)
+    audio = _dy_url_list(record.get("music_download_url"), allow_scalar_commas=False)
+    cover = _dy_url_list(record.get("cover_url"), allow_scalar_commas=False)
     # The pinned crawler deliberately chooses image downloads whenever
     # note_download_url is populated; its video URL can then be an audio stream.
     if len(images) > 1:
@@ -567,7 +625,9 @@ def normalize_record(record: Mapping[str, object], context: NormalizationContext
         sanitized_record = _strip_private_detail_field(record)
         if not isinstance(sanitized_record, Mapping):  # pragma: no cover - record is already a mapping
             raise RecordNormalizationError(QuarantineReason.INVALID_RECORD)
-        if context.platform is Platform.KS:
+        if context.platform is Platform.DY:
+            sanitized_record = _strip_dy_media_url_ephemera(sanitized_record)
+        elif context.platform is Platform.KS:
             sanitized_record = _strip_ks_media_url_ephemera(sanitized_record)
         envelope = MediaCrawlerEnvelope(
             platform=context.platform,

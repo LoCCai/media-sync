@@ -12,7 +12,11 @@ from media_sync.domain import AssetKind, LoginMethod, Platform
 from media_sync.infrastructure.db.asset_identity import asset_source_hint, stable_asset_key
 from media_sync.integrations.mediacrawler import detail_runner as detail_runner_module
 from media_sync.integrations.mediacrawler.checkout import VerifiedCheckout, VerifiedPython
-from media_sync.integrations.mediacrawler.detail_runner import MediaCrawlerDetailProcessRunner
+from media_sync.integrations.mediacrawler.detail_runner import (
+    MediaCrawlerDetailProcessRunner,
+    MediaCrawlerDetailRequest,
+    MediaCrawlerDetailResult,
+)
 from media_sync.integrations.mediacrawler.policies import WatchdogLimits
 from media_sync.integrations.mediacrawler.refresh import (
     MediaCrawlerLocatorRefresher,
@@ -27,7 +31,9 @@ SUBSCRIPTION_ID = UUID("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")
 ASSET_ID = UUID("cccccccc-cccc-4ccc-8ccc-cccccccccccc")
 COOKIE_SENTINEL = "DETAIL-COOKIE-SENTINEL-91d4b7"
 CONTENT_ID = "7525082444551310602"
-SIGNED_URL = f"https://video.example.test/douyin/main.mp4?sign={COOKIE_SENTINEL}"
+DY_VIDEO_URL = f"https://video.example.test/douyin/main.mp4?sign={COOKIE_SENTINEL}"
+DY_COVER_SENTINEL = "DETAIL-COVER-SENTINEL-a8f2c1"
+DY_COVER_URL = f"https://image.example.test/douyin/cover.jpg?sign={DY_COVER_SENTINEL}"
 BILI_COVER = "https://image.example.test/bili/cover.jpg?token=bili-detail-sentinel"
 BILI_VIDEO_URL = "https://video.example.test/bili/first.mp4?" + "deadline=4102444800&sig=ephemeral-sentinel"
 KS_VIDEO_ID = "3x3zxz4mjrsc8ke"
@@ -62,11 +68,18 @@ class FakeCrawler:
         assert config.SAVE_DATA_OPTION == "jsonl"
         assert config.MAX_CONCURRENCY_NUM == 1
         assert config.ENABLE_GET_COMMENTS is False
+        assert config.ENABLE_GET_SUB_COMMENTS is False
+        assert config.ENABLE_GET_MEIDAS is False
         assert config.ENABLE_GET_MEDIAS is False
+        assert config.SAVE_LOGIN_STATE is True
+        assert config.CRAWLER_MAX_SLEEP_SEC == 0.25
         profile = Path(
             os.path.join(os.getcwd(), "browser_data", config.USER_DATA_DIR % config.PLATFORM)
         ).resolve()
         assert profile.name == "dy_user_data_dir"
+        assert profile.parent.name == "browser_data"
+        profile.mkdir(parents=True, exist_ok=True)
+        (profile / "session.marker").write_text("stable fixture profile", encoding="utf-8")
         print("upstream stdout must not contaminate the detail frame")
         os.write(2, b"upstream stderr must not contaminate the detail frame\n")
         target = Path(config.SAVE_DATA_PATH) / "douyin" / "jsonl" / "detail_contents_fixture.jsonl"
@@ -76,6 +89,7 @@ class FakeCrawler:
             "title": "fixture",
             "desc": "fixture",
             "video_download_url": "https://video.example.test/douyin/main.mp4?sign=" + config.COOKIES,
+            "cover_url": __DY_COVER_URL__,
         }
         target.write_text(json.dumps(record, separators=(",", ":")) + "\n", encoding="utf-8")
 
@@ -239,8 +253,52 @@ def _fake_checkout(root: Path) -> Path:
     checkout = root / "fake-mediacrawler"
     (checkout / "config").mkdir(parents=True)
     (checkout / "config" / "__init__.py").write_text(textwrap.dedent(_CONFIG).lstrip(), encoding="utf-8")
-    (checkout / "main.py").write_text(textwrap.dedent(_MAIN).lstrip(), encoding="utf-8")
+    main_source = textwrap.dedent(_MAIN).lstrip().replace("__DY_COVER_URL__", repr(DY_COVER_URL))
+    (checkout / "main.py").write_text(main_source, encoding="utf-8")
     return checkout.resolve()
+
+
+def _dy_context(kind: AssetKind, signed_url: str) -> MediaCrawlerRefreshContext:
+    remote_id = f"{CONTENT_ID}:{kind.value}:0"
+    locator = AdapterRefreshLocator(
+        adapter="mediacrawler",
+        asset_key=stable_asset_key(
+            platform="dy",
+            content_remote_type="content",
+            content_remote_id=CONTENT_ID,
+            kind=kind.value,
+            position=0,
+            remote_id=remote_id,
+        ),
+    )
+    source_hint = asset_source_hint(signed_url)
+    assert source_hint is not None
+    return MediaCrawlerRefreshContext(
+        asset_id=ASSET_ID,
+        account_id=ACCOUNT_ID,
+        subscription_id=SUBSCRIPTION_ID,
+        platform=Platform.DY,
+        login_method=LoginMethod.COOKIE,
+        content_remote_type="content",
+        content_remote_id=CONTENT_ID,
+        author_remote_id="creator-42",
+        author_display_name="Fixture creator",
+        asset_remote_id=remote_id,
+        asset_kind=kind,
+        asset_position=0,
+        source_hint=source_hint,
+        locator=locator,
+        cookie=SecretValue(COOKIE_SENTINEL),
+        request_delay_seconds=0.25,
+        watchdogs=WatchdogLimits(
+            max_seconds=10,
+            max_output_bytes=64 * 1024,
+            max_output_items=5,
+            max_output_files=2,
+            max_line_bytes=16 * 1024,
+            poll_seconds=0.01,
+        ),
+    )
 
 
 def _ks_record(*, video_id: str = KS_VIDEO_ID) -> dict[str, str]:
@@ -462,56 +520,40 @@ def test_detail_process_runner_uses_detail_mode_and_cleans_signed_jsonl(tmp_path
         checkout_verifier=verify_checkout,
         python_verifier=verify_python,
     )
-    remote_id = f"{CONTENT_ID}:video:0"
-    locator = AdapterRefreshLocator(
-        adapter="mediacrawler",
-        asset_key=stable_asset_key(
-            platform="dy",
-            content_remote_type="content",
-            content_remote_id=CONTENT_ID,
-            kind="video",
-            position=0,
-            remote_id=remote_id,
-        ),
-    )
-    source_hint = asset_source_hint(SIGNED_URL)
-    assert source_hint is not None
-    context = MediaCrawlerRefreshContext(
-        asset_id=ASSET_ID,
-        account_id=ACCOUNT_ID,
-        subscription_id=SUBSCRIPTION_ID,
-        platform=Platform.DY,
-        login_method=LoginMethod.COOKIE,
-        content_remote_type="content",
-        content_remote_id=CONTENT_ID,
-        author_remote_id="creator-42",
-        author_display_name="Fixture creator",
-        asset_remote_id=remote_id,
-        asset_kind=AssetKind.VIDEO,
-        asset_position=0,
-        source_hint=source_hint,
-        locator=locator,
-        cookie=SecretValue(COOKIE_SENTINEL),
-        watchdogs=WatchdogLimits(
-            max_seconds=10,
-            max_output_bytes=64 * 1024,
-            max_output_items=5,
-            max_output_files=2,
-            max_line_bytes=16 * 1024,
-            poll_seconds=0.01,
-        ),
-    )
+    requests: list[MediaCrawlerDetailRequest] = []
+    results: list[MediaCrawlerDetailResult] = []
 
-    resolved = MediaCrawlerLocatorRefresher(context, runner).resolve(locator)
+    class RecordingRunner:
+        def run(self, request: MediaCrawlerDetailRequest) -> MediaCrawlerDetailResult:
+            requests.append(request)
+            result = runner.run(request)
+            results.append(result)
+            return result
 
-    assert resolved.url == SIGNED_URL
+    video_context = _dy_context(AssetKind.VIDEO, DY_VIDEO_URL)
+    cover_context = _dy_context(AssetKind.COVER, DY_COVER_URL)
+    recording_runner = RecordingRunner()
+
+    video = MediaCrawlerLocatorRefresher(video_context, recording_runner).resolve(video_context.locator)
+    cover = MediaCrawlerLocatorRefresher(cover_context, recording_runner).resolve(cover_context.locator)
+
+    assert video.url == DY_VIDEO_URL
+    assert cover.url == DY_COVER_URL
+    assert video.request_profile is MediaRequestProfile.DEFAULT
+    assert cover.request_profile is MediaRequestProfile.DEFAULT
+    assert len(requests) == len(results) == 2
+    for value in (video_context, cover_context, *requests, *results, video, cover):
+        assert COOKIE_SENTINEL not in repr(value)
+        assert DY_COVER_SENTINEL not in repr(value)
     jobs_root = integration_root / "jobs"
     assert jobs_root.is_dir()
     assert list(jobs_root.iterdir()) == []
     retained = b"".join(path.read_bytes() for path in integration_root.rglob("*") if path.is_file())
     assert COOKIE_SENTINEL.encode() not in retained
+    assert DY_COVER_SENTINEL.encode() not in retained
     profile = integration_root / "accounts" / "dy" / str(ACCOUNT_ID) / "browser_data" / "dy_user_data_dir"
-    assert profile.parent.is_dir()
+    assert profile.is_dir()
+    assert (profile / "session.marker").read_text(encoding="utf-8") == "stable fixture profile"
 
 
 def test_kuaishou_detail_refresh_resolves_video_and_cover_without_retaining_signed_urls(tmp_path: Path) -> None:

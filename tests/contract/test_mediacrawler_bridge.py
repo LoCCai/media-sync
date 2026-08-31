@@ -7,6 +7,7 @@ import os
 import subprocess
 import sys
 import textwrap
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -374,7 +375,9 @@ def _request(
         allow_full_history=(platform in FULL_HISTORY_PLATFORMS) if allow_full_history is None else allow_full_history,
         cookie=cookie,
         max_items=17,
-        watchdogs=limits or WatchdogLimits(max_seconds=4, poll_seconds=0.02),
+        # Windows cold process startup and real-time scanning can exceed four
+        # seconds.  Watchdog-specific cases below always pass explicit limits.
+        watchdogs=limits or WatchdogLimits(max_seconds=10, poll_seconds=0.02),
         scheduler_job_id=scheduler_job_id or durable_job_id,
         schedule_revision=schedule_revision,
         attempt=attempt,
@@ -828,27 +831,27 @@ def test_receipt_rejects_raw_bytes_and_json_escaped_known_values(
         ),
         (
             "mode-bytes",
-            WatchdogLimits(max_seconds=4, max_output_bytes=300, max_line_bytes=4096, poll_seconds=0.02),
+            WatchdogLimits(max_seconds=10, max_output_bytes=300, max_line_bytes=4096, poll_seconds=0.02),
             MediaCrawlerProcessStatus.OUTPUT_BYTES_EXCEEDED,
         ),
         (
             "mode-items",
-            WatchdogLimits(max_seconds=4, max_output_items=2, poll_seconds=0.02),
+            WatchdogLimits(max_seconds=10, max_output_items=2, poll_seconds=0.02),
             MediaCrawlerProcessStatus.OUTPUT_ITEMS_EXCEEDED,
         ),
         (
             "mode-files",
-            WatchdogLimits(max_seconds=4, max_output_files=2, poll_seconds=0.02),
+            WatchdogLimits(max_seconds=10, max_output_files=2, poll_seconds=0.02),
             MediaCrawlerProcessStatus.OUTPUT_FILES_EXCEEDED,
         ),
         (
             "mode-line",
-            WatchdogLimits(max_seconds=4, max_output_bytes=4096, max_line_bytes=128, poll_seconds=0.02),
+            WatchdogLimits(max_seconds=10, max_output_bytes=4096, max_line_bytes=128, poll_seconds=0.02),
             MediaCrawlerProcessStatus.OUTPUT_LINE_EXCEEDED,
         ),
         (
             "mode-extension",
-            WatchdogLimits(max_seconds=4, poll_seconds=0.02),
+            WatchdogLimits(max_seconds=10, poll_seconds=0.02),
             MediaCrawlerProcessStatus.OUTPUT_TREE_INVALID,
         ),
     ],
@@ -925,7 +928,11 @@ def test_child_exception_and_native_output_are_fixed_and_redacted(fake_project: 
     assert CREATOR_SENTINEL not in combined
 
 
-def test_account_profile_lock_serializes_same_account(fake_project: FakeProject, tmp_path: Path) -> None:
+def test_account_profile_lock_serializes_same_account(
+    fake_project: FakeProject,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     spec = _bridge().prepare(
         _request(
             fake_project,
@@ -935,11 +942,17 @@ def test_account_profile_lock_serializes_same_account(fake_project: FakeProject,
         )
     )
     runner = MediaCrawlerProcessRunner()
+    lock_acquired = threading.Event()
+    run_locked = runner._run_locked
+
+    def recording_run_locked(*args: object, **kwargs: object) -> object:
+        lock_acquired.set()
+        return run_locked(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(runner, "_run_locked", recording_run_locked)
     with ThreadPoolExecutor(max_workers=1) as pool:
         first = pool.submit(runner.run, spec)
-        deadline = time.monotonic() + 3
-        while not any(spec.paths.output_root.rglob("*.jsonl")) and time.monotonic() < deadline:
-            time.sleep(0.02)
+        assert lock_acquired.wait(timeout=3)
         second = runner.run(spec)
         first_result = first.result(timeout=5)
     assert second.status is MediaCrawlerProcessStatus.ACCOUNT_BUSY
