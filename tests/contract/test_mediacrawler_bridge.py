@@ -66,6 +66,9 @@ from media_sync.integrations.mediacrawler.runner import (
     MediaCrawlerProcessRunner,
     MediaCrawlerProcessStatus,
 )
+from media_sync.integrations.mediacrawler.weibo_media import (
+    WEIBO_IMAGES_FIELD,
+)
 from media_sync.security import SecretValue
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -260,6 +263,191 @@ async def async_cleanup():
     )
 """
 
+_WEIBO_STORE_SOURCE = r"""
+import asyncio
+import json
+from pathlib import Path
+
+import config
+
+
+class WeiboJsonlStoreImplement:
+    async def store_content(self, content_item):
+        target = Path(config.SAVE_DATA_PATH) / "wb" / "jsonl" / "creator_contents_fixture.jsonl"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with target.open("a", encoding="utf-8", newline="\n") as stream:
+            stream.write(json.dumps(content_item, separators=(",", ":")) + "\n")
+
+
+async def update_weibo_note(note_item):
+    mblog = note_item["mblog"]
+    await asyncio.sleep(0.01 if mblog["id"].endswith("1") else 0)
+    await WeiboJsonlStoreImplement().store_content(
+        {
+            "note_id": mblog["id"],
+            "content": mblog["text"],
+            "note_url": "https://m.weibo.cn/detail/" + mblog["id"],
+        }
+    )
+"""
+
+_WEIBO_MAIN_SOURCE = r"""
+import asyncio
+import os
+from pathlib import Path
+
+import config
+from store import weibo as weibo_store
+
+crawler = None
+
+
+def _profile():
+    return Path(
+        os.path.join(os.getcwd(), "browser_data", config.USER_DATA_DIR % config.PLATFORM)
+    ).resolve()
+
+
+NOTES = [
+    {
+        "mblog": {
+            "id": "7525082444551310601",
+            "text": "first valid image note",
+            "pics": [
+                {"pid": "firstPid", "url": "https://wx1.sinaimg.cn/orj360/first.jpg"},
+                {"pid": "secondPid", "url": "https://wx2.sinaimg.cn/mw690/second.png"},
+            ],
+        }
+    },
+    {
+        "mblog": {
+            "id": "7525082444551310602",
+            "text": "second valid image note",
+            "page_info": {},
+            "pics": [{"pid": "thirdPid", "url": "https://wx3.sinaimg.cn/thumb150/third.WEBP"}],
+        }
+    },
+    {
+        "mblog": {
+            "id": "7525082444551310603",
+            "text": "duplicate pid",
+            "pics": [
+                {"pid": "duplicatePid", "url": "https://wx1.sinaimg.cn/a/one.jpg"},
+                {"pid": "duplicatePid", "url": "https://wx2.sinaimg.cn/b/two.jpg"},
+            ],
+        }
+    },
+    {
+        "mblog": {
+            "id": "7525082444551310604",
+            "text": "retweeted note",
+            "retweeted_status": {},
+            "pics": [{"pid": "retweetPid", "url": "https://wx1.sinaimg.cn/a/retweet.jpg"}],
+        }
+    },
+    {
+        "mblog": {
+            "id": "7525082444551310605",
+            "text": "video page info",
+            "page_info": {"object_type": "video"},
+            "pics": [{"pid": "pagePid", "url": "https://wx1.sinaimg.cn/a/page.jpg"}],
+        }
+    },
+    {
+        "mblog": {
+            "id": "7525082444551310606",
+            "text": "drifted source path",
+            "pics": [{"pid": "driftPid", "url": "https://wx1.sinaimg.cn/a/nested/drift.jpg"}],
+        }
+    },
+    {
+        "mblog": {
+            "id": "7525082444551310607",
+            "text": "gif is outside the static slice",
+            "pics": [{"pid": "gifPid", "url": "https://wx1.sinaimg.cn/a/animated.gif"}],
+        }
+    },
+    {
+        "mblog": {
+            "id": "7525082444551310608",
+            "text": "mp4 is outside the image slice",
+            "pics": [{"pid": "mp4Pid", "url": "https://wx1.sinaimg.cn/a/video.mp4"}],
+        }
+    },
+    {
+        "mblog": {
+            "id": "7525082444551310609",
+            "text": "extensionless source",
+            "pics": [{"pid": "noExtensionPid", "url": "https://wx1.sinaimg.cn/a/no-extension"}],
+        }
+    },
+    {
+        "mblog": {
+            "id": "7525082444551310610",
+            "text": "unsupported image extension",
+            "pics": [{"pid": "avifPid", "url": "https://wx1.sinaimg.cn/a/image.avif"}],
+        }
+    },
+    {
+        "mblog": {
+            "id": "7525082444551310611",
+            "text": "foreign raw host",
+            "pics": [{"pid": "foreignPid", "url": "https://evil.example/a/foreign.jpg"}],
+        }
+    },
+    {
+        "mblog": {
+            "id": "7525082444551310612",
+            "text": "raw query is not canonical",
+            "pics": [{"pid": "queryPid", "url": "https://wx1.sinaimg.cn/a/query.jpg?token=private"}],
+        }
+    },
+    {
+        "mblog": {
+            "id": "7525082444551310613",
+            "text": "raw fragment is not canonical",
+            "pics": [{"pid": "fragmentPid", "url": "https://wx1.sinaimg.cn/a/fragment.jpg#private"}],
+        }
+    },
+]
+
+
+async def main():
+    assert config.PLATFORM == "wb"
+    assert config.LOGIN_TYPE == "qrcode"
+    assert config.CRAWLER_TYPE == "creator"
+    assert config.WEIBO_CREATOR_ID_LIST == ["123456"]
+    assert config.SAVE_DATA_OPTION == "jsonl"
+    assert config.CREATOR_MODE is True
+    assert config.ENABLE_GET_COMMENTS is False
+    assert config.ENABLE_GET_MEIDAS is False
+    assert config.ENABLE_GET_MEDIAS is False
+    assert config.MAX_CONCURRENCY_NUM == 1
+    profile = _profile()
+    assert profile.name == "wb_user_data_dir"
+    profile.mkdir(parents=True, exist_ok=True)
+    await asyncio.gather(*(weibo_store.update_weibo_note(note) for note in NOTES))
+
+
+async def async_cleanup():
+    assert config.COOKIES == ""
+    collision_blocked = False
+    try:
+        await weibo_store.WeiboJsonlStoreImplement().store_content(
+            {"note_id": "collision", "__media_sync_weibo_images_v1": []}
+        )
+    except RuntimeError:
+        collision_blocked = True
+    await weibo_store.WeiboJsonlStoreImplement().store_content(
+        {
+            "note_id": "cleanup",
+            "cleanup": True,
+            "cookie_cleared": True,
+            "collision_blocked": collision_blocked,
+        }
+    )
+"""
+
 
 @dataclass(frozen=True)
 class FakeProject:
@@ -322,6 +510,35 @@ def _make_fake_project(root: Path) -> FakeProject:
     )
     commit = _git(checkout, "rev-parse", "HEAD")
     project = FakeProject(root=root, checkout=checkout.resolve(), lock_path=root / "upstreams.lock.json", commit=commit)
+    _write_lock(project, commit)
+    return project
+
+
+def _make_fake_weibo_project(root: Path) -> FakeProject:
+    base = _make_fake_project(root)
+    (base.checkout / "store" / "weibo").mkdir(parents=True)
+    (base.checkout / "store" / "__init__.py").write_text("", encoding="utf-8")
+    (base.checkout / "store" / "weibo" / "__init__.py").write_text(
+        textwrap.dedent(_WEIBO_STORE_SOURCE).lstrip(),
+        encoding="utf-8",
+    )
+    (base.checkout / "main.py").write_text(
+        textwrap.dedent(_WEIBO_MAIN_SOURCE).lstrip(),
+        encoding="utf-8",
+    )
+    _git(base.checkout, "add", "main.py", "store/__init__.py", "store/weibo/__init__.py")
+    _git(
+        base.checkout,
+        "-c",
+        "user.name=media-sync-tests",
+        "-c",
+        "user.email=tests@example.invalid",
+        "commit",
+        "-m",
+        "fake Weibo checkout",
+    )
+    commit = _git(base.checkout, "rev-parse", "HEAD")
+    project = FakeProject(root=base.root, checkout=base.checkout, lock_path=base.lock_path, commit=commit)
     _write_lock(project, commit)
     return project
 
@@ -758,6 +975,54 @@ def test_fake_child_proves_config_cwd_profile_and_private_env_contract(
     rendered = repr(result) + result.message
     assert COOKIE_SENTINEL not in rendered
     assert CREATOR_SENTINEL not in rendered
+
+
+def test_weibo_creator_child_captures_task_local_images_and_fails_closed(tmp_path: Path) -> None:
+    project = _make_fake_weibo_project(tmp_path / "project")
+    spec = _bridge().prepare(
+        _request(
+            project,
+            tmp_path / "runtime",
+            platform=Platform.WB,
+            creator="123456",
+            request_delay_seconds=0.25,
+        )
+    )
+
+    result = MediaCrawlerProcessRunner().run(spec)
+
+    assert result.status is MediaCrawlerProcessStatus.SUCCEEDED
+    snapshot = load_validated_output_snapshot(spec.manifest)
+    assert snapshot.stats.jsonl_items == 14
+    records = {str(record["note_id"]): record for record in _records(spec.paths.output_root)}
+    assert records["7525082444551310601"][WEIBO_IMAGES_FIELD] == [
+        {"pid": "firstPid", "url": "https://i1.wp.com/wx1.sinaimg.cn/large/first.jpg"},
+        {"pid": "secondPid", "url": "https://i1.wp.com/wx2.sinaimg.cn/large/second.png"},
+    ]
+    assert records["7525082444551310602"][WEIBO_IMAGES_FIELD] == [
+        {"pid": "thirdPid", "url": "https://i1.wp.com/wx3.sinaimg.cn/large/third.WEBP"}
+    ]
+    for note_id in (
+        "7525082444551310603",
+        "7525082444551310604",
+        "7525082444551310605",
+        "7525082444551310606",
+        "7525082444551310607",
+        "7525082444551310608",
+        "7525082444551310609",
+        "7525082444551310610",
+        "7525082444551310611",
+        "7525082444551310612",
+        "7525082444551310613",
+    ):
+        assert WEIBO_IMAGES_FIELD not in records[note_id]
+    assert records["cleanup"] == {
+        "note_id": "cleanup",
+        "cleanup": True,
+        "cookie_cleared": True,
+        "collision_blocked": True,
+    }
+    assert completion_receipt_path(spec.paths.job_root).is_file()
 
 
 def test_parent_rejects_exact_known_secrets_in_ordinary_output_fields(

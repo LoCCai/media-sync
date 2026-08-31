@@ -51,6 +51,10 @@ from media_sync.integrations.mediacrawler.runner import (
     _close_process_tree,
     _WindowsJob,
 )
+from media_sync.integrations.mediacrawler.weibo_media import (
+    install_weibo_media_capture,
+    is_weibo_numeric_note_id,
+)
 from media_sync.media import ResolvedLocator
 from media_sync.media.errors import MediaDownloadError
 from media_sync.security import SecretValue
@@ -60,7 +64,7 @@ DETAIL_RUNNER_SCHEMA_VERSION = 2
 MAX_DETAIL_REQUEST_BYTES = 128 * 1024
 MAX_DETAIL_FRAME_OVERHEAD = 8 * 1024
 
-_SUPPORTED_PLATFORMS = frozenset({Platform.XHS, Platform.DY, Platform.KS, Platform.BILI})
+_SUPPORTED_PLATFORMS = frozenset({Platform.XHS, Platform.DY, Platform.KS, Platform.BILI, Platform.WB})
 _DETAIL_CONFIG_ATTRIBUTES = {
     Platform.XHS: "XHS_SPECIFIED_NOTE_URL_LIST",
     Platform.DY: "DY_SPECIFIED_ID_LIST",
@@ -104,6 +108,14 @@ class MediaCrawlerDetailPayloadRunner(Protocol):
         ...
 
 
+def _is_weibo_detail_reference(value: object, content_remote_id: str) -> bool:
+    """Accept only the implicit ID or the exact same non-secret Weibo ID."""
+
+    return is_weibo_numeric_note_id(content_remote_id) and (
+        value is None or (type(value) is str and value == content_remote_id)
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class MediaCrawlerDetailRequest:
     """One frozen, account-bound detail lookup with no database dependency."""
@@ -135,6 +147,8 @@ class MediaCrawlerDetailRequest:
             raise MediaDownloadError("locator_refresh_configuration_invalid")
         if isinstance(self.detail_reference, str):
             _bounded_text(self.detail_reference, maximum=4_096)
+        if platform is Platform.WB and not _is_weibo_detail_reference(self.detail_reference, content_remote_id):
+            raise MediaDownloadError("locator_refresh_configuration_invalid")
         if login_method is LoginMethod.COOKIE and self.cookie is None:
             raise MediaDownloadError("locator_refresh_configuration_invalid")
         if login_method is not LoginMethod.COOKIE and self.cookie is not None:
@@ -157,11 +171,21 @@ class MediaCrawlerDetailRequest:
         """Reveal an explicit reference only at the child-request boundary."""
 
         value = self.detail_reference
+        if self.platform is Platform.WB:
+            if not _is_weibo_detail_reference(value, self.content_remote_id):
+                raise MediaDownloadError("locator_refresh_configuration_invalid")
+            if value is None:
+                return self.content_remote_id
+            if not isinstance(value, str):  # Defensive narrowing after the exact-type predicate.
+                raise MediaDownloadError("locator_refresh_configuration_invalid")
+            return value
         if isinstance(value, SecretValue):
-            return _bounded_text(value.reveal(), maximum=4_096)
-        if isinstance(value, str):
-            return _bounded_text(value, maximum=4_096)
-        return self.content_remote_id
+            resolved = _bounded_text(value.reveal(), maximum=4_096)
+        elif isinstance(value, str):
+            resolved = _bounded_text(value, maximum=4_096)
+        else:
+            resolved = self.content_remote_id
+        return resolved
 
 
 @dataclass(frozen=True, slots=True)
@@ -549,6 +573,8 @@ class _ChildRequest:
             raise _ChildConfigurationError
         if (login_method is LoginMethod.COOKIE) != (cookie is not None):
             raise _ChildConfigurationError
+        if platform is Platform.WB and not _is_weibo_detail_reference(detail_reference, content_remote_id):
+            raise _ChildConfigurationError
         if bili_progressive_detail and content_remote_id != detail_reference:
             raise _ChildConfigurationError
         if profile_root.parent.parent != account_root or output_root.parent != job_root:
@@ -762,6 +788,8 @@ async def _run_upstream(request: _ChildRequest) -> tuple[Any, _BiliProgressiveRe
     upstream_main = importlib.import_module("main")
     if not _module_belongs_to_checkout(upstream_main, request.checkout_root):
         raise _ChildConfigurationError
+    if request.platform is Platform.WB:
+        install_weibo_media_capture(request.checkout_root)
 
     async def dispatch() -> _BiliProgressiveResult | None:
         if request.platform is Platform.BILI and request.detail_reference.isdigit():

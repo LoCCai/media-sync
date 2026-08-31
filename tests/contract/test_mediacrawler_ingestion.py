@@ -29,6 +29,7 @@ from media_sync.integrations.mediacrawler.normalizers import (
     normalize_jsonl,
     normalize_record,
 )
+from media_sync.integrations.mediacrawler.weibo_media import WEIBO_IMAGES_FIELD
 
 PINNED_SHA = "d6f7c5bb906b6dac40ddf343ef9e26438a3de092"
 FIXTURE_ROOT = Path(__file__).resolve().parents[1] / "fixtures" / "mediacrawler"
@@ -409,6 +410,165 @@ def test_bili_dynamic_never_materializes_progressive_detail_asset() -> None:
     item = normalize_record(payload, context(Platform.BILI, allow_bili_progressive_detail=True))
     assert item.assets == ()
     assert "__media_sync_bili_progressive_url" not in item.content.raw["record"]
+
+
+@pytest.mark.parametrize(
+    ("images", "expected_kind"),
+    [
+        (
+            [{"pid": "single-pid", "url": "https://i1.wp.com/wx1.sinaimg.cn/large/single-pid.JpEg"}],
+            ContentKind.IMAGE,
+        ),
+        (
+            [
+                {"pid": "first-pid", "url": "https://i1.wp.com/wx1.sinaimg.cn/large/first-pid.jpg"},
+                {"pid": "second-pid", "url": "https://i1.wp.com/wx2.sinaimg.cn/large/second-pid.png"},
+            ],
+            ContentKind.GALLERY,
+        ),
+    ],
+)
+def test_weibo_private_capture_materializes_ordered_images_without_persisting_the_shim_field(
+    images: list[dict[str, str]],
+    expected_kind: ContentKind,
+) -> None:
+    payload = source_record("wb/contents.v1.jsonl")
+    payload["note_id"] = "5123456789012345"
+    payload[WEIBO_IMAGES_FIELD] = images
+    payload["future_nested_shape"] = {WEIBO_IMAGES_FIELD: images}
+
+    item = normalize_record(payload, context(Platform.WB))
+
+    expected_urls = tuple(image["url"] for image in images)
+    assert item.content.kind is expected_kind
+    assert tuple(asset.kind for asset in item.assets) == (AssetKind.IMAGE,) * len(images)
+    assert tuple(asset.position for asset in item.assets) == tuple(range(len(images)))
+    assert tuple(asset.remote_id for asset in item.assets) == tuple(
+        f"5123456789012345:image:{position}" for position in range(len(images))
+    )
+    assert tuple(asset.source_url for asset in item.assets) == expected_urls
+    assert tuple(asset.mime_type for asset in item.assets) == tuple(
+        "image/png" if url.endswith(".png") else "image/jpeg" for url in expected_urls
+    )
+    durable_record = item.content.raw["record"]
+    assert isinstance(durable_record, Mapping)
+    assert WEIBO_IMAGES_FIELD not in durable_record
+    nested = durable_record["future_nested_shape"]
+    assert isinstance(nested, Mapping)
+    assert WEIBO_IMAGES_FIELD not in nested
+    assert all(asset.raw == item.content.raw for asset in item.assets)
+
+
+@pytest.mark.parametrize(
+    "images",
+    [
+        pytest.param("https://i1.wp.com/wx1.sinaimg.cn/large/not-a-list.jpg", id="scalar"),
+        pytest.param([[{"pid": "nested", "url": "https://i1.wp.com/wx1.sinaimg.cn/large/nested.jpg"}]], id="nested"),
+        pytest.param([{"pid": "missing-url"}], id="missing-key"),
+        pytest.param(
+            [
+                {
+                    "pid": "extra-key",
+                    "url": "https://i1.wp.com/wx1.sinaimg.cn/large/extra-key.jpg",
+                    "future": "drift",
+                }
+            ],
+            id="extra-key",
+        ),
+        pytest.param(
+            [
+                {"pid": "duplicate", "url": "https://i1.wp.com/wx1.sinaimg.cn/large/first.jpg"},
+                {"pid": "duplicate", "url": "https://i1.wp.com/wx2.sinaimg.cn/large/second.jpg"},
+            ],
+            id="duplicate-pid",
+        ),
+        pytest.param(
+            [
+                {"pid": "first", "url": "https://i1.wp.com/wx1.sinaimg.cn/large/duplicate.jpg"},
+                {"pid": "second", "url": "https://i1.wp.com/wx1.sinaimg.cn/large/duplicate.jpg"},
+            ],
+            id="duplicate-url",
+        ),
+        pytest.param(
+            [{"pid": "http", "url": "http://i1.wp.com/wx1.sinaimg.cn/large/http.jpg"}],
+            id="not-https",
+        ),
+        pytest.param(
+            [{"pid": "direct", "url": "https://wx1.sinaimg.cn/large/direct.jpg"}],
+            id="not-proxy",
+        ),
+        pytest.param(
+            [{"pid": "query", "url": "https://i1.wp.com/wx1.sinaimg.cn/large/query.jpg?token=private"}],
+            id="query",
+        ),
+        pytest.param(
+            [{"pid": "fragment", "url": "https://i1.wp.com/wx1.sinaimg.cn/large/fragment.jpg#private"}],
+            id="fragment",
+        ),
+        pytest.param(
+            [{"pid": "wrong-path", "url": "https://i1.wp.com/wx1.sinaimg.cn/original/wrong-path.jpg"}],
+            id="wrong-size-path",
+        ),
+        pytest.param(
+            [{"pid": "gif", "url": "https://i1.wp.com/wx1.sinaimg.cn/large/animated.gif"}],
+            id="gif",
+        ),
+        pytest.param(
+            [{"pid": "mp4", "url": "https://i1.wp.com/wx1.sinaimg.cn/large/video.mp4"}],
+            id="mp4",
+        ),
+        pytest.param(
+            [{"pid": "no-extension", "url": "https://i1.wp.com/wx1.sinaimg.cn/large/no-extension"}],
+            id="no-extension",
+        ),
+        pytest.param(
+            [{"pid": "avif", "url": "https://i1.wp.com/wx1.sinaimg.cn/large/image.avif"}],
+            id="unsupported-extension",
+        ),
+        pytest.param(
+            [{"pid": "foreign", "url": "https://i1.wp.com/evil.example/large/foreign.jpg"}],
+            id="foreign-embedded-host",
+        ),
+    ],
+)
+def test_weibo_capture_drift_and_duplicates_fail_closed_to_text_without_assets(images: object) -> None:
+    payload = source_record("wb/contents.v1.jsonl")
+    payload["note_id"] = "5123456789012345"
+    payload[WEIBO_IMAGES_FIELD] = images
+
+    item = normalize_record(payload, context(Platform.WB))
+
+    assert item.content.kind is ContentKind.TEXT
+    assert item.assets == ()
+    durable_record = item.content.raw["record"]
+    assert isinstance(durable_record, Mapping)
+    assert WEIBO_IMAGES_FIELD not in durable_record
+
+
+@pytest.mark.parametrize(
+    "eligibility_drift",
+    [
+        pytest.param({"note_id": "wb-text-001"}, id="non-numeric-id"),
+        pytest.param({"note_id": "05123456789012345"}, id="non-canonical-numeric-id"),
+        pytest.param({"retweeted_status": {}}, id="retweet"),
+        pytest.param({"page_info": {"type": "video"}}, id="page-info"),
+    ],
+)
+def test_weibo_nonordinary_or_noncanonical_posts_cannot_materialize_forged_images(
+    eligibility_drift: dict[str, object],
+) -> None:
+    payload = source_record("wb/contents.v1.jsonl")
+    payload["note_id"] = "5123456789012345"
+    payload.update(eligibility_drift)
+    payload[WEIBO_IMAGES_FIELD] = [{"pid": "forged", "url": "https://i1.wp.com/wx1.sinaimg.cn/large/forged.jpg"}]
+
+    item = normalize_record(payload, context(Platform.WB))
+
+    assert item.content.kind is ContentKind.TEXT
+    assert item.assets == ()
+    durable_record = item.content.raw["record"]
+    assert isinstance(durable_record, Mapping)
+    assert WEIBO_IMAGES_FIELD not in durable_record
 
 
 def test_replay_is_equal_and_mixed_timestamp_inputs_normalize_to_utc() -> None:

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -39,12 +39,14 @@ from media_sync.infrastructure.db import (
     SubscriptionRepository,
     SyncRunRepository,
 )
+from media_sync.infrastructure.db.asset_identity import asset_source_hint, stable_asset_key
 from media_sync.infrastructure.db.models import Asset, AssetRefreshSource, Author, Content, Subscription, SyncRun
 from media_sync.integrations.mediacrawler.normalizers import (
     NormalizationContext,
     NormalizedMediaRecord,
     normalize_jsonl_bytes,
 )
+from media_sync.integrations.mediacrawler.weibo_media import WEIBO_IMAGES_FIELD
 from media_sync.media.locator import AdapterRefreshLocator, locator_fingerprint, parse_locator
 
 
@@ -469,6 +471,113 @@ def test_douyin_media_url_ephemera_are_removed_across_normalization_and_sqlite(
     database_path = Path(database_path_value)
     sqlite_bytes = b"".join(path.read_bytes() for path in database_path.parent.glob(f"{database_path.name}*"))
     assert all(sentinel.encode() not in sqlite_bytes for sentinel in forbidden)
+
+
+def test_weibo_ordered_images_persist_exact_identity_and_refresh_provenance(
+    database: Database,
+) -> None:
+    note_id = "5123456789012345"
+    image_urls = (
+        "https://i1.wp.com/wx1.sinaimg.cn/large/weibo-first.jpg",
+        "https://i1.wp.com/wx2.sinaimg.cn/large/weibo-second.png",
+    )
+    images = [
+        {"pid": "weibo-first", "url": image_urls[0]},
+        {"pid": "weibo-second", "url": image_urls[1]},
+    ]
+    record = {
+        "note_id": note_id,
+        "content": "One ordinary original Weibo gallery",
+        "create_time": "1767225600",
+        "note_url": f"https://m.weibo.cn/detail/{note_id}",
+        WEIBO_IMAGES_FIELD: images,
+        "nested_future_shape": {WEIBO_IMAGES_FIELD: images},
+    }
+    batch = normalize_jsonl_bytes(
+        (json.dumps(record, separators=(",", ":")) + "\n").encode(),
+        NormalizationContext(
+            platform=Platform.WB,
+            creator_remote_id="creator-001",
+            creator_display_name="Creator One",
+            upstream_sha="d6f7c5bb906b6dac40ddf343ef9e26438a3de092",
+            ingested_at=datetime(2026, 8, 31, tzinfo=UTC),
+        ),
+    )
+
+    assert not batch.quarantined
+    assert len(batch.records) == 1
+    normalized = batch.records[0]
+    assert normalized.content.kind is ContentKind.GALLERY
+    assert tuple(asset.source_url for asset in normalized.assets) == image_urls
+    assert tuple(asset.position for asset in normalized.assets) == (0, 1)
+    normalized_record = normalized.content.raw["record"]
+    assert isinstance(normalized_record, Mapping)
+    assert WEIBO_IMAGES_FIELD not in normalized_record
+    nested = normalized_record["nested_future_shape"]
+    assert isinstance(nested, Mapping)
+    assert WEIBO_IMAGES_FIELD not in nested
+
+    subscription_id = _seed_subscription(database, platform=Platform.WB)
+    run_id = _create_run(database, subscription_id)
+    result = MediaCrawlerIngestionService(database).ingest(
+        batch.records,
+        subscription_id=subscription_id,
+        run_id=run_id,
+        expected_revision=0,
+        mode=IngestionMode.FORWARD,
+    )
+    assert result.accepted_count == 1
+    assert result.asset_count == 2
+
+    with database.session() as session:
+        author = session.scalar(select(Author).where(Author.platform == Platform.WB.value))
+        content = session.scalar(select(Content).where(Content.platform == Platform.WB.value))
+        assets = tuple(
+            session.scalars(select(Asset).where(Asset.platform == Platform.WB.value).order_by(Asset.position)).all()
+        )
+        assert author is not None and content is not None and len(assets) == 2
+        assert content.kind == ContentKind.GALLERY.value
+        assert tuple(asset.source_url for asset in assets) == image_urls
+        retained = json.dumps(
+            {
+                "author_raw": author.raw,
+                "content_raw": content.raw,
+                "asset_raw": [asset.raw for asset in assets],
+            },
+            sort_keys=True,
+        )
+        assert WEIBO_IMAGES_FIELD not in retained
+        for position, asset in enumerate(assets):
+            expected_remote_id = f"{note_id}:image:{position}"
+            assert asset.remote_id == expected_remote_id
+            assert asset_source_hint(asset.source_url) == image_urls[position]
+            locator = parse_locator(asset.locator)
+            assert isinstance(locator, AdapterRefreshLocator)
+            assert locator.adapter == "mediacrawler"
+            assert locator.asset_key == stable_asset_key(
+                platform=Platform.WB.value,
+                content_remote_type="content",
+                content_remote_id=note_id,
+                kind=AssetKind.IMAGE.value,
+                position=position,
+                remote_id=expected_remote_id,
+            )
+            sources = AssetRefreshSourceRepository(session).list_eligible(asset.id)
+            assert len(sources) == 1
+            source = sources[0]
+            assert source.subscription_id == subscription_id
+            assert source.last_run_id == run_id
+            assert source.observation_kind == "ingested"
+            assert source.observed_generation == asset.generation == 1
+            assert source.observed_semantic_fingerprint == asset.semantic_fingerprint
+            assert source.observed_locator_fingerprint == asset.locator_fingerprint
+
+    database_path_value = make_url(database.url).database
+    assert database_path_value is not None
+    database.dispose()
+    database_path = Path(database_path_value)
+    sqlite_bytes = b"".join(path.read_bytes() for path in database_path.parent.glob(f"{database_path.name}*"))
+    assert WEIBO_IMAGES_FIELD.encode() not in sqlite_bytes
 
 
 def test_ingestion_records_exact_refresh_source_and_archive_reset_keeps_it_eligible(

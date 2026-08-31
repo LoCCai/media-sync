@@ -32,13 +32,20 @@ from .jsonl import (
     read_jsonl,
     read_jsonl_bytes,
 )
+from .weibo_media import (
+    WEIBO_IMAGES_FIELD,
+    is_weibo_numeric_note_id,
+    is_weibo_proxy_image_url,
+)
 
 _GIT_SHA = re.compile(r"[0-9a-fA-F]{40}\Z")
 _CHINA_TZ = timezone(timedelta(hours=8))
 _BILI_PROGRESSIVE_FIELD = "__media_sync_bili_progressive_url"
+_PRIVATE_MEDIA_FIELDS = frozenset({_BILI_PROGRESSIVE_FIELD, WEIBO_IMAGES_FIELD})
 _DY_EPHEMERAL_MEDIA_URL_FIELDS = frozenset({"video_download_url", "cover_url", "music_download_url"})
 _DY_NOTE_MEDIA_URL_FIELD = "note_download_url"
 _KS_EPHEMERAL_MEDIA_URL_FIELDS = frozenset({"video_play_url", "video_cover_url"})
+_WEIBO_PID = re.compile(r"[A-Za-z0-9_-]{1,128}\Z", re.ASCII)
 
 
 @dataclass(frozen=True, slots=True)
@@ -187,14 +194,40 @@ def _dy_url_list(value: object, *, allow_scalar_commas: bool) -> tuple[str, ...]
     return tuple(result)
 
 
-def _strip_private_detail_field(value: object) -> object:
-    """Copy JSON-shaped input while removing the closed detail-only field."""
+def _strip_private_media_fields(value: object) -> object:
+    """Copy JSON-shaped input while recursively removing shim-only media fields."""
 
     if isinstance(value, Mapping):
-        return {key: _strip_private_detail_field(item) for key, item in value.items() if key != _BILI_PROGRESSIVE_FIELD}
+        return {
+            key: _strip_private_media_fields(item) for key, item in value.items() if key not in _PRIVATE_MEDIA_FIELDS
+        }
     if isinstance(value, Sequence) and not isinstance(value, bytes | bytearray | str):
-        return [_strip_private_detail_field(item) for item in value]
+        return [_strip_private_media_fields(item) for item in value]
     return value
+
+
+def _weibo_image_urls(value: object) -> tuple[str, ...]:
+    """Parse one all-or-nothing ordered Weibo image capture payload."""
+
+    # The JSON reader freezes a JSON list to a tuple before normalization.
+    if not isinstance(value, Sequence) or isinstance(value, bytes | bytearray | str) or not value:
+        return ()
+    urls: list[str] = []
+    seen_pids: set[str] = set()
+    seen_urls: set[str] = set()
+    for item in value:
+        if not isinstance(item, Mapping) or set(item) != {"pid", "url"}:
+            return ()
+        pid = item.get("pid")
+        if not isinstance(pid, str) or not pid or pid != pid.strip() or _WEIBO_PID.fullmatch(pid) is None:
+            return ()
+        url = item.get("url")
+        if not isinstance(url, str) or not is_weibo_proxy_image_url(url) or pid in seen_pids or url in seen_urls:
+            return ()
+        seen_pids.add(pid)
+        seen_urls.add(url)
+        urls.append(url)
+    return tuple(urls)
 
 
 def _query_free_media_url(value: object) -> object:
@@ -498,9 +531,20 @@ def _normalize_bili(record: Mapping[str, object], *, allow_progressive_detail: b
 def _normalize_wb(record: Mapping[str, object]) -> _ContentParts:
     remote_id = _required_id(record, "note_id")
     body = _text(record.get("content"))
+    page_info = record.get("page_info")
+    eligible_image_post = (
+        is_weibo_numeric_note_id(remote_id) and record.get("retweeted_status") is None and page_info in (None, {})
+    )
+    images = _weibo_image_urls(record.get(WEIBO_IMAGES_FIELD)) if eligible_image_post else ()
+    if len(images) > 1:
+        kind = ContentKind.GALLERY
+    elif images:
+        kind = ContentKind.IMAGE
+    else:
+        kind = ContentKind.TEXT
     return _ContentParts(
         remote_id=remote_id,
-        kind=ContentKind.TEXT,
+        kind=kind,
         title=_summary(body),
         body=body,
         canonical_url=_safe_url(record.get("note_url")) or f"https://m.weibo.cn/detail/{remote_id}",
@@ -509,6 +553,7 @@ def _normalize_wb(record: Mapping[str, object]) -> _ContentParts:
             record,
             {"liked_count": "likes", "comments_count": "comments", "shared_count": "shares"},
         ),
+        asset_groups=((AssetKind.IMAGE, images),),
     )
 
 
@@ -622,7 +667,7 @@ def normalize_record(record: Mapping[str, object], context: NormalizationContext
             parts = _normalize_bili(record, allow_progressive_detail=context.allow_bili_progressive_detail)
         else:
             parts = _NORMALIZERS[context.platform](record)
-        sanitized_record = _strip_private_detail_field(record)
+        sanitized_record = _strip_private_media_fields(record)
         if not isinstance(sanitized_record, Mapping):  # pragma: no cover - record is already a mapping
             raise RecordNormalizationError(QuarantineReason.INVALID_RECORD)
         if context.platform is Platform.DY:

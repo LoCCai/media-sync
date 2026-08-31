@@ -22,6 +22,7 @@ from media_sync.integrations.mediacrawler.refresh import (
     MediaCrawlerLocatorRefresher,
     MediaCrawlerRefreshContext,
 )
+from media_sync.integrations.mediacrawler.weibo_media import WEIBO_IMAGES_FIELD
 from media_sync.media import AdapterRefreshLocator, MediaDownloadError, MediaRequestProfile
 from media_sync.security import SecretValue
 
@@ -248,6 +249,101 @@ async def update_up_info(detail):
     assert detail["View"]["aid"] == 987654321
 """
 
+_WB_STORE = r"""
+import asyncio
+import json
+from pathlib import Path
+
+import config
+
+
+class WeiboJsonlStoreImplement:
+    async def store_content(self, content_item):
+        target = Path(config.SAVE_DATA_PATH) / "wb" / "jsonl" / "detail_contents_fixture.jsonl"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with target.open("a", encoding="utf-8", newline="\n") as stream:
+            stream.write(json.dumps(content_item, separators=(",", ":")) + "\n")
+
+
+async def update_weibo_note(note_item):
+    mblog = note_item["mblog"]
+    await asyncio.sleep(0)
+    await WeiboJsonlStoreImplement().store_content(
+        {
+            "note_id": mblog["id"],
+            "content": mblog["text"],
+            "note_url": "https://m.weibo.cn/detail/" + mblog["id"],
+        }
+    )
+"""
+
+_WB_MAIN = r"""
+import json
+import os
+from pathlib import Path
+
+import config
+from store import weibo as weibo_store
+
+crawler = None
+
+
+def _profile():
+    return Path(
+        os.path.join(os.getcwd(), "browser_data", config.USER_DATA_DIR % config.PLATFORM)
+    ).resolve()
+
+
+class FakeCrawler:
+    async def start(self):
+        assert config.PLATFORM == "wb"
+        assert config.LOGIN_TYPE == "qrcode"
+        assert config.CRAWLER_TYPE == "detail"
+        assert config.WEIBO_SPECIFIED_ID_LIST == ["7525082444551310602"]
+        assert config.SAVE_DATA_OPTION == "jsonl"
+        assert config.CREATOR_MODE is False
+        assert config.ENABLE_GET_COMMENTS is False
+        assert config.ENABLE_GET_MEIDAS is False
+        assert config.ENABLE_GET_MEDIAS is False
+        assert config.MAX_CONCURRENCY_NUM == 1
+        profile = _profile()
+        assert profile.name == "wb_user_data_dir"
+        profile.mkdir(parents=True, exist_ok=True)
+        await weibo_store.update_weibo_note(
+            {
+                "mblog": {
+                    "id": "7525082444551310602",
+                    "text": "fixture image note",
+                    "pics": [
+                        {"pid": "firstPid", "url": "https://wx1.sinaimg.cn/orj360/first.jpg"},
+                        {"pid": "secondPid", "url": "https://wx2.sinaimg.cn/mw690/second.png"},
+                    ],
+                }
+            }
+        )
+
+
+class CrawlerFactory:
+    @staticmethod
+    def create_crawler(platform):
+        assert platform == "wb"
+        return FakeCrawler()
+
+
+async def main():
+    global crawler
+    crawler = CrawlerFactory.create_crawler(config.PLATFORM)
+    await crawler.start()
+
+
+async def async_cleanup():
+    assert config.COOKIES == ""
+    (_profile() / "cleanup.json").write_text(
+        json.dumps({"called": True, "cookie_cleared": True}),
+        encoding="utf-8",
+    )
+"""
+
 
 def _fake_checkout(root: Path) -> Path:
     checkout = root / "fake-mediacrawler"
@@ -381,7 +477,51 @@ def _fake_bili_checkout(
     return checkout.resolve()
 
 
+def _fake_wb_checkout(
+    root: Path,
+    *,
+    first_url: str = "https://wx1.sinaimg.cn/orj360/first.jpg",
+) -> Path:
+    checkout = root / "fake-mediacrawler-wb"
+    (checkout / "config").mkdir(parents=True)
+    (checkout / "store" / "weibo").mkdir(parents=True)
+    (checkout / "config" / "__init__.py").write_text(textwrap.dedent(_CONFIG).lstrip(), encoding="utf-8")
+    (checkout / "store" / "weibo" / "__init__.py").write_text(
+        textwrap.dedent(_WB_STORE).lstrip(),
+        encoding="utf-8",
+    )
+    main_source = (
+        textwrap.dedent(_WB_MAIN)
+        .lstrip()
+        .replace(
+            "https://wx1.sinaimg.cn/orj360/first.jpg",
+            first_url,
+        )
+    )
+    (checkout / "main.py").write_text(main_source, encoding="utf-8")
+    return checkout.resolve()
+
+
 def _bili_process_runner(tmp_path: Path, checkout: Path) -> MediaCrawlerDetailProcessRunner:
+    lock_path = tmp_path / "upstreams.lock.json"
+    lock_path.write_text("{}", encoding="utf-8")
+    return MediaCrawlerDetailProcessRunner(
+        lock_path=lock_path,
+        integration_root=tmp_path / "runtime",
+        python_executable=Path(sys.executable),
+        license_acknowledged=True,
+        checkout_verifier=lambda _path, _accepted: VerifiedCheckout(
+            root=checkout,
+            commit=UPSTREAM_SHA,
+            repository="https://github.com/NanmiCoder/MediaCrawler.git",
+            license_name="NON-COMMERCIAL LEARNING LICENSE 1.1",
+            lock_path=lock_path,
+        ),
+        python_verifier=lambda path: VerifiedPython(path),
+    )
+
+
+def _wb_process_runner(tmp_path: Path, checkout: Path) -> MediaCrawlerDetailProcessRunner:
     lock_path = tmp_path / "upstreams.lock.json"
     lock_path.write_text("{}", encoding="utf-8")
     return MediaCrawlerDetailProcessRunner(
@@ -554,6 +694,168 @@ def test_detail_process_runner_uses_detail_mode_and_cleans_signed_jsonl(tmp_path
     profile = integration_root / "accounts" / "dy" / str(ACCOUNT_ID) / "browser_data" / "dy_user_data_dir"
     assert profile.is_dir()
     assert (profile / "session.marker").read_text(encoding="utf-8") == "stable fixture profile"
+
+
+def test_weibo_numeric_detail_installs_media_shim_and_runs_cleanup(tmp_path: Path) -> None:
+    checkout = _fake_wb_checkout(tmp_path)
+    lock_path = tmp_path / "upstreams.lock.json"
+    lock_path.write_text("{}", encoding="utf-8")
+    integration_root = tmp_path / "runtime"
+    runner = MediaCrawlerDetailProcessRunner(
+        lock_path=lock_path,
+        integration_root=integration_root,
+        python_executable=Path(sys.executable),
+        license_acknowledged=True,
+        checkout_verifier=lambda _path, _accepted: VerifiedCheckout(
+            root=checkout,
+            commit=UPSTREAM_SHA,
+            repository="https://github.com/NanmiCoder/MediaCrawler.git",
+            license_name="NON-COMMERCIAL LEARNING LICENSE 1.1",
+            lock_path=lock_path,
+        ),
+        python_verifier=lambda path: VerifiedPython(path),
+    )
+
+    result = runner.run(
+        MediaCrawlerDetailRequest(
+            account_id=ACCOUNT_ID,
+            subscription_id=SUBSCRIPTION_ID,
+            platform=Platform.WB,
+            login_method=LoginMethod.QR,
+            content_remote_id=CONTENT_ID,
+            request_delay_seconds=0.25,
+            watchdogs=WatchdogLimits(max_seconds=10, poll_seconds=0.01),
+        )
+    )
+
+    assert result.upstream_sha == UPSTREAM_SHA
+    records = [json.loads(line) for line in result.jsonl.splitlines()]
+    assert records == [
+        {
+            "note_id": CONTENT_ID,
+            "content": "fixture image note",
+            "note_url": f"https://m.weibo.cn/detail/{CONTENT_ID}",
+            WEIBO_IMAGES_FIELD: [
+                {"pid": "firstPid", "url": "https://i1.wp.com/wx1.sinaimg.cn/large/first.jpg"},
+                {"pid": "secondPid", "url": "https://i1.wp.com/wx2.sinaimg.cn/large/second.png"},
+            ],
+        }
+    ]
+    assert list((integration_root / "jobs").iterdir()) == []
+    profile = integration_root / "accounts" / "wb" / str(ACCOUNT_ID) / "browser_data" / "wb_user_data_dir"
+    assert json.loads((profile / "cleanup.json").read_text(encoding="utf-8")) == {
+        "called": True,
+        "cookie_cleared": True,
+    }
+    retained = b"".join(path.read_bytes() for path in integration_root.rglob("*") if path.is_file())
+    assert WEIBO_IMAGES_FIELD.encode("utf-8") not in retained
+
+
+@pytest.mark.parametrize(
+    "first_url",
+    [
+        pytest.param("https://wx1.sinaimg.cn/orj360/animated.gif", id="gif"),
+        pytest.param("https://evil.example/orj360/foreign.jpg", id="foreign-host"),
+    ],
+)
+def test_weibo_detail_capture_rejects_nonstatic_or_foreign_source(
+    tmp_path: Path,
+    first_url: str,
+) -> None:
+    checkout = _fake_wb_checkout(tmp_path, first_url=first_url)
+    result = _wb_process_runner(tmp_path, checkout).run(
+        MediaCrawlerDetailRequest(
+            account_id=ACCOUNT_ID,
+            subscription_id=SUBSCRIPTION_ID,
+            platform=Platform.WB,
+            login_method=LoginMethod.QR,
+            content_remote_id=CONTENT_ID,
+            watchdogs=WatchdogLimits(max_seconds=10, poll_seconds=0.01),
+        )
+    )
+
+    records = [json.loads(line) for line in result.jsonl.splitlines()]
+    assert len(records) == 1
+    assert records[0]["note_id"] == CONTENT_ID
+    assert WEIBO_IMAGES_FIELD not in records[0]
+    assert list((tmp_path / "runtime" / "jobs").iterdir()) == []
+
+
+@pytest.mark.parametrize(
+    ("content_remote_id", "detail_reference"),
+    [
+        ("not-numeric", None),
+        ("07525082444551310602", None),
+        (CONTENT_ID, "https://m.weibo.cn/detail/7525082444551310602"),
+        (CONTENT_ID, "7525082444551310603"),
+        (CONTENT_ID, SecretValue(CONTENT_ID)),
+    ],
+)
+def test_weibo_detail_rejects_noncanonical_or_nonmatching_references(
+    content_remote_id: str,
+    detail_reference: str | SecretValue | None,
+) -> None:
+    with pytest.raises(MediaDownloadError, match="locator_refresh_configuration_invalid"):
+        MediaCrawlerDetailRequest(
+            account_id=ACCOUNT_ID,
+            subscription_id=SUBSCRIPTION_ID,
+            platform=Platform.WB,
+            login_method=LoginMethod.QR,
+            content_remote_id=content_remote_id,
+            detail_reference=detail_reference,
+        )
+
+
+@pytest.mark.parametrize("detail_reference", [None, CONTENT_ID])
+def test_weibo_detail_accepts_implicit_or_exact_plain_reference(detail_reference: str | None) -> None:
+    request = MediaCrawlerDetailRequest(
+        account_id=ACCOUNT_ID,
+        subscription_id=SUBSCRIPTION_ID,
+        platform=Platform.WB,
+        login_method=LoginMethod.QR,
+        content_remote_id=CONTENT_ID,
+        detail_reference=detail_reference,
+    )
+
+    assert request.resolved_detail_reference() == CONTENT_ID
+
+
+def test_weibo_detail_child_rejects_mismatched_numeric_reference(tmp_path: Path) -> None:
+    account_root = tmp_path / "accounts" / "wb" / str(ACCOUNT_ID)
+    profile_root = account_root / "browser_data" / "wb_user_data_dir"
+    job_root = tmp_path / "jobs" / "attempt"
+    output_root = job_root / "output"
+    limits = WatchdogLimits()
+    payload = json.dumps(
+        {
+            "schema_version": detail_runner_module.DETAIL_RUNNER_SCHEMA_VERSION,
+            "checkout_root": str(Path.cwd().resolve()),
+            "account_root": str(account_root),
+            "profile_root": str(profile_root),
+            "job_root": str(job_root),
+            "output_root": str(output_root),
+            "platform": Platform.WB.value,
+            "login_method": LoginMethod.QR.value,
+            "content_remote_id": CONTENT_ID,
+            "detail_reference": "7525082444551310603",
+            "cookie": None,
+            "headless": True,
+            "request_delay_seconds": 0.25,
+            "bili_progressive_detail": False,
+            "watchdogs": {
+                "max_seconds": limits.max_seconds,
+                "max_output_bytes": limits.max_output_bytes,
+                "max_output_items": limits.max_output_items,
+                "max_output_files": limits.max_output_files,
+                "max_line_bytes": limits.max_line_bytes,
+                "poll_seconds": limits.poll_seconds,
+            },
+        },
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+    with pytest.raises(detail_runner_module._ChildConfigurationError):
+        detail_runner_module._ChildRequest.load(payload)
 
 
 def test_kuaishou_detail_refresh_resolves_video_and_cover_without_retaining_signed_urls(tmp_path: Path) -> None:

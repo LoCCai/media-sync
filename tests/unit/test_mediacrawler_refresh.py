@@ -18,6 +18,7 @@ from media_sync.integrations.mediacrawler.refresh import (
     MediaCrawlerLocatorRefresher,
     MediaCrawlerRefreshContext,
 )
+from media_sync.integrations.mediacrawler.weibo_media import WEIBO_IMAGES_FIELD
 from media_sync.media import AdapterRefreshLocator, MediaDownloadError, MediaRequestProfile
 from media_sync.security import SecretValue
 
@@ -205,6 +206,27 @@ def _context(
                 "video_cover_url": "https://i.example.test/bili/cover.jpg@672w?token=bili-cover-sentinel",
             },
         ),
+        (
+            Platform.WB,
+            "5123456789012345",
+            AssetKind.IMAGE,
+            1,
+            "https://i1.wp.com/wx2.sinaimg.cn/large/weibo-second.jpg",
+            {
+                "note_id": "5123456789012345",
+                "content": "two images",
+                WEIBO_IMAGES_FIELD: [
+                    {
+                        "pid": "weibo-first",
+                        "url": "https://i1.wp.com/wx1.sinaimg.cn/large/weibo-first.jpg",
+                    },
+                    {
+                        "pid": "weibo-second",
+                        "url": "https://i1.wp.com/wx2.sinaimg.cn/large/weibo-second.jpg",
+                    },
+                ],
+            },
+        ),
     ],
 )
 def test_bound_refresher_selects_exact_normalized_asset_in_memory(
@@ -231,8 +253,92 @@ def test_bound_refresher_selects_exact_normalized_asset_in_memory(
     assert len(runner.calls) == 1
     assert runner.calls[0].platform is platform
     assert runner.calls[0].content_remote_id == content_id
+    assert resolved.request_profile is MediaRequestProfile.DEFAULT
     assert "sentinel" not in repr(resolved)
     assert "sentinel" not in repr(context)
+
+
+@pytest.mark.parametrize("drift", ["reordered", "duplicate-pid"])
+def test_weibo_refresh_requires_exact_ordered_identity_and_source_hint(drift: str) -> None:
+    first_url = "https://i1.wp.com/wx1.sinaimg.cn/large/weibo-first.jpg"
+    second_url = "https://i1.wp.com/wx2.sinaimg.cn/large/weibo-second.jpg"
+    images = [
+        {"pid": "weibo-first", "url": first_url},
+        {"pid": "weibo-second", "url": second_url},
+    ]
+    if drift == "reordered":
+        images.reverse()
+    else:
+        images[1]["pid"] = images[0]["pid"]
+    context = _context(
+        platform=Platform.WB,
+        content_id="5123456789012345",
+        kind=AssetKind.IMAGE,
+        position=1,
+        signed_url=second_url,
+    )
+    runner = _FakeDetailRunner(
+        _jsonl(
+            {
+                "note_id": "5123456789012345",
+                "content": "two images",
+                WEIBO_IMAGES_FIELD: images,
+            }
+        )
+    )
+
+    with pytest.raises(MediaDownloadError) as caught:
+        MediaCrawlerLocatorRefresher(context, runner, clock=lambda: NOW).resolve(context.locator)
+
+    assert caught.value.code == "locator_refresh_asset_mismatch"
+    assert len(runner.calls) == 1
+
+
+def test_weibo_refresh_context_accepts_only_image_assets() -> None:
+    with pytest.raises(MediaDownloadError) as caught:
+        _context(
+            platform=Platform.WB,
+            content_id="5123456789012345",
+            kind=AssetKind.VIDEO,
+            position=0,
+            signed_url="https://i1.wp.com/wx1.sinaimg.cn/large/not-video.jpg",
+        )
+
+    assert caught.value.code == "locator_refresh_unsupported"
+
+
+def test_weibo_refresh_context_accepts_exact_plain_detail_reference() -> None:
+    content_id = "5123456789012345"
+    context = _context(
+        platform=Platform.WB,
+        content_id=content_id,
+        kind=AssetKind.IMAGE,
+        position=0,
+        signed_url="https://i1.wp.com/wx1.sinaimg.cn/large/weibo-first.jpg",
+        detail_reference=content_id,
+    )
+
+    assert context.detail_request().resolved_detail_reference() == content_id
+
+
+@pytest.mark.parametrize(
+    "detail_reference",
+    ["5123456789012346", SecretValue("5123456789012345")],
+)
+def test_weibo_refresh_context_rejects_mismatched_or_secret_detail_reference(
+    detail_reference: str | SecretValue,
+) -> None:
+    with pytest.raises(MediaDownloadError) as caught:
+        _context(
+            platform=Platform.WB,
+            content_id="5123456789012345",
+            kind=AssetKind.IMAGE,
+            position=0,
+            signed_url="https://i1.wp.com/wx1.sinaimg.cn/large/weibo-first.jpg",
+            detail_reference=detail_reference,
+        )
+
+    assert caught.value.code == "locator_refresh_configuration_invalid"
 
 
 def test_bilibili_locator_only_video_uses_private_detail_gate_and_media_profile() -> None:
@@ -401,7 +507,7 @@ def test_xhs_requires_explicit_secret_detail_reference_and_uses_it() -> None:
     )
 
 
-@pytest.mark.parametrize("platform", [Platform.WB, Platform.TIEBA, Platform.ZHIHU])
+@pytest.mark.parametrize("platform", [Platform.TIEBA, Platform.ZHIHU])
 def test_platforms_without_normalized_assets_return_unsupported_without_runner_call(platform: Platform) -> None:
     context = _context(
         platform=platform,

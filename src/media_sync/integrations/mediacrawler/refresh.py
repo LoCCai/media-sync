@@ -28,12 +28,13 @@ from .detail_runner import (
     MediaCrawlerDetailPayloadRunner,
     MediaCrawlerDetailRequest,
     MediaCrawlerDetailResult,
+    _is_weibo_detail_reference,
 )
 from .normalizers import NormalizationContext, normalize_jsonl_bytes
 from .policies import WatchdogLimits
 
-_SUPPORTED_PLATFORMS = frozenset({Platform.XHS, Platform.DY, Platform.KS, Platform.BILI})
-_NO_ASSET_PLATFORMS = frozenset({Platform.WB, Platform.TIEBA, Platform.ZHIHU})
+_SUPPORTED_PLATFORMS = frozenset({Platform.XHS, Platform.DY, Platform.KS, Platform.BILI, Platform.WB})
+_NO_ASSET_PLATFORMS = frozenset({Platform.TIEBA, Platform.ZHIHU})
 
 
 @dataclass(frozen=True, slots=True)
@@ -116,6 +117,8 @@ class MediaCrawlerRefreshContext:
             raise MediaDownloadError("locator_refresh_unsupported")
         if platform is Platform.XHS:
             _validate_xhs_detail_reference(self.detail_reference, self.content_remote_id)
+        if platform is Platform.WB and not _is_weibo_detail_reference(self.detail_reference, self.content_remote_id):
+            raise MediaDownloadError("locator_refresh_configuration_invalid")
         if login_method is LoginMethod.PHONE:
             raise MediaDownloadError("locator_refresh_unsupported")
         if login_method is LoginMethod.COOKIE and self.cookie is None:
@@ -258,6 +261,7 @@ def _supported_kinds(platform: Platform) -> frozenset[AssetKind]:
         Platform.DY: frozenset({AssetKind.IMAGE, AssetKind.VIDEO, AssetKind.AUDIO, AssetKind.COVER}),
         Platform.KS: frozenset({AssetKind.VIDEO, AssetKind.COVER}),
         Platform.BILI: frozenset({AssetKind.VIDEO, AssetKind.COVER}),
+        Platform.WB: frozenset({AssetKind.IMAGE}),
     }.get(platform, frozenset())
 
 
