@@ -1,8 +1,10 @@
 # Execution 0026 goal / 执行 0026 目标
 
-- Status / 状态：Frozen plan; implementation not started / 计划已冻结；实现尚未开始
+- Status / 状态：Frozen offline scope delivered; live qualification remains `NOT_RUN` / 冻结离线范围已交付；真人验收保持 `NOT_RUN`
 - Date / 日期：2026-09-02
 - Predecessor / 前置：Execution 0025 closeout `7cb84fc6c93b832492b95513d9cb6a9708ee6cc9`
+- Plan commit / 计划提交：`0694934bc9230151a85c040a061d6e704dffc4fc`
+- Implementation commit / 实现提交：`190488f77d1704492cc148b890d6f9ae16d84f84`
 - Scope / 范围：Ordered, bounded primary-to-backup CDN failover for the already-supported single-segment Bilibili progressive `durl` shape / 为既有单段 Bilibili progressive `durl` 形状增加有序、有界的主 CDN → 备用 CDN 故障切换
 
 ## Outcome / 目标结果
