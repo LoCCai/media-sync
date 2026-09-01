@@ -26,6 +26,8 @@ from media_sync.media import (
 ASSET_ID = UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
 VIDEO_URL = "https://video.dash.test/component.m4s?deadline=4102444800&sig=video-secret"
 AUDIO_URL = "https://audio.dash.test/component.m4s?deadline=4102444800&sig=audio-secret"
+VIDEO_BACKUP_URL = "https://video-backup.dash.test/component.m4s?deadline=4102444800&sig=video-backup-secret"
+AUDIO_BACKUP_URL = "https://audio-backup.dash.test/component.m4s?deadline=4102444800&sig=audio-backup-secret"
 VIDEO = b"\x00\x00\x00\x18ftypisom" + b"dash-video-component"
 AUDIO = b"\x00\x00\x00\x18ftypM4A " + b"dash-audio-component"
 MUXED = b"\x00\x00\x00\x18ftypisom" + b"muxed-video-and-audio"
@@ -115,10 +117,15 @@ class _BreakingStream(httpx.SyncByteStream):
         raise httpx.ReadError("offline component interruption")
 
 
-def _target(*, audio: bool = True) -> ResolvedDashLocator:
+def _target(
+    *,
+    audio: bool = True,
+    video_backups: tuple[str, ...] = (),
+    audio_backups: tuple[str, ...] = (),
+) -> ResolvedDashLocator:
     return ResolvedDashLocator(
-        video=ResolvedLocator(VIDEO_URL, MediaRequestProfile.BILIBILI_MEDIA),
-        audio=ResolvedLocator(AUDIO_URL, MediaRequestProfile.BILIBILI_MEDIA) if audio else None,
+        video=ResolvedLocator(VIDEO_URL, MediaRequestProfile.BILIBILI_MEDIA, video_backups),
+        audio=(ResolvedLocator(AUDIO_URL, MediaRequestProfile.BILIBILI_MEDIA, audio_backups) if audio else None),
         video_quality=127,
         video_codec="avc",
         audio_quality=30251 if audio else None,
@@ -227,6 +234,213 @@ def test_dash_audio_components_are_probed_muxed_archived_and_cleaned(tmp_path: P
 
     downloader.cleanup_partial(request.asset_id, request.generation, request.work_root)
     assert _part_files(request.work_root) == ()
+
+
+def test_primary_component_success_does_not_touch_backup_candidates(tmp_path: Path) -> None:
+    requests: list[httpx.Request] = []
+    probe = _Probe()
+    muxer = _Muxer()
+    downloader, refresher, resolver = _downloader(
+        _component_handler(requests),
+        target=_target(
+            video_backups=(VIDEO_BACKUP_URL,),
+            audio_backups=(AUDIO_BACKUP_URL,),
+        ),
+        probe=probe,
+        muxer=muxer,
+    )
+
+    result = downloader.download(_request(tmp_path))
+
+    assert result.archive_path.read_bytes() == MUXED
+    assert [str(item.url) for item in requests] == [VIDEO_URL, AUDIO_URL]
+    assert resolver.calls == [("video.dash.test", 443), ("audio.dash.test", 443)]
+    assert refresher.calls == 1
+    assert [payload for payload, _timeout, _cap in probe.calls] == [VIDEO, AUDIO, MUXED]
+
+
+def test_video_and_audio_components_fail_over_in_declared_order(tmp_path: Path) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        url = str(request.url)
+        if url == VIDEO_URL:
+            return httpx.Response(503)
+        if url == VIDEO_BACKUP_URL:
+            return _response(VIDEO, media_type="video/mp4", etag=VIDEO_ETAG)
+        if url == AUDIO_URL:
+            return httpx.Response(403)
+        if url == AUDIO_BACKUP_URL:
+            return _response(AUDIO, media_type="audio/mp4", etag=AUDIO_ETAG)
+        raise AssertionError("unexpected DASH candidate")
+
+    probe = _Probe()
+    muxer = _Muxer()
+    downloader, refresher, resolver = _downloader(
+        handler,
+        target=_target(
+            video_backups=(VIDEO_BACKUP_URL,),
+            audio_backups=(AUDIO_BACKUP_URL,),
+        ),
+        probe=probe,
+        muxer=muxer,
+    )
+
+    result = downloader.download(_request(tmp_path))
+
+    assert result.archive_path.read_bytes() == MUXED
+    assert [str(item.url) for item in requests] == [
+        VIDEO_URL,
+        VIDEO_BACKUP_URL,
+        AUDIO_URL,
+        AUDIO_BACKUP_URL,
+    ]
+    assert resolver.calls == [
+        ("video.dash.test", 443),
+        ("video-backup.dash.test", 443),
+        ("audio.dash.test", 443),
+        ("audio-backup.dash.test", 443),
+    ]
+    assert refresher.calls == 1
+    assert [payload for payload, _timeout, _cap in probe.calls] == [VIDEO, AUDIO, MUXED]
+    assert len(muxer.calls) == 1
+
+
+def test_all_component_candidates_auth_fail_without_writing_bytes(tmp_path: Path) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(403 if str(request.url) == VIDEO_URL else 401)
+
+    probe = _Probe()
+    muxer = _Muxer()
+    downloader, refresher, _resolver = _downloader(
+        handler,
+        target=_target(audio=False, video_backups=(VIDEO_BACKUP_URL,)),
+        probe=probe,
+        muxer=muxer,
+    )
+    request = _request(tmp_path)
+
+    with pytest.raises(MediaDownloadError) as caught:
+        downloader.download(request)
+
+    assert caught.value.code == "locator_refresh_auth_expired"
+    assert [str(item.url) for item in requests] == [VIDEO_URL, VIDEO_BACKUP_URL]
+    assert refresher.calls == 1
+    assert probe.calls == []
+    assert muxer.calls == []
+    assert _part_files(request.work_root) == ()
+
+
+def test_candidate_exhaustion_returns_last_redaction_safe_failure(tmp_path: Path) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(503 if str(request.url) == VIDEO_URL else 404)
+
+    downloader, _refresher, _resolver = _downloader(
+        handler,
+        target=_target(audio=False, video_backups=(VIDEO_BACKUP_URL,)),
+        probe=_Probe(),
+        muxer=_Muxer(),
+    )
+
+    with pytest.raises(MediaDownloadError) as caught:
+        downloader.download(_request(tmp_path))
+
+    assert caught.value.code == "download_http_terminal"
+    assert [str(item.url) for item in requests] == [VIDEO_URL, VIDEO_BACKUP_URL]
+    assert VIDEO_URL not in str(caught.value)
+    assert VIDEO_BACKUP_URL not in str(caught.value)
+
+
+def test_primary_dns_failure_advances_to_validated_backup(tmp_path: Path) -> None:
+    class _PrimaryDnsFailureResolver(_Resolver):
+        def resolve(self, hostname: str, port: int) -> Sequence[str]:
+            self.calls.append((hostname, port))
+            if hostname == "video.dash.test":
+                raise MediaDownloadError("network_dns_failed")
+            return ("8.8.8.8",)
+
+    resolver = _PrimaryDnsFailureResolver()
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        assert str(request.url) == VIDEO_BACKUP_URL
+        return _response(VIDEO, media_type="video/mp4", etag=VIDEO_ETAG)
+
+    probe = _Probe()
+    downloader, _refresher, _resolver = _downloader(
+        handler,
+        target=_target(audio=False, video_backups=(VIDEO_BACKUP_URL,)),
+        probe=probe,
+        muxer=_Muxer(),
+        resolver=resolver,
+    )
+
+    result = downloader.download(_request(tmp_path))
+
+    assert result.archive_path.read_bytes() == MUXED
+    assert resolver.calls == [("video.dash.test", 443), ("video-backup.dash.test", 443)]
+    assert [str(item.url) for item in requests] == [VIDEO_BACKUP_URL]
+    assert [payload for payload, _timeout, _cap in probe.calls] == [VIDEO, MUXED]
+
+
+def test_forbidden_primary_candidate_fails_closed_without_touching_backup(tmp_path: Path) -> None:
+    class _ForbiddenPrimaryResolver(_Resolver):
+        def resolve(self, hostname: str, port: int) -> Sequence[str]:
+            self.calls.append((hostname, port))
+            return ("127.0.0.1",) if hostname == "video.dash.test" else ("8.8.8.8",)
+
+    resolver = _ForbiddenPrimaryResolver()
+
+    def unexpected_http(_request: httpx.Request) -> httpx.Response:
+        raise AssertionError("forbidden primary must fail before HTTP or backup")
+
+    probe = _Probe()
+    muxer = _Muxer()
+    downloader, _refresher, _resolver = _downloader(
+        unexpected_http,
+        target=_target(audio=False, video_backups=(VIDEO_BACKUP_URL,)),
+        probe=probe,
+        muxer=muxer,
+        resolver=resolver,
+    )
+
+    with pytest.raises(MediaDownloadError) as caught:
+        downloader.download(_request(tmp_path))
+
+    assert caught.value.code == "network_address_forbidden"
+    assert resolver.calls == [("video.dash.test", 443)]
+    assert probe.calls == []
+    assert muxer.calls == []
+
+
+def test_component_size_limit_fails_without_touching_backup(tmp_path: Path) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return _response(VIDEO, media_type="video/mp4", etag=VIDEO_ETAG)
+
+    downloader, _refresher, _resolver = _downloader(
+        handler,
+        target=_target(audio=False, video_backups=(VIDEO_BACKUP_URL,)),
+        probe=_Probe(),
+        muxer=_Muxer(),
+        limits=DownloadLimits(max_bytes=len(VIDEO) - 1),
+    )
+
+    with pytest.raises(MediaDownloadError) as caught:
+        downloader.download(_request(tmp_path))
+
+    assert caught.value.code == "download_size_limit"
+    assert [str(item.url) for item in requests] == [VIDEO_URL]
 
 
 def test_silent_dash_remuxes_one_video_component(tmp_path: Path) -> None:
@@ -351,6 +565,181 @@ def test_interrupted_video_component_resumes_before_audio_and_mux(tmp_path: Path
     assert [str(item.url) for item in requests] == [VIDEO_URL, VIDEO_URL, AUDIO_URL]
     assert refresher.calls == 2
     assert [payload for payload, _timeout, _cap in probe.calls] == [VIDEO, AUDIO, MUXED]
+
+
+def test_interrupted_primary_resumes_from_backup_with_exact_validator(tmp_path: Path) -> None:
+    split = len(VIDEO) // 2
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if str(request.url) == VIDEO_URL:
+            return httpx.Response(
+                200,
+                headers={
+                    "Content-Length": str(len(VIDEO)),
+                    "Content-Type": "video/mp4",
+                    "ETag": VIDEO_ETAG,
+                },
+                stream=_BreakingStream(VIDEO[:split]),
+            )
+        assert str(request.url) == VIDEO_BACKUP_URL
+        assert request.headers["range"] == f"bytes={split}-"
+        assert request.headers["if-range"] == VIDEO_ETAG
+        remainder = VIDEO[split:]
+        return httpx.Response(
+            206,
+            headers={
+                "Content-Length": str(len(remainder)),
+                "Content-Range": f"bytes {split}-{len(VIDEO) - 1}/{len(VIDEO)}",
+                "Content-Type": "video/mp4",
+                "ETag": VIDEO_ETAG,
+            },
+            content=remainder,
+        )
+
+    probe = _Probe()
+    muxer = _Muxer()
+    downloader, refresher, _resolver = _downloader(
+        handler,
+        target=_target(audio=False, video_backups=(VIDEO_BACKUP_URL,)),
+        probe=probe,
+        muxer=muxer,
+    )
+
+    result = downloader.download(_request(tmp_path))
+
+    assert result.archive_path.read_bytes() == MUXED
+    assert [str(item.url) for item in requests] == [VIDEO_URL, VIDEO_BACKUP_URL]
+    assert refresher.calls == 1
+    assert [payload for payload, _timeout, _cap in probe.calls] == [VIDEO, MUXED]
+    assert len(muxer.calls) == 1
+
+
+def test_partial_restarts_only_after_every_candidate_rejects_range(tmp_path: Path) -> None:
+    split = len(VIDEO) // 2
+    request = _request(tmp_path)
+
+    def seed_handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={
+                "Content-Length": str(len(VIDEO)),
+                "Content-Type": "video/mp4",
+                "ETag": VIDEO_ETAG,
+            },
+            stream=_BreakingStream(VIDEO[:split]),
+        )
+
+    seed, _refresher, _resolver = _downloader(
+        seed_handler,
+        target=_target(audio=False),
+        probe=_Probe(),
+        muxer=_Muxer(),
+    )
+    with pytest.raises(MediaDownloadError) as seeded:
+        seed.download(request)
+    assert seeded.value.code == "download_interrupted"
+
+    requests: list[httpx.Request] = []
+
+    def handler(candidate_request: httpx.Request) -> httpx.Response:
+        requests.append(candidate_request)
+        if "range" in candidate_request.headers:
+            assert candidate_request.headers["range"] == f"bytes={split}-"
+            assert candidate_request.headers["if-range"] == VIDEO_ETAG
+            if str(candidate_request.url) == VIDEO_URL:
+                return _response(VIDEO, media_type="video/mp4", etag=VIDEO_ETAG)
+            remainder = VIDEO[split:]
+            return httpx.Response(
+                206,
+                headers={
+                    "Content-Length": str(len(remainder)),
+                    "Content-Range": f"bytes {split}-{len(VIDEO) - 1}/{len(VIDEO)}",
+                    "Content-Type": "video/mp4",
+                    "ETag": '"different-stream"',
+                },
+                content=remainder,
+            )
+        assert str(candidate_request.url) == VIDEO_URL
+        return _response(VIDEO, media_type="video/mp4", etag=VIDEO_ETAG)
+
+    probe = _Probe()
+    muxer = _Muxer()
+    downloader, _refresher, _resolver = _downloader(
+        handler,
+        target=_target(audio=False, video_backups=(VIDEO_BACKUP_URL,)),
+        probe=probe,
+        muxer=muxer,
+    )
+
+    result = downloader.download(request)
+
+    assert result.archive_path.read_bytes() == MUXED
+    assert [str(item.url) for item in requests] == [VIDEO_URL, VIDEO_BACKUP_URL, VIDEO_URL]
+    assert all("range" in item.headers for item in requests[:2])
+    assert "range" not in requests[2].headers
+    assert [payload for payload, _timeout, _cap in probe.calls] == [VIDEO, MUXED]
+
+
+def test_incompatible_backup_range_preserves_existing_partial(tmp_path: Path) -> None:
+    split = len(VIDEO) // 2
+    request = _request(tmp_path)
+
+    def seed_handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={
+                "Content-Length": str(len(VIDEO)),
+                "Content-Type": "video/mp4",
+                "ETag": VIDEO_ETAG,
+            },
+            stream=_BreakingStream(VIDEO[:split]),
+        )
+
+    seed, _refresher, _resolver = _downloader(
+        seed_handler,
+        target=_target(audio=False),
+        probe=_Probe(),
+        muxer=_Muxer(),
+    )
+    with pytest.raises(MediaDownloadError):
+        seed.download(request)
+
+    requests: list[httpx.Request] = []
+
+    def handler(candidate_request: httpx.Request) -> httpx.Response:
+        requests.append(candidate_request)
+        assert candidate_request.headers["range"] == f"bytes={split}-"
+        assert candidate_request.headers["if-range"] == VIDEO_ETAG
+        if str(candidate_request.url) == VIDEO_URL:
+            return httpx.Response(503)
+        remainder = VIDEO[split:]
+        return httpx.Response(
+            206,
+            headers={
+                "Content-Length": str(len(remainder)),
+                "Content-Range": f"bytes {split}-{len(VIDEO) - 1}/{len(VIDEO)}",
+                "Content-Type": "video/mp4",
+                "ETag": '"different-stream"',
+            },
+            content=remainder,
+        )
+
+    downloader, _refresher, _resolver = _downloader(
+        handler,
+        target=_target(audio=False, video_backups=(VIDEO_BACKUP_URL,)),
+        probe=_Probe(),
+        muxer=_Muxer(),
+    )
+
+    with pytest.raises(MediaDownloadError) as caught:
+        downloader.download(request)
+
+    assert caught.value.code == "download_range_invalid"
+    assert [str(item.url) for item in requests] == [VIDEO_URL, VIDEO_BACKUP_URL]
+    video_part = next(path for path in _part_files(request.work_root) if path.name.endswith("dash-video.part"))
+    assert video_part.read_bytes() == VIDEO[:split]
 
 
 def test_dash_component_sum_is_bounded_before_audio_bytes_are_written(tmp_path: Path) -> None:

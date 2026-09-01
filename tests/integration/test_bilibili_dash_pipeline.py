@@ -60,6 +60,12 @@ CID = 24680
 SIGNED_SENTINEL = "EXECUTION-0024-DASH-SIGNED-URL-MUST-STAY-EPHEMERAL"
 VIDEO_URL = f"https://video.dash-integration.test/video.m4s?deadline=4102444800&sig={SIGNED_SENTINEL}-video"
 AUDIO_URL = f"https://audio.dash-integration.test/audio.m4s?deadline=4102444800&sig={SIGNED_SENTINEL}-audio"
+VIDEO_BACKUP_URL = (
+    f"https://video-backup.dash-integration.test/video.m4s?deadline=4102444800&sig={SIGNED_SENTINEL}-video-backup"
+)
+AUDIO_BACKUP_URL = (
+    f"https://audio-backup.dash-integration.test/audio.m4s?deadline=4102444800&sig={SIGNED_SENTINEL}-audio-backup"
+)
 
 
 def _jsonl(record: Mapping[str, object]) -> bytes:
@@ -84,13 +90,13 @@ def _detail_jsonl() -> bytes:
                 "cid": CID,
                 "video": {
                     "url": VIDEO_URL,
-                    "backup_urls": [],
+                    "backup_urls": [VIDEO_BACKUP_URL],
                     "quality": 127,
                     "codec": "avc",
                 },
                 "audio": {
                     "url": AUDIO_URL,
-                    "backup_urls": [],
+                    "backup_urls": [AUDIO_BACKUP_URL],
                     "quality": 30251,
                 },
             },
@@ -254,6 +260,8 @@ def _assert_ephemeral_absent(*roots: Path) -> None:
         SIGNED_SENTINEL.encode(),
         VIDEO_URL.encode(),
         AUDIO_URL.encode(),
+        VIDEO_BACKUP_URL.encode(),
+        AUDIO_BACKUP_URL.encode(),
         BILIBILI_DASH_PAGE_FIELD.encode(),
         BILIBILI_PAGES_FIELD.encode(),
     )
@@ -283,7 +291,7 @@ def _stream_types(path: Path, ffprobe: str) -> set[str]:
     return {stream["codec_type"] for stream in payload["streams"]}
 
 
-def test_bilibili_dash_components_reach_emby_through_production_ffmpeg_and_ffprobe(
+def test_bilibili_dash_backup_components_reach_emby_through_production_ffmpeg_and_ffprobe(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -366,8 +374,12 @@ def test_bilibili_dash_components_reach_emby_through_production_ffmpeg_and_ffpro
             assert request.headers["accept-encoding"] == "identity"
             assert "cookie" not in request.headers and "authorization" not in request.headers
             if url == VIDEO_URL:
+                return httpx.Response(503)
+            if url == AUDIO_URL:
+                return httpx.Response(403)
+            if url == VIDEO_BACKUP_URL:
                 payload, media_type, etag = video_bytes, "video/mp4", '"execution-0024-video"'
-            elif url == AUDIO_URL:
+            elif url == AUDIO_BACKUP_URL:
                 payload, media_type, etag = audio_bytes, "audio/mp4", '"execution-0024-audio"'
             else:
                 raise AssertionError("unexpected DASH component URL")
@@ -402,8 +414,18 @@ def test_bilibili_dash_components_reach_emby_through_production_ffmpeg_and_ffpro
         assert downloaded.mime_type == "video/mp4"
         assert downloaded.checksum_sha256 == hashlib.sha256(downloaded.archive_path.read_bytes()).hexdigest()
         assert _stream_types(downloaded.archive_path, ffprobe) == {"video", "audio"}
-        assert [str(request.url) for request in requests] == [VIDEO_URL, AUDIO_URL]
-        assert resolver.calls == [("video.dash-integration.test", 443), ("audio.dash-integration.test", 443)]
+        assert [str(request.url) for request in requests] == [
+            VIDEO_URL,
+            VIDEO_BACKUP_URL,
+            AUDIO_URL,
+            AUDIO_BACKUP_URL,
+        ]
+        assert resolver.calls == [
+            ("video.dash-integration.test", 443),
+            ("video-backup.dash-integration.test", 443),
+            ("audio.dash-integration.test", 443),
+            ("audio-backup.dash-integration.test", 443),
+        ]
         assert len(_DetailRunner.calls) == 1
         assert len(refresher.results) == 1 and isinstance(refresher.results[0], ResolvedDashLocator)
         target = refresher.results[0]
@@ -411,6 +433,8 @@ def test_bilibili_dash_components_reach_emby_through_production_ffmpeg_and_ffpro
         assert target.selection_key == (127, "avc", 30251)
         assert target.video.request_profile is MediaRequestProfile.BILIBILI_MEDIA
         assert target.audio is not None and target.audio.request_profile is MediaRequestProfile.BILIBILI_MEDIA
+        assert target.video.backup_urls == (VIDEO_BACKUP_URL,)
+        assert target.audio.backup_urls == (AUDIO_BACKUP_URL,)
         assert SIGNED_SENTINEL not in repr(target)
         assert not tuple((download_work_root / "parts").glob(f"{asset_id}.1*"))
 
@@ -439,7 +463,7 @@ def test_bilibili_dash_components_reach_emby_through_production_ffmpeg_and_ffpro
         assert replayed_download.disposition == "already_verified"
         assert replayed_export.already_exported is True
         assert len(_DetailRunner.calls) == 1
-        assert len(requests) == 2
+        assert len(requests) == 4
         assert _tree(archive_root) == archive_tree
         assert _tree(author_directory) == library_tree
 

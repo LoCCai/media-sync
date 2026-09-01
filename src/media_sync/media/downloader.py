@@ -51,6 +51,17 @@ _CONTENT_RANGE = re.compile(r"bytes ([0-9]+)-([0-9]+)/([0-9]+)\Z")
 _UNSATISFIED_RANGE = re.compile(r"bytes \*/([0-9]+)\Z")
 _DIGITS = re.compile(r"[0-9]+\Z")
 _RETRYABLE_STATUSES = frozenset({408, 425, 429})
+_DASH_CANDIDATE_FAILURES = frozenset(
+    {
+        "network_dns_failed",
+        "download_timeout",
+        "download_transport",
+        "download_http_retryable",
+        "download_http_terminal",
+        "download_interrupted",
+        "download_range_invalid",
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -710,47 +721,78 @@ class SecureMediaDownloader:
                     raise MediaDownloadError("download_restart_limit") from None
                 store.discard()
                 restarts += 1
-                state = None
-            try:
-                with self._http.stream(
-                    locator.url,
-                    headers=self._resume_headers(state),
-                    request_profile=locator.request_profile,
-                    timeout_seconds=self._remaining(started),
-                ) as (response, _target):
-                    if response.status_code in {401, 403}:
-                        raise MediaDownloadError("locator_refresh_auth_expired")
-                    completed, advertised_mime = self._consume_response(
-                        response,
-                        store=store,
-                        request=request,
-                        fingerprint=fingerprint,
-                        state=state,
-                        started=started,
-                        max_bytes=max_bytes,
-                    )
-            except _RestartRequired:
+            candidates = locator.urls
+            incompatible_candidates = 0
+            auth_failures = 0
+            last_failure: MediaDownloadError | None = None
+            state_restart_required = False
+            for candidate in candidates:
+                try:
+                    state = store.load(request, fingerprint)
+                except _RestartRequired:
+                    state_restart_required = True
+                    break
+                try:
+                    with self._http.stream(
+                        candidate,
+                        headers=self._resume_headers(state),
+                        request_profile=locator.request_profile,
+                        timeout_seconds=self._remaining(started),
+                    ) as (response, _target):
+                        if response.status_code in {401, 403}:
+                            auth_failures += 1
+                            last_failure = MediaDownloadError("locator_refresh_auth_expired")
+                            continue
+                        completed, advertised_mime = self._consume_response(
+                            response,
+                            store=store,
+                            request=request,
+                            fingerprint=fingerprint,
+                            state=state,
+                            started=started,
+                            max_bytes=max_bytes,
+                        )
+                except _RestartRequired:
+                    # Preserve a valid partial while later candidates still
+                    # have a chance to honor its exact Range/validator fence.
+                    incompatible_candidates += 1
+                    continue
+                except MediaDownloadError as error:
+                    if error.code == "download_range_invalid" and state is not None and state.current_length > 0:
+                        incompatible_candidates += 1
+                        last_failure = error
+                        continue
+                    if error.code not in _DASH_CANDIDATE_FAILURES:
+                        raise
+                    last_failure = error
+                    continue
+                _digest, size = hash_file(store.part, root=store.root)
+                if size != completed.current_length:
+                    raise MediaDownloadError("download_state_invalid")
+                verify_media(
+                    store.part,
+                    root=store.root,
+                    expected_kind=expected_kind,
+                    advertised_mime=advertised_mime,
+                    probe=self._probe,
+                    require_static_image=False,
+                    sniff_bytes=self._limits.sniff_bytes,
+                    probe_timeout_seconds=min(self._limits.probe_timeout_seconds, self._remaining(started)),
+                    probe_output_bytes=self._limits.probe_output_bytes,
+                )
+                return completed, size
+
+            if state_restart_required or incompatible_candidates == len(candidates):
                 if restarts >= self._limits.max_restarts:
                     raise MediaDownloadError("download_restart_limit") from None
                 store.discard()
                 restarts += 1
                 continue
-            digest, size = hash_file(store.part, root=store.root)
-            del digest
-            if size != completed.current_length:
-                raise MediaDownloadError("download_state_invalid")
-            verify_media(
-                store.part,
-                root=store.root,
-                expected_kind=expected_kind,
-                advertised_mime=advertised_mime,
-                probe=self._probe,
-                require_static_image=False,
-                sniff_bytes=self._limits.sniff_bytes,
-                probe_timeout_seconds=min(self._limits.probe_timeout_seconds, self._remaining(started)),
-                probe_output_bytes=self._limits.probe_output_bytes,
-            )
-            return completed, size
+            if auth_failures == len(candidates):
+                raise MediaDownloadError("locator_refresh_auth_expired")
+            if last_failure is not None:
+                raise last_failure
+            raise MediaDownloadError("download_interrupted")  # pragma: no cover - closed candidate outcomes
 
     def _remaining(self, started: float) -> float:
         remaining = self._limits.total_timeout_seconds - (self._monotonic() - started)
