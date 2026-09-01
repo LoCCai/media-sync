@@ -24,6 +24,8 @@ SECOND_IMAGE_ID = "0123456789abcdef0123456789abcdef01234567"
 SECOND_IMAGE_URL = (
     f"https://tiebapic.baidu.com/forum/pic/item/{SECOND_IMAGE_ID}.jpg?tbpicau=2026-09-02-17_contract_second"
 )
+THIRD_IMAGE_ID = "abcdef0123456789abcdef0123456789abcdef01"
+THIRD_IMAGE_URL = f"https://tiebapic.baidu.com/forum/pic/item/{THIRD_IMAGE_ID}.jpg?tbpicau=2026-09-02-17_contract_third"
 
 
 def _pinned_tree(relative_path: Path) -> tuple[Path, ast.Module]:
@@ -124,6 +126,7 @@ def test_pinned_extractor_receives_current_structured_item_then_discards_every_l
                 {"type": 0, "text": "plain text"},
                 _image_item(),
                 _image_item(identity=SECOND_IMAGE_ID, image_url=SECOND_IMAGE_URL),
+                _image_item(identity=THIRD_IMAGE_ID, image_url=THIRD_IMAGE_URL),
             ],
         },
         "forum": {"name": "测试"},
@@ -137,6 +140,7 @@ def test_pinned_extractor_receives_current_structured_item_then_discards_every_l
     assert extracted.desc == "plain text"
     assert IMAGE_URL not in vars(extracted).values()
     assert SECOND_IMAGE_URL not in vars(extracted).values()
+    assert THIRD_IMAGE_URL not in vars(extracted).values()
     assert not any("image" in key or "media" in key or "src" in key for key in vars(extracted))
 
 

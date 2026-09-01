@@ -29,7 +29,12 @@ from media_sync.integrations.mediacrawler.normalizers import (
     normalize_jsonl,
     normalize_record,
 )
-from media_sync.integrations.mediacrawler.tieba_media import TIEBA_IMAGE_FIELD, TIEBA_IMAGES_FIELD
+from media_sync.integrations.mediacrawler.tieba_media import (
+    TIEBA_GALLERY_FIELD,
+    TIEBA_IMAGE_FIELD,
+    TIEBA_IMAGES_FIELD,
+    TIEBA_MAX_GALLERY_IMAGES,
+)
 from media_sync.integrations.mediacrawler.weibo_media import WEIBO_IMAGES_FIELD
 from media_sync.integrations.mediacrawler.zhihu_media import ZHIHU_IMAGE_FIELD
 
@@ -447,6 +452,42 @@ def test_tieba_private_two_image_gallery_materializes_ordered_article_assets_and
     assert all(TIEBA_IMAGES_FIELD not in asset.raw["record"] for asset in item.assets)
 
 
+def test_tieba_private_v3_gallery_materializes_ordered_article_assets_and_is_stripped() -> None:
+    note_id = "10376710029"
+    signed = [
+        (f"https://tiebapic.baidu.com/forum/pic/item/{position + 1:040x}.jpg?tbpicau=2026-09-02-17_v3_{position}")
+        for position in range(3)
+    ]
+    payload = source_record("tieba/contents.v1.jsonl")
+    payload.update(
+        {
+            "note_id": note_id,
+            "note_url": f"https://tieba.baidu.com/p/{note_id}",
+            TIEBA_GALLERY_FIELD: signed,
+            "nested": [
+                {
+                    TIEBA_GALLERY_FIELD: list(reversed(signed)),
+                    TIEBA_IMAGES_FIELD: signed[:2],
+                    TIEBA_IMAGE_FIELD: signed[0],
+                }
+            ],
+        }
+    )
+
+    item = normalize_record(payload, context(Platform.TIEBA))
+
+    assert item.content.kind is ContentKind.ARTICLE
+    assert [(asset.kind, asset.position, asset.remote_id, asset.source_url) for asset in item.assets] == [
+        (AssetKind.IMAGE, position, f"{note_id}:image:{position}", url) for position, url in enumerate(signed)
+    ]
+    retained = repr(item.content.raw)
+    assert all(field not in retained for field in (TIEBA_IMAGE_FIELD, TIEBA_IMAGES_FIELD, TIEBA_GALLERY_FIELD))
+    assert all(
+        all(field not in repr(asset.raw) for field in (TIEBA_IMAGE_FIELD, TIEBA_IMAGES_FIELD, TIEBA_GALLERY_FIELD))
+        for asset in item.assets
+    )
+
+
 def test_tieba_two_image_claim_rejects_cardinality_duplicates_and_dual_fields() -> None:
     note_id = "10376710029"
     first = (
@@ -483,6 +524,61 @@ def test_tieba_two_image_claim_rejects_cardinality_duplicates_and_dual_fields() 
             normalize_record(payload, context(Platform.TIEBA))
 
         assert caught.value.reason is QuarantineReason.INVALID_RECORD
+
+
+def test_tieba_v3_gallery_rejects_cardinality_duplicates_and_version_conflicts() -> None:
+    note_id = "10376710029"
+    signed = [
+        (f"https://tiebapic.baidu.com/forum/pic/item/{position + 1:040x}.jpg?tbpicau=2026-09-02-17_v3_{position}")
+        for position in range(TIEBA_MAX_GALLERY_IMAGES + 1)
+    ]
+    duplicate_hint = signed[0].replace("17_v3_0", "17_v3_duplicate")
+    claims = (
+        {TIEBA_GALLERY_FIELD: []},
+        {TIEBA_GALLERY_FIELD: signed[:2]},
+        {TIEBA_GALLERY_FIELD: [*signed[:2], duplicate_hint]},
+        {TIEBA_GALLERY_FIELD: signed},
+        {TIEBA_GALLERY_FIELD: signed[:3], TIEBA_IMAGE_FIELD: signed[0]},
+        {TIEBA_GALLERY_FIELD: signed[:3], TIEBA_IMAGES_FIELD: signed[:2]},
+    )
+    for claim in claims:
+        payload = source_record("tieba/contents.v1.jsonl")
+        payload.update(
+            {
+                "note_id": note_id,
+                "note_url": f"https://tieba.baidu.com/p/{note_id}",
+                **claim,
+            }
+        )
+
+        with pytest.raises(RecordNormalizationError) as caught:
+            normalize_record(payload, context(Platform.TIEBA))
+
+        assert caught.value.reason is QuarantineReason.INVALID_RECORD
+
+
+def test_tieba_v3_gallery_accepts_the_64_image_boundary() -> None:
+    note_id = "10376710029"
+    signed = [
+        (f"https://tiebapic.baidu.com/forum/pic/item/{position + 1:040x}.jpg?tbpicau=2026-09-02-17_v3_{position}")
+        for position in range(TIEBA_MAX_GALLERY_IMAGES)
+    ]
+    payload = source_record("tieba/contents.v1.jsonl")
+    payload.update(
+        {
+            "note_id": note_id,
+            "note_url": f"https://tieba.baidu.com/p/{note_id}",
+            TIEBA_GALLERY_FIELD: signed,
+        }
+    )
+
+    item = normalize_record(payload, context(Platform.TIEBA))
+
+    assert len(item.assets) == TIEBA_MAX_GALLERY_IMAGES
+    assert tuple(asset.position for asset in item.assets) == tuple(range(TIEBA_MAX_GALLERY_IMAGES))
+    assert tuple(asset.remote_id for asset in item.assets) == tuple(
+        f"{note_id}:image:{position}" for position in range(TIEBA_MAX_GALLERY_IMAGES)
+    )
 
 
 @pytest.mark.parametrize(

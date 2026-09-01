@@ -18,7 +18,12 @@ from media_sync.integrations.mediacrawler.refresh import (
     MediaCrawlerLocatorRefresher,
     MediaCrawlerRefreshContext,
 )
-from media_sync.integrations.mediacrawler.tieba_media import TIEBA_IMAGE_FIELD, TIEBA_IMAGES_FIELD
+from media_sync.integrations.mediacrawler.tieba_media import (
+    TIEBA_GALLERY_FIELD,
+    TIEBA_IMAGE_FIELD,
+    TIEBA_IMAGES_FIELD,
+    TIEBA_MAX_GALLERY_IMAGES,
+)
 from media_sync.integrations.mediacrawler.weibo_media import WEIBO_IMAGES_FIELD
 from media_sync.integrations.mediacrawler.xhs_media import validate_xhs_video_url
 from media_sync.integrations.mediacrawler.zhihu_media import ZHIHU_IMAGE_FIELD
@@ -958,6 +963,87 @@ def test_tieba_refresh_revalidates_complete_ordered_two_image_gallery(position: 
     assert runner.calls[0].resolved_detail_reference() == canonical_url
 
 
+@pytest.mark.parametrize("position", [0, 1, 2])
+def test_tieba_refresh_revalidates_complete_ordered_v3_gallery(position: int) -> None:
+    content_id = "10376710029"
+    canonical_url = f"https://tieba.baidu.com/p/{content_id}"
+    hints = tuple(f"https://tiebapic.baidu.com/forum/pic/item/{index + 1:040x}.jpg" for index in range(3))
+    previous = tuple(f"{hint}?tbpicau=2026-09-02-17_previous_{index}" for index, hint in enumerate(hints))
+    current = tuple(f"{hint}?tbpicau=2026-09-02-17_current_{index}" for index, hint in enumerate(hints))
+    context = _context(
+        platform=Platform.TIEBA,
+        content_id=content_id,
+        kind=AssetKind.IMAGE,
+        position=position,
+        signed_url=previous[position],
+        detail_reference=canonical_url,
+        tieba_image_source_hints=hints,
+    )
+    runner = _FakeDetailRunner(
+        _jsonl(
+            {
+                "note_id": content_id,
+                "title": "fixture",
+                "desc": "fixture body",
+                "note_url": canonical_url,
+                TIEBA_GALLERY_FIELD: list(current),
+            }
+        )
+    )
+
+    resolved = MediaCrawlerLocatorRefresher(context, runner, clock=lambda: NOW).resolve(context.locator)
+
+    assert resolved == ResolvedLocator(current[position], MediaRequestProfile.DEFAULT)
+    assert runner.calls[0].resolved_detail_reference() == canonical_url
+
+
+@pytest.mark.parametrize("drift", ["reordered", "replacement", "missing", "added", "duplicate", "dual-claim"])
+def test_tieba_v3_refresh_rejects_complete_gallery_drift(drift: str) -> None:
+    content_id = "10376710029"
+    canonical_url = f"https://tieba.baidu.com/p/{content_id}"
+    hints = tuple(f"https://tiebapic.baidu.com/forum/pic/item/{index + 1:040x}.jpg" for index in range(3))
+    current = [f"{hint}?tbpicau=2026-09-02-17_current_{index}" for index, hint in enumerate(hints)]
+    replacement = (
+        "https://tiebapic.baidu.com/forum/pic/item/"
+        "abcdef0123456789abcdef0123456789abcdef01.jpg?tbpicau=2026-09-02-17_replaced"
+    )
+    record: dict[str, object] = {
+        "note_id": content_id,
+        "title": "fixture",
+        "desc": "fixture body",
+        "note_url": canonical_url,
+    }
+    if drift == "reordered":
+        record[TIEBA_GALLERY_FIELD] = [current[1], current[0], current[2]]
+    elif drift == "replacement":
+        record[TIEBA_GALLERY_FIELD] = [current[0], current[1], replacement]
+    elif drift == "missing":
+        record[TIEBA_IMAGES_FIELD] = current[:2]
+    elif drift == "added":
+        record[TIEBA_GALLERY_FIELD] = [*current, replacement]
+    elif drift == "duplicate":
+        record[TIEBA_GALLERY_FIELD] = [current[0], current[1], current[0].replace("current_0", "changed")]
+    else:
+        record[TIEBA_GALLERY_FIELD] = current
+        record[TIEBA_IMAGES_FIELD] = current[:2]
+    context = _context(
+        platform=Platform.TIEBA,
+        content_id=content_id,
+        kind=AssetKind.IMAGE,
+        position=2,
+        signed_url=current[2],
+        detail_reference=canonical_url,
+        tieba_image_source_hints=hints,
+    )
+
+    with pytest.raises(MediaDownloadError) as caught:
+        MediaCrawlerLocatorRefresher(context, _FakeDetailRunner(_jsonl(record)), clock=lambda: NOW).resolve(
+            context.locator
+        )
+
+    assert caught.value.code == "locator_refresh_schema_changed"
+
+
 @pytest.mark.parametrize("drift", ["reordered", "replacement", "missing", "dual-claim"])
 def test_tieba_two_image_refresh_rejects_complete_gallery_drift(drift: str) -> None:
     content_id = "10376710029"
@@ -1032,6 +1118,37 @@ def test_tieba_refresh_context_rejects_unbound_or_duplicate_gallery(position: in
             kind=AssetKind.IMAGE,
             position=position,
             signed_url=f"{selected_hint}?tbpicau=2026-09-02-17_previous",
+            detail_reference=f"https://tieba.baidu.com/p/{content_id}",
+            tieba_image_source_hints=hints,
+        )
+
+    assert caught.value.code == "locator_refresh_configuration_invalid"
+
+
+def test_tieba_refresh_context_accepts_64_hints_and_rejects_65() -> None:
+    content_id = "10376710029"
+    hints = tuple(
+        f"https://tiebapic.baidu.com/forum/pic/item/{index + 1:040x}.jpg"
+        for index in range(TIEBA_MAX_GALLERY_IMAGES + 1)
+    )
+    accepted = _context(
+        platform=Platform.TIEBA,
+        content_id=content_id,
+        kind=AssetKind.IMAGE,
+        position=TIEBA_MAX_GALLERY_IMAGES - 1,
+        signed_url=f"{hints[TIEBA_MAX_GALLERY_IMAGES - 1]}?tbpicau=2026-09-02-17_previous",
+        detail_reference=f"https://tieba.baidu.com/p/{content_id}",
+        tieba_image_source_hints=hints[:TIEBA_MAX_GALLERY_IMAGES],
+    )
+    assert len(accepted.tieba_image_source_hints) == TIEBA_MAX_GALLERY_IMAGES
+
+    with pytest.raises(MediaDownloadError) as caught:
+        _context(
+            platform=Platform.TIEBA,
+            content_id=content_id,
+            kind=AssetKind.IMAGE,
+            position=0,
+            signed_url=f"{hints[0]}?tbpicau=2026-09-02-17_previous",
             detail_reference=f"https://tieba.baidu.com/p/{content_id}",
             tieba_image_source_hints=hints,
         )

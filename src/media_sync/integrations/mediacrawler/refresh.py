@@ -33,7 +33,7 @@ from .detail_runner import (
 )
 from .normalizers import NormalizationContext, normalize_jsonl_bytes
 from .policies import WatchdogLimits
-from .tieba_media import validate_tieba_image_source_hint, validate_tieba_image_url
+from .tieba_media import TIEBA_MAX_GALLERY_IMAGES, validate_tieba_image_source_hint, validate_tieba_image_url
 from .xhs_authority import validate_xhs_creator_reference, validate_xhs_detail_reference
 from .xhs_media import validate_xhs_video_url
 from .zhihu_media import validate_zhihu_image_url
@@ -145,7 +145,7 @@ class MediaCrawlerRefreshContext:
             if (
                 self.content_remote_type != "content"
                 or asset_kind is not AssetKind.IMAGE
-                or self.asset_position not in {0, 1}
+                or self.asset_position >= TIEBA_MAX_GALLERY_IMAGES
                 or self.asset_remote_id != f"{self.content_remote_id}:image:{self.asset_position}"
                 or not _is_tieba_detail_reference(self.detail_reference, self.content_remote_id)
             ):
@@ -162,7 +162,7 @@ class MediaCrawlerRefreshContext:
                 if self.asset_position != 0:
                     raise MediaDownloadError("locator_refresh_configuration_invalid")
                 gallery_hints = (source_hint,)
-            if len(gallery_hints) not in {1, 2} or self.asset_position >= len(gallery_hints):
+            if not 1 <= len(gallery_hints) <= TIEBA_MAX_GALLERY_IMAGES or self.asset_position >= len(gallery_hints):
                 raise MediaDownloadError("locator_refresh_configuration_invalid")
             try:
                 for hint in gallery_hints:

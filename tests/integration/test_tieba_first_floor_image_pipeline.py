@@ -37,7 +37,7 @@ from media_sync.infrastructure.db.asset_identity import asset_source_hint, stabl
 from media_sync.infrastructure.db.models import Asset, AssetRefreshSource, Content, ExportRecord, Job, SyncRun
 from media_sync.integrations.mediacrawler import MediaCrawlerDetailRequest, MediaCrawlerDetailResult
 from media_sync.integrations.mediacrawler.normalizers import NormalizationContext, normalize_jsonl_bytes
-from media_sync.integrations.mediacrawler.tieba_media import TIEBA_IMAGE_FIELD, TIEBA_IMAGES_FIELD
+from media_sync.integrations.mediacrawler.tieba_media import TIEBA_GALLERY_FIELD, TIEBA_IMAGE_FIELD, TIEBA_IMAGES_FIELD
 from media_sync.media import (
     AdapterRefreshLocator,
     MediaRequestProfile,
@@ -60,6 +60,8 @@ IMAGE_ID = "489c9a3df8dcd1009420153b348b4710b8122fc3"
 IMAGE_HINT = f"https://tiebapic.baidu.com/forum/pic/item/{IMAGE_ID}.jpg"
 SECOND_IMAGE_ID = "0123456789abcdef0123456789abcdef01234567"
 SECOND_IMAGE_HINT = f"https://tiebapic.baidu.com/forum/pic/item/{SECOND_IMAGE_ID}.png"
+THIRD_IMAGE_ID = "abcdef0123456789abcdef0123456789abcdef01"
+THIRD_IMAGE_HINT = f"https://tiebapic.baidu.com/forum/pic/item/{THIRD_IMAGE_ID}.webp"
 DISCOVERY_V1_TOKEN = "2026-09-02-17_EXECUTION0020DISCOVERYV1PRIVATE"
 DISCOVERY_V2_TOKEN = "2026-09-02-17_EXECUTION0020DISCOVERYV2PRIVATE"
 REFRESH_TOKEN = "2026-09-02-17_EXECUTION0020REFRESHPRIVATE"
@@ -77,6 +79,22 @@ DOUBLE_REFRESH_TOKENS = (
     "2026-09-02-17_EXECUTION0021REFRESHPOSITION1PRIVATE",
 )
 DOUBLE_NESTED_TOKEN = "2026-09-02-17_EXECUTION0021NESTEDPRIVATE"
+TRIPLE_DISCOVERY_V1_TOKENS = (
+    "2026-09-02-17_EXECUTION0022DISCOVERYV1POSITION0PRIVATE",
+    "2026-09-02-17_EXECUTION0022DISCOVERYV1POSITION1PRIVATE",
+    "2026-09-02-17_EXECUTION0022DISCOVERYV1POSITION2PRIVATE",
+)
+TRIPLE_DISCOVERY_V2_TOKENS = (
+    "2026-09-02-17_EXECUTION0022DISCOVERYV2POSITION0PRIVATE",
+    "2026-09-02-17_EXECUTION0022DISCOVERYV2POSITION1PRIVATE",
+    "2026-09-02-17_EXECUTION0022DISCOVERYV2POSITION2PRIVATE",
+)
+TRIPLE_REFRESH_TOKENS = (
+    "2026-09-02-17_EXECUTION0022REFRESHPOSITION0PRIVATE",
+    "2026-09-02-17_EXECUTION0022REFRESHPOSITION1PRIVATE",
+    "2026-09-02-17_EXECUTION0022REFRESHPOSITION2PRIVATE",
+)
+TRIPLE_NESTED_TOKEN = "2026-09-02-17_EXECUTION0022NESTEDPRIVATE"
 DISCOVERY_IMAGE_V1 = f"{IMAGE_HINT}?tbpicau={DISCOVERY_V1_TOKEN}"
 DISCOVERY_IMAGE_V2 = f"{IMAGE_HINT}?tbpicau={DISCOVERY_V2_TOKEN}"
 REFRESH_IMAGE = f"{IMAGE_HINT}?tbpicau={REFRESH_TOKEN}"
@@ -92,6 +110,7 @@ JPEG = b64decode(
     "09fb3+Pn6/9oADAMBAAIRAxEAPwDi6KKK+ZP3E//Z"
 )
 PNG = b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=")
+WEBP = b64decode("UklGRjwAAABXRUJQVlA4IDAAAADQAQCdASoBAAEAAUAmJaACdLoB+AADsAD+8ut//NgVzXPv9//S4P0uD9Lg/9KQAAA=")
 DOUBLE_IMAGE_HINTS = (IMAGE_HINT, SECOND_IMAGE_HINT)
 DOUBLE_ASSET_REMOTE_IDS = tuple(f"{CONTENT_ID}:image:{position}" for position in range(2))
 DOUBLE_DISCOVERY_IMAGES_V1 = tuple(
@@ -104,7 +123,20 @@ DOUBLE_REFRESH_IMAGES = tuple(
     f"{hint}?tbpicau={token}" for hint, token in zip(DOUBLE_IMAGE_HINTS, DOUBLE_REFRESH_TOKENS, strict=True)
 )
 DOUBLE_IMAGE_BYTES = (JPEG, PNG)
+TRIPLE_IMAGE_HINTS = (IMAGE_HINT, SECOND_IMAGE_HINT, THIRD_IMAGE_HINT)
+TRIPLE_ASSET_REMOTE_IDS = tuple(f"{CONTENT_ID}:image:{position}" for position in range(3))
+TRIPLE_DISCOVERY_IMAGES_V1 = tuple(
+    f"{hint}?tbpicau={token}" for hint, token in zip(TRIPLE_IMAGE_HINTS, TRIPLE_DISCOVERY_V1_TOKENS, strict=True)
+)
+TRIPLE_DISCOVERY_IMAGES_V2 = tuple(
+    f"{hint}?tbpicau={token}" for hint, token in zip(TRIPLE_IMAGE_HINTS, TRIPLE_DISCOVERY_V2_TOKENS, strict=True)
+)
+TRIPLE_REFRESH_IMAGES = tuple(
+    f"{hint}?tbpicau={token}" for hint, token in zip(TRIPLE_IMAGE_HINTS, TRIPLE_REFRESH_TOKENS, strict=True)
+)
+TRIPLE_IMAGE_BYTES = (JPEG, PNG, WEBP)
 FORBIDDEN_VALUES = (
+    TIEBA_GALLERY_FIELD,
     TIEBA_IMAGE_FIELD,
     TIEBA_IMAGES_FIELD,
     DISCOVERY_V1_TOKEN,
@@ -121,6 +153,13 @@ FORBIDDEN_VALUES = (
     *DOUBLE_DISCOVERY_IMAGES_V1,
     *DOUBLE_DISCOVERY_IMAGES_V2,
     *DOUBLE_REFRESH_IMAGES,
+    *TRIPLE_DISCOVERY_V1_TOKENS,
+    *TRIPLE_DISCOVERY_V2_TOKENS,
+    *TRIPLE_REFRESH_TOKENS,
+    TRIPLE_NESTED_TOKEN,
+    *TRIPLE_DISCOVERY_IMAGES_V1,
+    *TRIPLE_DISCOVERY_IMAGES_V2,
+    *TRIPLE_REFRESH_IMAGES,
     "tbpicau=",
 )
 
@@ -176,12 +215,37 @@ def _two_image_thread_record(image_urls: tuple[str, str]) -> dict[str, object]:
     }
 
 
+def _v3_gallery_thread_record(image_urls: tuple[str, str, str]) -> dict[str, object]:
+    return {
+        "note_id": CONTENT_ID,
+        "title": "Execution 0022 Tieba bounded static gallery",
+        "desc": "Execution 0022 ordinary Tieba first floor with 3 through 64 ordered static images.",
+        "note_url": CANONICAL_URL,
+        "publish_time": "2026-09-02 20:22:00",
+        "creator_hash": "untrusted-creator-hash",
+        "user_nickname": "Untrusted nickname",
+        "tieba_name": "测试吧",
+        "tieba_link": "https://tieba.baidu.com/f?kw=test",
+        "total_replay_num": 22,
+        "total_replay_page": 2,
+        "source_keyword": "fixture",
+        "last_modify_ts": 1788351720,
+        TIEBA_GALLERY_FIELD: list(image_urls),
+        "future_private_shape": {
+            TIEBA_GALLERY_FIELD: [f"{hint}?tbpicau={TRIPLE_NESTED_TOKEN}" for hint in TRIPLE_IMAGE_HINTS],
+        },
+    }
+
+
 DISCOVERY_JSONL_V1 = _jsonl(_thread_record(DISCOVERY_IMAGE_V1))
 DISCOVERY_JSONL_V2 = _jsonl(_thread_record(DISCOVERY_IMAGE_V2))
 DETAIL_JSONL = _jsonl(_thread_record(REFRESH_IMAGE))
 DOUBLE_DISCOVERY_JSONL_V1 = _jsonl(_two_image_thread_record(DOUBLE_DISCOVERY_IMAGES_V1))
 DOUBLE_DISCOVERY_JSONL_V2 = _jsonl(_two_image_thread_record(DOUBLE_DISCOVERY_IMAGES_V2))
 DOUBLE_DETAIL_JSONL = _jsonl(_two_image_thread_record(DOUBLE_REFRESH_IMAGES))
+TRIPLE_DISCOVERY_JSONL_V1 = _jsonl(_v3_gallery_thread_record(TRIPLE_DISCOVERY_IMAGES_V1))
+TRIPLE_DISCOVERY_JSONL_V2 = _jsonl(_v3_gallery_thread_record(TRIPLE_DISCOVERY_IMAGES_V2))
+TRIPLE_DETAIL_JSONL = _jsonl(_v3_gallery_thread_record(TRIPLE_REFRESH_IMAGES))
 
 
 def _normalization_context() -> NormalizationContext:
@@ -272,6 +336,67 @@ class _TwoImageDetailRunner:
     def run(self, request: MediaCrawlerDetailRequest) -> MediaCrawlerDetailResult:
         self.calls.append(request)
         return MediaCrawlerDetailResult(DOUBLE_DETAIL_JSONL, UPSTREAM_SHA)
+
+
+class _ThreeImageDetailRunner:
+    instances: ClassVar[list[_ThreeImageDetailRunner]] = []
+
+    def __init__(self, **kwargs: object) -> None:
+        self.constructor_kwargs = kwargs
+        self.calls: list[MediaCrawlerDetailRequest] = []
+        type(self).instances.append(self)
+
+    def run(self, request: MediaCrawlerDetailRequest) -> MediaCrawlerDetailResult:
+        self.calls.append(request)
+        return MediaCrawlerDetailResult(TRIPLE_DETAIL_JSONL, UPSTREAM_SHA)
+
+
+@dataclass(frozen=True, slots=True)
+class _GalleryCase:
+    label: str
+    discovery_v1: bytes
+    discovery_v2: bytes
+    discovery_images_v1: tuple[str, ...]
+    image_hints: tuple[str, ...]
+    asset_remote_ids: tuple[str, ...]
+    refresh_images: tuple[str, ...]
+    image_bytes: tuple[bytes, ...]
+    mime_types: tuple[str, ...]
+    extensions: tuple[str, ...]
+    body_marker: bytes
+    runner_type: type[_TwoImageDetailRunner] | type[_ThreeImageDetailRunner]
+
+
+GALLERY_CASES = (
+    _GalleryCase(
+        label="execution-0021-two-image",
+        discovery_v1=DOUBLE_DISCOVERY_JSONL_V1,
+        discovery_v2=DOUBLE_DISCOVERY_JSONL_V2,
+        discovery_images_v1=DOUBLE_DISCOVERY_IMAGES_V1,
+        image_hints=DOUBLE_IMAGE_HINTS,
+        asset_remote_ids=DOUBLE_ASSET_REMOTE_IDS,
+        refresh_images=DOUBLE_REFRESH_IMAGES,
+        image_bytes=DOUBLE_IMAGE_BYTES,
+        mime_types=("image/jpeg", "image/png"),
+        extensions=("jpg", "png"),
+        body_marker=b"exactly two ordered static images",
+        runner_type=_TwoImageDetailRunner,
+    ),
+    _GalleryCase(
+        label="execution-0022-three-image",
+        discovery_v1=TRIPLE_DISCOVERY_JSONL_V1,
+        discovery_v2=TRIPLE_DISCOVERY_JSONL_V2,
+        discovery_images_v1=TRIPLE_DISCOVERY_IMAGES_V1,
+        image_hints=TRIPLE_IMAGE_HINTS,
+        asset_remote_ids=TRIPLE_ASSET_REMOTE_IDS,
+        refresh_images=TRIPLE_REFRESH_IMAGES,
+        image_bytes=TRIPLE_IMAGE_BYTES,
+        mime_types=("image/jpeg", "image/png", "image/webp"),
+        extensions=("jpg", "png", "webp"),
+        body_marker=b"3 through 64 ordered static images",
+        runner_type=_ThreeImageDetailRunner,
+    ),
+)
 
 
 @dataclass(slots=True)
@@ -593,11 +718,14 @@ def test_tieba_first_floor_image_reaches_emby_and_query_only_replay_does_no_work
         database.dispose()
 
 
-def test_tieba_first_floor_two_image_gallery_reaches_emby_and_query_only_replay_does_no_work(
+@pytest.mark.parametrize("case", [pytest.param(case, id=case.label) for case in GALLERY_CASES])
+def test_tieba_first_floor_gallery_reaches_emby_and_query_only_replay_does_no_work(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    case: _GalleryCase,
 ) -> None:
-    database_path = tmp_path / "tieba-first-floor-two-image.sqlite3"
+    gallery_size = len(case.image_hints)
+    database_path = tmp_path / f"tieba-first-floor-{case.label}.sqlite3"
     database_url = f"sqlite+pysqlite:///{database_path.as_posix()}"
     archive_root = tmp_path / "archive"
     library_root = tmp_path / "library"
@@ -607,12 +735,12 @@ def test_tieba_first_floor_two_image_gallery_reaches_emby_and_query_only_replay_
     runtime_root.mkdir()
     upgrade_database(database_url)
     database = Database(database_url)
-    _TwoImageDetailRunner.instances = []
-    monkeypatch.setattr(mediacrawler_runtime, "MediaCrawlerDetailProcessRunner", _TwoImageDetailRunner)
+    case.runner_type.instances = []
+    monkeypatch.setattr(mediacrawler_runtime, "MediaCrawlerDetailProcessRunner", case.runner_type)
 
     try:
         seed = _seed_subscription(database)
-        normalized = normalize_jsonl_bytes(DOUBLE_DISCOVERY_JSONL_V1, _normalization_context())
+        normalized = normalize_jsonl_bytes(case.discovery_v1, _normalization_context())
         assert not normalized.quarantined and not normalized.truncated_tail
         assert len(normalized.records) == 1
         record = normalized.records[0]
@@ -620,11 +748,12 @@ def test_tieba_first_floor_two_image_gallery_reaches_emby_and_query_only_replay_
         assert record.content.canonical_url == CANONICAL_URL
         assert TIEBA_IMAGE_FIELD not in repr(record.content.raw)
         assert TIEBA_IMAGES_FIELD not in repr(record.content.raw)
+        assert TIEBA_GALLERY_FIELD not in repr(record.content.raw)
         assert [(asset.kind, asset.position, asset.remote_id) for asset in record.assets] == [
-            (AssetKind.IMAGE, position, DOUBLE_ASSET_REMOTE_IDS[position]) for position in range(2)
+            (AssetKind.IMAGE, position, case.asset_remote_ids[position]) for position in range(gallery_size)
         ]
-        assert tuple(asset.source_url for asset in record.assets) == DOUBLE_DISCOVERY_IMAGES_V1
-        assert tuple(asset_source_hint(asset.source_url) for asset in record.assets) == DOUBLE_IMAGE_HINTS
+        assert tuple(asset.source_url for asset in record.assets) == case.discovery_images_v1
+        assert tuple(asset_source_hint(asset.source_url) for asset in record.assets) == case.image_hints
 
         first_run_id = _start_ingesting_run(database, seed.subscription_id)
         first_ingest = MediaCrawlerIngestionService(database).ingest(
@@ -634,13 +763,17 @@ def test_tieba_first_floor_two_image_gallery_reaches_emby_and_query_only_replay_
             expected_revision=0,
             mode=IngestionMode.FORWARD,
         )
-        assert (first_ingest.accepted_count, first_ingest.discovered_count, first_ingest.asset_count) == (1, 1, 2)
+        assert (first_ingest.accepted_count, first_ingest.discovered_count, first_ingest.asset_count) == (
+            1,
+            1,
+            gallery_size,
+        )
 
         with database.session() as session:
             assets = list(session.scalars(select(Asset).order_by(Asset.position)).all())
             sources = {source.asset_id: source for source in session.scalars(select(AssetRefreshSource)).all()}
             content = session.scalars(select(Content)).one()
-            assert len(assets) == len(sources) == 2
+            assert len(assets) == len(sources) == gallery_size
             assert content.canonical_url == CANONICAL_URL
             for position, asset in enumerate(assets):
                 locator = parse_locator(asset.locator)
@@ -651,13 +784,13 @@ def test_tieba_first_floor_two_image_gallery_reaches_emby_and_query_only_replay_
                     content_remote_id=CONTENT_ID,
                     kind=AssetKind.IMAGE.value,
                     position=position,
-                    remote_id=DOUBLE_ASSET_REMOTE_IDS[position],
+                    remote_id=case.asset_remote_ids[position],
                 )
                 assert (asset.remote_id, asset.position, asset.generation, asset.source_url) == (
-                    DOUBLE_ASSET_REMOTE_IDS[position],
+                    case.asset_remote_ids[position],
                     position,
                     1,
-                    DOUBLE_IMAGE_HINTS[position],
+                    case.image_hints[position],
                 )
                 source = sources[asset.id]
                 assert source.subscription_id == seed.subscription_id
@@ -672,9 +805,9 @@ def test_tieba_first_floor_two_image_gallery_reaches_emby_and_query_only_replay_
         def handler(request: httpx.Request) -> httpx.Response:
             requests.append(request)
             request_url = str(request.url)
-            assert request_url in DOUBLE_REFRESH_IMAGES
-            position = DOUBLE_REFRESH_IMAGES.index(request_url)
-            mime_type = ("image/jpeg", "image/png")[position]
+            assert request_url in case.refresh_images
+            position = case.refresh_images.index(request_url)
+            mime_type = case.mime_types[position]
             assert set(request.headers) == {"accept", "accept-encoding", "connection", "host", "user-agent"}
             assert request.headers["accept-encoding"] == "identity"
             assert request.headers["host"] == "tiebapic.baidu.com"
@@ -683,11 +816,11 @@ def test_tieba_first_floor_two_image_gallery_reaches_emby_and_query_only_replay_
             return httpx.Response(
                 200,
                 headers={
-                    "Content-Length": str(len(DOUBLE_IMAGE_BYTES[position])),
+                    "Content-Length": str(len(case.image_bytes[position])),
                     "Content-Type": mime_type,
-                    "ETag": f'"execution-0021-image-{position}-v1"',
+                    "ETag": f'"{case.label}-image-{position}-v1"',
                 },
-                content=DOUBLE_IMAGE_BYTES[position],
+                content=case.image_bytes[position],
             )
 
         def transport_factory(target: ValidatedTarget) -> httpx.BaseTransport:
@@ -716,7 +849,7 @@ def test_tieba_first_floor_two_image_gallery_reaches_emby_and_query_only_replay_
             )
             request = AssetDownloadRequest(
                 asset_id=asset_id,
-                worker_id=f"execution-0021-image-{position}-download",
+                worker_id=f"{case.label}-image-{position}-download",
                 work_root=download_work_root,
                 archive_root=archive_root,
                 lease_seconds=60,
@@ -724,27 +857,27 @@ def test_tieba_first_floor_two_image_gallery_reaches_emby_and_query_only_replay_
             harnesses.append((service, request, refresher))
 
         first_downloads = tuple(service.run(request) for service, request, _refresher in harnesses)
-        checksums = tuple(hashlib.sha256(payload).hexdigest() for payload in DOUBLE_IMAGE_BYTES)
-        expected_archives = (
-            archive_root / "sha256" / checksums[0][:2] / f"{checksums[0]}.jpg",
-            archive_root / "sha256" / checksums[1][:2] / f"{checksums[1]}.png",
+        checksums = tuple(hashlib.sha256(payload).hexdigest() for payload in case.image_bytes)
+        expected_archives = tuple(
+            archive_root / "sha256" / checksum[:2] / f"{checksum}.{extension}"
+            for checksum, extension in zip(checksums, case.extensions, strict=True)
         )
         for position, download in enumerate(first_downloads):
             assert download.disposition == "downloaded"
             assert download.archive_path == expected_archives[position].absolute()
             assert download.checksum_sha256 == checksums[position]
-            assert download.mime_type == ("image/jpeg", "image/png")[position]
-            assert expected_archives[position].read_bytes() == DOUBLE_IMAGE_BYTES[position]
+            assert download.mime_type == case.mime_types[position]
+            assert expected_archives[position].read_bytes() == case.image_bytes[position]
         assert probe.calls == []
-        assert resolver.calls == [("tiebapic.baidu.com", 443), ("tiebapic.baidu.com", 443)]
-        assert [target.address for target in targets] == ["8.8.8.8", "8.8.8.8"]
-        assert [str(request.url) for request in requests] == list(DOUBLE_REFRESH_IMAGES)
+        assert resolver.calls == [("tiebapic.baidu.com", 443)] * gallery_size
+        assert [target.address for target in targets] == ["8.8.8.8"] * gallery_size
+        assert [str(request.url) for request in requests] == list(case.refresh_images)
         assert [refresher.results[0] for _service, _request, refresher in harnesses] == [
-            ResolvedLocator(url, MediaRequestProfile.DEFAULT) for url in DOUBLE_REFRESH_IMAGES
+            ResolvedLocator(url, MediaRequestProfile.DEFAULT) for url in case.refresh_images
         ]
 
-        assert len(_TwoImageDetailRunner.instances) == 2
-        for detail_instance in _TwoImageDetailRunner.instances:
+        assert len(case.runner_type.instances) == gallery_size
+        for detail_instance in case.runner_type.instances:
             assert detail_instance.constructor_kwargs == {
                 "integration_root": runtime_root,
                 "license_acknowledged": True,
@@ -768,21 +901,20 @@ def test_tieba_first_floor_two_image_gallery_reaches_emby_and_query_only_replay_
             clock=lambda: FIXED_AT,
         )
         first_export = export_service.export_author(
-            EmbyExportRequest(seed.author_id, "execution-0021-export", lease_seconds=60)
+            EmbyExportRequest(seed.author_id, f"{case.label}-export", lease_seconds=60)
         )
         assert first_export.already_exported is False
         author_directory = library_root / first_export.output_path
         poster = next(author_directory.glob("Season */*-poster.jpg"))
         backdrop = next(author_directory.glob("Season */*-backdrop.png"))
         gallery = tuple(sorted(author_directory.glob("Season */*.assets/gallery-*")))
-        assert len(gallery) == 2
-        assert gallery[0].name.startswith("gallery-001-")
-        assert gallery[1].name.startswith("gallery-002-")
+        assert len(gallery) == gallery_size
+        assert all(path.name.startswith(f"gallery-{position + 1:03d}-") for position, path in enumerate(gallery))
         assert poster.read_bytes() == JPEG
         assert backdrop.read_bytes() == PNG
-        assert tuple(path.read_bytes() for path in gallery) == DOUBLE_IMAGE_BYTES
+        assert tuple(path.read_bytes() for path in gallery) == case.image_bytes
         body = next(author_directory.glob("Season */*.assets/body.txt"))
-        assert b"exactly two ordered static images" in body.read_bytes()
+        assert case.body_marker in body.read_bytes()
         episode_nfo = next(author_directory.glob("Season */*.nfo"))
         episode_nfo_payload = episode_nfo.read_bytes()
         assert CONTENT_ID.encode() in episode_nfo_payload
@@ -796,8 +928,8 @@ def test_tieba_first_floor_two_image_gallery_reaches_emby_and_query_only_replay_
             (item["kind"], item["position"], item["remote_id"], item["checksum_sha256"])
             for item in source_document["assets"]
         ] == [
-            (AssetKind.IMAGE.value, position, DOUBLE_ASSET_REMOTE_IDS[position], checksums[position])
-            for position in range(2)
+            (AssetKind.IMAGE.value, position, case.asset_remote_ids[position], checksums[position])
+            for position in range(gallery_size)
         ]
         assert not {"canonical_url", "locator", "raw", "source_url"} & source_document.keys()
 
@@ -812,7 +944,7 @@ def test_tieba_first_floor_two_image_gallery_reaches_emby_and_query_only_replay_
             library_root,
         )
 
-        replay = normalize_jsonl_bytes(DOUBLE_DISCOVERY_JSONL_V2, _normalization_context())
+        replay = normalize_jsonl_bytes(case.discovery_v2, _normalization_context())
         assert not replay.quarantined
         second_run_id = _start_ingesting_run(database, seed.subscription_id)
         second_ingest = MediaCrawlerIngestionService(database).ingest(
@@ -827,7 +959,7 @@ def test_tieba_first_floor_two_image_gallery_reaches_emby_and_query_only_replay_
 
         replay_downloads = tuple(service.run(request) for service, request, _refresher in harnesses)
         replay_export = export_service.export_author(
-            EmbyExportRequest(seed.author_id, "execution-0021-export-replay", lease_seconds=60)
+            EmbyExportRequest(seed.author_id, f"{case.label}-export-replay", lease_seconds=60)
         )
         assert all(download.disposition == "already_verified" for download in replay_downloads)
         assert tuple(download.job_id for download in replay_downloads) == tuple(
@@ -835,8 +967,8 @@ def test_tieba_first_floor_two_image_gallery_reaches_emby_and_query_only_replay_
         )
         assert replay_export.already_exported is True
         assert replay_export.job_id == first_export.job_id
-        assert len(_TwoImageDetailRunner.instances) == len(requests) == len(targets) == 2
-        assert resolver.calls == [("tiebapic.baidu.com", 443), ("tiebapic.baidu.com", 443)]
+        assert len(case.runner_type.instances) == len(requests) == len(targets) == gallery_size
+        assert resolver.calls == [("tiebapic.baidu.com", 443)] * gallery_size
         assert probe.calls == []
         assert _tree(archive_root) == first_archive_tree
         assert _tree(author_directory) == first_library_tree
@@ -847,15 +979,15 @@ def test_tieba_first_floor_two_image_gallery_reaches_emby_and_query_only_replay_
             jobs = list(session.scalars(select(Job).order_by(Job.job_type, Job.natural_key)).all())
             runs = list(session.scalars(select(SyncRun).order_by(SyncRun.created_at)).all())
             exports = list(session.scalars(select(ExportRecord)).all())
-            assert len(final_assets) == 2
+            assert len(final_assets) == gallery_size
             for position, final_asset in enumerate(final_assets):
                 assert final_asset.status == "verified" and final_asset.generation == 1
-                assert final_asset.source_url == DOUBLE_IMAGE_HINTS[position]
+                assert final_asset.source_url == case.image_hints[position]
                 assert final_asset.local_path == str(expected_archives[position].absolute())
                 assert final_asset.checksum_sha256 == checksums[position]
             assert final_content.canonical_url == CANONICAL_URL
             assert [run.status for run in runs] == ["succeeded", "succeeded"]
-            assert [job.job_type for job in jobs].count("asset_download") == 2
+            assert [job.job_type for job in jobs].count("asset_download") == gallery_size
             assert [job.job_type for job in jobs].count("export.emby") == 1
             assert all(job.status == "succeeded" and job.attempts == 1 for job in jobs)
             assert len(exports) == 1 and exports[0].status == "succeeded"

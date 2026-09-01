@@ -11,8 +11,10 @@ import pytest
 
 from media_sync.integrations.mediacrawler import tieba_media
 from media_sync.integrations.mediacrawler.tieba_media import (
+    TIEBA_GALLERY_FIELD,
     TIEBA_IMAGE_FIELD,
     TIEBA_IMAGES_FIELD,
+    TIEBA_MAX_GALLERY_IMAGES,
     install_tieba_media_capture,
     is_tieba_positive_id,
     tieba_image_source_hint,
@@ -28,6 +30,11 @@ TOKEN = "2026-09-02-17_deadbeef"
 IMAGE_URL = f"https://tiebapic.baidu.com/forum/pic/item/{IMAGE_ID}.jpg?tbpicau={TOKEN}"
 SECOND_IMAGE_URL = f"https://tiebapic.baidu.com/forum/pic/item/{SECOND_IMAGE_ID}.jpg?tbpicau={TOKEN}"
 IMAGE_HINT = f"https://tiebapic.baidu.com/forum/pic/item/{IMAGE_ID}.jpg"
+
+
+def _generated_image_url(position: int) -> str:
+    identity = f"{position + 1:040x}"
+    return f"https://tiebapic.baidu.com/forum/pic/item/{identity}.jpg?tbpicau={TOKEN}"
 
 
 @dataclass
@@ -290,7 +297,7 @@ async def test_capture_injects_exact_ordered_two_image_gallery(
     assert TIEBA_IMAGE_FIELD not in checkout.rows[0]
 
 
-async def test_capture_rejects_three_distinct_images_and_duplicate_durable_identity(
+async def test_capture_injects_three_distinct_images_under_v3_and_rejects_duplicate_durable_identity(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -299,27 +306,42 @@ async def test_capture_rejects_three_distinct_images_and_duplicate_durable_ident
     third_id = "abcdef0123456789abcdef0123456789abcdef01"
     third_url = f"https://tiebapic.baidu.com/forum/pic/item/{third_id}.jpg?tbpicau={TOKEN}"
     duplicate_query = IMAGE_URL.replace(TOKEN, "2026-09-02-17_other")
+    gallery = [IMAGE_URL, SECOND_IMAGE_URL, third_url]
     for content in (
-        [
-            {"type": 0, "text": "fixture body"},
-            _image_item(),
-            _image_item(image_url=SECOND_IMAGE_URL),
-            _image_item(image_url=third_url),
-        ],
-        [
-            {"type": 0, "text": "fixture body"},
-            _image_item(),
-            _image_item(image_url=duplicate_query),
-        ],
+        [{"type": 0, "text": "fixture body"}, *(_image_item(image_url=url) for url in gallery)],
+        [{"type": 0, "text": "fixture body"}, _image_item(), _image_item(image_url=duplicate_query)],
     ):
         note = checkout.extractor_class().extract_note_detail_from_api(_api_data(content=content))
         await checkout.modules["store.tieba"].update_tieba_note(note)
 
     assert len(checkout.rows) == 2
-    assert all(
-        isinstance(row, dict) and TIEBA_IMAGE_FIELD not in row and TIEBA_IMAGES_FIELD not in row
-        for row in checkout.rows
-    )
+    assert isinstance(checkout.rows[0], dict)
+    assert checkout.rows[0][TIEBA_GALLERY_FIELD] == gallery
+    assert TIEBA_IMAGE_FIELD not in checkout.rows[0] and TIEBA_IMAGES_FIELD not in checkout.rows[0]
+    assert isinstance(checkout.rows[1], dict)
+    assert not {TIEBA_IMAGE_FIELD, TIEBA_IMAGES_FIELD, TIEBA_GALLERY_FIELD} & checkout.rows[1].keys()
+
+
+async def test_capture_accepts_64_images_and_rejects_65(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    checkout = _fake_checkout(monkeypatch, tmp_path)
+    install_tieba_media_capture(checkout.root)
+    image_urls = tuple(_generated_image_url(position) for position in range(TIEBA_MAX_GALLERY_IMAGES + 1))
+
+    for count in (TIEBA_MAX_GALLERY_IMAGES, TIEBA_MAX_GALLERY_IMAGES + 1):
+        note = checkout.extractor_class().extract_note_detail_from_api(
+            _api_data(
+                content=[
+                    {"type": 0, "text": "fixture body"},
+                    *(_image_item(image_url=url) for url in image_urls[:count]),
+                ]
+            )
+        )
+        await checkout.modules["store.tieba"].update_tieba_note(note)
+
+    assert isinstance(checkout.rows[0], dict)
+    assert checkout.rows[0][TIEBA_GALLERY_FIELD] == list(image_urls[:TIEBA_MAX_GALLERY_IMAGES])
+    assert isinstance(checkout.rows[1], dict)
+    assert not {TIEBA_IMAGE_FIELD, TIEBA_IMAGES_FIELD, TIEBA_GALLERY_FIELD} & checkout.rows[1].keys()
 
 
 @pytest.mark.parametrize(
@@ -347,7 +369,7 @@ async def test_capture_fails_closed_for_nonfrozen_first_floor_shapes(
     note = checkout.extractor_class().extract_note_detail_from_api(_api_data(content=content))
     await checkout.modules["store.tieba"].update_tieba_note(note)
     assert isinstance(checkout.rows[0], dict)
-    assert TIEBA_IMAGE_FIELD not in checkout.rows[0]
+    assert not {TIEBA_IMAGE_FIELD, TIEBA_IMAGES_FIELD, TIEBA_GALLERY_FIELD} & checkout.rows[0].keys()
 
 
 async def test_capture_rejects_mismatched_response_ids(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -437,6 +459,38 @@ async def test_two_image_capture_is_isolated_across_concurrent_gather_children(
     assert by_id["10376710030"][TIEBA_IMAGES_FIELD] == [third_url, fourth_url]
 
 
+async def test_v3_gallery_capture_is_isolated_across_concurrent_gather_children(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    checkout = _fake_checkout(monkeypatch, tmp_path)
+    install_tieba_media_capture(checkout.root)
+
+    async def extract(note_id: str, image_urls: tuple[str, ...]) -> object:
+        await asyncio.sleep(0)
+        return checkout.extractor_class().extract_note_detail_from_api(
+            _api_data(
+                note_id=note_id,
+                content=[
+                    {"type": 0, "text": "text"},
+                    *(_image_item(image_url=image_url) for image_url in image_urls),
+                ],
+            )
+        )
+
+    first_gallery = tuple(_generated_image_url(position) for position in range(3))
+    second_gallery = tuple(_generated_image_url(position) for position in range(3, 6))
+    notes = await asyncio.gather(
+        extract(NOTE_ID, first_gallery),
+        extract("10376710030", second_gallery),
+    )
+    await asyncio.gather(*(checkout.modules["store.tieba"].update_tieba_note(note) for note in notes))
+
+    by_id = {row["note_id"]: row for row in checkout.rows if isinstance(row, dict)}
+    assert by_id[NOTE_ID][TIEBA_GALLERY_FIELD] == list(first_gallery)
+    assert by_id["10376710030"][TIEBA_GALLERY_FIELD] == list(second_gallery)
+
+
 async def test_store_exception_consumes_capture_and_clears_context(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -455,7 +509,7 @@ async def test_store_exception_consumes_capture_and_clears_context(
     assert TIEBA_IMAGE_FIELD not in checkout.rows[0]
 
 
-@pytest.mark.parametrize("private_field", [TIEBA_IMAGE_FIELD, TIEBA_IMAGES_FIELD])
+@pytest.mark.parametrize("private_field", [TIEBA_IMAGE_FIELD, TIEBA_IMAGES_FIELD, TIEBA_GALLERY_FIELD])
 async def test_private_field_collision_is_rejected_recursively(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

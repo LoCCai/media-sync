@@ -33,8 +33,10 @@ from .jsonl import (
     read_jsonl_bytes,
 )
 from .tieba_media import (
+    TIEBA_GALLERY_FIELD,
     TIEBA_IMAGE_FIELD,
     TIEBA_IMAGES_FIELD,
+    TIEBA_MAX_GALLERY_IMAGES,
     is_tieba_positive_id,
     tieba_image_source_hint,
     validate_tieba_image_url,
@@ -58,6 +60,7 @@ _BILI_PROGRESSIVE_FIELD = "__media_sync_bili_progressive_url"
 _PRIVATE_MEDIA_FIELDS = frozenset(
     {
         _BILI_PROGRESSIVE_FIELD,
+        TIEBA_GALLERY_FIELD,
         TIEBA_IMAGE_FIELD,
         TIEBA_IMAGES_FIELD,
         WEIBO_IMAGES_FIELD,
@@ -583,7 +586,9 @@ def _normalize_tieba(record: Mapping[str, object]) -> _ContentParts:
     remote_id = _required_id(record, "note_id")
     canonical_url = _safe_url(record.get("note_url")) or f"https://tieba.baidu.com/p/{remote_id}"
     images: tuple[str, ...] = ()
-    claimed_fields = tuple(field for field in (TIEBA_IMAGE_FIELD, TIEBA_IMAGES_FIELD) if field in record)
+    claimed_fields = tuple(
+        field for field in (TIEBA_IMAGE_FIELD, TIEBA_IMAGES_FIELD, TIEBA_GALLERY_FIELD) if field in record
+    )
     if len(claimed_fields) > 1:
         raise RecordNormalizationError(QuarantineReason.INVALID_RECORD)
     if claimed_fields:
@@ -599,16 +604,21 @@ def _normalize_tieba(record: Mapping[str, object]) -> _ContentParts:
                 raise RecordNormalizationError(QuarantineReason.INVALID_RECORD)
             images = (validate_tieba_image_url(image_url),)
         else:
-            image_urls = record.get(TIEBA_IMAGES_FIELD)
+            claimed_field = claimed_fields[0]
+            image_urls = record.get(claimed_field)
+            expected_minimum = 2 if claimed_field == TIEBA_IMAGES_FIELD else 3
+            expected_maximum = 2 if claimed_field == TIEBA_IMAGES_FIELD else TIEBA_MAX_GALLERY_IMAGES
             if (
                 not isinstance(image_urls, Sequence)
                 or isinstance(image_urls, bytes | bytearray | str)
-                or len(image_urls) != 2
+                or not expected_minimum <= len(image_urls) <= expected_maximum
                 or any(type(value) is not str for value in image_urls)
             ):
                 raise RecordNormalizationError(QuarantineReason.INVALID_RECORD)
             images = tuple(validate_tieba_image_url(value) for value in image_urls if isinstance(value, str))
-            if len(images) != 2 or len({tieba_image_source_hint(value) for value in images}) != 2:
+            if len(images) != len(image_urls) or len({tieba_image_source_hint(value) for value in images}) != len(
+                images
+            ):
                 raise RecordNormalizationError(QuarantineReason.INVALID_RECORD)
     return _ContentParts(
         remote_id=remote_id,

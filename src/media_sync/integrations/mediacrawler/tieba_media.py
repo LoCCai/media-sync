@@ -1,10 +1,11 @@
-"""Verified capture of one or two static first-floor images from pinned Tieba detail.
+"""Verified capture of a bounded static first-floor gallery from pinned Tieba detail.
 
 The pinned MediaCrawler detail API receives structured ``first_floor.content``
 items and then reduces them to text before ``TiebaNote`` reaches JSONL.  This
-integration-owned shim captures one narrowly frozen type-3 image or one exact
-ordered pair, binds the capture to the exact returned model across the upstream
-gather-child/parent-store boundary, and exposes it only to the matching nested
+integration-owned shim captures one narrowly frozen type-3 image, one exact
+ordered pair, or a separately versioned gallery of three through 64 images. It
+binds the capture to the exact returned model across the upstream
+gather-child/parent-store boundary and exposes it only to the matching nested
 JSONL store call.
 """
 
@@ -23,6 +24,8 @@ from urllib.parse import urlsplit, urlunsplit
 
 TIEBA_IMAGE_FIELD = "__media_sync_tieba_first_floor_image_v1"
 TIEBA_IMAGES_FIELD = "__media_sync_tieba_first_floor_images_v2"
+TIEBA_GALLERY_FIELD = "__media_sync_tieba_first_floor_gallery_v3"
+TIEBA_MAX_GALLERY_IMAGES = 64
 
 _INSTALL_MARKER = "__media_sync_tieba_media_capture_v1__"
 _CREATOR_CAP_MARKER = "__media_sync_tieba_creator_cap_v1__"
@@ -272,8 +275,10 @@ def install_tieba_media_capture(
         enriched = dict(content_item)
         if len(capture.image_urls) == 1:
             enriched[TIEBA_IMAGE_FIELD] = capture.image_urls[0]
-        else:
+        elif len(capture.image_urls) == 2:
             enriched[TIEBA_IMAGES_FIELD] = list(capture.image_urls)
+        else:
+            enriched[TIEBA_GALLERY_FIELD] = list(capture.image_urls)
         return await store_content(instance, enriched)
 
     setattr(extract_with_image, _INSTALL_MARKER, _INSTALL_VERSION)
@@ -421,7 +426,7 @@ def _capture_first_floor(api_data: object) -> _RawCapture | None:
                 return None
             text_count += 1
         elif item_type == 3:
-            if len(image_items) == 2:
+            if len(image_items) == TIEBA_MAX_GALLERY_IMAGES:
                 return None
             image_items.append(cast(Mapping[str, object], item))
         else:
@@ -531,7 +536,7 @@ def _matches_stored_row(capture: _BoundCapture, content_item: Mapping[object, ob
 def _contains_private_field(value: object) -> bool:
     if isinstance(value, Mapping):
         return any(
-            key in {TIEBA_IMAGE_FIELD, TIEBA_IMAGES_FIELD} or _contains_private_field(item)
+            key in {TIEBA_IMAGE_FIELD, TIEBA_IMAGES_FIELD, TIEBA_GALLERY_FIELD} or _contains_private_field(item)
             for key, item in value.items()
         )
     if isinstance(value, Sequence) and not isinstance(value, bytes | bytearray | str):
@@ -601,8 +606,10 @@ def _module_belongs_to_checkout(module: object, checkout_root: Path) -> bool:
 
 
 __all__ = [
+    "TIEBA_GALLERY_FIELD",
     "TIEBA_IMAGES_FIELD",
     "TIEBA_IMAGE_FIELD",
+    "TIEBA_MAX_GALLERY_IMAGES",
     "install_tieba_media_capture",
     "is_tieba_positive_id",
     "tieba_image_source_hint",

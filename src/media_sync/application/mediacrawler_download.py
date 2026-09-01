@@ -36,6 +36,7 @@ from media_sync.integrations.mediacrawler.subscription_policy import (
     from_subscription_policy,
 )
 from media_sync.integrations.mediacrawler.tieba_media import (
+    TIEBA_MAX_GALLERY_IMAGES,
     validate_tieba_image_source_hint,
     validate_tieba_thread_url,
 )
@@ -209,7 +210,7 @@ class LazyMediaCrawlerLocatorRefresher:
                     ).all()
                 )
                 if (
-                    len(tieba_assets) not in {1, 2}
+                    not 1 <= len(tieba_assets) <= TIEBA_MAX_GALLERY_IMAGES
                     or asset.position >= len(tieba_assets)
                     or tieba_assets[asset.position].id != asset.id
                 ):

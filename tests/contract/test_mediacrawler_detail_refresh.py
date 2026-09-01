@@ -22,7 +22,7 @@ from media_sync.integrations.mediacrawler.refresh import (
     MediaCrawlerLocatorRefresher,
     MediaCrawlerRefreshContext,
 )
-from media_sync.integrations.mediacrawler.tieba_media import TIEBA_IMAGE_FIELD, TIEBA_IMAGES_FIELD
+from media_sync.integrations.mediacrawler.tieba_media import TIEBA_GALLERY_FIELD, TIEBA_IMAGE_FIELD, TIEBA_IMAGES_FIELD
 from media_sync.integrations.mediacrawler.weibo_media import WEIBO_IMAGES_FIELD
 from media_sync.integrations.mediacrawler.zhihu_media import ZHIHU_IMAGE_FIELD
 from media_sync.media import AdapterRefreshLocator, MediaDownloadError, MediaRequestProfile
@@ -70,6 +70,12 @@ TIEBA_SECOND_IMAGE_URL = (
     f"https://tiebapic.baidu.com/forum/pic/item/{TIEBA_SECOND_IMAGE_ID}.jpg?tbpicau={TIEBA_SECOND_TOKEN}"
 )
 TIEBA_SECOND_IMAGE_HINT = f"https://tiebapic.baidu.com/forum/pic/item/{TIEBA_SECOND_IMAGE_ID}.jpg"
+TIEBA_THIRD_IMAGE_ID = "abcdef0123456789abcdef0123456789abcdef01"
+TIEBA_THIRD_TOKEN = "tieba-detail-sentinel-third-2026-09-02"
+TIEBA_THIRD_IMAGE_URL = (
+    f"https://tiebapic.baidu.com/forum/pic/item/{TIEBA_THIRD_IMAGE_ID}.jpg?tbpicau={TIEBA_THIRD_TOKEN}"
+)
+TIEBA_THIRD_IMAGE_HINT = f"https://tiebapic.baidu.com/forum/pic/item/{TIEBA_THIRD_IMAGE_ID}.jpg"
 _DEFAULT_BILI_VIEW = object()
 _DEFAULT_BILI_PLAY = object()
 
@@ -932,7 +938,9 @@ def _fake_zhihu_checkout(root: Path) -> Path:
     return checkout.resolve()
 
 
-def _fake_tieba_checkout(root: Path, *, two_images: bool = False) -> Path:
+def _fake_tieba_checkout(root: Path, *, gallery_size: int = 1) -> Path:
+    if gallery_size not in {1, 2, 3}:
+        raise ValueError("unsupported fixture gallery size")
     checkout = root / "fake-mediacrawler-tieba"
     for package in (
         checkout / "config",
@@ -970,6 +978,20 @@ def _fake_tieba_checkout(root: Path, *, two_images: bool = False) -> Path:
         "is_long_pic": 0,
         "show_original_btn": 1,
     }
+    third_query = f"tbpicau={TIEBA_THIRD_TOKEN}"
+    third_item = {
+        "type": 3,
+        "origin_src": TIEBA_THIRD_IMAGE_URL,
+        "cdn_src": f"https://tiebapic.baidu.com/forum/w%3D720/sign=g/{TIEBA_THIRD_IMAGE_ID}.jpg?{third_query}",
+        "big_cdn_src": f"https://tiebapic.baidu.com/forum/w%3D1920/sign=h/{TIEBA_THIRD_IMAGE_ID}.jpg?{third_query}",
+        "cdn_src_active": (f"https://tiebapic.baidu.com/forum/w%3D720/sign=i/{TIEBA_THIRD_IMAGE_ID}.jpg?{third_query}"),
+        "pic_id": 300_933_013_322,
+        "bsize": "800,450",
+        "origin_size": 82_144,
+        "is_long_pic": 0,
+        "show_original_btn": 1,
+    }
+    extra_items = (second_item, third_item)[: gallery_size - 1]
     main_source = (
         textwrap.dedent(_TIEBA_MAIN)
         .lstrip()
@@ -987,7 +1009,7 @@ def _fake_tieba_checkout(root: Path, *, two_images: bool = False) -> Path:
             "__TIEBA_ACTIVE_CDN_URL__",
             repr(f"https://tiebapic.baidu.com/forum/w%3D720/sign=c/{TIEBA_IMAGE_ID}.jpg?{query}"),
         )
-        .replace("__TIEBA_SECOND_IMAGE_ITEM__", repr(second_item) if two_images else "")
+        .replace("__TIEBA_SECOND_IMAGE_ITEM__", ",".join(repr(item) for item in extra_items))
     )
     (checkout / "main.py").write_text(main_source, encoding="utf-8")
     return checkout.resolve()
@@ -1169,8 +1191,8 @@ def _zhihu_context() -> MediaCrawlerRefreshContext:
     )
 
 
-def _tieba_context(*, position: int = 0, two_images: bool = False) -> MediaCrawlerRefreshContext:
-    hints = (TIEBA_IMAGE_HINT, TIEBA_SECOND_IMAGE_HINT) if two_images else (TIEBA_IMAGE_HINT,)
+def _tieba_context(*, position: int = 0, gallery_size: int = 1) -> MediaCrawlerRefreshContext:
+    hints = (TIEBA_IMAGE_HINT, TIEBA_SECOND_IMAGE_HINT, TIEBA_THIRD_IMAGE_HINT)[:gallery_size]
     remote_id = f"{TIEBA_NOTE_ID}:image:{position}"
     return MediaCrawlerRefreshContext(
         asset_id=ASSET_ID,
@@ -1497,8 +1519,8 @@ def test_tieba_detail_carries_exact_two_image_gallery_across_gather_and_refreshe
     tmp_path: Path,
     position: int,
 ) -> None:
-    checkout = _fake_tieba_checkout(tmp_path, two_images=True)
-    context = _tieba_context(position=position, two_images=True)
+    checkout = _fake_tieba_checkout(tmp_path, gallery_size=2)
+    context = _tieba_context(position=position, gallery_size=2)
 
     resolved = MediaCrawlerLocatorRefresher(
         context,
@@ -1510,6 +1532,34 @@ def test_tieba_detail_carries_exact_two_image_gallery_across_gather_and_refreshe
     assert list((tmp_path / "runtime" / "jobs").iterdir()) == []
     retained = b"".join(path.read_bytes() for path in (tmp_path / "runtime").rglob("*") if path.is_file())
     for transient in (TIEBA_IMAGE_FIELD, TIEBA_IMAGES_FIELD, TIEBA_TOKEN, TIEBA_SECOND_TOKEN):
+        assert transient.encode("utf-8") not in retained
+
+
+@pytest.mark.parametrize("position", [0, 1, 2])
+def test_tieba_detail_carries_v3_gallery_across_gather_and_refreshes_each_position(
+    tmp_path: Path,
+    position: int,
+) -> None:
+    checkout = _fake_tieba_checkout(tmp_path, gallery_size=3)
+    context = _tieba_context(position=position, gallery_size=3)
+
+    resolved = MediaCrawlerLocatorRefresher(
+        context,
+        _tieba_process_runner(tmp_path, checkout),
+    ).resolve(context.locator)
+
+    assert resolved.url == (TIEBA_IMAGE_URL, TIEBA_SECOND_IMAGE_URL, TIEBA_THIRD_IMAGE_URL)[position]
+    assert resolved.request_profile is MediaRequestProfile.DEFAULT
+    assert list((tmp_path / "runtime" / "jobs").iterdir()) == []
+    retained = b"".join(path.read_bytes() for path in (tmp_path / "runtime").rglob("*") if path.is_file())
+    for transient in (
+        TIEBA_IMAGE_FIELD,
+        TIEBA_IMAGES_FIELD,
+        TIEBA_GALLERY_FIELD,
+        TIEBA_TOKEN,
+        TIEBA_SECOND_TOKEN,
+        TIEBA_THIRD_TOKEN,
+    ):
         assert transient.encode("utf-8") not in retained
 
 
