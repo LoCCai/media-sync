@@ -113,6 +113,7 @@ from media_sync.integrations.mediacrawler.subscription_policy import (
 )
 from media_sync.media import (
     DownloadLimits,
+    FFmpegStreamCopyMuxer,
     FFprobeMediaProbe,
     MediaDownloadError,
     NetworkLimits,
@@ -243,7 +244,11 @@ def collect_doctor_report(settings: Settings) -> dict[str, Any]:
             "asset_download": {
                 "ffprobe_required_for": ["video", "audio"],
                 "ready": tools["ffprobe"] is not None,
-            }
+            },
+            "bilibili_dash_mux": {
+                "ffmpeg_required": True,
+                "ready": tools["ffmpeg"] is not None,
+            },
         },
         "paths": {name: str(path.resolve()) for name, path in runtime_roots.items()},
         "path_exists": {name: path.exists() for name, path in runtime_roots.items()},
@@ -761,6 +766,7 @@ def _build_pipeline_worker(
             accept_mediacrawler_license=accept_mediacrawler_license,
             xhs_detail_reference_ref=xhs_detail_reference_ref,
             ffprobe_executable=shutil.which("ffprobe"),
+            ffmpeg_executable=shutil.which("ffmpeg"),
         ),
     )
 
@@ -939,6 +945,10 @@ def doctor(
     typer.echo(
         "video/audio asset download prerequisite: "
         f"ffprobe is required ({'ready' if asset_download_ready else 'NOT READY'})"
+    )
+    dash_mux_ready = report["requirements"]["bilibili_dash_mux"]["ready"]
+    typer.echo(
+        f"Bilibili DASH video download prerequisite: ffmpeg is required ({'ready' if dash_mux_ready else 'NOT READY'})"
     )
     for name, path in report["paths"].items():
         marker = "exists" if report["path_exists"][name] else "will be created"
@@ -1980,7 +1990,7 @@ def download_asset(
     ] = None,
     json_output: Annotated[bool, typer.Option("--json", help="Emit machine-readable JSON.")] = False,
 ) -> None:
-    """Download and archive one asset; ffprobe is required for video/audio assets."""
+    """Download one asset; ffprobe is required for media and ffmpeg for Bilibili DASH."""
 
     if accept_mediacrawler_license and not enable_mediacrawler:
         raise typer.BadParameter("MediaCrawler license acknowledgement requires --enable-mediacrawler")
@@ -2083,6 +2093,27 @@ def download_asset(
                 label="Asset download",
             )
             raise typer.Exit(code=1)
+        ffmpeg = shutil.which("ffmpeg")
+        requires_bilibili_mux = (
+            requires_download
+            and asset_platform == Platform.BILI.value
+            and asset_kind == "video"
+            and mediacrawler_refresh
+        )
+        if requires_bilibili_mux and ffmpeg is None:
+            _emit_record(
+                {
+                    "asset_id": str(asset_id),
+                    "status": "blocked",
+                    "disposition": "not_started",
+                    "persisted_status": asset_status,
+                    "error_code": "media_mux_unavailable",
+                    "retryable": True,
+                },
+                json_output=json_output,
+                label="Asset download",
+            )
+            raise typer.Exit(code=1)
 
         limits = DownloadLimits()
         refresher = None
@@ -2122,10 +2153,11 @@ def download_asset(
             limits=NetworkLimits(timeout_seconds=min(limits.total_timeout_seconds, 120.0)),
         )
         probe = FFprobeMediaProbe(ffprobe) if ffprobe is not None else None
+        muxer = FFmpegStreamCopyMuxer(ffmpeg) if ffmpeg is not None else None
         if refresher is None:
-            downloader = SecureMediaDownloader(http, probe=probe, limits=limits)
+            downloader = SecureMediaDownloader(http, probe=probe, muxer=muxer, limits=limits)
         else:
-            downloader = SecureMediaDownloader(http, refresher=refresher, probe=probe, limits=limits)
+            downloader = SecureMediaDownloader(http, refresher=refresher, probe=probe, muxer=muxer, limits=limits)
         outcome = AssetDownloadService(
             database,
             downloader,

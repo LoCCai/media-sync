@@ -25,7 +25,13 @@ from media_sync.integrations.mediacrawler.refresh import (
 from media_sync.integrations.mediacrawler.tieba_media import TIEBA_GALLERY_FIELD, TIEBA_IMAGE_FIELD, TIEBA_IMAGES_FIELD
 from media_sync.integrations.mediacrawler.weibo_media import WEIBO_IMAGES_FIELD
 from media_sync.integrations.mediacrawler.zhihu_media import ZHIHU_IMAGE_FIELD
-from media_sync.media import AdapterRefreshLocator, MediaDownloadError, MediaRequestProfile
+from media_sync.media import (
+    AdapterRefreshLocator,
+    MediaDownloadError,
+    MediaRequestProfile,
+    ResolvedDashLocator,
+    ResolvedLocator,
+)
 from media_sync.security import SecretValue
 
 UPSTREAM_SHA = "d6f7c5bb906b6dac40ddf343ef9e26438a3de092"
@@ -39,6 +45,9 @@ DY_COVER_SENTINEL = "DETAIL-COVER-SENTINEL-a8f2c1"
 DY_COVER_URL = f"https://image.example.test/douyin/cover.jpg?sign={DY_COVER_SENTINEL}"
 BILI_COVER = "https://image.example.test/bili/cover.jpg?token=bili-detail-sentinel"
 BILI_VIDEO_URL = "https://video.example.test/bili/first.mp4?" + "deadline=4102444800&sig=ephemeral-sentinel"
+BILI_DASH_AVC_URL = "https://video.example.test/bili/avc.m4s?deadline=4102444800&sig=dash-avc-sentinel"
+BILI_DASH_AVC_BACKUP = "https://backup.example.test/bili/avc.m4s?deadline=4102444800&sig=dash-backup-sentinel"
+BILI_DASH_AUDIO_URL = "https://audio.example.test/bili/hires.m4s?deadline=4102444800&sig=dash-audio-sentinel"
 KS_VIDEO_ID = "3x3zxz4mjrsc8ke"
 KS_VIDEO_URL = "https://video.example.test/ks/main.mp4?auth=ks-video-sentinel"
 KS_COVER_URL = "https://image.example.test/ks/cover.jpg?auth=ks-cover-sentinel"
@@ -298,7 +307,33 @@ EXPECTED_CID = __BILI_EXPECTED_CID__
 FORBIDDEN_URL = __BILI_FORBIDDEN_URL__
 
 
+class FakeBiliClient:
+    async def get(self, uri, params, enable_params_sign):
+        assert uri == "/x/player/wbi/playurl"
+        assert params == {
+            "avid": 987654321,
+            "cid": EXPECTED_CID,
+            "qn": 127,
+            "fourk": 1,
+            "fnval": 4048,
+            "platform": "pc",
+        }
+        assert enable_params_sign is True
+        for path in Path(config.SAVE_DATA_PATH).rglob("*.jsonl"):
+            retained = path.read_bytes()
+            assert b"__media_sync_bili_progressive_url" not in retained
+            assert b"__media_sync_bili_dash_page_v1" not in retained
+            if FORBIDDEN_URL:
+                assert FORBIDDEN_URL.encode("utf-8") not in retained
+        if PLAY_RAISES:
+            raise RuntimeError("private play failure must be classified without echo")
+        return PLAY_RESPONSE
+
+
 class FakeCrawler:
+    def __init__(self):
+        self.bili_client = FakeBiliClient()
+
     async def get_video_info_task(self, aid, bvid, semaphore):
         assert aid == 987654321
         assert bvid == ""
@@ -306,19 +341,6 @@ class FakeCrawler:
         if VIEW_RESPONSE is None:
             return None
         return {"View": VIEW_RESPONSE}
-
-    async def get_video_play_url_task(self, aid, cid, semaphore):
-        assert aid == 987654321
-        assert cid == EXPECTED_CID
-        assert semaphore is not None
-        for path in Path(config.SAVE_DATA_PATH).rglob("*.jsonl"):
-            retained = path.read_bytes()
-            assert b"__media_sync_bili_progressive_url" not in retained
-            if FORBIDDEN_URL:
-                assert FORBIDDEN_URL.encode("utf-8") not in retained
-        if PLAY_RAISES:
-            raise RuntimeError("private play failure must be classified without echo")
-        return PLAY_RESPONSE
 
     async def start(self):
         assert config.PLATFORM == "bili"
@@ -2123,13 +2145,106 @@ def test_bilibili_multipart_child_fetches_only_the_requested_cid_and_returns_the
     assert "ephemeral-sentinel" not in repr(request)
 
 
+def test_bilibili_dash_selects_quality_codec_hires_audio_and_keeps_urls_ephemeral(tmp_path: Path) -> None:
+    play_response = {
+        "dash": {
+            "video": [
+                {
+                    "id": 80,
+                    "codecid": 7,
+                    "base_url": "https://video.example.test/bili/1080p-avc.m4s?sig=lower-quality",
+                },
+                {
+                    "id": 127,
+                    "codecid": 13,
+                    "base_url": "https://video.example.test/bili/av1.m4s?sig=dash-av1-sentinel",
+                },
+                {
+                    "id": 127,
+                    "codecid": 12,
+                    "baseUrl": "https://video.example.test/bili/hev.m4s?sig=dash-hev-sentinel",
+                },
+                {
+                    "id": 127,
+                    "codecid": 7,
+                    "base_url": BILI_DASH_AVC_URL,
+                    "backup_url": [BILI_DASH_AVC_BACKUP],
+                },
+                {"id": 999, "codecid": 7},
+            ],
+            "audio": [
+                {
+                    "id": 30280,
+                    "base_url": "https://audio.example.test/bili/192k.m4s?sig=dash-192k-sentinel",
+                }
+            ],
+            "dolby": {
+                "audio": [
+                    {
+                        "id": 30250,
+                        "base_url": "https://audio.example.test/bili/dolby.m4s?sig=dash-dolby-sentinel",
+                    }
+                ]
+            },
+            "flac": {"audio": {"id": 30251, "base_url": BILI_DASH_AUDIO_URL}},
+        }
+    }
+    checkout = _fake_bili_checkout(tmp_path, play_response=play_response)
+    context = _bili_video_context()
+
+    resolved = MediaCrawlerLocatorRefresher(context, _bili_process_runner(tmp_path, checkout)).resolve(context.locator)
+
+    assert isinstance(resolved, ResolvedDashLocator)
+    assert resolved.selection_key == (127, "avc", 30251)
+    assert resolved.video.url == BILI_DASH_AVC_URL
+    assert resolved.video.backup_urls == (BILI_DASH_AVC_BACKUP,)
+    assert resolved.video.request_profile is MediaRequestProfile.BILIBILI_MEDIA
+    assert resolved.audio is not None
+    assert resolved.audio.url == BILI_DASH_AUDIO_URL
+    assert resolved.audio.request_profile is MediaRequestProfile.BILIBILI_MEDIA
+    for sentinel in (
+        "dash-avc-sentinel",
+        "dash-backup-sentinel",
+        "dash-audio-sentinel",
+        "dash-av1-sentinel",
+        "dash-hev-sentinel",
+    ):
+        assert sentinel not in repr(resolved)
+    jobs_root = tmp_path / "runtime" / "jobs"
+    assert jobs_root.is_dir() and list(jobs_root.iterdir()) == []
+    retained = b"".join(path.read_bytes() for path in (tmp_path / "runtime").rglob("*") if path.is_file())
+    assert BILI_DASH_AVC_URL.encode() not in retained
+    assert BILI_DASH_AVC_BACKUP.encode() not in retained
+    assert BILI_DASH_AUDIO_URL.encode() not in retained
+    assert b"__media_sync_bili_dash_page_v1" not in retained
+
+
+def test_bilibili_silent_dash_is_a_valid_selected_target(tmp_path: Path) -> None:
+    play_response = {
+        "dash": {
+            "video": [{"id": 120, "codecid": 12, "base_url": BILI_DASH_AVC_URL}],
+            "audio": [],
+            "dolby": {"audio": None},
+            "flac": {"audio": None},
+        }
+    }
+    checkout = _fake_bili_checkout(tmp_path, play_response=play_response)
+    context = _bili_video_context()
+
+    resolved = MediaCrawlerLocatorRefresher(context, _bili_process_runner(tmp_path, checkout)).resolve(context.locator)
+
+    assert isinstance(resolved, ResolvedDashLocator)
+    assert resolved.selection_key == (120, "hev", None)
+    assert resolved.audio is None
+
+
 def test_bilibili_private_jsonl_bridge_is_bounded_collision_safe_and_repr_safe() -> None:
     ordinary = json.dumps({"video_id": "987654321", "title": "fixture"}, separators=(",", ":")).encode() + b"\n"
-    progressive = detail_runner_module._BiliProgressiveResult(
+    progressive = detail_runner_module._BiliPlaybackResult(
         aid=987654321,
         pages=(detail_runner_module.BilibiliPageIdentity(page=1, cid=24680),),
         cid=24680,
-        url=BILI_VIDEO_URL,
+        target=ResolvedLocator(BILI_VIDEO_URL, MediaRequestProfile.BILIBILI_MEDIA),
     )
     limits = WatchdogLimits(
         max_output_bytes=8 * 1024,
@@ -2178,6 +2293,64 @@ def test_bilibili_private_jsonl_bridge_is_bounded_collision_safe_and_repr_safe()
         ("none", None, False, "locator_refresh_temporary"),
         ("exception", {"durl": [{"url": BILI_VIDEO_URL}]}, True, "locator_refresh_temporary"),
         ("dash-only", {"dash": {"video": [], "audio": []}}, False, "locator_refresh_unsupported"),
+        ("dash-video-type", {"dash": {"video": {}, "audio": []}}, False, "locator_refresh_result_invalid"),
+        (
+            "dash-known-video-missing-url",
+            {"dash": {"video": [{"id": 127, "codecid": 7}], "audio": []}},
+            False,
+            "locator_refresh_result_invalid",
+        ),
+        (
+            "dash-conflicting-url-aliases",
+            {
+                "dash": {
+                    "video": [
+                        {
+                            "id": 127,
+                            "codecid": 7,
+                            "base_url": BILI_DASH_AVC_URL,
+                            "baseUrl": "https://video.example.test/bili/different.m4s?sig=conflict",
+                        }
+                    ],
+                    "audio": [],
+                }
+            },
+            False,
+            "locator_refresh_result_invalid",
+        ),
+        (
+            "dash-audio-type",
+            {
+                "dash": {
+                    "video": [{"id": 127, "codecid": 7, "base_url": BILI_DASH_AVC_URL}],
+                    "audio": {},
+                }
+            },
+            False,
+            "locator_refresh_result_invalid",
+        ),
+        (
+            "dash-known-audio-missing-url",
+            {
+                "dash": {
+                    "video": [{"id": 127, "codecid": 7, "base_url": BILI_DASH_AVC_URL}],
+                    "audio": [{"id": 30280}],
+                }
+            },
+            False,
+            "locator_refresh_result_invalid",
+        ),
+        (
+            "dash-video-list-limit",
+            {
+                "dash": {
+                    "video": [{"id": 127, "codecid": 7, "base_url": BILI_DASH_AVC_URL}] * 65,
+                    "audio": [],
+                }
+            },
+            False,
+            "locator_refresh_result_invalid",
+        ),
         ("empty", {"durl": []}, False, "locator_refresh_unsupported"),
         (
             "multi-segment",

@@ -10,6 +10,7 @@ from media_sync.media import (
     DirectLocator,
     MediaDownloadError,
     MediaRequestProfile,
+    ResolvedDashLocator,
     ResolvedLocator,
     canonical_locator_json,
     locator_fingerprint,
@@ -160,3 +161,48 @@ def test_resolved_locator_carries_only_a_closed_non_secret_request_profile() -> 
 
     with pytest.raises(MediaDownloadError, match="locator_invalid"):
         ResolvedLocator(signed_url, "bilibili_media")  # type: ignore[arg-type]
+
+
+def test_resolved_dash_locator_is_closed_repr_safe_and_selection_bound() -> None:
+    video = ResolvedLocator(
+        "https://video.test/v.m4s?signature=video-private",
+        MediaRequestProfile.BILIBILI_MEDIA,
+        ("https://backup.test/v.m4s?signature=backup-private",),
+    )
+    audio = ResolvedLocator(
+        "https://audio.test/a.m4s?signature=audio-private",
+        MediaRequestProfile.BILIBILI_MEDIA,
+    )
+
+    resolved = ResolvedDashLocator(
+        video=video,
+        audio=audio,
+        video_quality=120,
+        video_codec="avc",
+        audio_quality=30251,
+    )
+
+    assert resolved.selection_key == (120, "avc", 30251)
+    assert video.urls == (video.url, video.backup_urls[0])
+    assert "private" not in repr(resolved)
+    assert "private" not in repr(video)
+
+
+@pytest.mark.parametrize(
+    ("quality", "codec", "audio_quality"),
+    [(999, "avc", None), (120, "vp9", None), (120, "avc", 999)],
+)
+def test_resolved_dash_locator_rejects_unknown_selection_values(
+    quality: int,
+    codec: str,
+    audio_quality: int | None,
+) -> None:
+    video = ResolvedLocator("https://video.test/v.m4s", MediaRequestProfile.BILIBILI_MEDIA)
+    audio = (
+        None
+        if audio_quality is None
+        else ResolvedLocator("https://audio.test/a.m4s", MediaRequestProfile.BILIBILI_MEDIA)
+    )
+
+    with pytest.raises(MediaDownloadError, match="locator_invalid"):
+        ResolvedDashLocator(video, audio, quality, codec, audio_quality)

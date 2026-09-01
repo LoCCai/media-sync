@@ -140,10 +140,14 @@ def test_doctor_report_is_read_only(tmp_path: Path) -> None:
     assert report["ok"] is True
     assert report["path_exists"] == {"state": False, "archive": False, "export": False, "jobs": False}
     assert report["requirements"]["asset_download"]["ffprobe_required_for"] == ["video", "audio"]
+    assert report["requirements"]["bilibili_dash_mux"] == {
+        "ffmpeg_required": True,
+        "ready": report["tools"]["ffmpeg"] is not None,
+    }
     assert list(tmp_path.iterdir()) == []
 
 
-def test_doctor_and_asset_download_help_state_ffprobe_requirement(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_doctor_and_asset_download_help_state_media_tool_requirements(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(cli_module.shutil, "which", lambda _name: None)
 
     doctor_result = runner.invoke(app, ["doctor"])
@@ -151,8 +155,11 @@ def test_doctor_and_asset_download_help_state_ffprobe_requirement(monkeypatch: p
 
     assert doctor_result.exit_code == 0, doctor_result.output
     assert "video/audio asset download prerequisite: ffprobe is required (NOT READY)" in doctor_result.output
+    assert "Bilibili DASH video download prerequisite: ffmpeg is required (NOT READY)" in doctor_result.output
     assert help_result.exit_code == 0, help_result.output
     assert "ffprobe is required" in help_result.output
+    assert "ffmpeg for Bilibili" in help_result.output
+    assert "DASH." in help_result.output
 
 
 def test_mediacrawler_doctor_requires_explicit_license_without_writes(tmp_path: Path) -> None:
@@ -1133,7 +1140,11 @@ def test_pipeline_worker_cli_wires_bounded_runtime_and_fixed_output(
     monkeypatch.setattr(cli_module, "LocalPipelineRuntimeConfig", _FakeConfig)
     monkeypatch.setattr(cli_module, "SubscriptionPipelineExecutor", _FakeExecutor)
     monkeypatch.setattr(cli_module, "PipelineSubscriptionWorker", _FakePipelineWorker)
-    monkeypatch.setattr(cli_module.shutil, "which", lambda _name: "C:/tools/ffprobe.exe")
+    monkeypatch.setattr(
+        cli_module.shutil,
+        "which",
+        lambda name: f"C:/tools/{name}.exe",
+    )
 
     result = runner.invoke(
         app,
@@ -1179,6 +1190,7 @@ def test_pipeline_worker_cli_wires_bounded_runtime_and_fixed_output(
     assert config["enable_mediacrawler"] is True
     assert config["accept_mediacrawler_license"] is True
     assert config["ffprobe_executable"] == "C:/tools/ffprobe.exe"
+    assert config["ffmpeg_executable"] == "C:/tools/ffmpeg.exe"
 
 
 def test_pipeline_worker_cli_rejects_license_without_enablement(
@@ -1608,6 +1620,101 @@ def test_asset_download_without_ffprobe_fails_before_database_or_job_work(
         database.dispose()
 
 
+def test_bilibili_refresh_video_without_ffmpeg_fails_before_database_or_job_work(
+    initialized_cli_database: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    asset_id = UUID("00000000-0000-0000-0000-000000000037")
+    author_id = "00000000-0000-0000-0000-000000000038"
+    content_id = "00000000-0000-0000-0000-000000000039"
+    database = Database(initialized_cli_database)
+    try:
+        with database.session() as session:
+            session.add_all(
+                [
+                    Author(
+                        id=author_id,
+                        platform="bili",
+                        remote_id="mux-author",
+                        display_name="Mux Author",
+                    ),
+                    Content(
+                        id=content_id,
+                        author_id=author_id,
+                        platform="bili",
+                        remote_type="video",
+                        remote_id="mux-content",
+                        kind="video",
+                    ),
+                    Asset(
+                        id=str(asset_id),
+                        content_id=content_id,
+                        platform="bili",
+                        kind="video",
+                        position=0,
+                        locator={
+                            "version": 1,
+                            "type": "adapter_refresh",
+                            "adapter": "mediacrawler",
+                            "asset_key": "bili/video/mux-preflight",
+                        },
+                        semantic_fingerprint="a" * 64,
+                        locator_fingerprint="b" * 64,
+                        status="discovered",
+                    ),
+                ]
+            )
+    finally:
+        database.dispose()
+
+    service_calls: list[object] = []
+
+    def unexpected_service(*args: object, **kwargs: object) -> None:
+        service_calls.append((args, kwargs))
+        raise AssertionError("download service must not start without ffmpeg")
+
+    monkeypatch.setenv("MEDIA_SYNC_MEDIACRAWLER_PYTHON_EXECUTABLE", "C:/tools/python.exe")
+    get_settings.cache_clear()
+    monkeypatch.setattr(
+        cli_module.shutil,
+        "which",
+        lambda name: "C:/tools/ffprobe.exe" if name == "ffprobe" else None,
+    )
+    monkeypatch.setattr(cli_module, "AssetDownloadService", unexpected_service)
+
+    result = runner.invoke(
+        app,
+        [
+            "asset",
+            "download",
+            "--asset-id",
+            str(asset_id),
+            "--enable-mediacrawler",
+            "--accept-mediacrawler-license",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert json.loads(result.output) == {
+        "asset_id": str(asset_id),
+        "status": "blocked",
+        "disposition": "not_started",
+        "persisted_status": "discovered",
+        "error_code": "media_mux_unavailable",
+        "retryable": True,
+    }
+    assert service_calls == []
+    database = Database(initialized_cli_database)
+    try:
+        with database.session() as session:
+            asset = session.get(Asset, str(asset_id))
+            assert asset is not None and (asset.status, asset.download_job_id) == ("discovered", None)
+            assert session.scalar(select(func.count()).select_from(Job)) == 0
+    finally:
+        database.dispose()
+
+
 def test_asset_download_without_ffprobe_allows_image_magic_validation(
     initialized_cli_database: str,
     monkeypatch: pytest.MonkeyPatch,
@@ -1653,8 +1760,8 @@ def test_asset_download_without_ffprobe_allows_image_magic_validation(
     captured: dict[str, object] = {}
 
     class _FakeDownloader:
-        def __init__(self, client: object, *, probe: object, limits: object) -> None:
-            captured.update(client=client, probe=probe, limits=limits)
+        def __init__(self, client: object, *, probe: object, muxer: object, limits: object) -> None:
+            captured.update(client=client, probe=probe, muxer=muxer, limits=limits)
 
     class _FakeService:
         def __init__(
@@ -1955,9 +2062,10 @@ def test_asset_download_explicitly_wires_lazy_mediacrawler_refresh(
             *,
             refresher: object,
             probe: object,
+            muxer: object,
             limits: object,
         ) -> None:
-            captured.update(client=client, refresher=refresher, probe=probe, limits=limits)
+            captured.update(client=client, refresher=refresher, probe=probe, muxer=muxer, limits=limits)
 
     class _FakeService:
         def __init__(

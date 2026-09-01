@@ -43,6 +43,7 @@ _PIPELINE_ERRORS: dict[str, tuple[str, bool]] = {
     "pipeline_locator_refresh_retryable": ("asset locator refresh could not complete and may be retried", True),
     "pipeline_locator_refresh_terminal": ("asset locator refresh cannot be completed", False),
     "pipeline_media_probe_unavailable": ("required local media probe is unavailable", True),
+    "pipeline_media_mux_unavailable": ("required local media muxer is unavailable", True),
 }
 
 

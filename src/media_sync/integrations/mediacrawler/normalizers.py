@@ -5,9 +5,10 @@ from __future__ import annotations
 import math
 import re
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
+from types import MappingProxyType
 from urllib.parse import urlsplit, urlunsplit
 
 from media_sync.domain import (
@@ -19,8 +20,15 @@ from media_sync.domain import (
     DomainError,
     Platform,
 )
+from media_sync.media.locator import (
+    MediaRequestProfile,
+    ResolvedDashLocator,
+    ResolvedLocator,
+    ResolvedMediaTarget,
+)
 
 from .bilibili_media import (
+    BILIBILI_DASH_PAGE_FIELD,
     BILIBILI_PAGES_FIELD,
     BILIBILI_PROGRESSIVE_PAGE_FIELD,
     bilibili_video_remote_ids,
@@ -66,6 +74,7 @@ _BILI_PROGRESSIVE_FIELD = "__media_sync_bili_progressive_url"
 _PRIVATE_MEDIA_FIELDS = frozenset(
     {
         BILIBILI_PAGES_FIELD,
+        BILIBILI_DASH_PAGE_FIELD,
         BILIBILI_PROGRESSIVE_PAGE_FIELD,
         _BILI_PROGRESSIVE_FIELD,
         TIEBA_GALLERY_FIELD,
@@ -125,6 +134,15 @@ class NormalizedMediaRecord:
     author: AuthorSnapshot
     content: ContentSnapshot
     assets: tuple[AssetSnapshot, ...]
+    runtime_asset_targets: Mapping[str, ResolvedMediaTarget] = field(default_factory=dict, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        if any(
+            type(key) is not str or not isinstance(value, ResolvedLocator | ResolvedDashLocator)
+            for key, value in self.runtime_asset_targets.items()
+        ):
+            raise ValueError("runtime asset targets are invalid")
+        object.__setattr__(self, "runtime_asset_targets", MappingProxyType(dict(self.runtime_asset_targets)))
 
 
 @dataclass(frozen=True, slots=True)
@@ -149,6 +167,7 @@ class _ContentParts:
     metrics: Mapping[str, int | float]
     asset_groups: tuple[tuple[AssetKind, tuple[str | None, ...]], ...] = ()
     asset_remote_ids: Mapping[AssetKind, tuple[str, ...]] | None = None
+    runtime_asset_targets: Mapping[str, ResolvedMediaTarget] = field(default_factory=dict)
     remote_type: str = "content"
 
 
@@ -510,46 +529,141 @@ def _bili_video_assets(
     *,
     aid: str,
     allow_progressive_detail: bool,
-) -> tuple[tuple[str | None, ...], tuple[str, ...]]:
+) -> tuple[tuple[str | None, ...], tuple[str, ...], Mapping[str, ResolvedMediaTarget]]:
     if BILIBILI_PAGES_FIELD not in record:
-        if allow_progressive_detail and BILIBILI_PROGRESSIVE_PAGE_FIELD in record:
-            return (), ()
-        return (
-            (_safe_url(record.get(_BILI_PROGRESSIVE_FIELD)) if allow_progressive_detail else None,),
-            (f"{aid}:video:0",),
-        )
+        remote_ids: tuple[str, ...] = (f"{aid}:video:0",)
+        if allow_progressive_detail and (
+            BILIBILI_PROGRESSIVE_PAGE_FIELD in record or BILIBILI_DASH_PAGE_FIELD in record
+        ):
+            return (), (), {}
+        url = _safe_url(record.get(_BILI_PROGRESSIVE_FIELD)) if allow_progressive_detail else None
+        targets: dict[str, ResolvedMediaTarget] = {}
+        if url is not None:
+            try:
+                targets[remote_ids[0]] = ResolvedLocator(url, MediaRequestProfile.BILIBILI_MEDIA)
+            except Exception:
+                return (), (), {}
+        return (url,), remote_ids, targets
 
     try:
         pages = parse_bilibili_page_payload(record.get(BILIBILI_PAGES_FIELD))
         remote_ids = bilibili_video_remote_ids(aid, pages)
     except ValueError:
-        return (), ()
+        return (), (), {}
+
+    if allow_progressive_detail and BILIBILI_DASH_PAGE_FIELD in record:
+        if _BILI_PROGRESSIVE_FIELD in record or BILIBILI_PROGRESSIVE_PAGE_FIELD in record:
+            return (), (), {}
+        try:
+            cid, dash_target = _bili_dash_target(record[BILIBILI_DASH_PAGE_FIELD])
+        except ValueError:
+            return (), (), {}
+        page_index = next((index for index, page in enumerate(pages) if page.cid == cid), None)
+        if page_index is None:
+            return (), (), {}
+        dash_urls: list[str | None] = [None] * len(pages)
+        dash_urls[page_index] = dash_target.video.url
+        return tuple(dash_urls), remote_ids, {remote_ids[page_index]: dash_target}
 
     if len(pages) == 1:
         if allow_progressive_detail and BILIBILI_PROGRESSIVE_PAGE_FIELD in record:
-            return (), ()
-        return (
-            (_safe_url(record.get(_BILI_PROGRESSIVE_FIELD)) if allow_progressive_detail else None,),
-            remote_ids,
-        )
+            return (), (), {}
+        url = _safe_url(record.get(_BILI_PROGRESSIVE_FIELD)) if allow_progressive_detail else None
+        targets = {}
+        if url is not None:
+            try:
+                targets[remote_ids[0]] = ResolvedLocator(url, MediaRequestProfile.BILIBILI_MEDIA)
+            except Exception:
+                return (), (), {}
+        return (url,), remote_ids, targets
 
     urls: list[str | None] = [None] * len(pages)
+    targets = {}
     if allow_progressive_detail:
         if _BILI_PROGRESSIVE_FIELD in record:
-            return (), ()
-        target = record.get(BILIBILI_PROGRESSIVE_PAGE_FIELD)
-        if not isinstance(target, Mapping) or set(target) != {"cid", "url"}:
-            return (), ()
-        cid = target.get("cid")
-        url = _safe_url(target.get("url"))
+            return (), (), {}
+        progressive_payload = record.get(BILIBILI_PROGRESSIVE_PAGE_FIELD)
+        if not isinstance(progressive_payload, Mapping) or set(progressive_payload) != {"cid", "url"}:
+            return (), (), {}
+        progressive_cid = progressive_payload.get("cid")
+        url = _safe_url(progressive_payload.get("url"))
         page_index = next(
-            (index for index, page in enumerate(pages) if type(cid) is int and page.cid == cid),
+            (index for index, page in enumerate(pages) if type(progressive_cid) is int and page.cid == progressive_cid),
             None,
         )
         if page_index is None or url is None:
-            return (), ()
+            return (), (), {}
         urls[page_index] = url
-    return tuple(urls), remote_ids
+        try:
+            targets[remote_ids[page_index]] = ResolvedLocator(url, MediaRequestProfile.BILIBILI_MEDIA)
+        except Exception:
+            return (), (), {}
+    return tuple(urls), remote_ids, targets
+
+
+def _bili_dash_target(value: object) -> tuple[int, ResolvedDashLocator]:
+    """Parse the exact private DASH page shape emitted by the detail child."""
+
+    if not isinstance(value, Mapping) or set(value) != {"cid", "video", "audio"}:
+        raise ValueError("invalid Bilibili DASH target")
+    cid = value.get("cid")
+    if type(cid) is not int or not 1 <= cid <= 2**63 - 1:
+        raise ValueError("invalid Bilibili DASH target")
+    video_value = value.get("video")
+    if not isinstance(video_value, Mapping) or set(video_value) != {
+        "url",
+        "backup_urls",
+        "quality",
+        "codec",
+    }:
+        raise ValueError("invalid Bilibili DASH target")
+    video = _bili_component_locator(video_value)
+    video_quality = video_value.get("quality")
+    video_codec = video_value.get("codec")
+
+    audio_value = value.get("audio")
+    audio: ResolvedLocator | None = None
+    audio_quality: int | None = None
+    if audio_value is not None:
+        if not isinstance(audio_value, Mapping) or set(audio_value) != {"url", "backup_urls", "quality"}:
+            raise ValueError("invalid Bilibili DASH target")
+        audio = _bili_component_locator(audio_value)
+        raw_audio_quality = audio_value.get("quality")
+        if type(raw_audio_quality) is not int:
+            raise ValueError("invalid Bilibili DASH target")
+        audio_quality = raw_audio_quality
+    try:
+        return cid, ResolvedDashLocator(
+            video=video,
+            audio=audio,
+            video_quality=video_quality if type(video_quality) is int else -1,
+            video_codec=video_codec if type(video_codec) is str else "",
+            audio_quality=audio_quality,
+        )
+    except Exception as exc:
+        raise ValueError("invalid Bilibili DASH target") from exc
+
+
+def _bili_component_locator(value: Mapping[str, object]) -> ResolvedLocator:
+    raw_backups = value.get("backup_urls")
+    if (
+        not isinstance(raw_backups, Sequence)
+        or isinstance(raw_backups, bytes | bytearray | str)
+        or len(raw_backups) > 8
+        or any(type(item) is not str for item in raw_backups)
+    ):
+        raise ValueError("invalid Bilibili DASH component")
+    url = value.get("url")
+    if type(url) is not str:
+        raise ValueError("invalid Bilibili DASH component")
+    try:
+        return ResolvedLocator(
+            url,
+            MediaRequestProfile.BILIBILI_MEDIA,
+            tuple(raw_backups),
+        )
+    except Exception as exc:
+        raise ValueError("invalid Bilibili DASH component") from exc
 
 
 def _normalize_bili(record: Mapping[str, object], *, allow_progressive_detail: bool = False) -> _ContentParts:
@@ -576,7 +690,7 @@ def _normalize_bili(record: Mapping[str, object], *, allow_progressive_detail: b
 
     remote_id = _required_id(record, "video_id")
     body = _text(record.get("desc"))
-    video_urls, video_remote_ids = _bili_video_assets(
+    video_urls, video_remote_ids, runtime_asset_targets = _bili_video_assets(
         record,
         aid=remote_id,
         allow_progressive_detail=allow_progressive_detail,
@@ -609,6 +723,7 @@ def _normalize_bili(record: Mapping[str, object], *, allow_progressive_detail: b
             (AssetKind.COVER, _url_list(record.get("video_cover_url"))),
         ),
         asset_remote_ids={AssetKind.VIDEO: video_remote_ids},
+        runtime_asset_targets=runtime_asset_targets,
     )
 
 
@@ -871,7 +986,12 @@ def normalize_record(record: Mapping[str, object], context: NormalizationContext
         raise
     except (DomainError, TypeError, ValueError):
         raise RecordNormalizationError(QuarantineReason.INVALID_RECORD) from None
-    return NormalizedMediaRecord(author=author, content=content, assets=assets)
+    return NormalizedMediaRecord(
+        author=author,
+        content=content,
+        assets=assets,
+        runtime_asset_targets=parts.runtime_asset_targets,
+    )
 
 
 def normalize_jsonl(

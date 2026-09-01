@@ -18,7 +18,7 @@ import shutil
 import subprocess
 import sys
 import time
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import MethodType
@@ -33,6 +33,7 @@ if __name__ == "__main__" and (__package__ is None or __package__ == ""):
 
 from media_sync.domain import LoginMethod, Platform
 from media_sync.integrations.mediacrawler.bilibili_media import (
+    BILIBILI_DASH_PAGE_FIELD,
     BILIBILI_PAGES_FIELD,
     BILIBILI_PROGRESSIVE_PAGE_FIELD,
     BilibiliPageIdentity,
@@ -74,12 +75,12 @@ from media_sync.integrations.mediacrawler.zhihu_media import (
     install_zhihu_media_capture,
     validate_zhihu_answer_url,
 )
-from media_sync.media import ResolvedLocator
+from media_sync.media import MediaRequestProfile, ResolvedDashLocator, ResolvedLocator, ResolvedMediaTarget
 from media_sync.media.errors import MediaDownloadError
 from media_sync.security import SecretValue
 from media_sync.security.secrets import MAX_SECRET_BYTES
 
-DETAIL_RUNNER_SCHEMA_VERSION = 4
+DETAIL_RUNNER_SCHEMA_VERSION = 5
 MAX_DETAIL_REQUEST_BYTES = 128 * 1024
 MAX_DETAIL_FRAME_OVERHEAD = 8 * 1024
 
@@ -601,13 +602,13 @@ class _ChildUnsupportedError(RuntimeError):
 
 
 @dataclass(frozen=True, slots=True)
-class _BiliProgressiveResult:
-    """One current page tuple and optional requested URL kept only in memory."""
+class _BiliPlaybackResult:
+    """One current page tuple and optional selected target kept only in memory."""
 
     aid: int
     pages: tuple[BilibiliPageIdentity, ...]
     cid: int | None
-    url: str | None = field(repr=False)
+    target: ResolvedMediaTarget | None = field(repr=False)
 
     def __post_init__(self) -> None:
         if (
@@ -619,16 +620,19 @@ class _BiliProgressiveResult:
         ):
             raise ValueError("invalid Bilibili identity")
         if self.cid is None:
-            if self.url is not None:
-                raise ValueError("invalid Bilibili progressive result")
+            if self.target is not None:
+                raise ValueError("invalid Bilibili playback result")
             return
-        if type(self.cid) is not int or self.cid not in {page.cid for page in self.pages} or self.url is None:
+        if (
+            type(self.cid) is not int
+            or self.cid not in {page.cid for page in self.pages}
+            or not isinstance(self.target, ResolvedLocator | ResolvedDashLocator)
+            or (
+                isinstance(self.target, ResolvedLocator)
+                and self.target.request_profile is not MediaRequestProfile.BILIBILI_MEDIA
+            )
+        ):
             raise ValueError("invalid Bilibili identity")
-        try:
-            validated = ResolvedLocator(self.url)
-        except MediaDownloadError as exc:
-            raise ValueError("invalid Bilibili progressive URL") from exc
-        object.__setattr__(self, "url", validated.url)
 
 
 @dataclass(frozen=True, slots=True)
@@ -894,15 +898,144 @@ def _first_bili_cid(view: Mapping[str, object]) -> int:
     return parse_bilibili_view_pages(view)[0].cid
 
 
-def _bili_progressive_result(
+_BILI_VIDEO_QUALITIES = frozenset({16, 32, 64, 80, 112, 116, 120, 125, 126, 127})
+_BILI_AUDIO_QUALITIES = frozenset({30216, 30232, 30250, 30251, 30255, 30280})
+_BILI_CODEC_BY_ID = {7: "avc", 12: "hev", 13: "av1"}
+_BILI_CODEC_PREFERENCE = {"avc": 0, "hev": 1, "av1": 2}
+_BILI_MAX_DASH_STREAMS = 64
+
+
+def _bili_stream_locator(stream: Mapping[str, object]) -> ResolvedLocator:
+    primary_values = [stream[key] for key in ("base_url", "baseUrl") if key in stream]
+    if not primary_values or any(value != primary_values[0] for value in primary_values):
+        raise ValueError("invalid Bilibili stream URL")
+    backup_values = [stream[key] for key in ("backup_url", "backupUrl") if key in stream]
+    if backup_values and any(value != backup_values[0] for value in backup_values):
+        raise ValueError("invalid Bilibili backup URLs")
+    raw_backups = backup_values[0] if backup_values else []
+    if (
+        type(primary_values[0]) is not str
+        or not isinstance(raw_backups, Sequence)
+        or isinstance(raw_backups, bytes | bytearray | str)
+        or len(raw_backups) > 8
+        or any(type(item) is not str for item in raw_backups)
+    ):
+        raise ValueError("invalid Bilibili stream URL")
+    try:
+        return ResolvedLocator(
+            primary_values[0],
+            MediaRequestProfile.BILIBILI_MEDIA,
+            tuple(raw_backups),
+        )
+    except MediaDownloadError as exc:
+        raise ValueError("invalid Bilibili stream URL") from exc
+
+
+def _bili_audio_sort_key(quality: int) -> int:
+    return quality + 40 if quality in {30250, 30251, 30255} else quality
+
+
+def _bili_dash_result(
+    dash: object,
+    *,
+    aid: int,
+    pages: tuple[BilibiliPageIdentity, ...],
+    cid: int,
+) -> _BiliPlaybackResult:
+    if not isinstance(dash, Mapping):
+        raise ValueError("invalid Bilibili DASH response")
+    raw_videos = dash.get("video")
+    if (
+        not isinstance(raw_videos, Sequence)
+        or isinstance(raw_videos, bytes | bytearray | str)
+        or len(raw_videos) > _BILI_MAX_DASH_STREAMS
+    ):
+        raise ValueError("invalid Bilibili DASH video response")
+    videos: list[tuple[int, int, ResolvedLocator, str]] = []
+    for item in raw_videos:
+        if not isinstance(item, Mapping):
+            raise ValueError("invalid Bilibili DASH video stream")
+        quality = item.get("id")
+        codec_id = item.get("codecid")
+        if type(quality) is not int or type(codec_id) is not int:
+            raise ValueError("invalid Bilibili DASH video stream")
+        codec = _BILI_CODEC_BY_ID.get(codec_id)
+        if quality not in _BILI_VIDEO_QUALITIES or codec is None:
+            continue
+        videos.append((quality, -_BILI_CODEC_PREFERENCE[codec], _bili_stream_locator(item), codec))
+    if not videos:
+        raise _ChildUnsupportedError
+    video_quality, _preference, video, video_codec = max(videos, key=lambda item: (item[0], item[1]))
+
+    raw_audio_groups: list[object] = []
+    ordinary = dash.get("audio")
+    if ordinary is not None:
+        if (
+            not isinstance(ordinary, Sequence)
+            or isinstance(ordinary, bytes | bytearray | str)
+            or len(ordinary) > _BILI_MAX_DASH_STREAMS
+        ):
+            raise ValueError("invalid Bilibili DASH audio response")
+        raw_audio_groups.extend(ordinary)
+    dolby = dash.get("dolby")
+    if dolby is not None:
+        if not isinstance(dolby, Mapping):
+            raise ValueError("invalid Bilibili Dolby response")
+        dolby_audio = dolby.get("audio")
+        if dolby_audio is not None:
+            if (
+                not isinstance(dolby_audio, Sequence)
+                or isinstance(dolby_audio, bytes | bytearray | str)
+                or len(dolby_audio) > _BILI_MAX_DASH_STREAMS
+            ):
+                raise ValueError("invalid Bilibili Dolby response")
+            raw_audio_groups.extend(dolby_audio)
+    flac = dash.get("flac")
+    if flac is not None:
+        if not isinstance(flac, Mapping):
+            raise ValueError("invalid Bilibili FLAC response")
+        flac_audio = flac.get("audio")
+        if flac_audio is not None:
+            raw_audio_groups.append(flac_audio)
+    if len(raw_audio_groups) > _BILI_MAX_DASH_STREAMS:
+        raise ValueError("invalid Bilibili DASH audio response")
+
+    audios: list[tuple[int, int, ResolvedLocator]] = []
+    for item in raw_audio_groups:
+        if not isinstance(item, Mapping):
+            raise ValueError("invalid Bilibili DASH audio stream")
+        quality = item.get("id")
+        if type(quality) is not int:
+            raise ValueError("invalid Bilibili DASH audio stream")
+        if quality not in _BILI_AUDIO_QUALITIES:
+            continue
+        audios.append((_bili_audio_sort_key(quality), quality, _bili_stream_locator(item)))
+    selected_audio = max(audios, key=lambda item: item[0]) if audios else None
+    return _BiliPlaybackResult(
+        aid=aid,
+        pages=pages,
+        cid=cid,
+        target=ResolvedDashLocator(
+            video=video,
+            audio=None if selected_audio is None else selected_audio[2],
+            video_quality=video_quality,
+            video_codec=video_codec,
+            audio_quality=None if selected_audio is None else selected_audio[1],
+        ),
+    )
+
+
+def _bili_playback_result(
     play: object,
     *,
     aid: int,
     pages: tuple[BilibiliPageIdentity, ...],
     cid: int,
-) -> _BiliProgressiveResult:
+) -> _BiliPlaybackResult:
     if not isinstance(play, Mapping):
         raise ValueError("invalid Bilibili play response")
+    if "dash" in play and play.get("dash") is not None:
+        return _bili_dash_result(play["dash"], aid=aid, pages=pages, cid=cid)
     if "durl" not in play or play.get("durl") is None:
         raise _ChildUnsupportedError
     durl = play["durl"]
@@ -913,10 +1046,14 @@ def _bili_progressive_result(
     segment = durl[0]
     if not isinstance(segment, Mapping) or not isinstance(segment.get("url"), str):
         raise ValueError("invalid Bilibili durl segment")
-    return _BiliProgressiveResult(aid=aid, pages=pages, cid=cid, url=segment["url"])
+    try:
+        target = ResolvedLocator(segment["url"], MediaRequestProfile.BILIBILI_MEDIA)
+    except MediaDownloadError as exc:
+        raise ValueError("invalid Bilibili progressive URL") from exc
+    return _BiliPlaybackResult(aid=aid, pages=pages, cid=cid, target=target)
 
 
-async def _run_bilibili_aid(upstream_main: Any, request: _ChildRequest) -> _BiliProgressiveResult | None:
+async def _run_bilibili_aid(upstream_main: Any, request: _ChildRequest) -> _BiliPlaybackResult | None:
     """Use the pinned client's aid-capable detail entry when discovery stored av."""
 
     crawler = upstream_main.CrawlerFactory.create_crawler(platform=request.platform.value)
@@ -928,11 +1065,11 @@ async def _run_bilibili_aid(upstream_main: Any, request: _ChildRequest) -> _Bili
         raise _ChildConfigurationError from exc
     if requested_aid <= 0 or requested_aid > 2**63 - 1 or str(requested_aid) != request.detail_reference:
         raise _ChildConfigurationError
-    progressive: _BiliProgressiveResult | None = None
+    playback: _BiliPlaybackResult | None = None
     callback_called = False
 
     async def get_specified_videos(instance: Any, _references: list[str]) -> None:
-        nonlocal callback_called, progressive
+        nonlocal callback_called, playback
         callback_called = True
         semaphore = asyncio.Semaphore(1)
         detail = await instance.get_video_info_task(
@@ -961,24 +1098,38 @@ async def _run_bilibili_aid(upstream_main: Any, request: _ChildRequest) -> _Bili
             elif cid not in {page.cid for page in pages}:
                 cid = None
             if cid is None:
-                progressive = _BiliProgressiveResult(
+                playback = _BiliPlaybackResult(
                     aid=requested_aid,
                     pages=pages,
                     cid=None,
-                    url=None,
+                    target=None,
                 )
                 return
             try:
-                play = await instance.get_video_play_url_task(
-                    aid=requested_aid,
-                    cid=cid,
-                    semaphore=semaphore,
-                )
+                client = getattr(instance, "bili_client", None)
+                get = getattr(client, "get", None)
+                if not callable(get):
+                    raise _ChildConfigurationError
+                async with semaphore:
+                    play = await get(
+                        "/x/player/wbi/playurl",
+                        {
+                            "avid": requested_aid,
+                            "cid": cid,
+                            "qn": 127,
+                            "fourk": 1,
+                            "fnval": 4048,
+                            "platform": "pc",
+                        },
+                        enable_params_sign=True,
+                    )
             except Exception as exc:
+                if isinstance(exc, _ChildConfigurationError):
+                    raise
                 raise _ChildTemporaryError from exc
             if play is None:
                 raise _ChildTemporaryError
-            progressive = _bili_progressive_result(
+            playback = _bili_playback_result(
                 play,
                 aid=requested_aid,
                 pages=pages,
@@ -990,10 +1141,10 @@ async def _run_bilibili_aid(upstream_main: Any, request: _ChildRequest) -> _Bili
     await crawler.start()
     if not callback_called:
         raise RuntimeError("Bilibili detail callback did not run")
-    return progressive
+    return playback
 
 
-async def _run_upstream(request: _ChildRequest) -> tuple[Any, _BiliProgressiveResult | None]:
+async def _run_upstream(request: _ChildRequest) -> tuple[Any, _BiliPlaybackResult | None]:
     os.chdir(request.checkout_root)
     if str(request.checkout_root) not in sys.path:
         sys.path.insert(0, str(request.checkout_root))
@@ -1015,7 +1166,7 @@ async def _run_upstream(request: _ChildRequest) -> tuple[Any, _BiliProgressiveRe
     elif request.platform is Platform.ZHIHU:
         install_zhihu_media_capture(request.checkout_root)
 
-    async def dispatch() -> _BiliProgressiveResult | None:
+    async def dispatch() -> _BiliPlaybackResult | None:
         if (
             request.platform is Platform.BILI
             and request.detail_reference is not None
@@ -1040,7 +1191,7 @@ async def _run_upstream(request: _ChildRequest) -> tuple[Any, _BiliProgressiveRe
     return upstream_main, progressive
 
 
-async def _watch_upstream(request: _ChildRequest) -> tuple[Any, _BiliProgressiveResult | None]:
+async def _watch_upstream(request: _ChildRequest) -> tuple[Any, _BiliPlaybackResult | None]:
     deadline = time.monotonic() + request.watchdogs.max_seconds
     task = asyncio.create_task(_run_upstream(request))
     try:
@@ -1079,7 +1230,7 @@ def _read_content_jsonl(request: _ChildRequest) -> bytes:
 
 def _augment_bili_progressive_jsonl(
     payload: bytes,
-    progressive: _BiliProgressiveResult,
+    progressive: _BiliPlaybackResult,
     limits: WatchdogLimits,
 ) -> bytes:
     """Inject current pages and at most one URL into in-memory JSONL only."""
@@ -1110,15 +1261,36 @@ def _augment_bili_progressive_jsonl(
                 matches += 1
                 enriched = dict(decoded)
                 enriched[BILIBILI_PAGES_FIELD] = [page.as_mapping() for page in progressive.pages]
-                if progressive.url is not None:
+                if isinstance(progressive.target, ResolvedLocator):
                     if len(progressive.pages) == 1:
-                        enriched[_BILI_PROGRESSIVE_FIELD] = progressive.url
+                        enriched[_BILI_PROGRESSIVE_FIELD] = progressive.target.url
                     else:
                         assert progressive.cid is not None
                         enriched[BILIBILI_PROGRESSIVE_PAGE_FIELD] = {
                             "cid": progressive.cid,
-                            "url": progressive.url,
+                            "url": progressive.target.url,
                         }
+                elif isinstance(progressive.target, ResolvedDashLocator):
+                    assert progressive.cid is not None
+                    target = progressive.target
+                    enriched[BILIBILI_DASH_PAGE_FIELD] = {
+                        "cid": progressive.cid,
+                        "video": {
+                            "url": target.video.url,
+                            "backup_urls": list(target.video.backup_urls),
+                            "quality": target.video_quality,
+                            "codec": target.video_codec,
+                        },
+                        "audio": (
+                            None
+                            if target.audio is None
+                            else {
+                                "url": target.audio.url,
+                                "backup_urls": list(target.audio.backup_urls),
+                                "quality": target.audio_quality,
+                            }
+                        ),
+                    }
                 encoded = json.dumps(
                     enriched,
                     ensure_ascii=False,
@@ -1138,7 +1310,13 @@ def _augment_bili_progressive_jsonl(
 def _contains_private_detail_field(value: object) -> bool:
     if isinstance(value, Mapping):
         return bool(
-            {BILIBILI_PAGES_FIELD, BILIBILI_PROGRESSIVE_PAGE_FIELD, _BILI_PROGRESSIVE_FIELD} & set(value)
+            {
+                BILIBILI_DASH_PAGE_FIELD,
+                BILIBILI_PAGES_FIELD,
+                BILIBILI_PROGRESSIVE_PAGE_FIELD,
+                _BILI_PROGRESSIVE_FIELD,
+            }
+            & set(value)
         ) or any(_contains_private_detail_field(item) for item in value.values())
     if isinstance(value, list):
         return any(_contains_private_detail_field(item) for item in value)

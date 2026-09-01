@@ -10,6 +10,7 @@ import pytest
 from media_sync.domain import AssetKind, LoginMethod, Platform
 from media_sync.infrastructure.db.asset_identity import asset_source_hint, stable_asset_key
 from media_sync.integrations.mediacrawler.bilibili_media import (
+    BILIBILI_DASH_PAGE_FIELD,
     BILIBILI_PAGES_FIELD,
     BILIBILI_PROGRESSIVE_PAGE_FIELD,
 )
@@ -31,7 +32,13 @@ from media_sync.integrations.mediacrawler.tieba_media import (
 from media_sync.integrations.mediacrawler.weibo_media import WEIBO_IMAGES_FIELD
 from media_sync.integrations.mediacrawler.xhs_media import validate_xhs_video_url
 from media_sync.integrations.mediacrawler.zhihu_media import ZHIHU_IMAGE_FIELD
-from media_sync.media import AdapterRefreshLocator, MediaDownloadError, MediaRequestProfile, ResolvedLocator
+from media_sync.media import (
+    AdapterRefreshLocator,
+    MediaDownloadError,
+    MediaRequestProfile,
+    ResolvedDashLocator,
+    ResolvedLocator,
+)
 from media_sync.security import SecretValue
 
 UPSTREAM_SHA = "d6f7c5bb906b6dac40ddf343ef9e26438a3de092"
@@ -426,6 +433,60 @@ def test_bilibili_multipart_refresh_targets_one_cid_and_binds_the_complete_page_
     assert resolved.url == signed_url
     assert resolved.request_profile is MediaRequestProfile.BILIBILI_MEDIA
     assert runner.calls[0].bili_progressive_detail is True
+    assert runner.calls[0].bili_video_cid == 97531
+
+
+def test_bilibili_dash_refresh_returns_one_typed_ephemeral_target() -> None:
+    content_id = "987654321"
+    remote_ids = (
+        f"{content_id}:video:cid:24680",
+        f"{content_id}:video:cid:97531",
+    )
+    context = _context(
+        platform=Platform.BILI,
+        content_id=content_id,
+        kind=AssetKind.VIDEO,
+        position=1,
+        signed_url=None,
+        remote_id=remote_ids[1],
+        bili_video_remote_ids=remote_ids,
+    )
+    runner = _FakeDetailRunner(
+        _jsonl(
+            {
+                "video_id": content_id,
+                "video_type": "video",
+                "title": "two-page DASH",
+                BILIBILI_PAGES_FIELD: [
+                    {"page": 1, "cid": 24680},
+                    {"page": 2, "cid": 97531},
+                ],
+                BILIBILI_DASH_PAGE_FIELD: {
+                    "cid": 97531,
+                    "video": {
+                        "url": "https://v.example.test/p2.m4s?signature=dash-video-private",
+                        "backup_urls": ["https://backup.example.test/p2.m4s?signature=backup-private"],
+                        "quality": 120,
+                        "codec": "avc",
+                    },
+                    "audio": {
+                        "url": "https://a.example.test/p2.m4s?signature=dash-audio-private",
+                        "backup_urls": [],
+                        "quality": 30251,
+                    },
+                },
+            }
+        )
+    )
+
+    resolved = MediaCrawlerLocatorRefresher(context, runner, clock=lambda: NOW).resolve(context.locator)
+
+    assert isinstance(resolved, ResolvedDashLocator)
+    assert resolved.selection_key == (120, "avc", 30251)
+    assert resolved.video.request_profile is MediaRequestProfile.BILIBILI_MEDIA
+    assert resolved.audio is not None
+    assert resolved.audio.request_profile is MediaRequestProfile.BILIBILI_MEDIA
+    assert "private" not in repr(resolved)
     assert runner.calls[0].bili_video_cid == 97531
 
 

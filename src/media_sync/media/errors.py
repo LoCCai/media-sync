@@ -42,6 +42,8 @@ _ERRORS: dict[str, tuple[str, bool]] = {
     "media_probe_failed": ("downloaded media failed bounded probing", True),
     "media_probe_mismatch": ("media signature and structural probe disagree", False),
     "media_image_not_static": ("downloaded image failed static-image qualification", False),
+    "media_mux_unavailable": ("required local media muxer is unavailable", True),
+    "media_mux_failed": ("downloaded components failed bounded media muxing", True),
     "archive_blob_missing": ("verified archive blob is missing", True),
     "archive_blob_invalid": ("existing archive blob failed validation", False),
     "archive_blob_busy": ("archive blob is owned by another local operation", True),

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -23,9 +24,12 @@ from media_sync.media.locator import (
     AdapterRefreshLocator,
     AssetLocator,
     LocatorRefreshPort,
+    ResolvedDashLocator,
+    ResolvedLocator,
     locator_fingerprint,
     resolve_locator,
 )
+from media_sync.media.mux import MediaMuxer
 from media_sync.media.network import SafeHttpClient
 from media_sync.media.probe import MediaProbe, verify_media
 from media_sync.security.paths import (
@@ -60,6 +64,7 @@ class DownloadLimits:
     sniff_bytes: int = 65536
     probe_timeout_seconds: float = 10.0
     probe_output_bytes: int = 65536
+    mux_output_bytes: int = 1024 * 1024
 
     def __post_init__(self) -> None:
         if self.max_bytes <= 0 or self.max_chunk_bytes <= 0:
@@ -68,7 +73,12 @@ class DownloadLimits:
             raise ValueError("download timeout must be positive")
         if self.max_restarts < 0:
             raise ValueError("max_restarts must be non-negative")
-        if self.sniff_bytes <= 0 or self.probe_timeout_seconds <= 0 or self.probe_output_bytes <= 0:
+        if (
+            self.sniff_bytes <= 0
+            or self.probe_timeout_seconds <= 0
+            or self.probe_output_bytes <= 0
+            or self.mux_output_bytes <= 0
+        ):
             raise ValueError("media probe limits must be positive")
 
 
@@ -254,6 +264,13 @@ def _response_validator(headers: httpx.Headers) -> tuple[ValidatorKind | None, s
     return None, None
 
 
+def _component_fingerprint(stable_fingerprint: str, selection: str, role: Literal["video", "audio"]) -> str:
+    """Fence component resume state to one non-secret DASH selection shape."""
+
+    payload = f"media-sync-dash-v1:{stable_fingerprint}:{selection}:{role}".encode("ascii")
+    return hashlib.sha256(payload).hexdigest()
+
+
 def _content_length(headers: httpx.Headers) -> int | None:
     values = headers.get_list("content-length")
     if not values:
@@ -274,10 +291,19 @@ class _RestartRequired(Exception):
 
 
 class _PartStore:
-    def __init__(self, root: Path, asset_id: UUID, generation: int) -> None:
+    def __init__(
+        self,
+        root: Path,
+        asset_id: UUID,
+        generation: int,
+        role: Literal["asset", "dash-video", "dash-audio"] = "asset",
+    ) -> None:
         self.root = ensure_secure_root(root)
         ensure_secure_directory(self.root, "parts")
-        stem = f"{asset_id}.{generation}"
+        if role not in {"asset", "dash-video", "dash-audio"}:
+            raise ValueError("invalid partial role")
+        suffix = "" if role == "asset" else f".{role}"
+        stem = f"{asset_id}.{generation}{suffix}"
         self.part = confined_file(self.root, Path("parts") / f"{stem}.part")
         self.metadata = confined_file(self.root, Path("parts") / f"{stem}.part.json")
 
@@ -349,12 +375,14 @@ class SecureMediaDownloader:
         *,
         refresher: LocatorRefreshPort | None = None,
         probe: MediaProbe | None = None,
+        muxer: MediaMuxer | None = None,
         limits: DownloadLimits | None = None,
         monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
         self._http = http
         self._refresher = refresher
         self._probe = probe
+        self._muxer = muxer
         self._limits = limits or DownloadLimits()
         self._monotonic = monotonic
 
@@ -386,6 +414,8 @@ class SecureMediaDownloader:
             lock_relative = Path("locks") / f"{asset_id}.{generation}.lock"
             with exclusive_file_lock(root, lock_relative):
                 _PartStore(root, asset_id, generation).discard()
+                _PartStore(root, asset_id, generation, "dash-video").discard()
+                _PartStore(root, asset_id, generation, "dash-audio").discard()
         except PathLockBusyError as exc:
             raise MediaDownloadError("download_part_busy") from exc
         except PathSecurityError as exc:
@@ -459,6 +489,10 @@ class SecureMediaDownloader:
         archive = ArchivePublisher(request.archive_root)
         store = _PartStore(work_root, request.asset_id, request.generation)
         locator = resolve_locator(request.locator, self._refresher)
+        if isinstance(locator, ResolvedDashLocator):
+            return self._download_dash_locked(request, work_root, locator)
+        if not isinstance(locator, ResolvedLocator):  # pragma: no cover - closed resolver contract
+            raise MediaDownloadError("locator_invalid")
         can_refresh_auth = isinstance(request.locator, AdapterRefreshLocator) and self._refresher is not None
         auth_refreshes = 0
         fingerprint = locator_fingerprint(request.locator)
@@ -485,7 +519,10 @@ class SecureMediaDownloader:
                     if can_refresh_auth and response.status_code in {401, 403}:
                         if auth_refreshes >= 1:
                             raise MediaDownloadError("locator_refresh_auth_expired")
-                        locator = resolve_locator(request.locator, self._refresher)
+                        refreshed = resolve_locator(request.locator, self._refresher)
+                        if not isinstance(refreshed, ResolvedLocator):
+                            raise MediaDownloadError("locator_refresh_schema_changed")
+                        locator = refreshed
                         auth_refreshes += 1
                         continue
                     outcome = self._consume_response(
@@ -495,6 +532,7 @@ class SecureMediaDownloader:
                         fingerprint=fingerprint,
                         state=state,
                         started=started,
+                        max_bytes=self._limits.max_bytes,
                     )
             except _RestartRequired:
                 if restarts >= self._limits.max_restarts:
@@ -537,6 +575,183 @@ class SecureMediaDownloader:
                 ),
             )
 
+    def _download_dash_locked(
+        self,
+        request: DownloadRequest,
+        work_root: Path,
+        target: ResolvedDashLocator,
+    ) -> DownloadResult:
+        """Download, verify and stream-copy one selected DASH generation."""
+
+        if request.expected_kind is not AssetKind.VIDEO:
+            raise MediaDownloadError("media_type_mismatch")
+        if self._muxer is None:
+            raise MediaDownloadError("media_mux_unavailable")
+        started = self._monotonic()
+        stable_fingerprint = locator_fingerprint(request.locator)
+        selection = ":".join(
+            (
+                str(target.video_quality),
+                target.video_codec,
+                "silent" if target.audio_quality is None else str(target.audio_quality),
+            )
+        )
+        video_store = _PartStore(work_root, request.asset_id, request.generation, "dash-video")
+        audio_store = _PartStore(work_root, request.asset_id, request.generation, "dash-audio")
+        final_store = _PartStore(work_root, request.asset_id, request.generation)
+        video_fingerprint = _component_fingerprint(stable_fingerprint, selection, "video")
+        video_state, video_size = self._download_component(
+            request,
+            locator=target.video,
+            store=video_store,
+            fingerprint=video_fingerprint,
+            expected_kind=AssetKind.VIDEO,
+            started=started,
+            max_bytes=self._limits.max_bytes,
+        )
+        del video_state
+        audio_size = 0
+        if target.audio is not None:
+            audio_fingerprint = _component_fingerprint(stable_fingerprint, selection, "audio")
+            audio_state, audio_size = self._download_component(
+                request,
+                locator=target.audio,
+                store=audio_store,
+                fingerprint=audio_fingerprint,
+                expected_kind=AssetKind.AUDIO,
+                started=started,
+                max_bytes=self._limits.max_bytes - video_size,
+            )
+            del audio_state
+        else:
+            audio_store.discard()
+        if video_size + audio_size > self._limits.max_bytes:
+            raise MediaDownloadError("download_size_limit")
+
+        final_store.discard()
+        final_store.create()
+        try:
+            self._muxer.mux(
+                video_store.part,
+                None if target.audio is None else audio_store.part,
+                final_store.part,
+                root=final_store.root,
+                timeout_seconds=self._remaining(started),
+                max_output_bytes=self._limits.mux_output_bytes,
+                max_media_bytes=self._limits.max_bytes,
+            )
+            digest, size = hash_file(final_store.part, root=final_store.root)
+            if size <= 0 or size > self._limits.max_bytes:
+                raise MediaDownloadError("download_size_limit")
+            verified = verify_media(
+                final_store.part,
+                root=final_store.root,
+                expected_kind=AssetKind.VIDEO,
+                advertised_mime=None,
+                probe=self._probe,
+                require_static_image=False,
+                sniff_bytes=self._limits.sniff_bytes,
+                probe_timeout_seconds=min(self._limits.probe_timeout_seconds, self._remaining(started)),
+                probe_output_bytes=self._limits.probe_output_bytes,
+            )
+            final_state = PartMetadata(
+                asset_id=request.asset_id,
+                generation=request.generation,
+                locator_fingerprint=stable_fingerprint,
+                validator_kind=None,
+                validator=None,
+                expected_length=size,
+                current_length=size,
+            )
+            final_store.save(final_state)
+            blob = ArchivePublisher(request.archive_root).publish(
+                final_store.part,
+                source_root=final_store.root,
+                sha256=digest,
+                size_bytes=size,
+                extension=verified.extension,
+                before_commit=request.before_archive_commit,
+            )
+        except Exception:
+            # Components remain resumable; an incomplete/unprepared final file
+            # can never be mistaken for a published recovery candidate.
+            if not final_store.metadata.exists():
+                final_store.discard()
+            raise
+        return DownloadResult(
+            archive_path=blob.path,
+            sha256=digest,
+            size_bytes=size,
+            mime_type=verified.mime_type,
+            extension=verified.extension,
+        )
+
+    def _download_component(
+        self,
+        request: DownloadRequest,
+        *,
+        locator: ResolvedLocator,
+        store: _PartStore,
+        fingerprint: str,
+        expected_kind: AssetKind,
+        started: float,
+        max_bytes: int,
+    ) -> tuple[PartMetadata, int]:
+        """Resume and structurally verify one ephemeral DASH component."""
+
+        if max_bytes <= 0:
+            raise MediaDownloadError("download_size_limit")
+        restarts = 0
+        while True:
+            try:
+                state = store.load(request, fingerprint)
+            except _RestartRequired:
+                if restarts >= self._limits.max_restarts:
+                    raise MediaDownloadError("download_restart_limit") from None
+                store.discard()
+                restarts += 1
+                state = None
+            try:
+                with self._http.stream(
+                    locator.url,
+                    headers=self._resume_headers(state),
+                    request_profile=locator.request_profile,
+                    timeout_seconds=self._remaining(started),
+                ) as (response, _target):
+                    if response.status_code in {401, 403}:
+                        raise MediaDownloadError("locator_refresh_auth_expired")
+                    completed, advertised_mime = self._consume_response(
+                        response,
+                        store=store,
+                        request=request,
+                        fingerprint=fingerprint,
+                        state=state,
+                        started=started,
+                        max_bytes=max_bytes,
+                    )
+            except _RestartRequired:
+                if restarts >= self._limits.max_restarts:
+                    raise MediaDownloadError("download_restart_limit") from None
+                store.discard()
+                restarts += 1
+                continue
+            digest, size = hash_file(store.part, root=store.root)
+            del digest
+            if size != completed.current_length:
+                raise MediaDownloadError("download_state_invalid")
+            verify_media(
+                store.part,
+                root=store.root,
+                expected_kind=expected_kind,
+                advertised_mime=advertised_mime,
+                probe=self._probe,
+                require_static_image=False,
+                sniff_bytes=self._limits.sniff_bytes,
+                probe_timeout_seconds=min(self._limits.probe_timeout_seconds, self._remaining(started)),
+                probe_output_bytes=self._limits.probe_output_bytes,
+            )
+            return completed, size
+
     def _remaining(self, started: float) -> float:
         remaining = self._limits.total_timeout_seconds - (self._monotonic() - started)
         if remaining <= 0:
@@ -558,7 +773,10 @@ class SecureMediaDownloader:
         fingerprint: str,
         state: PartMetadata | None,
         started: float,
+        max_bytes: int,
     ) -> tuple[PartMetadata, str | None]:
+        if max_bytes <= 0 or (state is not None and state.current_length > max_bytes):
+            raise MediaDownloadError("download_size_limit")
         _validate_encoding(response.headers)
         if state is not None and state.current_length > 0 and state.validator is not None:
             if response.status_code == 200:
@@ -577,7 +795,7 @@ class SecureMediaDownloader:
                 raise _RestartRequired
             if response.status_code != 206:
                 self._raise_status(response.status_code)
-            expected_length = self._validate_partial_response(response, state)
+            expected_length = self._validate_partial_response(response, state, max_bytes=max_bytes)
             return (
                 self._stream_bytes(
                     response,
@@ -588,6 +806,7 @@ class SecureMediaDownloader:
                     expected_length=expected_length,
                     append=True,
                     started=started,
+                    max_bytes=max_bytes,
                 ),
                 response.headers.get("content-type"),
             )
@@ -596,7 +815,7 @@ class SecureMediaDownloader:
                 raise MediaDownloadError("download_range_invalid")
             self._raise_status(response.status_code)
         length = _content_length(response.headers)
-        if length is not None and length > self._limits.max_bytes:
+        if length is not None and length > max_bytes:
             raise MediaDownloadError("download_size_limit")
         validator_kind, validator = _response_validator(response.headers)
         if state is not None:
@@ -622,11 +841,18 @@ class SecureMediaDownloader:
                 expected_length=length,
                 append=False,
                 started=started,
+                max_bytes=max_bytes,
             ),
             response.headers.get("content-type"),
         )
 
-    def _validate_partial_response(self, response: httpx.Response, state: PartMetadata) -> int:
+    def _validate_partial_response(
+        self,
+        response: httpx.Response,
+        state: PartMetadata,
+        *,
+        max_bytes: int,
+    ) -> int:
         raw_range = response.headers.get("content-range", "")
         match = _CONTENT_RANGE.fullmatch(raw_range)
         if match is None:
@@ -642,7 +868,7 @@ class SecureMediaDownloader:
         validator_kind, validator = _response_validator(response.headers)
         if validator_kind != state.validator_kind or validator != state.validator:
             raise MediaDownloadError("download_range_invalid")
-        if total > self._limits.max_bytes:
+        if total > max_bytes:
             raise MediaDownloadError("download_size_limit")
         return total
 
@@ -657,6 +883,7 @@ class SecureMediaDownloader:
         expected_length: int | None,
         append: bool,
         started: float,
+        max_bytes: int,
     ) -> PartMetadata:
         current = state.current_length if append else 0
         write_state = state
@@ -670,7 +897,7 @@ class SecureMediaDownloader:
                             continue
                         if len(chunk) > self._limits.max_chunk_bytes:
                             raise MediaDownloadError("download_chunk_limit")
-                        if current + len(chunk) > self._limits.max_bytes:
+                        if current + len(chunk) > max_bytes:
                             raise MediaDownloadError("download_size_limit")
                         if expected_length is not None and current + len(chunk) > expected_length:
                             raise MediaDownloadError("download_content_length_invalid")

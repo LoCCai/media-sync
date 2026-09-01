@@ -19,7 +19,9 @@ from media_sync.media import (
     AdapterRefreshLocator,
     MediaDownloadError,
     MediaRequestProfile,
+    ResolvedDashLocator,
     ResolvedLocator,
+    ResolvedMediaTarget,
 )
 from media_sync.security import SecretValue
 
@@ -289,7 +291,7 @@ class MediaCrawlerLocatorRefresher:
         self._runner = runner
         self._clock = clock or (lambda: datetime.now(UTC))
 
-    def resolve(self, locator: AdapterRefreshLocator) -> ResolvedLocator:
+    def resolve(self, locator: AdapterRefreshLocator) -> ResolvedMediaTarget:
         """Resolve exactly one current candidate without mutating durable state."""
 
         context = self._context
@@ -433,6 +435,16 @@ class MediaCrawlerLocatorRefresher:
                 source_url = validate_tieba_image_url(source_url)
             except ValueError as exc:
                 raise MediaDownloadError("locator_refresh_schema_changed") from exc
+        if context.platform is Platform.BILI and context._bili_progressive_detail():
+            runtime_target = matching_content[0].runtime_asset_targets.get(context.asset_remote_id or "")
+            if not isinstance(runtime_target, ResolvedLocator | ResolvedDashLocator):
+                raise MediaDownloadError("locator_refresh_result_invalid")
+            expected_url = (
+                runtime_target.url if isinstance(runtime_target, ResolvedLocator) else runtime_target.video.url
+            )
+            if source_url != expected_url:
+                raise MediaDownloadError("locator_refresh_result_invalid")
+            return runtime_target
         profile = (
             MediaRequestProfile.BILIBILI_MEDIA if context._bili_progressive_detail() else MediaRequestProfile.DEFAULT
         )

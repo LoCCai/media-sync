@@ -35,6 +35,7 @@ from media_sync.integrations.mediacrawler import (
 from media_sync.media import (
     AdapterRefreshLocator,
     DownloadLimits,
+    FFmpegStreamCopyMuxer,
     FFprobeMediaProbe,
     LocatorRefreshPort,
     MediaDownloadError,
@@ -67,6 +68,7 @@ class LocalPipelineRuntimeConfig:
     export_lease_seconds: int = 300
     export_max_attempts: int = 5
     ffprobe_executable: str | None = None
+    ffmpeg_executable: str | None = None
     http_client_factory: Callable[[], SafeHttpClient] | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
@@ -123,10 +125,16 @@ class _PerAssetDownloadRunner:
         probe = (
             FFprobeMediaProbe(self._config.ffprobe_executable) if self._config.ffprobe_executable is not None else None
         )
+        muxer = (
+            FFmpegStreamCopyMuxer(self._config.ffmpeg_executable)
+            if self._config.ffmpeg_executable is not None
+            else None
+        )
         downloader = SecureMediaDownloader(
             http,
             refresher=refresher,
             probe=probe,
+            muxer=muxer,
             limits=limits,
         )
         recovery_preflight = (
@@ -247,6 +255,7 @@ def _preflight_selection(
 
     requires_mediacrawler = False
     requires_media_probe = False
+    requires_media_mux = False
     for asset in selection.assets:
         if asset.status in {AssetStatus.VERIFIED, AssetStatus.FAILED_TERMINAL}:
             continue
@@ -267,6 +276,10 @@ def _preflight_selection(
             if config.ffprobe_executable is None:
                 raise SubscriptionPipelineError("pipeline_media_probe_unavailable")
             requires_media_probe = True
+        if asset.platform == Platform.BILI.value and asset.kind == "video" and asset.requires_mediacrawler_refresh:
+            if config.ffmpeg_executable is None:
+                raise SubscriptionPipelineError("pipeline_media_mux_unavailable")
+            requires_media_mux = True
 
     if requires_mediacrawler:
         try:
@@ -282,6 +295,8 @@ def _preflight_selection(
 
     if requires_media_probe and not _ffprobe_ready(config.ffprobe_executable):
         raise SubscriptionPipelineError("pipeline_media_probe_unavailable")
+    if requires_media_mux and not _ffmpeg_ready(config.ffmpeg_executable):
+        raise SubscriptionPipelineError("pipeline_media_mux_unavailable")
 
 
 def _xhs_preflight_pipeline_error(error: MediaDownloadError) -> SubscriptionPipelineError:
@@ -307,6 +322,28 @@ def _xhs_preflight_pipeline_error(error: MediaDownloadError) -> SubscriptionPipe
 
 def _ffprobe_ready(executable: str | None) -> bool:
     """Prove a configured ffprobe can start before a child Job is created."""
+
+    if not isinstance(executable, str) or not executable.strip():
+        return False
+    resolved = shutil.which(executable)
+    if resolved is None:
+        return False
+    try:
+        completed = subprocess.run(
+            (resolved, "-version"),
+            check=False,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return completed.returncode == 0
+
+
+def _ffmpeg_ready(executable: str | None) -> bool:
+    """Prove a configured ffmpeg can start before a child Job is created."""
 
     if not isinstance(executable, str) or not executable.strip():
         return False

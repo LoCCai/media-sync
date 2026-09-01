@@ -143,6 +143,7 @@ class ResolvedLocator:
 
     url: str = field(repr=False)
     request_profile: MediaRequestProfile = MediaRequestProfile.DEFAULT
+    backup_urls: tuple[str, ...] = field(default=(), repr=False)
 
     def __post_init__(self) -> None:
         if not isinstance(self.request_profile, MediaRequestProfile):
@@ -178,6 +179,62 @@ class ResolvedLocator:
             "url",
             urlunsplit((parsed.scheme.lower(), authority, parsed.path or "/", parsed.query, "")),
         )
+        backups = self.backup_urls
+        if type(backups) is not tuple or len(backups) > 8:
+            raise _fail()
+        validated_backups = tuple(ResolvedLocator(item, self.request_profile).url for item in backups)
+        if len(set((self.url, *validated_backups))) != 1 + len(validated_backups):
+            raise _fail()
+        object.__setattr__(self, "backup_urls", validated_backups)
+
+    @property
+    def urls(self) -> tuple[str, ...]:
+        """Return the primary URL followed by bounded ephemeral backups."""
+
+        return (self.url, *self.backup_urls)
+
+
+_BILIBILI_VIDEO_QUALITIES = frozenset({16, 32, 64, 80, 112, 116, 120, 125, 126, 127})
+_BILIBILI_AUDIO_QUALITIES = frozenset({30216, 30232, 30250, 30251, 30255, 30280})
+_BILIBILI_VIDEO_CODECS = frozenset({"avc", "hev", "av1"})
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedDashLocator:
+    """Ephemeral selected Bilibili DASH video and optional audio components."""
+
+    video: ResolvedLocator = field(repr=False)
+    audio: ResolvedLocator | None = field(repr=False)
+    video_quality: int
+    video_codec: str
+    audio_quality: int | None
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.video, ResolvedLocator)
+            or self.video.request_profile is not MediaRequestProfile.BILIBILI_MEDIA
+            or type(self.video_quality) is not int
+            or self.video_quality not in _BILIBILI_VIDEO_QUALITIES
+            or type(self.video_codec) is not str
+            or self.video_codec not in _BILIBILI_VIDEO_CODECS
+            or (self.audio is None) != (self.audio_quality is None)
+        ):
+            raise _fail()
+        if self.audio is not None and (
+            self.audio.request_profile is not MediaRequestProfile.BILIBILI_MEDIA
+            or type(self.audio_quality) is not int
+            or self.audio_quality not in _BILIBILI_AUDIO_QUALITIES
+        ):
+            raise _fail()
+
+    @property
+    def selection_key(self) -> tuple[int, str, int | None]:
+        """Return the non-secret stream shape used to fence resumable parts."""
+
+        return self.video_quality, self.video_codec, self.audio_quality
+
+
+ResolvedMediaTarget: TypeAlias = ResolvedLocator | ResolvedDashLocator
 
 
 def parse_locator(value: Mapping[str, object] | str) -> AssetLocator:
@@ -235,12 +292,12 @@ def locator_fingerprint(locator: AssetLocator) -> str:
 class LocatorRefreshPort(Protocol):
     """Resolve a stable refresh locator to an ephemeral direct target."""
 
-    def resolve(self, locator: AdapterRefreshLocator) -> ResolvedLocator:
+    def resolve(self, locator: AdapterRefreshLocator) -> ResolvedMediaTarget:
         """Return a validated direct locator without persisting it."""
         ...
 
 
-def resolve_locator(locator: AssetLocator, refresher: LocatorRefreshPort | None = None) -> ResolvedLocator:
+def resolve_locator(locator: AssetLocator, refresher: LocatorRefreshPort | None = None) -> ResolvedMediaTarget:
     """Resolve a locator, failing with a fixed code when refresh is unavailable."""
 
     if isinstance(locator, DirectLocator):
@@ -248,7 +305,7 @@ def resolve_locator(locator: AssetLocator, refresher: LocatorRefreshPort | None 
     if refresher is None:
         raise MediaDownloadError("locator_refresh_unsupported")
     resolved = refresher.resolve(locator)
-    if not isinstance(resolved, ResolvedLocator):
+    if not isinstance(resolved, ResolvedLocator | ResolvedDashLocator):
         raise MediaDownloadError("locator_invalid")
     return resolved
 
@@ -259,7 +316,9 @@ __all__ = [
     "DirectLocator",
     "LocatorRefreshPort",
     "MediaRequestProfile",
+    "ResolvedDashLocator",
     "ResolvedLocator",
+    "ResolvedMediaTarget",
     "canonical_locator_json",
     "locator_fingerprint",
     "parse_locator",

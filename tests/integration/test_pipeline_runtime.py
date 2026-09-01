@@ -450,6 +450,55 @@ def test_runtime_preflight_rejects_invalid_ffprobe_without_child_mutation(
         assert list(session.scalars(select(Job)).all()) == []
 
 
+def test_runtime_preflight_rejects_missing_bilibili_mux_without_child_mutation(
+    database: Database,
+    tmp_path: Path,
+) -> None:
+    subscription_id, account_id, asset_id = _seed_refresh_asset(
+        database,
+        platform=Platform.BILI.value,
+        kind="video",
+        suffix="missing-mux",
+    )
+    network_calls = 0
+
+    def client_factory() -> SafeHttpClient:
+        nonlocal network_calls
+        network_calls += 1
+        return SafeHttpClient(_PublicResolver())
+
+    config = LocalPipelineRuntimeConfig(
+        work_root=tmp_path / "work",
+        archive_root=tmp_path / "archive",
+        export_root=tmp_path / "emby",
+        export_staging_root=tmp_path / "export-work",
+        mediacrawler_lock_path=tmp_path / "upstreams.lock.json",
+        mediacrawler_runtime_root=tmp_path / "mediacrawler",
+        mediacrawler_python_executable=tmp_path / "python",
+        secret_resolver=SecretResolver.local(file_root=tmp_path / "secrets"),
+        enable_mediacrawler=True,
+        accept_mediacrawler_license=True,
+        ffprobe_executable=str(tmp_path / "configured-ffprobe"),
+        ffmpeg_executable=None,
+        http_client_factory=client_factory,
+    )
+
+    with pytest.raises(SubscriptionPipelineError) as captured:
+        SubscriptionPipelineExecutor(database, config).run(
+            subscription_id,
+            expected_account_id=account_id,
+            expected_platform=Platform.BILI.value,
+            worker_id="missing-bilibili-mux",
+        )
+
+    assert captured.value.code == "pipeline_media_mux_unavailable"
+    assert network_calls == 0
+    with database.session() as session:
+        asset = session.get(Asset, str(asset_id))
+        assert asset is not None and (asset.status, asset.download_job_id) == ("discovered", None)
+        assert list(session.scalars(select(Job)).all()) == []
+
+
 def test_runtime_preflight_requires_xhs_detail_authority_and_ffprobe_without_child_jobs(
     database: Database,
     tmp_path: Path,

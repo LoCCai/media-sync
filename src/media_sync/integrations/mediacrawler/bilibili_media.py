@@ -18,6 +18,7 @@ from typing import Any
 
 BILIBILI_PAGES_FIELD = "__media_sync_bili_pages_v1"
 BILIBILI_PROGRESSIVE_PAGE_FIELD = "__media_sync_bili_progressive_page_v2"
+BILIBILI_DASH_PAGE_FIELD = "__media_sync_bili_dash_page_v1"
 BILIBILI_MAX_PAGES = 64
 
 _INSTALL_MARKER = "__media_sync_bilibili_media_capture_v1__"
@@ -243,6 +244,7 @@ def _module_belongs_to_checkout(module: object, checkout_root: Path) -> bool:
 
 
 __all__ = [
+    "BILIBILI_DASH_PAGE_FIELD",
     "BILIBILI_MAX_PAGES",
     "BILIBILI_PAGES_FIELD",
     "BILIBILI_PROGRESSIVE_PAGE_FIELD",

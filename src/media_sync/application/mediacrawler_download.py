@@ -48,7 +48,7 @@ from media_sync.integrations.mediacrawler.zhihu_media import validate_zhihu_answ
 from media_sync.media import (
     AdapterRefreshLocator,
     MediaDownloadError,
-    ResolvedLocator,
+    ResolvedMediaTarget,
     parse_locator,
 )
 from media_sync.security import SecretError, SecretResolver, SecretValue
@@ -87,7 +87,7 @@ class LazyMediaCrawlerLocatorRefresher:
         self._saved_session_account_id: UUID | None = None
         self._lock = Lock()
 
-    def resolve(self, locator: AdapterRefreshLocator) -> ResolvedLocator:
+    def resolve(self, locator: AdapterRefreshLocator) -> ResolvedMediaTarget:
         """Build the bound refresher once, then allow its one-retry caller."""
 
         delegate = self._bound_delegate()
