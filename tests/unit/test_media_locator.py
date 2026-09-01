@@ -51,6 +51,11 @@ def test_direct_locator_rejects_non_persistable_or_ambiguous_urls(url: str) -> N
     assert "do-not-store" not in str(caught.value)
 
 
+@pytest.mark.parametrize("url", ["https://media.test/image.jpg?", "https://media.test/image.jpg#"])
+def test_source_hint_rejects_empty_query_or_fragment_delimiters(url: str) -> None:
+    assert asset_source_hint(url) is None
+
+
 @pytest.mark.parametrize(
     "path",
     [

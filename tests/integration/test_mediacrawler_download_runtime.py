@@ -27,6 +27,7 @@ from media_sync.infrastructure.db import (
 )
 from media_sync.infrastructure.db.asset_identity import asset_source_hint, stable_asset_key
 from media_sync.integrations.mediacrawler import MediaCrawlerDetailRequest, MediaCrawlerDetailResult
+from media_sync.integrations.mediacrawler.zhihu_media import ZHIHU_IMAGE_FIELD
 from media_sync.media import AdapterRefreshLocator, MediaDownloadError
 from media_sync.security import SecretProvider, SecretReference, SecretResolver, SecretScheme, SecretValue
 
@@ -135,6 +136,8 @@ def _seed(
     asset_position: int = 0,
     asset_remote_id: str = ASSET_REMOTE_ID,
     source_url: str | None = SOURCE_HINT,
+    content_kind: str = "video",
+    canonical_url: str | None = None,
     creator_secret_refs: tuple[str | None, ...] = (),
     subscription_max_items: tuple[int, ...] = (),
 ) -> _RuntimeSeed:
@@ -145,7 +148,14 @@ def _seed(
                 remote_id="runtime-author",
                 display_name="Runtime Author",
             ),
-            (ContentUpsert(remote_id=CONTENT_ID, remote_type=content_remote_type, kind="video"),),
+            (
+                ContentUpsert(
+                    remote_id=CONTENT_ID,
+                    remote_type=content_remote_type,
+                    kind=content_kind,
+                    canonical_url=canonical_url,
+                ),
+            ),
         )
         locator = AdapterRefreshLocator(
             adapter="mediacrawler",
@@ -238,6 +248,23 @@ def _xhs_payload(source_url: str) -> bytes:
                 "title": "Runtime XHS image",
                 "image_list": source_url,
                 "video_url": "",
+            },
+            separators=(",", ":"),
+        ).encode("utf-8")
+        + b"\n"
+    )
+
+
+def _zhihu_payload(source_url: str) -> bytes:
+    return (
+        json.dumps(
+            {
+                "content_id": CONTENT_ID,
+                "content_type": "answer",
+                "content_text": "Runtime Zhihu answer",
+                "question_id": "246810",
+                "content_url": f"https://www.zhihu.com/question/246810/answer/{CONTENT_ID}",
+                ZHIHU_IMAGE_FIELD: source_url,
             },
             separators=(",", ":"),
         ).encode("utf-8")
@@ -374,6 +401,180 @@ def test_xhs_missing_creator_authority_fails_preflight_before_child_spawn(
         refresher.preflight()
 
     assert caught.value.code == expected_code
+    assert fake_detail_runner.instances == []
+
+
+def test_zhihu_derives_plain_detail_authority_from_exact_selected_source_content(
+    database: Database,
+    tmp_path: Path,
+    fake_detail_runner: type[_FakeMediaCrawlerDetailProcessRunner],
+) -> None:
+    answer_url = f"https://www.zhihu.com/question/246810/answer/{CONTENT_ID}"
+    previous_url = "https://picx.zhimg.com/v2-runtime-answer.jpg?source=previous"
+    current_url = "https://picx.zhimg.com/v2-runtime-answer.jpg?source=current"
+    source_hint = asset_source_hint(previous_url)
+    assert source_hint is not None
+    seed = _seed(
+        database,
+        source_count=2,
+        login_method=LoginMethod.QR,
+        platform=Platform.ZHIHU,
+        asset_kind=AssetKind.IMAGE,
+        asset_remote_id=f"{CONTENT_ID}:image:0",
+        source_url=source_hint,
+        content_kind="article",
+        canonical_url=answer_url,
+    )
+    provider = _RecordingSecretProvider({})
+    fake_detail_runner.payload = _zhihu_payload(current_url)
+    refresher = _lazy(
+        database,
+        seed,
+        SecretResolver({SecretScheme.ENV: provider}),
+        tmp_path,
+        subscription_id=seed.source_subscription_ids[1],
+    )
+
+    assert refresher.resolve(seed.locator).url == current_url
+
+    assert provider.calls == []
+    request = fake_detail_runner.instances[0].calls[0]
+    assert request.subscription_id == seed.source_subscription_ids[1]
+    assert type(request.detail_reference) is str
+    assert request.detail_reference == answer_url
+    assert request.creator_reference is None
+    assert request.creator_max_items is None
+
+
+@pytest.mark.parametrize(
+    ("canonical_url", "detail_reference_ref"),
+    [
+        (None, None),
+        (f"https://www.zhihu.com/question/246810/answer/{CONTENT_ID}?", None),
+        (f"https://www.zhihu.com/question/246810/answer/{CONTENT_ID}?utm_source=drift", None),
+        ("https://www.zhihu.com/question/246810/answer/987654322", None),
+        (f"https://www.zhihu.com/question/246810/answer/{CONTENT_ID}", "env:ZHIHU_DETAIL"),
+    ],
+)
+def test_zhihu_rejects_invalid_persisted_authority_or_secret_override_before_child(
+    database: Database,
+    tmp_path: Path,
+    fake_detail_runner: type[_FakeMediaCrawlerDetailProcessRunner],
+    canonical_url: str | None,
+    detail_reference_ref: str | None,
+) -> None:
+    previous_url = "https://picx.zhimg.com/v2-runtime-answer.jpg?source=previous"
+    source_hint = asset_source_hint(previous_url)
+    assert source_hint is not None
+    seed = _seed(
+        database,
+        source_count=1,
+        login_method=LoginMethod.QR,
+        platform=Platform.ZHIHU,
+        asset_kind=AssetKind.IMAGE,
+        asset_remote_id=f"{CONTENT_ID}:image:0",
+        source_url=source_hint,
+        content_kind="article",
+        canonical_url=canonical_url,
+    )
+    provider = _RecordingSecretProvider({"ZHIHU_DETAIL": "must-not-be-read"})
+    refresher = _lazy(
+        database,
+        seed,
+        SecretResolver({SecretScheme.ENV: provider}),
+        tmp_path,
+        subscription_id=seed.source_subscription_ids[0],
+        detail_reference_ref=detail_reference_ref,
+    )
+
+    with pytest.raises(MediaDownloadError) as caught:
+        refresher.preflight()
+
+    assert caught.value.code == "locator_refresh_configuration_invalid"
+    assert provider.calls == []
+    assert fake_detail_runner.instances == []
+
+
+@pytest.mark.parametrize(
+    "invalid_hint",
+    [
+        "https://evil.example/v2-runtime-answer.jpg",
+        "https://picx.zhimg.com/v2-runtime-answer.jpg?",
+    ],
+    ids=["foreign-host", "empty-query-delimiter"],
+)
+def test_zhihu_rejects_invalid_persisted_source_before_child(
+    database: Database,
+    tmp_path: Path,
+    fake_detail_runner: type[_FakeMediaCrawlerDetailProcessRunner],
+    invalid_hint: str,
+) -> None:
+    answer_url = f"https://www.zhihu.com/question/246810/answer/{CONTENT_ID}"
+    seed = _seed(
+        database,
+        source_count=1,
+        login_method=LoginMethod.QR,
+        platform=Platform.ZHIHU,
+        asset_kind=AssetKind.IMAGE,
+        asset_remote_id=f"{CONTENT_ID}:image:0",
+        source_url=invalid_hint,
+        content_kind="article",
+        canonical_url=answer_url,
+    )
+    provider = _RecordingSecretProvider({})
+    refresher = _lazy(
+        database,
+        seed,
+        SecretResolver({SecretScheme.ENV: provider}),
+        tmp_path,
+        subscription_id=seed.source_subscription_ids[0],
+    )
+
+    with pytest.raises(MediaDownloadError) as caught:
+        refresher.preflight()
+
+    assert caught.value.code == "locator_refresh_configuration_invalid"
+    assert provider.calls == []
+    assert fake_detail_runner.instances == []
+
+
+@pytest.mark.parametrize(
+    ("content_kind", "content_remote_type"),
+    [("video", "content"), ("article", "answer")],
+)
+def test_zhihu_rejects_non_article_or_non_content_durable_shape_before_child(
+    database: Database,
+    tmp_path: Path,
+    fake_detail_runner: type[_FakeMediaCrawlerDetailProcessRunner],
+    content_kind: str,
+    content_remote_type: str,
+) -> None:
+    answer_url = f"https://www.zhihu.com/question/246810/answer/{CONTENT_ID}"
+    source_hint = "https://picx.zhimg.com/v2-runtime-answer.jpg"
+    seed = _seed(
+        database,
+        source_count=1,
+        login_method=LoginMethod.QR,
+        platform=Platform.ZHIHU,
+        content_remote_type=content_remote_type,
+        asset_kind=AssetKind.IMAGE,
+        asset_remote_id=f"{CONTENT_ID}:image:0",
+        source_url=source_hint,
+        content_kind=content_kind,
+        canonical_url=answer_url,
+    )
+    refresher = _lazy(
+        database,
+        seed,
+        SecretResolver({}),
+        tmp_path,
+        subscription_id=seed.source_subscription_ids[0],
+    )
+
+    with pytest.raises(MediaDownloadError) as caught:
+        refresher.preflight()
+
+    assert caught.value.code == "locator_refresh_configuration_invalid"
     assert fake_detail_runner.instances == []
 
 

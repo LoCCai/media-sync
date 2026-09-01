@@ -13,7 +13,7 @@ from types import MappingProxyType
 from typing import Literal
 from uuid import UUID
 
-from media_sync.domain import AssetKind, AssetStatus
+from media_sync.domain import AssetKind, AssetStatus, Platform
 from media_sync.infrastructure.db import (
     AssetConflictError,
     AssetLeaseLostError,
@@ -35,6 +35,11 @@ from media_sync.media import (
 from media_sync.security.paths import PathLockBusyError, PathSecurityError, ensure_secure_root, exclusive_file_lock
 
 ASSET_DOWNLOAD_JOB_TYPE = "asset_download"
+
+
+def _requires_static_image(platform: str, kind: str) -> bool:
+    return platform == Platform.ZHIHU.value and kind == AssetKind.IMAGE.value
+
 
 _ORCHESTRATION_ERRORS: dict[str, tuple[str, bool]] = {
     "asset_download_not_found": ("asset was not found", False),
@@ -179,6 +184,7 @@ class _PreparedDownload:
     asset_id: UUID
     generation: int
     kind: AssetKind
+    require_static_image: bool
     locator: Mapping[str, object] = field(repr=False)
     job_id: UUID
     lease_token: str = field(repr=False)
@@ -191,6 +197,7 @@ class _PreparedRecovery:
     asset_id: UUID
     generation: int
     kind: AssetKind
+    require_static_image: bool
     locator: Mapping[str, object] = field(repr=False)
     job_id: UUID
     lease_owner: str | None
@@ -299,6 +306,7 @@ class AssetDownloadService:
                     work_root=request.work_root,
                     archive_root=request.archive_root,
                     expected_kind=prepared.kind,
+                    require_static_image=prepared.require_static_image,
                     before_archive_commit=lambda: self._guard_publish(request, prepared),
                 )
             )
@@ -342,6 +350,7 @@ class AssetDownloadService:
                     work_root=request.work_root,
                     archive_root=request.archive_root,
                     expected_kind=recovery.kind,
+                    require_static_image=recovery.require_static_image,
                 )
             )
         except MediaDownloadError as error:
@@ -410,6 +419,7 @@ class AssetDownloadService:
                     asset_id=recovery.asset_id,
                     generation=recovery.generation,
                     kind=recovery.kind,
+                    require_static_image=recovery.require_static_image,
                     locator=recovery.locator,
                     job_id=recovery.job_id,
                     lease_token=running.lease_token,
@@ -587,6 +597,7 @@ class AssetDownloadService:
                                     asset_id=UUID(asset.id),
                                     generation=asset.generation,
                                     kind=AssetKind(asset.kind),
+                                    require_static_image=_requires_static_image(asset.platform, asset.kind),
                                     locator=MappingProxyType(dict(asset.locator)),
                                     job_id=UUID(terminal_job.id),
                                     lease_owner=None,
@@ -637,6 +648,7 @@ class AssetDownloadService:
                                 asset_id=UUID(asset.id),
                                 generation=asset.generation,
                                 kind=AssetKind(asset.kind),
+                                require_static_image=_requires_static_image(asset.platform, asset.kind),
                                 locator=MappingProxyType(dict(asset.locator)),
                                 job_id=UUID(job.id),
                                 lease_owner=None,
@@ -662,6 +674,7 @@ class AssetDownloadService:
                                     asset_id=UUID(asset.id),
                                     generation=asset.generation,
                                     kind=AssetKind(asset.kind),
+                                    require_static_image=_requires_static_image(asset.platform, asset.kind),
                                     locator=MappingProxyType(dict(asset.locator)),
                                     job_id=UUID(job.id),
                                     lease_owner=None,
@@ -684,6 +697,7 @@ class AssetDownloadService:
                                     asset_id=UUID(asset.id),
                                     generation=asset.generation,
                                     kind=AssetKind(asset.kind),
+                                    require_static_image=_requires_static_image(asset.platform, asset.kind),
                                     locator=MappingProxyType(dict(asset.locator)),
                                     job_id=UUID(job.id),
                                     lease_owner=job.lease_owner,
@@ -760,6 +774,7 @@ class AssetDownloadService:
                                     asset_id=UUID(downloading.id),
                                     generation=downloading.generation,
                                     kind=AssetKind(downloading.kind),
+                                    require_static_image=_requires_static_image(downloading.platform, downloading.kind),
                                     locator=MappingProxyType(dict(downloading.locator)),
                                     job_id=UUID(running.id),
                                     lease_token=claimed.lease_token,

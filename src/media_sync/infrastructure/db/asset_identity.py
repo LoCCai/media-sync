@@ -42,6 +42,8 @@ def asset_source_hint(source_url: str | None) -> str | None:
         port = parsed.port
     except ValueError:
         return None
+    if ("?" in source_url and not parsed.query) or ("#" in source_url and not parsed.fragment):
+        return None
     scheme = parsed.scheme.lower()
     if scheme not in {"http", "https"} or hostname is None:
         return None

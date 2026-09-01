@@ -27,7 +27,6 @@ FULL_HISTORY_PLATFORMS = frozenset(
         Platform.KS,
         Platform.BILI,
         Platform.WB,
-        Platform.ZHIHU,
     }
 )
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from base64 import b64decode
 from collections.abc import Callable, Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -31,6 +32,7 @@ from media_sync.infrastructure.db import (
 )
 from media_sync.media import (
     ArchivePublisher,
+    DownloadRequest,
     MediaDownloadError,
     MediaProbe,
     ProbeResult,
@@ -40,6 +42,8 @@ from media_sync.media import (
 )
 
 PNG = b"\x89PNG\r\n\x1a\n" + b"offline-application-download"
+STATIC_PNG = b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=")
+GIF = b"GIF89a" + b"\x00" * 32
 MP4 = b"\x00\x00\x00\x18ftypisom" + b"offline-application-video"
 ETAG = '"application-v1"'
 STARTED_AT = datetime(2026, 8, 30, 6, tzinfo=UTC)
@@ -97,16 +101,17 @@ def _seed_asset(
     *,
     url: str = "https://media.test/original",
     kind: str = "image",
+    platform: str = "xhs",
 ) -> UUID:
     with database.session() as session:
         _author, contents = AuthorRepository(session).upsert_with_contents(
-            AuthorUpsert(platform="xhs", remote_id="download-author", display_name="Download Author"),
+            AuthorUpsert(platform=platform, remote_id="download-author", display_name="Download Author"),
             [ContentUpsert(remote_id="download-content", kind=kind, title="Offline fixture")],
         )
         asset = AssetRepository(session).upsert_for_content(
             contents[0].id,
             AssetUpsert(
-                platform="xhs",
+                platform=platform,
                 remote_id="download-image-v1",
                 kind=kind,
                 position=0,
@@ -277,6 +282,24 @@ def test_seed_to_download_is_atomic_and_already_verified_is_idempotent(
         assert job.payload == _job_payload(request, 1)
         assert str(request.work_root) not in repr(job.payload)
         assert str(request.archive_root) not in repr(job.payload)
+
+
+def test_zhihu_image_automatically_rejects_animated_bytes_before_archive(
+    database: Database,
+    tmp_path: Path,
+) -> None:
+    asset_id = _seed_asset(database, platform="zhihu", url="https://picx.zhimg.com/static-name.jpg")
+    service = AssetDownloadService(database, _downloader(lambda _request: _ok_response(GIF)), clock=lambda: STARTED_AT)
+
+    with pytest.raises(AssetDownloadOrchestrationError) as caught:
+        service.run(_request(tmp_path, asset_id))
+
+    assert caught.value.code == "media_image_not_static"
+    assert not tuple(path for path in (tmp_path / "archive").rglob("*") if path.is_file())
+    with database.session() as session:
+        asset = AssetRepository(session).require(str(asset_id))
+        assert asset.status == AssetStatus.FAILED_TERMINAL.value
+        assert asset.last_error_code == "media_image_not_static"
 
 
 def test_cleanup_failure_keeps_verified_commit_and_replay_retries_cleanup(
@@ -1273,14 +1296,14 @@ def test_reclaimed_retryable_attempt_recovers_prepared_result_before_next_claim(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    asset_id = _seed_asset(database)
+    asset_id = _seed_asset(database, platform="zhihu")
     clock = _MutableClock(STARTED_AT)
     initial_network_calls = 0
 
     def initial_handler(_request: httpx.Request) -> httpx.Response:
         nonlocal initial_network_calls
         initial_network_calls += 1
-        return _ok_response()
+        return _ok_response(STATIC_PNG)
 
     original_complete = JobRepository.complete
 
@@ -1302,9 +1325,9 @@ def test_reclaimed_retryable_attempt_recovers_prepared_result_before_next_claim(
     assert crashed.value.code == "asset_download_finalize_failed"
     assert initial_network_calls == 1
     part = tmp_path / "work" / "parts" / f"{asset_id}.1.part"
-    assert part.read_bytes() == PNG
+    assert part.read_bytes() == STATIC_PNG
     blobs = tuple(path for path in (tmp_path / "archive" / "sha256").rglob("*") if path.is_file())
-    assert len(blobs) == 1 and blobs[0].read_bytes() == PNG
+    assert len(blobs) == 1 and blobs[0].read_bytes() == STATIC_PNG
 
     expired_at = STARTED_AT + timedelta(seconds=2)
     with database.session() as session:
@@ -1350,7 +1373,16 @@ def test_reclaimed_retryable_attempt_recovers_prepared_result_before_next_claim(
         lease_seconds=60,
         max_attempts=5,
     )
-    recovery_service = AssetDownloadService(database, _downloader(forbidden_network), clock=clock)
+    recovery_downloader = _downloader(forbidden_network)
+    real_recover_published = recovery_downloader.recover_published
+    recovery_static_flags: list[bool] = []
+
+    def capture_recovery(request: DownloadRequest) -> object:
+        recovery_static_flags.append(request.require_static_image)
+        return real_recover_published(request)
+
+    monkeypatch.setattr(recovery_downloader, "recover_published", capture_recovery)
+    recovery_service = AssetDownloadService(database, recovery_downloader, clock=clock)
 
     recovered = recovery_service.run(recovery_request)
     replayed = recovery_service.run(recovery_request)
@@ -1358,8 +1390,9 @@ def test_reclaimed_retryable_attempt_recovers_prepared_result_before_next_claim(
     assert recovered.disposition == "downloaded"
     assert replayed.disposition == "already_verified"
     assert recovered.archive_path == replayed.archive_path == blobs[0]
-    assert recovered.archive_path.read_bytes() == PNG
+    assert recovered.archive_path.read_bytes() == STATIC_PNG
     assert recovery_network_calls == 0
+    assert recovery_static_flags == [True]
     assert not tuple((tmp_path / "work" / "parts").iterdir())
     with database.session() as session:
         asset = AssetRepository(session).require(str(asset_id))

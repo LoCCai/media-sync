@@ -17,7 +17,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import joinedload
 
-from media_sync.domain import AssetKind, AuthStatus, LoginMethod, Platform
+from media_sync.domain import AssetKind, AuthStatus, ContentKind, LoginMethod, Platform
 from media_sync.infrastructure.db import (
     AccountRepository,
     AssetRefreshSourceRepository,
@@ -35,13 +35,14 @@ from media_sync.integrations.mediacrawler.subscription_policy import (
     MediaCrawlerSubscriptionPolicyError,
     from_subscription_policy,
 )
+from media_sync.integrations.mediacrawler.zhihu_media import validate_zhihu_answer_url, validate_zhihu_image_url
 from media_sync.media import (
     AdapterRefreshLocator,
     MediaDownloadError,
     ResolvedLocator,
     parse_locator,
 )
-from media_sync.security import SecretError, SecretResolver
+from media_sync.security import SecretError, SecretResolver, SecretValue
 
 
 class LazyMediaCrawlerLocatorRefresher:
@@ -183,6 +184,13 @@ class LazyMediaCrawlerLocatorRefresher:
             locator = parse_locator(asset.locator)
             if not isinstance(locator, AdapterRefreshLocator) or locator.adapter != "mediacrawler":
                 raise MediaDownloadError("locator_refresh_source_mismatch")
+            if platform is Platform.ZHIHU:
+                if type(asset.source_url) is not str:
+                    raise MediaDownloadError("locator_refresh_configuration_invalid")
+                try:
+                    validate_zhihu_image_url(asset.source_url)
+                except ValueError as exc:
+                    raise MediaDownloadError("locator_refresh_configuration_invalid") from exc
             source_hint = asset_source_hint(asset.source_url)
             bili_video_slot = (
                 platform is Platform.BILI
@@ -207,7 +215,7 @@ class LazyMediaCrawlerLocatorRefresher:
                     raise MediaDownloadError("locator_refresh_credentials_unavailable")
                 cookie = self._secret_resolver.resolve(account.credential_ref)
 
-            detail_reference = None
+            detail_reference: str | SecretValue | None = None
             creator_reference = None
             creator_max_items = None
             if platform is Platform.XHS:
@@ -218,6 +226,19 @@ class LazyMediaCrawlerLocatorRefresher:
                         raise MediaDownloadError("locator_refresh_authority_required")
                     creator_reference = self._secret_resolver.resolve(policy.creator_secret_ref)
                     creator_max_items = subscription.max_items
+            elif platform is Platform.ZHIHU:
+                if self._detail_reference_ref is not None:
+                    raise MediaDownloadError("locator_refresh_configuration_invalid")
+                if (
+                    content.kind != ContentKind.ARTICLE.value
+                    or content.remote_type != "content"
+                    or type(content.canonical_url) is not str
+                ):
+                    raise MediaDownloadError("locator_refresh_configuration_invalid")
+                detail_reference = validate_zhihu_answer_url(
+                    content.canonical_url,
+                    answer_id=content.remote_id,
+                )
             elif self._detail_reference_ref is not None:
                 raise MediaDownloadError("locator_refresh_configuration_invalid")
 

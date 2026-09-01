@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+from base64 import b64decode
 from collections.abc import Callable, Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
@@ -36,6 +37,32 @@ from media_sync.security.paths import (
 )
 
 PNG = b"\x89PNG\r\n\x1a\n" + b"offline-fixture-payload"
+STATIC_PNG = b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=")
+STATIC_JPEG = b64decode(
+    "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAx"
+    "NDQ0Hyc5PTgyPC4zNDL/2wBDAQkJCQwLDBgNDRgyIRwhMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIy"
+    "MjIyMjIyMjL/wAARCAABAAEDASIAAhEBAxEB/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUFBA"
+    "QAAAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVWV1"
+    "hZWmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+"
+    "Tl5ufo6erx8vP09fb3+Pn6/8QAHwEAAwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoL/8QAtREAAgECBAQDBAcFBAQAAQJ3AAECAxEE"
+    "BSExBhJBUQdhcRMiMoEIFEKRobHBCSMzUvAVYnLRChYkNOEl8RcYGRomJygpKjU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hp"
+    "anN0dXZ3eHl6goOEhYaHiImKkpOUlZaXmJmaoqOkpaanqKmqsrO0tba3uLm6wsPExcbHyMnK0tPU1dbX2Nna4uPk5ebn6Onq8vP"
+    "09fb3+Pn6/9oADAMBAAIRAxEAPwDi6KKK+ZP3E//Z"
+)
+STATIC_WEBP = b64decode("UklGRjwAAABXRUJQVlA4IDAAAADQAQCdASoBAAEAAUAmJaACdLoB+AADsAD+8ut//NgVzXPv9//S4P0uD9Lg/9KQAAA=")
+_APNG_INSERT = STATIC_PNG.index(b"IDAT") - 4
+ANIMATED_PNG = STATIC_PNG[:_APNG_INSERT] + b"\x00\x00\x00\x08acTL" + b"\x00" * 12 + STATIC_PNG[_APNG_INSERT:]
+_ANIMATED_WEBP_BODY = (
+    b"WEBP"
+    + b"VP8X"
+    + (10).to_bytes(4, "little")
+    + b"\x02"
+    + b"\x00" * 9
+    + b"VP8 "
+    + (2).to_bytes(4, "little")
+    + b"\x00\x00"
+)
+ANIMATED_WEBP = b"RIFF" + len(_ANIMATED_WEBP_BODY).to_bytes(4, "little") + _ANIMATED_WEBP_BODY
 MP4 = b"\x00\x00\x00\x18ftypisom" + b"offline-video-payload"
 SRT = b"1\n00:00:00,000 --> 00:00:01,000\nOffline subtitle\n"
 VTT = b"WEBVTT\n\n00:00.000 --> 00:01.000\nOffline subtitle\n"
@@ -128,6 +155,43 @@ def test_download_verifies_magic_and_publishes_content_addressed_blob(tmp_path: 
     assert not tuple(parts.iterdir())
     assert requests[0].headers["accept-encoding"] == "identity"
     assert targets[0].address == "8.8.8.8"
+
+
+@pytest.mark.parametrize(
+    ("payload", "mime_type"),
+    [(STATIC_JPEG, "image/jpeg"), (STATIC_PNG, "image/png"), (STATIC_WEBP, "image/webp")],
+    ids=["jpeg", "png", "webp"],
+)
+def test_static_image_requirement_accepts_decodable_static_formats(
+    tmp_path: Path,
+    payload: bytes,
+    mime_type: str,
+) -> None:
+    request = replace(_request(tmp_path), require_static_image=True)
+
+    result = _downloader(lambda _request: _ok(payload, content_type=mime_type)).download(request)
+
+    assert result.mime_type == mime_type
+    assert result.archive_path.read_bytes() == payload
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        b"GIF89a" + b"\x00" * 32,
+        ANIMATED_PNG,
+        ANIMATED_WEBP,
+        b"\x00\x00\x00\x18ftypavif" + b"\x00" * 16,
+    ],
+    ids=["gif", "apng", "animated-webp", "avif"],
+)
+def test_static_image_requirement_rejects_animation_or_container_drift(tmp_path: Path, payload: bytes) -> None:
+    request = replace(_request(tmp_path), require_static_image=True)
+
+    with pytest.raises(MediaDownloadError) as caught:
+        _downloader(lambda _request: _ok(payload, content_type="image/unknown")).download(request)
+
+    assert caught.value.code == "media_image_not_static"
 
 
 def test_archive_commit_guard_runs_after_temp_rehash_and_cleans_on_failure(tmp_path: Path) -> None:

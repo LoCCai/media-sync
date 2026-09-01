@@ -30,6 +30,7 @@ from media_sync.integrations.mediacrawler.normalizers import (
     normalize_record,
 )
 from media_sync.integrations.mediacrawler.weibo_media import WEIBO_IMAGES_FIELD
+from media_sync.integrations.mediacrawler.zhihu_media import ZHIHU_IMAGE_FIELD
 
 PINNED_SHA = "d6f7c5bb906b6dac40ddf343ef9e26438a3de092"
 FIXTURE_ROOT = Path(__file__).resolve().parents[1] / "fixtures" / "mediacrawler"
@@ -233,6 +234,19 @@ def source_record(relative_path: str, index: int = 0) -> dict[str, object]:
     loaded = json.loads(lines[index])
     assert isinstance(loaded, dict)
     return loaded
+
+
+def zhihu_answer_record() -> dict[str, object]:
+    payload = source_record("zhihu/contents.v1.jsonl")
+    payload.update(
+        {
+            "content_id": "456",
+            "content_type": "answer",
+            "content_url": "https://www.zhihu.com/question/123/answer/456",
+            "question_id": "123",
+        }
+    )
+    return payload
 
 
 @pytest.mark.parametrize(("platform", "relative_path"), SOURCES)
@@ -569,6 +583,122 @@ def test_weibo_nonordinary_or_noncanonical_posts_cannot_materialize_forged_image
     durable_record = item.content.raw["record"]
     assert isinstance(durable_record, Mapping)
     assert WEIBO_IMAGES_FIELD not in durable_record
+
+
+@pytest.mark.parametrize(
+    ("image_url", "expected_mime"),
+    [
+        pytest.param("https://picx.zhimg.com/v2-a1b2c3.jpg?token=transient-one", "image/jpeg", id="jpeg-query"),
+        pytest.param("https://pic1.zhimg.com/80/v2-deadbeef.jpeg", "image/jpeg", id="jpeg"),
+        pytest.param("https://cdn-a.zhimg.com/path/image.png?token=transient-two", "image/png", id="png-query"),
+        pytest.param("https://pic2.zhimg.com/v2-feed.webp", "image/webp", id="webp"),
+    ],
+)
+def test_zhihu_private_answer_image_materializes_one_stable_asset_without_durable_locator(
+    image_url: str,
+    expected_mime: str,
+) -> None:
+    payload = zhihu_answer_record()
+    payload[ZHIHU_IMAGE_FIELD] = image_url
+    payload["future_nested_shape"] = {
+        "items": [{ZHIHU_IMAGE_FIELD: "https://pic3.zhimg.com/nested.jpg?token=nested-private"}]
+    }
+
+    item = normalize_record(payload, context(Platform.ZHIHU))
+
+    assert item.content.kind is ContentKind.ARTICLE
+    assert item.content.remote_type == "content"
+    assert item.content.remote_id == "456"
+    assert item.content.canonical_url == "https://www.zhihu.com/question/123/answer/456"
+    assert len(item.assets) == 1
+    asset = item.assets[0]
+    assert asset.kind is AssetKind.IMAGE
+    assert asset.remote_id == "456:image:0"
+    assert asset.content_remote_id == "456"
+    assert asset.position == 0
+    assert asset.source_url == image_url
+    assert asset.mime_type == expected_mime
+    assert item.author.raw == item.content.raw == asset.raw
+    for raw in (item.author.raw, item.content.raw, asset.raw):
+        retained = repr(raw)
+        assert ZHIHU_IMAGE_FIELD not in retained
+        assert "token=transient" not in retained
+        assert "token=nested-private" not in retained
+
+
+def test_zhihu_image_query_changes_do_not_change_content_or_asset_identity() -> None:
+    first_payload = zhihu_answer_record()
+    first_payload[ZHIHU_IMAGE_FIELD] = "https://picx.zhimg.com/v2-stable.jpg?token=first"
+    second_payload = zhihu_answer_record()
+    second_payload[ZHIHU_IMAGE_FIELD] = "https://picx.zhimg.com/v2-stable.jpg?token=second"
+
+    first = normalize_record(first_payload, context(Platform.ZHIHU))
+    second = normalize_record(second_payload, context(Platform.ZHIHU))
+
+    assert first.content.remote_id == second.content.remote_id == "456"
+    assert first.assets[0].remote_id == second.assets[0].remote_id == "456:image:0"
+    assert first.assets[0].position == second.assets[0].position == 0
+    assert first.assets[0].source_url != second.assets[0].source_url
+
+
+def test_zhihu_answer_without_private_image_field_preserves_assetless_compatibility() -> None:
+    item = normalize_record(zhihu_answer_record(), context(Platform.ZHIHU))
+
+    assert item.content.kind is ContentKind.ARTICLE
+    assert item.content.remote_id == "456"
+    assert item.assets == ()
+
+
+@pytest.mark.parametrize(
+    "drift",
+    [
+        pytest.param({ZHIHU_IMAGE_FIELD: None}, id="none"),
+        pytest.param(
+            {ZHIHU_IMAGE_FIELD: ["https://picx.zhimg.com/v2-list.jpg"]},
+            id="sequence",
+        ),
+        pytest.param({ZHIHU_IMAGE_FIELD: ""}, id="blank"),
+        pytest.param(
+            {ZHIHU_IMAGE_FIELD: "https://example.com/v2-foreign.jpg"},
+            id="foreign-image-host",
+        ),
+        pytest.param(
+            {ZHIHU_IMAGE_FIELD: "https://picx.zhimg.com/v2-empty-query.jpg?"},
+            id="image-empty-query-delimiter",
+        ),
+        pytest.param({"content_type": "article"}, id="article"),
+        pytest.param({"content_type": "zvideo"}, id="zvideo"),
+        pytest.param({"content_type": "ANSWER"}, id="answer-case"),
+        pytest.param({"content_id": "0"}, id="zero-answer-id"),
+        pytest.param({"content_id": "0456"}, id="leading-zero-answer-id"),
+        pytest.param({"content_id": 456}, id="non-string-answer-id"),
+        pytest.param({"question_id": "0"}, id="zero-question-id"),
+        pytest.param({"question_id": "0123"}, id="leading-zero-question-id"),
+        pytest.param({"question_id": 123}, id="non-string-question-id"),
+        pytest.param(
+            {"content_url": "https://www.zhihu.com/question/999/answer/456"},
+            id="question-id-drift",
+        ),
+        pytest.param(
+            {"content_url": "https://www.zhihu.com/question/123/answer/999"},
+            id="answer-id-drift",
+        ),
+        pytest.param(
+            {"content_url": "https://www.zhihu.com/question/123/answer/456?token=not-canonical"},
+            id="answer-url-query",
+        ),
+    ],
+)
+def test_zhihu_private_image_schema_and_identity_drift_are_quarantined(drift: dict[str, object]) -> None:
+    payload = zhihu_answer_record()
+    payload[ZHIHU_IMAGE_FIELD] = "https://picx.zhimg.com/v2-valid.jpg?token=transient"
+    payload.update(drift)
+
+    with pytest.raises(RecordNormalizationError) as raised:
+        normalize_record(payload, context(Platform.ZHIHU))
+
+    assert raised.value.reason is QuarantineReason.INVALID_RECORD
+    assert "token=transient" not in repr(raised.value)
 
 
 def test_replay_is_equal_and_mixed_timestamp_inputs_normalize_to_utc() -> None:

@@ -28,14 +28,16 @@ from .detail_runner import (
     MediaCrawlerDetailRequest,
     MediaCrawlerDetailResult,
     _is_weibo_detail_reference,
+    _is_zhihu_detail_reference,
 )
 from .normalizers import NormalizationContext, normalize_jsonl_bytes
 from .policies import WatchdogLimits
 from .xhs_authority import validate_xhs_creator_reference, validate_xhs_detail_reference
 from .xhs_media import validate_xhs_video_url
+from .zhihu_media import validate_zhihu_image_url
 
-_SUPPORTED_PLATFORMS = frozenset({Platform.XHS, Platform.DY, Platform.KS, Platform.BILI, Platform.WB})
-_NO_ASSET_PLATFORMS = frozenset({Platform.TIEBA, Platform.ZHIHU})
+_SUPPORTED_PLATFORMS = frozenset({Platform.XHS, Platform.DY, Platform.KS, Platform.BILI, Platform.WB, Platform.ZHIHU})
+_NO_ASSET_PLATFORMS = frozenset({Platform.TIEBA})
 
 
 @dataclass(frozen=True, slots=True)
@@ -133,6 +135,22 @@ class MediaCrawlerRefreshContext:
             raise MediaDownloadError("locator_refresh_configuration_invalid")
         if platform is Platform.WB and not _is_weibo_detail_reference(self.detail_reference, self.content_remote_id):
             raise MediaDownloadError("locator_refresh_configuration_invalid")
+        if platform is Platform.ZHIHU:
+            if (
+                self.content_remote_type != "content"
+                or asset_kind is not AssetKind.IMAGE
+                or self.asset_position != 0
+                or self.asset_remote_id != f"{self.content_remote_id}:image:0"
+                or not _is_zhihu_detail_reference(self.detail_reference, self.content_remote_id)
+            ):
+                raise MediaDownloadError("locator_refresh_configuration_invalid")
+            source_hint = self.source_hint
+            if type(source_hint) is not str:
+                raise MediaDownloadError("locator_refresh_configuration_invalid")
+            try:
+                validate_zhihu_image_url(source_hint)
+            except ValueError as exc:
+                raise MediaDownloadError("locator_refresh_configuration_invalid") from exc
         if login_method is LoginMethod.PHONE:
             raise MediaDownloadError("locator_refresh_unsupported")
         if login_method is LoginMethod.COOKIE and self.cookie is None:
@@ -251,6 +269,18 @@ class MediaCrawlerLocatorRefresher:
             raise MediaDownloadError("locator_refresh_asset_not_found")
         if len(matching_content) != 1:
             raise MediaDownloadError("locator_refresh_asset_mismatch")
+        if context.platform is Platform.ZHIHU:
+            target = matching_content[0]
+            if (
+                target.content.kind is not ContentKind.ARTICLE
+                or target.content.remote_type != "content"
+                or target.content.canonical_url != context.detail_reference
+                or len(target.assets) != 1
+                or target.assets[0].kind is not AssetKind.IMAGE
+                or target.assets[0].position != 0
+                or target.assets[0].remote_id != f"{context.content_remote_id}:image:0"
+            ):
+                raise MediaDownloadError("locator_refresh_schema_changed")
         xhs_creator_video = False
         if context.platform is Platform.XHS and context.creator_reference is not None:
             target = matching_content[0]
@@ -290,6 +320,11 @@ class MediaCrawlerLocatorRefresher:
                 source_url = validate_xhs_video_url(source_url)
             except ValueError as exc:
                 raise MediaDownloadError("locator_refresh_schema_changed") from exc
+        if context.platform is Platform.ZHIHU:
+            try:
+                source_url = validate_zhihu_image_url(source_url)
+            except ValueError as exc:
+                raise MediaDownloadError("locator_refresh_schema_changed") from exc
         profile = (
             MediaRequestProfile.BILIBILI_MEDIA if context._bili_progressive_detail() else MediaRequestProfile.DEFAULT
         )
@@ -306,6 +341,7 @@ def _supported_kinds(platform: Platform) -> frozenset[AssetKind]:
         Platform.KS: frozenset({AssetKind.VIDEO, AssetKind.COVER}),
         Platform.BILI: frozenset({AssetKind.VIDEO, AssetKind.COVER}),
         Platform.WB: frozenset({AssetKind.IMAGE}),
+        Platform.ZHIHU: frozenset({AssetKind.IMAGE}),
     }.get(platform, frozenset())
 
 

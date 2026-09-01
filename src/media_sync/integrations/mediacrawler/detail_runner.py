@@ -60,6 +60,10 @@ from media_sync.integrations.mediacrawler.xhs_authority import (
     validate_xhs_creator_reference,
     validate_xhs_detail_reference,
 )
+from media_sync.integrations.mediacrawler.zhihu_media import (
+    install_zhihu_media_capture,
+    validate_zhihu_answer_url,
+)
 from media_sync.media import ResolvedLocator
 from media_sync.media.errors import MediaDownloadError
 from media_sync.security import SecretValue
@@ -69,7 +73,7 @@ DETAIL_RUNNER_SCHEMA_VERSION = 3
 MAX_DETAIL_REQUEST_BYTES = 128 * 1024
 MAX_DETAIL_FRAME_OVERHEAD = 8 * 1024
 
-_SUPPORTED_PLATFORMS = frozenset({Platform.XHS, Platform.DY, Platform.KS, Platform.BILI, Platform.WB})
+_SUPPORTED_PLATFORMS = frozenset({Platform.XHS, Platform.DY, Platform.KS, Platform.BILI, Platform.WB, Platform.ZHIHU})
 _DETAIL_CONFIG_ATTRIBUTES = {
     Platform.XHS: "XHS_SPECIFIED_NOTE_URL_LIST",
     Platform.DY: "DY_SPECIFIED_ID_LIST",
@@ -119,6 +123,17 @@ def _is_weibo_detail_reference(value: object, content_remote_id: str) -> bool:
     return is_weibo_numeric_note_id(content_remote_id) and (
         value is None or (type(value) is str and value == content_remote_id)
     )
+
+
+def _is_zhihu_detail_reference(value: object, content_remote_id: str) -> bool:
+    """Accept only one canonical, non-secret Answer URL bound to this ID."""
+
+    if type(value) is not str:
+        return False
+    try:
+        return validate_zhihu_answer_url(value, answer_id=content_remote_id) == value
+    except ValueError:
+        return False
 
 
 def _validate_xhs_request_authority(
@@ -201,6 +216,8 @@ class MediaCrawlerDetailRequest:
             raise MediaDownloadError("locator_refresh_configuration_invalid")
         if platform is Platform.WB and not _is_weibo_detail_reference(self.detail_reference, content_remote_id):
             raise MediaDownloadError("locator_refresh_configuration_invalid")
+        if platform is Platform.ZHIHU and not _is_zhihu_detail_reference(self.detail_reference, content_remote_id):
+            raise MediaDownloadError("locator_refresh_configuration_invalid")
         if login_method is LoginMethod.COOKIE and self.cookie is None:
             raise MediaDownloadError("locator_refresh_configuration_invalid")
         if login_method is not LoginMethod.COOKIE and self.cookie is not None:
@@ -232,6 +249,12 @@ class MediaCrawlerDetailRequest:
             if value is None:
                 return self.content_remote_id
             if not isinstance(value, str):  # Defensive narrowing after the exact-type predicate.
+                raise MediaDownloadError("locator_refresh_configuration_invalid")
+            return value
+        if self.platform is Platform.ZHIHU:
+            if not _is_zhihu_detail_reference(value, self.content_remote_id):
+                raise MediaDownloadError("locator_refresh_configuration_invalid")
+            if type(value) is not str:  # Defensive narrowing after the exact-type predicate.
                 raise MediaDownloadError("locator_refresh_configuration_invalid")
             return value
         if isinstance(value, SecretValue):
@@ -673,6 +696,8 @@ class _ChildRequest:
             raise _ChildConfigurationError
         if platform is Platform.WB and not _is_weibo_detail_reference(detail_reference, content_remote_id):
             raise _ChildConfigurationError
+        if platform is Platform.ZHIHU and not _is_zhihu_detail_reference(detail_reference, content_remote_id):
+            raise _ChildConfigurationError
         if bili_progressive_detail and content_remote_id != detail_reference:
             raise _ChildConfigurationError
         if profile_root.parent.parent != account_root or output_root.parent != job_root:
@@ -905,6 +930,8 @@ async def _run_upstream(request: _ChildRequest) -> tuple[Any, _BiliProgressiveRe
         raise _ChildConfigurationError
     if request.platform is Platform.WB:
         install_weibo_media_capture(request.checkout_root)
+    elif request.platform is Platform.ZHIHU:
+        install_zhihu_media_capture(request.checkout_root)
 
     async def dispatch() -> _BiliProgressiveResult | None:
         if (

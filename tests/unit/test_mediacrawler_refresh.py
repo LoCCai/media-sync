@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from uuid import UUID
 
@@ -20,6 +20,7 @@ from media_sync.integrations.mediacrawler.refresh import (
 )
 from media_sync.integrations.mediacrawler.weibo_media import WEIBO_IMAGES_FIELD
 from media_sync.integrations.mediacrawler.xhs_media import validate_xhs_video_url
+from media_sync.integrations.mediacrawler.zhihu_media import ZHIHU_IMAGE_FIELD
 from media_sync.media import AdapterRefreshLocator, MediaDownloadError, MediaRequestProfile
 from media_sync.security import SecretValue
 
@@ -73,8 +74,6 @@ def _context(
         ),
     )
     source_hint = asset_source_hint(signed_url)
-    if signed_url is not None:
-        assert source_hint is not None
     return MediaCrawlerRefreshContext(
         asset_id=ASSET_ID,
         account_id=ACCOUNT_ID,
@@ -884,10 +883,9 @@ def test_xhs_creator_authority_rejects_invalid_or_ambiguous_inputs(
         )
 
 
-@pytest.mark.parametrize("platform", [Platform.TIEBA, Platform.ZHIHU])
-def test_platforms_without_normalized_assets_return_unsupported_without_runner_call(platform: Platform) -> None:
+def test_tieba_without_normalized_assets_returns_unsupported_without_runner_call() -> None:
     context = _context(
-        platform=platform,
+        platform=Platform.TIEBA,
         content_id="content-42",
         kind=AssetKind.IMAGE,
         position=0,
@@ -900,6 +898,166 @@ def test_platforms_without_normalized_assets_return_unsupported_without_runner_c
 
     assert caught.value.code == "locator_refresh_unsupported"
     assert runner.calls == []
+
+
+def test_zhihu_refresh_uses_canonical_answer_authority_and_exact_current_image() -> None:
+    answer_id = "987654321"
+    answer_url = f"https://www.zhihu.com/question/246810/answer/{answer_id}"
+    previous_url = "https://picx.zhimg.com/v2-answer.jpg?source=previous"
+    current_url = "https://picx.zhimg.com/v2-answer.jpg?source=current"
+    context = _context(
+        platform=Platform.ZHIHU,
+        content_id=answer_id,
+        kind=AssetKind.IMAGE,
+        position=0,
+        signed_url=previous_url,
+        detail_reference=answer_url,
+    )
+    runner = _FakeDetailRunner(
+        _jsonl(
+            {
+                "content_id": answer_id,
+                "content_type": "answer",
+                "content_text": "answer body",
+                "question_id": "246810",
+                "content_url": answer_url,
+                ZHIHU_IMAGE_FIELD: current_url,
+            }
+        )
+    )
+
+    resolved = MediaCrawlerLocatorRefresher(context, runner, clock=lambda: NOW).resolve(context.locator)
+
+    assert resolved.url == current_url
+    assert resolved.request_profile is MediaRequestProfile.DEFAULT
+    assert runner.calls[0].resolved_detail_reference() == answer_url
+    assert type(runner.calls[0].detail_reference) is str
+
+
+@pytest.mark.parametrize(
+    "detail_reference",
+    [
+        None,
+        SecretValue("https://www.zhihu.com/question/246810/answer/987654321"),
+        "https://www.zhihu.com/question/246810/answer/987654322",
+        "https://www.zhihu.com/question/246810/answer/987654321?",
+        "https://www.zhihu.com/question/246811/answer/987654321?utm_source=drift",
+        "http://www.zhihu.com/question/246810/answer/987654321",
+    ],
+)
+def test_zhihu_refresh_rejects_missing_secret_or_noncanonical_detail_authority(
+    detail_reference: str | SecretValue | None,
+) -> None:
+    with pytest.raises(MediaDownloadError) as caught:
+        _context(
+            platform=Platform.ZHIHU,
+            content_id="987654321",
+            kind=AssetKind.IMAGE,
+            position=0,
+            signed_url="https://picx.zhimg.com/v2-answer.jpg?source=previous",
+            detail_reference=detail_reference,
+        )
+
+    assert caught.value.code == "locator_refresh_configuration_invalid"
+
+
+@pytest.mark.parametrize(
+    ("kind", "position", "remote_type", "remote_id"),
+    [
+        (AssetKind.VIDEO, 0, "content", "987654321:video:0"),
+        (AssetKind.IMAGE, 1, "content", "987654321:image:1"),
+        (AssetKind.IMAGE, 0, "answer", "987654321:image:0"),
+        (AssetKind.IMAGE, 0, "content", "987654321:image:other"),
+    ],
+)
+def test_zhihu_refresh_context_closes_the_single_answer_image_slot(
+    kind: AssetKind,
+    position: int,
+    remote_type: str,
+    remote_id: str,
+) -> None:
+    with pytest.raises(MediaDownloadError) as caught:
+        _context(
+            platform=Platform.ZHIHU,
+            content_id="987654321",
+            kind=kind,
+            position=position,
+            content_remote_type=remote_type,
+            remote_id=remote_id,
+            signed_url="https://picx.zhimg.com/v2-answer.jpg?source=previous",
+            detail_reference="https://www.zhihu.com/question/246810/answer/987654321",
+        )
+
+    assert caught.value.code in {"locator_refresh_configuration_invalid", "locator_refresh_unsupported"}
+
+
+@pytest.mark.parametrize(
+    "persisted_hint",
+    [
+        "https://evil.example/v2-answer.jpg?source=previous",
+        "https://picx.zhimg.com/v2-answer.jpg?",
+    ],
+    ids=["foreign-host", "empty-query-delimiter"],
+)
+def test_zhihu_refresh_context_rejects_invalid_persisted_hint_before_runner(persisted_hint: str) -> None:
+    valid = _context(
+        platform=Platform.ZHIHU,
+        content_id="987654321",
+        kind=AssetKind.IMAGE,
+        position=0,
+        signed_url="https://picx.zhimg.com/v2-answer.jpg",
+        detail_reference="https://www.zhihu.com/question/246810/answer/987654321",
+    )
+
+    with pytest.raises(MediaDownloadError) as caught:
+        replace(valid, source_hint=persisted_hint)
+
+    assert caught.value.code == "locator_refresh_configuration_invalid"
+
+
+@pytest.mark.parametrize(
+    "drift",
+    ["missing-image", "source-hint", "canonical-url", "duplicate-content", "empty-query-delimiter"],
+)
+def test_zhihu_refresh_rejects_missing_drifted_or_duplicate_target(drift: str) -> None:
+    answer_id = "987654321"
+    answer_url = f"https://www.zhihu.com/question/246810/answer/{answer_id}"
+    previous_url = "https://picx.zhimg.com/v2-answer.jpg?source=previous"
+    base: dict[str, object] = {
+        "content_id": answer_id,
+        "content_type": "answer",
+        "content_text": "answer body",
+        "question_id": "246810",
+        "content_url": answer_url,
+    }
+    if drift != "missing-image":
+        if drift == "source-hint":
+            base[ZHIHU_IMAGE_FIELD] = "https://picx.zhimg.com/v2-different.jpg?source=current"
+        elif drift == "empty-query-delimiter":
+            base[ZHIHU_IMAGE_FIELD] = "https://picx.zhimg.com/v2-answer.jpg?"
+        else:
+            base[ZHIHU_IMAGE_FIELD] = "https://picx.zhimg.com/v2-answer.jpg?source=current"
+    if drift == "canonical-url":
+        base["question_id"] = "246811"
+        base["content_url"] = f"https://www.zhihu.com/question/246811/answer/{answer_id}"
+    payload = _jsonl(base, base) if drift == "duplicate-content" else _jsonl(base)
+    context = _context(
+        platform=Platform.ZHIHU,
+        content_id=answer_id,
+        kind=AssetKind.IMAGE,
+        position=0,
+        signed_url=previous_url,
+        detail_reference=answer_url,
+    )
+
+    with pytest.raises(MediaDownloadError) as caught:
+        MediaCrawlerLocatorRefresher(context, _FakeDetailRunner(payload), clock=lambda: NOW).resolve(context.locator)
+
+    assert caught.value.code == (
+        "locator_refresh_asset_mismatch"
+        if drift in {"source-hint", "duplicate-content"}
+        else "locator_refresh_schema_changed"
+    )
 
 
 @pytest.mark.parametrize(

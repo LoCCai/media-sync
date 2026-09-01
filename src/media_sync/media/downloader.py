@@ -82,11 +82,14 @@ class DownloadRequest:
     work_root: Path
     archive_root: Path
     expected_kind: AssetKind | None = None
+    require_static_image: bool = False
     before_archive_commit: Callable[[], None] | None = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         if isinstance(self.generation, bool) or not isinstance(self.generation, int) or self.generation < 1:
             raise ValueError("generation must be positive")
+        if type(self.require_static_image) is not bool:
+            raise ValueError("require_static_image must be a boolean")
 
 
 @dataclass(frozen=True, slots=True)
@@ -423,6 +426,7 @@ class SecureMediaDownloader:
                     expected_kind=request.expected_kind,
                     advertised_mime=None,
                     probe=self._probe,
+                    require_static_image=request.require_static_image,
                     sniff_bytes=self._limits.sniff_bytes,
                     probe_timeout_seconds=self._limits.probe_timeout_seconds,
                     probe_output_bytes=self._limits.probe_output_bytes,
@@ -508,6 +512,7 @@ class SecureMediaDownloader:
                 expected_kind=request.expected_kind,
                 advertised_mime=advertised_mime,
                 probe=self._probe,
+                require_static_image=request.require_static_image,
                 sniff_bytes=self._limits.sniff_bytes,
                 probe_timeout_seconds=self._limits.probe_timeout_seconds,
                 probe_output_bytes=self._limits.probe_output_bytes,

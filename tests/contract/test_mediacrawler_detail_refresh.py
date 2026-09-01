@@ -23,6 +23,7 @@ from media_sync.integrations.mediacrawler.refresh import (
     MediaCrawlerRefreshContext,
 )
 from media_sync.integrations.mediacrawler.weibo_media import WEIBO_IMAGES_FIELD
+from media_sync.integrations.mediacrawler.zhihu_media import ZHIHU_IMAGE_FIELD
 from media_sync.media import AdapterRefreshLocator, MediaDownloadError, MediaRequestProfile
 from media_sync.security import SecretValue
 
@@ -52,6 +53,10 @@ XHS_DETAIL_URL = (
 XHS_IMAGE_URL = "https://image.example.test/xhs/target.jpg?sign=xhs-image-sentinel"
 XHS_VIDEO_URL = "http://sns-video-bd.xhscdn.com/video-key.mp4?sign=xhs-video-sentinel"
 XHS_COVER_URL = "https://sns-webpic-qc.xhscdn.com/cover.png?sign=xhs-cover-sentinel"
+ZHIHU_ANSWER_ID = "987654321"
+ZHIHU_QUESTION_ID = "246810"
+ZHIHU_ANSWER_URL = f"https://www.zhihu.com/question/{ZHIHU_QUESTION_ID}/answer/{ZHIHU_ANSWER_ID}"
+ZHIHU_IMAGE_URL = "https://picx.zhimg.com/v2-detail-fixture.jpg?source=zhihu-detail-sentinel"
 _DEFAULT_BILI_VIEW = object()
 _DEFAULT_BILI_PLAY = object()
 
@@ -438,6 +443,113 @@ async def async_cleanup():
     )
 """
 
+_ZHIHU_HELP = r"""
+class ZhihuContent:
+    def model_dump(self):
+        return {
+            "content_id": self.content_id,
+            "content_type": self.content_type,
+            "content_text": self.content_text,
+            "question_id": self.question_id,
+            "content_url": self.content_url,
+            "title": self.title,
+        }
+
+
+class ZhihuExtractor:
+    def _extract_answer_content(self, answer):
+        result = ZhihuContent()
+        result.content_id = str(answer.get("id") or "")
+        result.content_type = answer.get("type")
+        result.content_text = "fixture answer body"
+        result.question_id = str(answer.get("question", {}).get("id") or "")
+        result.content_url = "https://www.zhihu.com/question/" + result.question_id + "/answer/" + result.content_id
+        result.title = "Fixture answer"
+        return result
+"""
+
+_ZHIHU_CLIENT = r"""
+class ZhiHuClient:
+    async def get_all_anwser_by_creator(self, url_token, crawl_interval=1.0, callback=None):
+        return []
+"""
+
+_ZHIHU_STORE_IMPL = r"""
+import json
+from pathlib import Path
+
+import config
+
+
+class ZhihuJsonlStoreImplement:
+    async def store_content(self, content_item):
+        target = Path(config.SAVE_DATA_PATH) / "zhihu" / "jsonl" / "detail_contents_fixture.jsonl"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps(content_item, separators=(",", ":")) + "\n", encoding="utf-8")
+"""
+
+_ZHIHU_STORE = r"""
+from ._store_impl import ZhihuJsonlStoreImplement
+
+
+async def update_zhihu_content(content_item):
+    await ZhihuJsonlStoreImplement().store_content(content_item.model_dump())
+"""
+
+_ZHIHU_MAIN = r"""
+import asyncio
+import os
+from pathlib import Path
+
+import config
+from media_platform.zhihu.help import ZhihuExtractor
+from store import zhihu as zhihu_store
+
+crawler = None
+
+
+class FakeCrawler:
+    async def start(self):
+        assert config.PLATFORM == "zhihu"
+        assert config.LOGIN_TYPE == "qrcode"
+        assert config.CRAWLER_TYPE == "detail"
+        assert config.CREATOR_MODE is False
+        assert config.CRAWLER_MAX_NOTES_COUNT == 1
+        assert config.ZHIHU_SPECIFIED_ID_LIST == [__ZHIHU_ANSWER_URL__]
+        assert config.SAVE_DATA_OPTION == "jsonl"
+        assert config.MAX_CONCURRENCY_NUM == 1
+        assert config.ENABLE_GET_COMMENTS is False
+        assert config.ENABLE_GET_MEIDAS is False
+        assert config.ENABLE_GET_MEDIAS is False
+        profile = Path(
+            os.path.join(os.getcwd(), "browser_data", config.USER_DATA_DIR % config.PLATFORM)
+        ).resolve()
+        profile.mkdir(parents=True, exist_ok=True)
+        (profile / "session.marker").write_text("stable fixture profile", encoding="utf-8")
+        answer = {
+            "id": int(__ZHIHU_ANSWER_ID__),
+            "type": "answer",
+            "question": {"id": int(__ZHIHU_QUESTION_ID__)},
+            "content": '<p>body</p><img src="' + __ZHIHU_IMAGE_URL__ + '">',
+        }
+        async def extract_in_detail_task():
+            await asyncio.sleep(0)
+            return ZhihuExtractor()._extract_answer_content(answer)
+
+        content = (await asyncio.gather(extract_in_detail_task()))[0]
+        await zhihu_store.update_zhihu_content(content)
+
+
+async def main():
+    global crawler
+    crawler = FakeCrawler()
+    await crawler.start()
+
+
+async def async_cleanup():
+    return None
+"""
+
 
 def _fake_checkout(root: Path) -> Path:
     checkout = root / "fake-mediacrawler"
@@ -639,6 +751,40 @@ def _fake_wb_checkout(
     return checkout.resolve()
 
 
+def _fake_zhihu_checkout(root: Path) -> Path:
+    checkout = root / "fake-mediacrawler-zhihu"
+    for package in (
+        checkout / "config",
+        checkout / "media_platform",
+        checkout / "media_platform" / "zhihu",
+        checkout / "store",
+        checkout / "store" / "zhihu",
+    ):
+        package.mkdir(parents=True, exist_ok=True)
+        (package / "__init__.py").write_text("", encoding="utf-8")
+    (checkout / "config" / "__init__.py").write_text(textwrap.dedent(_CONFIG).lstrip(), encoding="utf-8")
+    (checkout / "media_platform" / "zhihu" / "help.py").write_text(
+        textwrap.dedent(_ZHIHU_HELP).lstrip(), encoding="utf-8"
+    )
+    (checkout / "media_platform" / "zhihu" / "client.py").write_text(
+        textwrap.dedent(_ZHIHU_CLIENT).lstrip(), encoding="utf-8"
+    )
+    (checkout / "store" / "zhihu" / "_store_impl.py").write_text(
+        textwrap.dedent(_ZHIHU_STORE_IMPL).lstrip(), encoding="utf-8"
+    )
+    (checkout / "store" / "zhihu" / "__init__.py").write_text(textwrap.dedent(_ZHIHU_STORE).lstrip(), encoding="utf-8")
+    main_source = (
+        textwrap.dedent(_ZHIHU_MAIN)
+        .lstrip()
+        .replace("__ZHIHU_ANSWER_URL__", repr(ZHIHU_ANSWER_URL))
+        .replace("__ZHIHU_ANSWER_ID__", repr(ZHIHU_ANSWER_ID))
+        .replace("__ZHIHU_QUESTION_ID__", repr(ZHIHU_QUESTION_ID))
+        .replace("__ZHIHU_IMAGE_URL__", repr(ZHIHU_IMAGE_URL))
+    )
+    (checkout / "main.py").write_text(main_source, encoding="utf-8")
+    return checkout.resolve()
+
+
 def _bili_process_runner(tmp_path: Path, checkout: Path) -> MediaCrawlerDetailProcessRunner:
     lock_path = tmp_path / "upstreams.lock.json"
     lock_path.write_text("{}", encoding="utf-8")
@@ -739,6 +885,60 @@ def _wb_process_runner(tmp_path: Path, checkout: Path) -> MediaCrawlerDetailProc
             lock_path=lock_path,
         ),
         python_verifier=lambda path: VerifiedPython(path),
+    )
+
+
+def _zhihu_process_runner(tmp_path: Path, checkout: Path) -> MediaCrawlerDetailProcessRunner:
+    lock_path = tmp_path / "upstreams.lock.json"
+    lock_path.write_text("{}", encoding="utf-8")
+    return MediaCrawlerDetailProcessRunner(
+        lock_path=lock_path,
+        integration_root=tmp_path / "runtime",
+        python_executable=Path(sys.executable),
+        license_acknowledged=True,
+        checkout_verifier=lambda _path, _accepted: VerifiedCheckout(
+            root=checkout,
+            commit=UPSTREAM_SHA,
+            repository="https://github.com/NanmiCoder/MediaCrawler.git",
+            license_name="NON-COMMERCIAL LEARNING LICENSE 1.1",
+            lock_path=lock_path,
+        ),
+        python_verifier=lambda path: VerifiedPython(path),
+    )
+
+
+def _zhihu_context() -> MediaCrawlerRefreshContext:
+    remote_id = f"{ZHIHU_ANSWER_ID}:image:0"
+    source_hint = asset_source_hint(ZHIHU_IMAGE_URL)
+    assert source_hint is not None
+    return MediaCrawlerRefreshContext(
+        asset_id=ASSET_ID,
+        account_id=ACCOUNT_ID,
+        subscription_id=SUBSCRIPTION_ID,
+        platform=Platform.ZHIHU,
+        login_method=LoginMethod.QR,
+        content_remote_type="content",
+        content_remote_id=ZHIHU_ANSWER_ID,
+        author_remote_id="creator-42",
+        author_display_name="Zhihu fixture creator",
+        asset_remote_id=remote_id,
+        asset_kind=AssetKind.IMAGE,
+        asset_position=0,
+        source_hint=source_hint,
+        locator=AdapterRefreshLocator(
+            adapter="mediacrawler",
+            asset_key=stable_asset_key(
+                platform="zhihu",
+                content_remote_type="content",
+                content_remote_id=ZHIHU_ANSWER_ID,
+                kind="image",
+                position=0,
+                remote_id=remote_id,
+            ),
+        ),
+        detail_reference=ZHIHU_ANSWER_URL,
+        request_delay_seconds=0.25,
+        watchdogs=WatchdogLimits(max_seconds=10, poll_seconds=0.01),
     )
 
 
@@ -990,6 +1190,25 @@ def test_weibo_numeric_detail_installs_media_shim_and_runs_cleanup(tmp_path: Pat
     assert WEIBO_IMAGES_FIELD.encode("utf-8") not in retained
 
 
+def test_zhihu_answer_detail_installs_image_shim_binds_config_and_cleans_ephemera(tmp_path: Path) -> None:
+    checkout = _fake_zhihu_checkout(tmp_path)
+    context = _zhihu_context()
+
+    resolved = MediaCrawlerLocatorRefresher(
+        context,
+        _zhihu_process_runner(tmp_path, checkout),
+    ).resolve(context.locator)
+
+    assert resolved.url == ZHIHU_IMAGE_URL
+    assert resolved.request_profile is MediaRequestProfile.DEFAULT
+    assert list((tmp_path / "runtime" / "jobs").iterdir()) == []
+    profile = tmp_path / "runtime" / "accounts" / "zhihu" / str(ACCOUNT_ID) / "browser_data" / "zhihu_user_data_dir"
+    assert (profile / "session.marker").read_text(encoding="utf-8") == "stable fixture profile"
+    retained = b"".join(path.read_bytes() for path in (tmp_path / "runtime").rglob("*") if path.is_file())
+    assert ZHIHU_IMAGE_FIELD.encode("utf-8") not in retained
+    assert b"zhihu-detail-sentinel" not in retained
+
+
 @pytest.mark.parametrize(
     "first_url",
     [
@@ -1101,6 +1320,113 @@ def test_weibo_detail_child_rejects_mismatched_numeric_reference(tmp_path: Path)
 
     with pytest.raises(detail_runner_module._ChildConfigurationError):
         detail_runner_module._ChildRequest.load(payload)
+
+
+def test_zhihu_detail_parent_accepts_only_plain_canonical_answer_authority() -> None:
+    request = MediaCrawlerDetailRequest(
+        account_id=ACCOUNT_ID,
+        subscription_id=SUBSCRIPTION_ID,
+        platform=Platform.ZHIHU,
+        login_method=LoginMethod.QR,
+        content_remote_id=ZHIHU_ANSWER_ID,
+        author_remote_id="creator-42",
+        detail_reference=ZHIHU_ANSWER_URL,
+    )
+
+    assert request.resolved_detail_reference() == ZHIHU_ANSWER_URL
+    assert request.creator_reference is None
+    assert request.creator_max_items is None
+
+
+@pytest.mark.parametrize(
+    "detail_reference",
+    [
+        None,
+        SecretValue(ZHIHU_ANSWER_URL),
+        f"https://www.zhihu.com/question/{ZHIHU_QUESTION_ID}/answer/987654322",
+        f"{ZHIHU_ANSWER_URL}?",
+        f"{ZHIHU_ANSWER_URL}?utm_source=drift",
+        f"http://www.zhihu.com/question/{ZHIHU_QUESTION_ID}/answer/{ZHIHU_ANSWER_ID}",
+        f"{ZHIHU_ANSWER_URL}/",
+    ],
+)
+def test_zhihu_detail_parent_rejects_missing_secret_or_unbound_reference(
+    detail_reference: str | SecretValue | None,
+) -> None:
+    with pytest.raises(MediaDownloadError, match="locator_refresh_configuration_invalid"):
+        MediaCrawlerDetailRequest(
+            account_id=ACCOUNT_ID,
+            subscription_id=SUBSCRIPTION_ID,
+            platform=Platform.ZHIHU,
+            login_method=LoginMethod.QR,
+            content_remote_id=ZHIHU_ANSWER_ID,
+            author_remote_id="creator-42",
+            detail_reference=detail_reference,
+        )
+
+
+def test_zhihu_detail_parent_rejects_creator_mode_authority() -> None:
+    with pytest.raises(MediaDownloadError, match="locator_refresh_configuration_invalid"):
+        MediaCrawlerDetailRequest(
+            account_id=ACCOUNT_ID,
+            subscription_id=SUBSCRIPTION_ID,
+            platform=Platform.ZHIHU,
+            login_method=LoginMethod.QR,
+            content_remote_id=ZHIHU_ANSWER_ID,
+            author_remote_id="creator-42",
+            detail_reference=ZHIHU_ANSWER_URL,
+            creator_reference=SecretValue(ZHIHU_ANSWER_URL),
+            creator_max_items=1,
+        )
+
+
+def test_zhihu_detail_child_revalidates_canonical_answer_identity(tmp_path: Path) -> None:
+    account_root = tmp_path / "accounts" / "zhihu" / str(ACCOUNT_ID)
+    profile_root = account_root / "browser_data" / "zhihu_user_data_dir"
+    job_root = tmp_path / "jobs" / "attempt"
+    limits = WatchdogLimits()
+    base: dict[str, object] = {
+        "schema_version": detail_runner_module.DETAIL_RUNNER_SCHEMA_VERSION,
+        "checkout_root": str(Path.cwd().resolve()),
+        "account_root": str(account_root),
+        "profile_root": str(profile_root),
+        "job_root": str(job_root),
+        "output_root": str(job_root / "output"),
+        "platform": Platform.ZHIHU.value,
+        "login_method": LoginMethod.QR.value,
+        "content_remote_id": ZHIHU_ANSWER_ID,
+        "author_remote_id": "creator-42",
+        "detail_reference": ZHIHU_ANSWER_URL,
+        "creator_reference": None,
+        "creator_max_items": None,
+        "cookie": None,
+        "headless": True,
+        "request_delay_seconds": 0.25,
+        "bili_progressive_detail": False,
+        "watchdogs": {
+            "max_seconds": limits.max_seconds,
+            "max_output_bytes": limits.max_output_bytes,
+            "max_output_items": limits.max_output_items,
+            "max_output_files": limits.max_output_files,
+            "max_line_bytes": limits.max_line_bytes,
+            "poll_seconds": limits.poll_seconds,
+        },
+    }
+
+    valid = detail_runner_module._ChildRequest.load(json.dumps(base, separators=(",", ":")).encode())
+    assert valid.detail_reference == ZHIHU_ANSWER_URL
+
+    for changes in (
+        {"content_remote_id": "987654322"},
+        {"detail_reference": f"{ZHIHU_ANSWER_URL}?"},
+        {"detail_reference": f"{ZHIHU_ANSWER_URL}?utm_source=drift"},
+        {"creator_reference": ZHIHU_ANSWER_URL},
+        {"creator_max_items": 1},
+    ):
+        tampered = dict(base)
+        tampered.update(changes)
+        with pytest.raises(detail_runner_module._ChildConfigurationError):
+            detail_runner_module._ChildRequest.load(json.dumps(tampered, separators=(",", ":")).encode())
 
 
 def test_xhs_detail_child_revalidates_creator_authority_xor_and_bounds(tmp_path: Path) -> None:

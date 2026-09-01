@@ -15,7 +15,12 @@ from typing import BinaryIO, Protocol
 
 from media_sync.domain import AssetKind
 from media_sync.media.errors import MediaDownloadError
-from media_sync.security.paths import PathSecurityError, assert_regular_file, read_regular_file_prefix
+from media_sync.security.paths import (
+    PathSecurityError,
+    assert_regular_file,
+    open_regular_read_file,
+    read_regular_file_prefix,
+)
 
 _SRT_PREFIX = re.compile(rb"(?:\xef\xbb\xbf)?\s*\d{1,9}\s*\r?\n\s*\d{2}:\d{2}:\d{2}[,.]\d{3}\s+-->")
 _GENERIC_ADVERTISED_MIMES = frozenset({"", "application/octet-stream", "binary/octet-stream"})
@@ -26,6 +31,14 @@ _SUBTITLE_ADVERTISED_MIMES = {
     "srt": frozenset({"application/x-subrip", "text/plain"}),
     "vtt": frozenset({"text/vtt"}),
 }
+_MAX_STATIC_IMAGE_CHUNKS = 100_000
+_STATIC_IMAGE_RESULTS = frozenset(
+    {
+        ("image/jpeg", "jpg"),
+        ("image/png", "png"),
+        ("image/webp", "webp"),
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -271,6 +284,120 @@ def _advertised_mime_is_forbidden(mime_type: str) -> bool:
     )
 
 
+def _is_static_png(handle: BinaryIO, size: int) -> bool:
+    if size < 33 or handle.read(8) != b"\x89PNG\r\n\x1a\n":
+        return False
+    position = 8
+    chunks = 0
+    saw_ihdr = False
+    saw_idat = False
+    while position < size and chunks < _MAX_STATIC_IMAGE_CHUNKS:
+        header = handle.read(8)
+        if len(header) != 8:
+            return False
+        length = int.from_bytes(header[:4], "big")
+        chunk_type = header[4:]
+        chunks += 1
+        chunk_end = position + 12 + length
+        if (
+            length > 0x7FFF_FFFF
+            or chunk_end > size
+            or any(byte not in range(65, 91) and byte not in range(97, 123) for byte in chunk_type)
+        ):
+            return False
+        if chunks == 1:
+            if chunk_type != b"IHDR" or length != 13:
+                return False
+            saw_ihdr = True
+        elif chunk_type == b"IHDR":
+            return False
+        if chunk_type in {b"acTL", b"fcTL", b"fdAT"}:
+            return False
+        if chunk_type == b"IDAT":
+            saw_idat = True
+        handle.seek(length + 4, os.SEEK_CUR)
+        position = chunk_end
+        if chunk_type == b"IEND":
+            return length == 0 and saw_ihdr and saw_idat and position == size
+    return False
+
+
+def _is_static_webp(handle: BinaryIO, size: int) -> bool:
+    header = handle.read(12)
+    if (
+        size < 20
+        or len(header) != 12
+        or header[:4] != b"RIFF"
+        or header[8:] != b"WEBP"
+        or int.from_bytes(header[4:8], "little") + 8 != size
+    ):
+        return False
+    position = 12
+    chunks = 0
+    saw_image_payload = False
+    saw_vp8x = False
+    while position < size and chunks < _MAX_STATIC_IMAGE_CHUNKS:
+        chunk_header = handle.read(8)
+        if len(chunk_header) != 8:
+            return False
+        chunk_type = chunk_header[:4]
+        length = int.from_bytes(chunk_header[4:], "little")
+        chunks += 1
+        padded_length = length + (length & 1)
+        chunk_end = position + 8 + padded_length
+        if chunk_end > size or chunk_type in {b"ANIM", b"ANMF"}:
+            return False
+        if chunk_type == b"VP8X":
+            if saw_vp8x or length != 10:
+                return False
+            flags = handle.read(1)
+            if len(flags) != 1 or flags[0] & 0x02:
+                return False
+            handle.seek(length - 1 + (length & 1), os.SEEK_CUR)
+            saw_vp8x = True
+        else:
+            handle.seek(padded_length, os.SEEK_CUR)
+        if chunk_type in {b"VP8 ", b"VP8L"}:
+            saw_image_payload = True
+        position = chunk_end
+    return position == size and saw_image_payload and chunks < _MAX_STATIC_IMAGE_CHUNKS
+
+
+def _is_static_image(handle: BinaryIO, size: int, result: ProbeResult) -> bool:
+    if (result.mime_type, result.extension) not in _STATIC_IMAGE_RESULTS:
+        return False
+    if result.mime_type == "image/jpeg":
+        if size < 4 or handle.read(2) != b"\xff\xd8":
+            return False
+        handle.seek(-2, os.SEEK_END)
+        return handle.read(2) == b"\xff\xd9"
+    if result.mime_type == "image/png":
+        return _is_static_png(handle, size)
+    return _is_static_webp(handle, size)
+
+
+def _verify_static_image(path: Path, *, root: Path, result: ProbeResult) -> None:
+    try:
+        with open_regular_read_file(path, root=root) as handle:
+            opened = os.fstat(handle.fileno())
+            qualified = _is_static_image(handle, opened.st_size, result)
+            after_read = os.fstat(handle.fileno())
+        current = assert_regular_file(path, root=root)
+    except PathSecurityError as exc:
+        raise MediaDownloadError("filesystem_unsafe") from exc
+    except OSError as exc:
+        raise MediaDownloadError("filesystem_write_failed") from exc
+    identities = (
+        (opened.st_dev, opened.st_ino),
+        (after_read.st_dev, after_read.st_ino),
+        (current.st_dev, current.st_ino),
+    )
+    if len(set(identities)) != 1:
+        raise MediaDownloadError("filesystem_unsafe")
+    if not qualified:
+        raise MediaDownloadError("media_image_not_static")
+
+
 def verify_media(
     path: Path,
     *,
@@ -278,12 +405,15 @@ def verify_media(
     expected_kind: AssetKind | None,
     advertised_mime: str | None,
     probe: MediaProbe | None,
+    require_static_image: bool = False,
     sniff_bytes: int = 65536,
     probe_timeout_seconds: float = 10.0,
     probe_output_bytes: int = 65536,
 ) -> ProbeResult:
     """Verify bytes without trusting URL suffix or disposition metadata."""
 
+    if type(require_static_image) is not bool:
+        raise ValueError("require_static_image must be a boolean")
     if sniff_bytes <= 0 or probe_timeout_seconds <= 0 or probe_output_bytes <= 0:
         raise ValueError("probe limits must be positive")
     try:
@@ -323,6 +453,10 @@ def verify_media(
         raise MediaDownloadError("media_type_unsupported")
     if not _kind_accepts(expected_kind, result):
         raise MediaDownloadError("media_type_mismatch")
+    if require_static_image:
+        if expected_kind not in {None, AssetKind.IMAGE, AssetKind.COVER, AssetKind.AVATAR}:
+            raise MediaDownloadError("media_type_mismatch")
+        _verify_static_image(path, root=root, result=result)
     if advertised_mime:
         advertised = advertised_mime.partition(";")[0].strip().lower()
         if _advertised_mime_is_forbidden(advertised):

@@ -1423,6 +1423,15 @@ async def _execute_child(
             )
 
             install_weibo_media_capture(verified.root)
+        elif manifest.platform.value == "zhihu":
+            from media_sync.integrations.mediacrawler.zhihu_media import (
+                install_zhihu_media_capture,
+            )
+
+            install_zhihu_media_capture(
+                verified.root,
+                creator_max_items=manifest.max_items,
+            )
         config.__dict__["COOKIES"] = cookie or ""
         cookie = None
         if cancellation is not None and cancellation.is_set():

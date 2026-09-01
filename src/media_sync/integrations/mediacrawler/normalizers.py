@@ -37,11 +37,17 @@ from .weibo_media import (
     is_weibo_numeric_note_id,
     is_weibo_proxy_image_url,
 )
+from .zhihu_media import (
+    ZHIHU_IMAGE_FIELD,
+    is_zhihu_positive_id,
+    validate_zhihu_answer_url,
+    validate_zhihu_image_url,
+)
 
 _GIT_SHA = re.compile(r"[0-9a-fA-F]{40}\Z")
 _CHINA_TZ = timezone(timedelta(hours=8))
 _BILI_PROGRESSIVE_FIELD = "__media_sync_bili_progressive_url"
-_PRIVATE_MEDIA_FIELDS = frozenset({_BILI_PROGRESSIVE_FIELD, WEIBO_IMAGES_FIELD})
+_PRIVATE_MEDIA_FIELDS = frozenset({_BILI_PROGRESSIVE_FIELD, WEIBO_IMAGES_FIELD, ZHIHU_IMAGE_FIELD})
 _DY_EPHEMERAL_MEDIA_URL_FIELDS = frozenset({"video_download_url", "cover_url", "music_download_url"})
 _DY_NOTE_MEDIA_URL_FIELD = "note_download_url"
 _KS_EPHEMERAL_MEDIA_URL_FIELDS = frozenset({"video_play_url", "video_cover_url"})
@@ -573,6 +579,29 @@ def _normalize_tieba(record: Mapping[str, object]) -> _ContentParts:
 def _normalize_zhihu(record: Mapping[str, object]) -> _ContentParts:
     remote_id = _required_id(record, "content_id")
     content_type = (_text(record.get("content_type")) or "").lower()
+    canonical_url = _safe_url(record.get("content_url"))
+    images: tuple[str, ...] = ()
+    if ZHIHU_IMAGE_FIELD in record:
+        answer_id = record.get("content_id")
+        question_id = record.get("question_id")
+        answer_url = record.get("content_url")
+        image_url = record.get(ZHIHU_IMAGE_FIELD)
+        if (
+            record.get("content_type") != "answer"
+            or not is_zhihu_positive_id(answer_id)
+            or not is_zhihu_positive_id(question_id)
+            or type(answer_url) is not str
+            or type(image_url) is not str
+        ):
+            raise RecordNormalizationError(QuarantineReason.INVALID_RECORD)
+        assert isinstance(answer_id, str)
+        assert isinstance(question_id, str)
+        canonical_url = validate_zhihu_answer_url(
+            answer_url,
+            answer_id=answer_id,
+            question_id=question_id,
+        )
+        images = (validate_zhihu_image_url(image_url),)
     if content_type in {"answer", "article"}:
         kind = ContentKind.ARTICLE
     elif content_type in {"video", "zvideo"}:
@@ -586,9 +615,10 @@ def _normalize_zhihu(record: Mapping[str, object]) -> _ContentParts:
         kind=kind,
         title=_text(record.get("title")),
         body=_text(record.get("content_text")) or _text(record.get("desc")),
-        canonical_url=_safe_url(record.get("content_url")),
+        canonical_url=canonical_url,
         published_at=_published_at(record.get("created_time")),
         metrics=_metrics(record, {"voteup_count": "upvotes", "comment_count": "comments"}),
+        asset_groups=((AssetKind.IMAGE, images),),
     )
 
 
