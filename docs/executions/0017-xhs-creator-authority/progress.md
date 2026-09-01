@@ -1,26 +1,31 @@
 # Execution 0017 progress / 执行 0017 推进记录
 
-- Status / 状态：Planned; implementation not started / 已计划；实现尚未开始
+- Status / 状态：Offline implementation and documentation closeout complete / 离线实现与文档收尾已完成
 - Last updated / 最近更新：2026-09-01
-- Predecessor / 前置：`4774c34`
+- Plan commit / 计划提交：`9d19e7e`
+- Implementation commit / 实现提交：`2f8dbaa` (pushed to `origin/main` / 已推送至 `origin/main`)
 
-## Completed before implementation / 实现前已完成
+## Implemented / 已实现
 
-- Audited the locked XHS creator, detail, store and media paths at upstream commit `d6f7c5bb906b6dac40ddf343ef9e26438a3de092`. / 已审计锁定上游提交 `d6f7c5bb906b6dac40ddf343ef9e26438a3de092` 的小红书 creator、detail、store 与媒体路径。
-- Confirmed that XHS creator feed supplies per-note token/source authority and is bounded by `CRAWLER_MAX_NOTES_COUNT`; confirmed that persisted `note_url` rewrites source to `pc_search` and is unsuitable as authoritative multi-note state. / 已确认小红书 creator feed 提供逐 note token/source 权限并受 `CRAWLER_MAX_NOTES_COUNT` 限制；也确认持久 `note_url` 会把 source 改写为 `pc_search`，不适合作为权威多 note 状态。
-- Audited Tieba and Zhihu. Tieba needs a real redacted image API fixture before implementation; Zhihu loses relevant media structure. / 已审计贴吧与知乎；贴吧实现前需要真实脱敏图片 API fixture，知乎则丢失了相关媒体结构。
-- Ran the six-file pre-edit baseline: `136 passed in 13.50s`. / 已运行六文件修改前基线：`136 passed in 13.50s`。
-- Created the four bilingual Execution 0017 records before source edits. / 已在源码修改前创建 Execution 0017 四份双语记录。
+- [x] Exact XHS note/creator validators, XOR request boundaries and child schema v3, including decoded xsec value validation. / 精确小红书 note/creator 校验器、互斥 request 边界与 child schema v3，包括解码后 xsec 值校验。
+- [x] Exact Subscription creator-secret fallback and `max_items` projection; explicit detail override wins with zero creator-secret resolution. / 精确 Subscription creator-secret fallback 与 `max_items` 投影；显式 detail 覆盖优先且作者 secret 解析为零。
+- [x] Bounded isolated creator child with one configured XHS path, cleared lists, concurrency one and disabled comments/media. / 有界隔离 creator child，只配置一条小红书路径、清空列表、单并发并关闭评论/媒体。
+- [x] Unique ordinary raw `type="normal"` IMAGE/GALLERY/all-IMAGE target gate and duplicate-target rejection. / 唯一普通 raw `type="normal"` IMAGE/GALLERY/全 IMAGE 目标门及重复目标拒绝。
+- [x] Exact SQLite provenance, DEFAULT-profile mock HTTP, synthetic image validation, SHA-256 archive and idempotent Emby/Jellyfin output with zero-work replay. / 精确 SQLite 来源、DEFAULT-profile mock HTTP、合成图片校验、SHA-256 归档及带零工作重放的幂等 Emby/Jellyfin 输出。
+- [x] Durable raw shape preservation with field-specific authority/query cleanup; fixed pipeline/scheduler error taxonomy. / 持久 raw 形状保持与按字段执行的权限/query 清理；固定 pipeline/scheduler 错误分类。
+- [x] Exact authority preflight before archive repair or lifecycle writes; valid VERIFIED replay zero-secret; non-XHS CLI option rejection. / 归档修复或生命周期写入前执行精确权限 preflight；有效 VERIFIED 重放零 secret；非小红书 CLI 选项拒绝。
 
-## Pending / 待推进
+## Verification completed / 已完成验证
 
-- [ ] Commit and push the bilingual plan checkpoint. / 提交并推送双语计划检查点。
-- [ ] Implement exact XHS creator authority validation and request/child schema. / 实现精确 XHS 作者权限校验及 request/child schema。
-- [ ] Resolve the exact Subscription creator reference in lazy refresh and update pipeline preflight. / 在惰性刷新中解析精确 Subscription 作者引用，并更新 pipeline 前置校验。
-- [ ] Configure bounded XHS creator lookup while preserving explicit single-note compatibility. / 配置有界 XHS 作者查找，同时保留显式单 note 兼容。
-- [ ] Add contract, unit, runtime and IMAGE/GALLERY composition tests. / 增加合约、单元、运行时及 IMAGE/GALLERY 组合测试。
-- [ ] Run focused and complete gates, update truth docs, create implementation/closeout commits and push each. / 运行专项与完整门禁，更新真值文档，创建实现/收尾提交并逐次推送。
+- Focused: `266 passed in 56.90s`; post-format related: `89 passed in 13.74s`. / 专项：`266 passed in 56.90s`；格式后相关：`89 passed in 13.74s`。
+- Complete: `1298 passed, 1 skipped in 365.73s`; only skip is the Windows-inapplicable POSIX mode-bit test. / 完整：`1298 passed, 1 skipped in 365.73s`；唯一跳过项是 Windows 不适用的 POSIX mode-bit 测试。
+- Final pipeline/worker regression: `52 passed in 4.57s`. / 最终 pipeline/worker 回归：`52 passed in 4.57s`。
+- Ruff PASS; format 234 files; strict mypy 79 sources; compileall, two upstream locks, two build artifacts, diff and retained-artifact audits PASS. No coverage run is claimed. / Ruff 通过；格式检查 234 个文件；严格 mypy 79 个源码；compileall、两个上游锁、两个构建产物、diff 与保留产物审计均通过。不宣称 coverage。
 
-## Current truth / 当前事实
+## Remaining / 待实现或待验收
 
-No Execution 0017 production source change has been made yet. Automatic XHS multi-note authority remains unavailable at this checkpoint; users still need the existing explicit single-note detail reference for download refresh. / 当前尚未进行 Execution 0017 生产源码修改。在此检查点，小红书多 note 权限自动查找仍不可用；用户仍需使用现有显式单 note 详情引用才能进行下载刷新。
+- [ ] Main thread: create/push the bilingual closeout commit and reconcile local/tracking/GitHub SHAs; the post-edit checker already passes for 84 Markdown files. / 主线程：创建/推送双语收尾提交并核对本地/tracking/GitHub SHA；编辑后检查已通过 84 个 Markdown 文件。
+- [ ] Real XHS QR/Cookie, creator/feed/detail, CDN bytes and Emby/Jellyfin server rows remain `NOT_RUN`. / 真人小红书 QR/Cookie、creator/feed/detail、CDN 字节及 Emby/Jellyfin 服务器行保持 `NOT_RUN`。
+- [ ] Automatic XHS video/live-photo/animation/mixed-media, authority-expiry recovery and remaining platform/media shapes remain future work. / 小红书自动视频/实况照片/动图/混合媒体、权限过期恢复及其余平台/媒体形状仍为后续工作。
+
+Execution 0017 is complete at its offline boundary; the broader user goal remains active. / Execution 0017 已在离线边界完成；更大的用户目标继续推进。
