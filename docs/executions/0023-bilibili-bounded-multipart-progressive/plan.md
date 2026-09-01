@@ -1,8 +1,10 @@
 # Execution 0023 plan / 执行 0023 计划
 
-- Status / 状态：Frozen, implementation pending / 已冻结，待实现
+- Status / 状态：Executed for the frozen offline scope / 冻结离线范围已执行
 - Plan date / 计划日期：2026-09-02
 - Predecessor / 前置：`27e45c89f20e8eb6bc871ab1505fe25167b70ae3`
+- Plan commit / 计划提交：`bd45478b28cc61a7f35b6211faf3a0fc1eb94138`
+- Implementation commit / 实现提交：`24fd41c600eb30fb2df22079e3cf52778589959e`
 - Database migration / 数据库迁移：None planned / 计划无
 
 ## Baseline and audit / 基线与审计
@@ -20,8 +22,8 @@ Execution 0022 is clean and reconciled at `27e45c8`. The current Bilibili slice 
 
 ## Commit sequence / 提交序列
 
-1. This plan commit / 本计划提交 — `docs: 启动 Bilibili 有界多分P progressive / start bounded Bilibili multipart progressive`
-2. Implementation commit / 实现提交 — `feat: 闭环 Bilibili 有界多分P progressive / close bounded Bilibili multipart progressive`
-3. Documentation closeout commit / 文档收尾提交 — `docs: 收尾 Bilibili 有界多分P progressive / close bounded Bilibili multipart progressive`
+1. `bd45478` — `docs: 启动 Bilibili 有界多分P progressive / start bounded Bilibili multipart progressive`
+2. `24fd41c` — `feat: 闭环 Bilibili 有界多分P progressive / close bounded Bilibili multipart progressive`
+3. This documentation closeout commit; self SHA intentionally omitted / 本文档收尾提交；有意不嵌入自身 SHA — `docs: 收尾 Bilibili 有界多分P progressive / close bounded Bilibili multipart progressive`
 
 `.upstream` remains excluded, unmodified and clean. / `.upstream` 继续排除在跟踪外、保持未修改且干净。

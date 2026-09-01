@@ -687,9 +687,7 @@ def test_bili_captured_single_page_keeps_the_delivered_legacy_asset_identity() -
 
 def test_bili_sixty_four_page_capture_materializes_every_ordered_video_slot() -> None:
     payload = source_record("bili/contents.v1.jsonl")
-    payload[BILIBILI_PAGES_FIELD] = [
-        {"page": index, "cid": 20_000 + index} for index in range(1, 65)
-    ]
+    payload[BILIBILI_PAGES_FIELD] = [{"page": index, "cid": 20_000 + index} for index in range(1, 65)]
 
     item = normalize_record(payload, context(Platform.BILI))
     videos = tuple(asset for asset in item.assets if asset.kind is AssetKind.VIDEO)
