@@ -1,15 +1,15 @@
 # Execution 0020 goal / 执行 0020 目标
 
-- Status / 状态：Plan frozen; implementation and offline qualification pending / 计划已冻结；实现与离线验收待执行
+- Status / 状态：Frozen offline scope delivered and verified; authenticated/live qualification `NOT_RUN` / 冻结离线范围已交付并验证；登录/现网验收 `NOT_RUN`
 - Date / 日期：2026-09-02
 - Predecessor / 前置：Execution 0019 closeout commit `431fd855dafce502e83f74a055a4b27ae5c6f40b`
-- Plan commit / 计划提交：`PENDING`
-- Implementation commit / 实现提交：`PENDING`
+- Plan commit / 计划提交：`df7a38a6f9beee35c6c19336260b512ebc87ce0d`
+- Implementation commit / 实现提交：`8a0e935624e944809af1a56b0f02186686433d95`
 - Scope / 范围：Exactly one static image in an ordinary Tieba creator thread's first floor / 贴吧作者普通主题首楼中的精确一张静态图片
 
 ## Outcome / 目标结果
 
-Execution 0020 will add the first downloadable Tieba media slice and therefore a narrow media path for the seventh platform. A verified-checkout runtime shim will capture exactly one current `type=3` first-floor image from the locked MediaCrawler `page_pc` response before the extractor reduces structured content to text. Scheduled creator discovery will remain bounded by Subscription `max_items`; normalization will retain the thread as ARTICLE and add one position-zero IMAGE; an exact canonical detail lookup will reacquire the current transient `tbpicau` locator immediately before download; the existing bounded static-image gate, SHA-256 archive and deterministic Emby/Jellyfin layout will complete the offline pipeline. / Execution 0020 将增加首个可下载的贴吧媒体切片，从而为第七个平台建立一条狭窄媒体路径。校验 checkout 的运行时 shim 会在锁定 MediaCrawler extractor 把结构化内容压成文本前，从当前 `page_pc` 响应中捕获首楼精确一个 `type=3` 图片。定时作者发现继续受 Subscription `max_items` 约束；归一化保留 ARTICLE 主题并增加一个 position 0 IMAGE；下载前通过精确 canonical 详情查找重新取得当前瞬态 `tbpicau` locator；既有有界静态图片门、SHA-256 归档及确定性 Emby/Jellyfin 布局完成离线闭环。
+Execution 0020 adds the first downloadable Tieba media slice and therefore a narrow media path for the seventh platform. A verified-checkout runtime shim captures exactly one current `type=3` first-floor image from the locked MediaCrawler `page_pc` response before the extractor reduces structured content to text. Scheduled creator discovery is bounded by Subscription `max_items`; normalization retains the thread as ARTICLE and adds one position-zero IMAGE; an exact canonical detail lookup reacquires the current transient `tbpicau` locator immediately before download; the existing bounded static-image gate, SHA-256 archive and deterministic Emby/Jellyfin layout complete the offline pipeline. / Execution 0020 已增加首个可下载的贴吧媒体切片，从而为第七个平台建立一条狭窄媒体路径。校验 checkout 的运行时 shim 会在锁定 MediaCrawler extractor 把结构化内容压成文本前，从当前 `page_pc` 响应中捕获首楼精确一个 `type=3` 图片。定时作者发现受 Subscription `max_items` 约束；归一化保留 ARTICLE 主题并增加一个 position 0 IMAGE；下载前通过精确 canonical 详情查找重新取得当前瞬态 `tbpicau` locator；既有有界静态图片门、SHA-256 归档及确定性 Emby/Jellyfin 布局完成离线闭环。
 
 ## Evidence for this slice / 本切片证据
 

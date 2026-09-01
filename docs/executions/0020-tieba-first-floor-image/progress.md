@@ -1,10 +1,10 @@
 # Execution 0020 progress / 执行 0020 推进记录
 
-- Status / 状态：Planning and response-shape audit complete; implementation pending / 规划与响应形状审计已完成；实现待执行
+- Status / 状态：Frozen offline slice implemented, verified and pushed; live rows `NOT_RUN` / 冻结离线切片已实现、验证并推送；真人行 `NOT_RUN`
 - Last updated / 最近更新：2026-09-02
 - Predecessor / 前置：`431fd855dafce502e83f74a055a4b27ae5c6f40b`
-- Plan commit / 计划提交：`PENDING`
-- Implementation commit / 实现提交：`PENDING`
+- Plan commit / 计划提交：`df7a38a6f9beee35c6c19336260b512ebc87ce0d`
+- Implementation commit / 实现提交：`8a0e935624e944809af1a56b0f02186686433d95`
 
 ## Completed before implementation / 实现前已完成
 
@@ -16,20 +16,29 @@
 - [x] Passed the pre-edit focused baseline: `307 passed in 36.66s`. / 编辑前专项基线通过：`307 passed in 36.66s`。
 - [x] Frozen the claim to one ordinary first-floor static IMAGE while keeping the thread ARTICLE. Multiple images and every other media/rich-content type remain deferred. / 已把声明冻结为普通首楼精确一张静态 IMAGE，同时保持主题为 ARTICLE；多图片与全部其他媒体/富内容类型继续延期。
 
-## Implementation pending / 待实现
+## Implemented / 已实现
 
-- [ ] Add the pinned-source loss/creator-bound contract without changing `.upstream`. / 增加锁定源码丢失/作者边界合约，且不修改 `.upstream`。
-- [ ] Implement strict Tieba ID, canonical URL, current type-3 item, signed locator and query-free source-hint validators. / 实现严格贴吧 ID、canonical URL、当前 type-3 item、签名 locator 与无 query source-hint 校验器。
-- [ ] Implement verified-checkout exact-object capture with parent-store task isolation, collision/origin guards and scheduled creator cap hardening. / 实现校验 checkout 的精确对象捕获，覆盖父存储任务隔离、冲突/来源 guard 与 scheduled creator 上限加固。
-- [ ] Normalize ARTICLE plus one `image:0`, remove private/transient data, and add exact detail refresh with DEFAULT profile. / 归一化 ARTICLE 加一个 `image:0`，移除私有/瞬态数据，并增加 DEFAULT profile 的精确详情刷新。
-- [ ] Enable the static byte gate and prove SQLite/detail/mock HTTP/archive/Emby composition plus zero-work replay. / 启用静态字节门，并证明 SQLite/detail/mock HTTP/archive/Emby 组合及零工作重放。
-- [ ] Run final focused/full/static/type/build/docs/audit gates, update truth documents, review, commit and push bilingual implementation/closeout changes. / 运行最终专项/全量/静态/类型/构建/文档/审计门，更新真值文档，复核、提交并推送双语实现/收尾变更。
+- [x] Added a source-bound contract that verifies the exact locked SHA and executes the real Tieba extractor/model/store loss boundary without changing `.upstream`. / 已增加源码绑定合约，校验精确锁定 SHA 并执行真实贴吧 extractor/model/store 丢失边界，且未修改 `.upstream`。
+- [x] Added strict positive thread IDs, exact canonical thread URLs, the current ten-key integer type-3 item, signed `origin_src` and query-free source-hint validators. / 已增加严格正整数主题 ID、精确 canonical 主题 URL、当前十键整数 type-3 item、签名 `origin_src` 与无 query source-hint 校验器。
+- [x] Added verified-checkout exact-object capture across gather-child → parent-store, nested-store-only `ContextVar`, module/marker/collision guards and scheduled creator cap hardening. `max_items=23` produces `20 + 3` detail/callback batches, no third page and no post-cap sleep. / 已增加校验 checkout 的精确对象捕获，跨越 gather-child → parent-store，只在嵌套 store 使用 `ContextVar`，并加入模块/marker/冲突 guard 与 scheduled creator 上限加固；`max_items=23` 形成 `20 + 3` 详情/callback 批次，无第三页或达到上限后的 sleep。
+- [x] Kept ARTICLE and added exactly one `<note_id>:image:0` IMAGE, recursively removed private state, persisted only a query-free hint, and added canonical parent/child detail authority plus credential-free DEFAULT refresh. / 保持 ARTICLE 并增加精确一个 `<note_id>:image:0` IMAGE，递归移除私有状态，只持久化无 query hint，并增加 canonical 父/child 详情权限及无凭据 DEFAULT 刷新。
+- [x] Enabled automatic static qualification for Tieba IMAGE. Qualified JPEG/PNG/WebP pass; GIF/APNG/animated WebP/AVIF fail; normal, recovery and takeover preparation preserve the flag. / 已为贴吧 IMAGE 自动启用静态资格门；合格 JPEG/PNG/WebP 通过，GIF/APNG/animated WebP/AVIF 失败，normal、recovery 与 takeover 准备链均保留该标志。
+- [x] Added deterministic SQLite → fake detail → mock public DNS/HTTP → production byte gate → SHA-256 archive → Emby poster/backdrop/gallery/body/NFO/source composition. Query-only replay adds zero work, and retained SQLite/WAL/SHM/runtime/archive/export trees contain no private field or transient token. / 已增加确定性 SQLite → fake detail → mock 公网 DNS/HTTP → 生产字节门 → SHA-256 归档 → Emby poster/backdrop/gallery/body/NFO/source 组合；仅 query 变化的重放新增工作为零，保留 SQLite/WAL/SHM/runtime/archive/export 树不含私有字段或瞬态 token。
+- [x] Passed the final focused/full/quality/build/upstream/audit gates and pushed bilingual implementation commit `8a0e935` with local, tracking and GitHub reconciliation. / 最终专项/全量/质量/构建/上游/审计门均通过；双语实现提交 `8a0e935` 已推送并完成本地、tracking 与 GitHub 核对。
+
+## Still open / 仍待实现或验收
+
+- [ ] Multiple first-floor images/gallery, video/voice/emoji/link/rich-card types, reply/comment media, alternate image authorities and media replacement semantics. / 首楼多图片/gallery、视频/语音/表情/链接/富卡片类型、回复/评论媒体、其他图片权限及媒体替换语义。
+- [ ] A retained redacted real response fixture and authenticated/live Tieba qualification. / 可保留的真实脱敏响应夹具及登录/现网贴吧验收。
+- [ ] Broader per-platform shapes and the full seven-platform product outcome. / 更广的逐平台形状及完整七平台产品结果。
 
 ## Verification status / 验证状态
 
 - Pre-edit focused baseline / 编辑前专项基线：`PASS — 307 passed in 36.66s`.
 - Current public response shape audit / 当前公开响应形状审计：`PASS — bounded unauthenticated read-only evidence; no values retained / 有界未登录只读证据；未保留值`.
-- Implementation and complete suite / 实现与完整套件：`PENDING`.
+- Focused implementation regression / 实现专项回归：`PASS — 368 passed in 41.18s`.
+- Complete suite / 完整套件：`PASS — 1650 passed, 1 skipped in 310.82s`; the skip is the Windows-inapplicable POSIX mode-bit boundary / 跳过项为 Windows 不适用的 POSIX mode-bit 边界。
+- Quality/build/upstream/audit gates / 质量/构建/上游/审计门：`PASS`.
 - Authenticated Tieba login/creator/detail, future real CDN bytes and real Emby/Jellyfin server / 登录态贴吧 login/creator/detail、未来真实 CDN 字节及真实 Emby/Jellyfin 服务：`NOT_RUN`.
 
-The broader goal remains active. Execution 0020 can establish a seventh-platform media slice without claiming complete Tieba media or complete seven-platform product coverage. / 更大的目标继续推进。Execution 0020 可以建立第七个平台媒体切片，但不宣称贴吧媒体或七平台产品能力已全部完成。
+The broader goal remains active. Execution 0020 establishes a seventh-platform media slice without claiming complete Tieba media or complete seven-platform product coverage. / 更大的目标继续推进。Execution 0020 已建立第七个平台媒体切片，但不宣称贴吧媒体或七平台产品能力已全部完成。
