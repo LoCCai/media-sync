@@ -1,10 +1,10 @@
 # Execution 0021 plan / 执行 0021 计划
 
-- Status / 状态：Plan frozen; implementation pending / 计划已冻结；实现待执行
+- Status / 状态：Executed for the frozen offline scope / 冻结离线范围已执行
 - Plan date / 计划日期：2026-09-02
 - Predecessor / 前置：`e5d871050cdf25da1a51e2f057ba317dea2cffb1`
-- Plan commit / 计划提交：`PENDING`
-- Implementation commit / 实现提交：`PENDING`
+- Plan commit / 计划提交：`5095ed6e803a8a2f0a3134e756dd3e101fef10bd`
+- Implementation commit / 实现提交：`e0fb8d572c8f5535a5495c2dfbf5b9cdf78461e7`
 - Database migration / 数据库迁移：None planned / 计划无
 
 ## Baseline / 前置基线
@@ -21,8 +21,8 @@ Execution 0020 is pushed and reconciled at `e5d8710`. Its focused implementation
 
 ## Commit sequence / 提交序列
 
-1. `PENDING` — `docs: 启动贴吧首楼双图闭环 / start Tieba first-floor two-image pipeline`
-2. `PENDING` — `feat: 闭环贴吧首楼双图 / close Tieba first-floor two-image pipeline`
-3. `PENDING` — `docs: 收尾贴吧首楼双图闭环 / close Tieba first-floor two-image pipeline`
+1. `5095ed6` — `docs: 启动贴吧首楼双图闭环 / start Tieba first-floor two-image pipeline`
+2. `e0fb8d5` — `feat: 闭环贴吧首楼双图 / close Tieba first-floor two-image pipeline`
+3. This documentation closeout commit; self SHA intentionally omitted / 本文档收尾提交；有意不嵌入自身 SHA — `docs: 收尾贴吧首楼双图闭环 / close Tieba first-floor two-image pipeline`
 
 `.upstream` remains excluded, unmodified and clean. / `.upstream` 继续排除在跟踪外、保持未修改且干净。
