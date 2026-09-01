@@ -1,36 +1,27 @@
 # Execution 0019 progress / 执行 0019 推进记录
 
-- Status / 状态：Planning complete; implementation not started / 规划完成；实现尚未开始
-- Last updated / 最近更新：2026-09-01
+- Status / 状态：Frozen offline Zhihu answer-image slice and documentation closeout complete / 冻结离线知乎回答图片切片与文档收尾已完成
+- Last updated / 最近更新：2026-09-02
 - Predecessor / 前置：`4fb639a`
-- Plan commit / 计划提交：`PENDING`
-- Implementation commit / 实现提交：`PENDING`
+- Plan commit / 计划提交：`dc1714c`
+- Implementation commit / 实现提交：`2edb9d763b4948c56cc182bcc5012914bcb644d1`
 
-## Completed before implementation / 实现前已完成
+## Completed / 已完成
 
-- [x] Read-only audit of the locked MediaCrawler Zhihu creator, answer, article, zvideo, detail, model and JSONL store paths at SHA `d6f7c5bb906b6dac40ddf343ef9e26438a3de092`; neither upstream checkout was modified. / 已对 SHA `d6f7c5bb906b6dac40ddf343ef9e26438a3de092` 的锁定 MediaCrawler 知乎 creator、回答、文章、zvideo、detail、模型及 JSONL store 路径完成只读审计；两个上游 checkout 均未修改。
-- [x] Confirmed that creator mode currently calls answers only, raw answer HTML reaches `_extract_answer_content`, all image attributes are removed by `extract_text_from_html`, `ZhihuContent` has no media field, and JSONL therefore contains no downloadable Asset locator. / 已确认 creator 模式当前只调用回答，原始回答 HTML 会到达 `_extract_answer_content`，全部图片属性被 `extract_text_from_html` 删除，`ZhihuContent` 没有媒体字段，因此 JSONL 不含可下载 Asset locator。
-- [x] Confirmed that the locked all-answer creator loop ignores `CRAWLER_MAX_NOTES_COUNT`; successful bounded pagination is included in scope instead of being misrepresented as an existing guarantee. / 已确认锁定的全回答 creator 循环忽略 `CRAWLER_MAX_NOTES_COUNT`；成功有界分页已纳入范围，不把它误述为现有保证。
-- [x] Frozen the minimum claim to an ordinary answer with exactly one static `zhimg.com` IMAGE. Zero-image answers remain compatible but outside the media claim; multiple images/gallery, article media and zvideo remain deferred. / 已把最小声明冻结为普通回答中的精确一张 `zhimg.com` 静态 IMAGE。零图片回答继续兼容但不属于媒体声明；多图/gallery、文章媒体及 zvideo 均延期。
-- [x] Recorded the evidence limit: no real redacted Zhihu answer/API fixture exists, so the planned result can be source-bound offline evidence only; all live rows remain `NOT_RUN`. / 已记录证据限制：当前没有真实脱敏知乎回答/API 夹具，因此计划结果只能形成源码绑定的离线证据；全部真人行保持 `NOT_RUN`。
-- [x] Pre-edit focused baseline passed `255 passed in 48.32s`, covering MediaCrawler ingestion, detail refresh, database ingestion, Asset download orchestration, pipeline runtime and refresh units. / 编辑前专项基线通过 `255 passed in 48.32s`，覆盖 MediaCrawler 导入、detail 刷新、数据库导入、Asset 下载编排、pipeline runtime 及刷新单元测试。
+- [x] Audited and source-bound the pinned MediaCrawler Zhihu answer request, real extractor/update/JSONL loss boundary, answers-only creator dispatch and missing native cap at SHA `d6f7c5bb906b6dac40ddf343ef9e26438a3de092`; no upstream file was edited. / 已审计并源码绑定 SHA `d6f7c5bb906b6dac40ddf343ef9e26438a3de092` 的锁定 MediaCrawler 知乎回答请求、真实 extractor/update/JSONL 丢失边界、仅回答 creator dispatch 及缺少原生上限事实；未修改任何上游文件。
+- [x] Implemented the frozen `data-original` → `data-actualsrc` → `src` one-image parser and strict canonical answer/`zhimg.com` URL gates. Duplicate/competing lazy or `srcset` attributes, multiple images, media-container drift, empty delimiters and unsupported URLs fail closed. / 已实现冻结的 `data-original` → `data-actualsrc` → `src` 单图解析器及严格 canonical 回答/`zhimg.com` URL 门；重复/竞争性 lazy 或 `srcset` 属性、多图、媒体容器漂移、空分隔符与不支持 URL 均关闭失败。
+- [x] Fixed the review-discovered P1 by binding capture to the exact returned object and using `ContextVar` only inside nested storage. The gather-child → parent-store regression and real locked Pydantic carry/consume/non-serialization contract pass. / 已通过把捕获绑定到精确返回对象、只在嵌套 store 中使用 `ContextVar` 修复审查发现的 P1；gather child → 父 store 回归及真实锁定 Pydantic 携带/消费/不序列化合约均通过。
+- [x] Bounded scheduled creator execution by Subscription `max_items`. The end-to-end child proof turns 23 into two API requests and two callback invocations with page sizes `20 + 3`, exactly 23 callback-processed rows and one between-page pacing sleep; there is no third request or post-cap sleep. Short non-terminal, repeated, malformed and extractor-drift pages fail closed. Zhihu no longer requires full-history acknowledgement. / 已以 Subscription `max_items` 约束 scheduled creator 执行；端到端 child 证据把 23 转换为页面大小 `20 + 3` 的两次 API 请求与两次 callback 调用，callback 精确处理 23 行，页间执行一次节奏 sleep；达到上限后没有第三次请求或额外 sleep。短非终止页、重复页、畸形页与 extractor 漂移均关闭失败。知乎不再要求全历史确认。
+- [x] Normalized ARTICLE plus one position-zero `<content_id>:image:0` IMAGE, removed private/transient authority from durable state, and implemented exact canonical-answer detail refresh with credential-free `MediaRequestProfile.DEFAULT`. / 已归一化 ARTICLE 加 position 0 的唯一 `<content_id>:image:0` IMAGE，从持久状态移除私有/瞬态权限，并实现精确 canonical 回答 detail 刷新与无凭据 `MediaRequestProfile.DEFAULT`。
+- [x] Added automatic bounded static structural qualification for Zhihu IMAGE downloads. Qualified JPEG/PNG/WebP pass; GIF/APNG/animated WebP/AVIF fail; normal, recovery and takeover preparation preserve the flag. This is structural qualification, not complete pixel decoding. / 已为知乎 IMAGE 下载增加自动有界静态结构资格校验；合格 JPEG/PNG/WebP 通过，GIF/APNG/animated WebP/AVIF 失败；normal、recovery 与 takeover 准备链保留该标志。该能力是结构资格校验，不是完整像素解码。
+- [x] Passed the SQLite → fake detail → mock public DNS/HTTP → production byte gate → SHA-256 archive → Emby poster/backdrop/gallery/body/NFO/source composition, zero-work query replay and retained SQLite/runtime/archive/export/WAL/SHM audit. / 已通过 SQLite → fake detail → mock 公网 DNS/HTTP → 生产字节门 → SHA-256 归档 → Emby poster/backdrop/gallery/body/NFO/source 组合、query 零工作重放及保留 SQLite/runtime/archive/export/WAL/SHM 审计。
+- [x] Passed the final 505-test focused gate, complete suite (`1543 passed, 1 skipped`), Ruff, format, strict mypy, compileall, upstream locks, build, docs, diff/retained-artifact audit and a fresh independent 461-test review with no P0/P1/P2. / 已通过最终 505 项专项门、完整套件（`1543 passed, 1 skipped`）、Ruff、格式、严格 mypy、compileall、上游锁、构建、文档、diff/保留产物审计，以及未发现 P0/P1/P2 的全新 461 项独立复核。
+- [x] Created and pushed bilingual implementation commit `2edb9d763b4948c56cc182bcc5012914bcb644d1`; local `main`, `origin/main` and GitHub were reconciled. / 已创建并推送双语实现提交 `2edb9d763b4948c56cc182bcc5012914bcb644d1`；本地 `main`、`origin/main` 与 GitHub 已核对一致。
 
-## Implementation pending / 待实现
+## Documentation closeout / 文档收尾
 
-- [ ] Reconcile local/tracking/GitHub predecessor SHAs before implementation. / 实现前核对本地/tracking/GitHub 前置 SHA。
-- [ ] Add the pinned-source contract proving the exact HTML-to-text and model-to-JSONL loss boundary without network access. / 增加锁定源码合约，在无需网络时证明精确 HTML→文本与模型→JSONL 丢失边界。
-- [ ] Implement strict one-image HTML/URL capture and verified-checkout runtime shim with collision, partial-installation and task-isolation protections. / 实现严格单图 HTML/URL 捕获及校验 checkout 运行时 shim，并覆盖冲突、部分安装与任务隔离保护。
-- [ ] Enforce successful creator pagination at Subscription `max_items`, with bounded page/data/paging validation and no extra request after the cap. / 在 Subscription `max_items` 强制成功 creator 分页边界，校验有界 page/data/paging，并保证达到上限后无额外请求。
-- [ ] Normalize exactly one ARTICLE-owned position-zero IMAGE while stripping the private field and signed query from durable state. / 在 ARTICLE 下归一化精确一个 position 0 IMAGE，同时从持久状态移除私有字段与签名 query。
-- [ ] Add strict persisted canonical answer authority and one-detail refresh with exact content/Asset/source-hint matching and `MediaRequestProfile.DEFAULT`. / 增加严格持久 canonical 回答权限与单详情刷新，要求精确 content/Asset/source-hint 匹配并使用 `MediaRequestProfile.DEFAULT`。
-- [ ] Prove SQLite provenance → bounded detail → mock DNS/HTTP → real image validation → immutable archive → Emby publication and zero-work replay. / 证明 SQLite 来源 → 有界 detail → mock DNS/HTTP → 真实图片校验 → 不可变归档 → Emby 发布及零工作重放。
-- [ ] Run all quality, build, documentation, upstream-cleanliness and retained-artifact gates; obtain independent final review; create/push separate bilingual implementation and closeout commits. / 运行全部质量、构建、文档、上游干净性及保留产物门禁；取得独立最终审查；分别创建/推送双语实现与收尾提交。
+- [x] The commit containing this record is the bilingual documentation closeout. Its self-referential SHA is intentionally not embedded; post-push local/tracking/GitHub reconciliation is reported in the task handoff. / 包含本记录的提交即双语文档收尾；其自引用 SHA 有意不嵌入，推送后的本地/tracking/GitHub 核对结果在任务交接中报告。
 
-## Verification status / 验证状态
+## Deferred product scope / 延期产品范围
 
-- Execution 0019 pre-edit baseline: `PASS` — `255 passed in 48.32s`. / Execution 0019 编辑前基线：`PASS` — `255 passed in 48.32s`。
-- Focused implementation tests: `PENDING`. / 实现专项测试：`PENDING`。
-- Complete suite and static/build/docs gates: `PENDING`. / 完整套件及静态/构建/文档门禁：`PENDING`。
-- Real Zhihu login, creator/detail traffic, real CDN bytes and real Emby/Jellyfin server: `NOT_RUN`. / 真人知乎登录、creator/detail 流量、真实 CDN 字节及真实 Emby/Jellyfin 服务：`NOT_RUN`。
-
-The broader user goal remains active. Execution 0019 will add only one narrow media shape for the sixth platform and will not claim complete Zhihu or seven-platform media coverage. / 更大的用户目标继续推进。Execution 0019 只会为第六个平台增加一个狭窄媒体形状，不宣称完成全部知乎或七平台媒体覆盖。
+Multiple-answer images/gallery, Zhihu articles, zvideo playback/covers, real redacted fixtures and live login/creator/detail/CDN/Emby qualification remain deferred or `NOT_RUN`. Tieba downloadable media and complete seven-platform coverage remain active work. / 知乎回答多图/gallery、文章、zvideo 播放/封面、真实脱敏夹具及真人登录/作者/detail/CDN/Emby 验收继续延期或保持 `NOT_RUN`。贴吧可下载媒体与七平台完整覆盖继续推进。
