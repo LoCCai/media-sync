@@ -32,6 +32,12 @@ from .jsonl import (
     read_jsonl,
     read_jsonl_bytes,
 )
+from .tieba_media import (
+    TIEBA_IMAGE_FIELD,
+    is_tieba_positive_id,
+    validate_tieba_image_url,
+    validate_tieba_thread_url,
+)
 from .weibo_media import (
     WEIBO_IMAGES_FIELD,
     is_weibo_numeric_note_id,
@@ -47,7 +53,7 @@ from .zhihu_media import (
 _GIT_SHA = re.compile(r"[0-9a-fA-F]{40}\Z")
 _CHINA_TZ = timezone(timedelta(hours=8))
 _BILI_PROGRESSIVE_FIELD = "__media_sync_bili_progressive_url"
-_PRIVATE_MEDIA_FIELDS = frozenset({_BILI_PROGRESSIVE_FIELD, WEIBO_IMAGES_FIELD, ZHIHU_IMAGE_FIELD})
+_PRIVATE_MEDIA_FIELDS = frozenset({_BILI_PROGRESSIVE_FIELD, TIEBA_IMAGE_FIELD, WEIBO_IMAGES_FIELD, ZHIHU_IMAGE_FIELD})
 _DY_EPHEMERAL_MEDIA_URL_FIELDS = frozenset({"video_download_url", "cover_url", "music_download_url"})
 _DY_NOTE_MEDIA_URL_FIELD = "note_download_url"
 _KS_EPHEMERAL_MEDIA_URL_FIELDS = frozenset({"video_play_url", "video_cover_url"})
@@ -565,14 +571,26 @@ def _normalize_wb(record: Mapping[str, object]) -> _ContentParts:
 
 def _normalize_tieba(record: Mapping[str, object]) -> _ContentParts:
     remote_id = _required_id(record, "note_id")
+    canonical_url = _safe_url(record.get("note_url")) or f"https://tieba.baidu.com/p/{remote_id}"
+    images: tuple[str, ...] = ()
+    if TIEBA_IMAGE_FIELD in record:
+        note_id = record.get("note_id")
+        note_url = record.get("note_url")
+        image_url = record.get(TIEBA_IMAGE_FIELD)
+        if not is_tieba_positive_id(note_id) or type(note_url) is not str or type(image_url) is not str:
+            raise RecordNormalizationError(QuarantineReason.INVALID_RECORD)
+        assert isinstance(note_id, str)
+        canonical_url = validate_tieba_thread_url(note_url, note_id=note_id)
+        images = (validate_tieba_image_url(image_url),)
     return _ContentParts(
         remote_id=remote_id,
         kind=ContentKind.ARTICLE,
         title=_text(record.get("title")),
         body=_text(record.get("desc")),
-        canonical_url=_safe_url(record.get("note_url")) or f"https://tieba.baidu.com/p/{remote_id}",
+        canonical_url=canonical_url,
         published_at=_published_at(record.get("publish_time")),
         metrics=_metrics(record, {"total_replay_num": "replies"}),
+        asset_groups=((AssetKind.IMAGE, images),),
     )
 
 

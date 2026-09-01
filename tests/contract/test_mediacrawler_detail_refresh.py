@@ -22,6 +22,7 @@ from media_sync.integrations.mediacrawler.refresh import (
     MediaCrawlerLocatorRefresher,
     MediaCrawlerRefreshContext,
 )
+from media_sync.integrations.mediacrawler.tieba_media import TIEBA_IMAGE_FIELD
 from media_sync.integrations.mediacrawler.weibo_media import WEIBO_IMAGES_FIELD
 from media_sync.integrations.mediacrawler.zhihu_media import ZHIHU_IMAGE_FIELD
 from media_sync.media import AdapterRefreshLocator, MediaDownloadError, MediaRequestProfile
@@ -57,6 +58,12 @@ ZHIHU_ANSWER_ID = "987654321"
 ZHIHU_QUESTION_ID = "246810"
 ZHIHU_ANSWER_URL = f"https://www.zhihu.com/question/{ZHIHU_QUESTION_ID}/answer/{ZHIHU_ANSWER_ID}"
 ZHIHU_IMAGE_URL = "https://picx.zhimg.com/v2-detail-fixture.jpg?source=zhihu-detail-sentinel"
+TIEBA_NOTE_ID = "10376710029"
+TIEBA_THREAD_URL = f"https://tieba.baidu.com/p/{TIEBA_NOTE_ID}"
+TIEBA_IMAGE_ID = "489c9a3df8dcd1009420153b348b4710b8122fc3"
+TIEBA_TOKEN = "tieba-detail-sentinel-2026-09-02"
+TIEBA_IMAGE_URL = f"https://tiebapic.baidu.com/forum/pic/item/{TIEBA_IMAGE_ID}.jpg?tbpicau={TIEBA_TOKEN}"
+TIEBA_IMAGE_HINT = f"https://tiebapic.baidu.com/forum/pic/item/{TIEBA_IMAGE_ID}.jpg"
 _DEFAULT_BILI_VIEW = object()
 _DEFAULT_BILI_PLAY = object()
 
@@ -550,6 +557,139 @@ async def async_cleanup():
     return None
 """
 
+_TIEBA_HELP = r"""
+class TiebaNote:
+    def model_dump(self):
+        return {
+            "note_id": self.note_id,
+            "note_url": self.note_url,
+            "title": self.title,
+            "desc": self.desc,
+        }
+
+
+class TieBaExtractor:
+    def extract_note_detail_from_api(self, api_data):
+        thread = api_data["thread"]
+        result = TiebaNote()
+        result.note_id = str(thread["id"])
+        result.note_url = "https://tieba.baidu.com/p/" + result.note_id
+        result.title = thread["title"]
+        result.desc = "fixture first-floor body"
+        return result
+"""
+
+_TIEBA_CLIENT = r"""
+class BaiduTieBaClient:
+    async def get_all_notes_by_creator_url(
+        self,
+        creator_url,
+        crawl_interval=1.0,
+        callback=None,
+        max_note_count=0,
+    ):
+        return []
+"""
+
+_TIEBA_STORE_IMPL = r"""
+import json
+from pathlib import Path
+
+import config
+
+
+class TieBaJsonlStoreImplement:
+    async def store_content(self, content_item):
+        target = Path(config.SAVE_DATA_PATH) / "tieba" / "jsonl" / "detail_contents_fixture.jsonl"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps(content_item, separators=(",", ":")) + "\n", encoding="utf-8")
+"""
+
+_TIEBA_STORE = r"""
+import asyncio
+
+from ._store_impl import TieBaJsonlStoreImplement
+
+
+async def update_tieba_note(note_item):
+    await asyncio.sleep(0)
+    await TieBaJsonlStoreImplement().store_content(note_item.model_dump())
+"""
+
+_TIEBA_MAIN = r"""
+import asyncio
+import os
+from pathlib import Path
+
+import config
+from media_platform.tieba.help import TieBaExtractor
+from store import tieba as tieba_store
+
+crawler = None
+
+
+class FakeCrawler:
+    async def start(self):
+        assert config.PLATFORM == "tieba"
+        assert config.LOGIN_TYPE == "qrcode"
+        assert config.CRAWLER_TYPE == "detail"
+        assert config.CREATOR_MODE is False
+        assert config.CRAWLER_MAX_NOTES_COUNT == 1
+        assert config.TIEBA_SPECIFIED_ID_LIST == [__TIEBA_NOTE_ID__]
+        assert config.SAVE_DATA_OPTION == "jsonl"
+        assert config.MAX_CONCURRENCY_NUM == 1
+        assert config.ENABLE_GET_COMMENTS is False
+        assert config.ENABLE_GET_MEIDAS is False
+        assert config.ENABLE_GET_MEDIAS is False
+        profile = Path(
+            os.path.join(os.getcwd(), "browser_data", config.USER_DATA_DIR % config.PLATFORM)
+        ).resolve()
+        profile.mkdir(parents=True, exist_ok=True)
+        (profile / "session.marker").write_text("stable fixture profile", encoding="utf-8")
+        api_data = {
+            "thread": {
+                "id": __TIEBA_NOTE_ID__,
+                "tid": __TIEBA_NOTE_ID__,
+                "title": "Fixture Tieba thread",
+            },
+            "first_floor": {
+                "tid": __TIEBA_NOTE_ID__,
+                "content": [
+                    {"type": 0, "text": "fixture first-floor body"},
+                    {
+                        "type": 3,
+                        "origin_src": __TIEBA_IMAGE_URL__,
+                        "cdn_src": __TIEBA_CDN_URL__,
+                        "big_cdn_src": __TIEBA_BIG_CDN_URL__,
+                        "cdn_src_active": __TIEBA_ACTIVE_CDN_URL__,
+                        "pic_id": 300933013320,
+                        "bsize": "560,303",
+                        "origin_size": 65144,
+                        "is_long_pic": 0,
+                        "show_original_btn": 1,
+                    },
+                ],
+            },
+        }
+
+        async def extract_in_detail_task():
+            await asyncio.sleep(0)
+            return TieBaExtractor().extract_note_detail_from_api(api_data)
+
+        note = (await asyncio.gather(extract_in_detail_task()))[0]
+        await tieba_store.update_tieba_note(note)
+
+
+async def main():
+    global crawler
+    crawler = FakeCrawler()
+    await crawler.start()
+
+
+async def async_cleanup():
+    return None
+"""
+
 
 def _fake_checkout(root: Path) -> Path:
     checkout = root / "fake-mediacrawler"
@@ -785,6 +925,51 @@ def _fake_zhihu_checkout(root: Path) -> Path:
     return checkout.resolve()
 
 
+def _fake_tieba_checkout(root: Path) -> Path:
+    checkout = root / "fake-mediacrawler-tieba"
+    for package in (
+        checkout / "config",
+        checkout / "media_platform",
+        checkout / "media_platform" / "tieba",
+        checkout / "store",
+        checkout / "store" / "tieba",
+    ):
+        package.mkdir(parents=True, exist_ok=True)
+        (package / "__init__.py").write_text("", encoding="utf-8")
+    (checkout / "config" / "__init__.py").write_text(textwrap.dedent(_CONFIG).lstrip(), encoding="utf-8")
+    (checkout / "media_platform" / "tieba" / "help.py").write_text(
+        textwrap.dedent(_TIEBA_HELP).lstrip(), encoding="utf-8"
+    )
+    (checkout / "media_platform" / "tieba" / "client.py").write_text(
+        textwrap.dedent(_TIEBA_CLIENT).lstrip(), encoding="utf-8"
+    )
+    (checkout / "store" / "tieba" / "_store_impl.py").write_text(
+        textwrap.dedent(_TIEBA_STORE_IMPL).lstrip(), encoding="utf-8"
+    )
+    (checkout / "store" / "tieba" / "__init__.py").write_text(textwrap.dedent(_TIEBA_STORE).lstrip(), encoding="utf-8")
+    query = f"tbpicau={TIEBA_TOKEN}"
+    main_source = (
+        textwrap.dedent(_TIEBA_MAIN)
+        .lstrip()
+        .replace("__TIEBA_NOTE_ID__", repr(TIEBA_NOTE_ID))
+        .replace("__TIEBA_IMAGE_URL__", repr(TIEBA_IMAGE_URL))
+        .replace(
+            "__TIEBA_CDN_URL__",
+            repr(f"https://tiebapic.baidu.com/forum/w%3D720/sign=a/{TIEBA_IMAGE_ID}.jpg?{query}"),
+        )
+        .replace(
+            "__TIEBA_BIG_CDN_URL__",
+            repr(f"https://tiebapic.baidu.com/forum/w%3D1920/sign=b/{TIEBA_IMAGE_ID}.jpg?{query}"),
+        )
+        .replace(
+            "__TIEBA_ACTIVE_CDN_URL__",
+            repr(f"https://tiebapic.baidu.com/forum/w%3D720/sign=c/{TIEBA_IMAGE_ID}.jpg?{query}"),
+        )
+    )
+    (checkout / "main.py").write_text(main_source, encoding="utf-8")
+    return checkout.resolve()
+
+
 def _bili_process_runner(tmp_path: Path, checkout: Path) -> MediaCrawlerDetailProcessRunner:
     lock_path = tmp_path / "upstreams.lock.json"
     lock_path.write_text("{}", encoding="utf-8")
@@ -907,6 +1092,25 @@ def _zhihu_process_runner(tmp_path: Path, checkout: Path) -> MediaCrawlerDetailP
     )
 
 
+def _tieba_process_runner(tmp_path: Path, checkout: Path) -> MediaCrawlerDetailProcessRunner:
+    lock_path = tmp_path / "upstreams.lock.json"
+    lock_path.write_text("{}", encoding="utf-8")
+    return MediaCrawlerDetailProcessRunner(
+        lock_path=lock_path,
+        integration_root=tmp_path / "runtime",
+        python_executable=Path(sys.executable),
+        license_acknowledged=True,
+        checkout_verifier=lambda _path, _accepted: VerifiedCheckout(
+            root=checkout,
+            commit=UPSTREAM_SHA,
+            repository="https://github.com/NanmiCoder/MediaCrawler.git",
+            license_name="NON-COMMERCIAL LEARNING LICENSE 1.1",
+            lock_path=lock_path,
+        ),
+        python_verifier=lambda path: VerifiedPython(path),
+    )
+
+
 def _zhihu_context() -> MediaCrawlerRefreshContext:
     remote_id = f"{ZHIHU_ANSWER_ID}:image:0"
     source_hint = asset_source_hint(ZHIHU_IMAGE_URL)
@@ -937,6 +1141,39 @@ def _zhihu_context() -> MediaCrawlerRefreshContext:
             ),
         ),
         detail_reference=ZHIHU_ANSWER_URL,
+        request_delay_seconds=0.25,
+        watchdogs=WatchdogLimits(max_seconds=10, poll_seconds=0.01),
+    )
+
+
+def _tieba_context() -> MediaCrawlerRefreshContext:
+    remote_id = f"{TIEBA_NOTE_ID}:image:0"
+    return MediaCrawlerRefreshContext(
+        asset_id=ASSET_ID,
+        account_id=ACCOUNT_ID,
+        subscription_id=SUBSCRIPTION_ID,
+        platform=Platform.TIEBA,
+        login_method=LoginMethod.QR,
+        content_remote_type="content",
+        content_remote_id=TIEBA_NOTE_ID,
+        author_remote_id="creator-42",
+        author_display_name="Tieba fixture creator",
+        asset_remote_id=remote_id,
+        asset_kind=AssetKind.IMAGE,
+        asset_position=0,
+        source_hint=TIEBA_IMAGE_HINT,
+        locator=AdapterRefreshLocator(
+            adapter="mediacrawler",
+            asset_key=stable_asset_key(
+                platform="tieba",
+                content_remote_type="content",
+                content_remote_id=TIEBA_NOTE_ID,
+                kind="image",
+                position=0,
+                remote_id=remote_id,
+            ),
+        ),
+        detail_reference=TIEBA_THREAD_URL,
         request_delay_seconds=0.25,
         watchdogs=WatchdogLimits(max_seconds=10, poll_seconds=0.01),
     )
@@ -1209,6 +1446,27 @@ def test_zhihu_answer_detail_installs_image_shim_binds_config_and_cleans_ephemer
     assert b"zhihu-detail-sentinel" not in retained
 
 
+def test_tieba_detail_installs_first_floor_shim_binds_numeric_config_and_cleans_ephemera(
+    tmp_path: Path,
+) -> None:
+    checkout = _fake_tieba_checkout(tmp_path)
+    context = _tieba_context()
+
+    resolved = MediaCrawlerLocatorRefresher(
+        context,
+        _tieba_process_runner(tmp_path, checkout),
+    ).resolve(context.locator)
+
+    assert resolved.url == TIEBA_IMAGE_URL
+    assert resolved.request_profile is MediaRequestProfile.DEFAULT
+    assert list((tmp_path / "runtime" / "jobs").iterdir()) == []
+    profile = tmp_path / "runtime" / "accounts" / "tieba" / str(ACCOUNT_ID) / "browser_data" / "tieba_user_data_dir"
+    assert (profile / "session.marker").read_text(encoding="utf-8") == "stable fixture profile"
+    retained = b"".join(path.read_bytes() for path in (tmp_path / "runtime").rglob("*") if path.is_file())
+    assert TIEBA_IMAGE_FIELD.encode("utf-8") not in retained
+    assert TIEBA_TOKEN.encode("utf-8") not in retained
+
+
 @pytest.mark.parametrize(
     "first_url",
     [
@@ -1421,6 +1679,100 @@ def test_zhihu_detail_child_revalidates_canonical_answer_identity(tmp_path: Path
         {"detail_reference": f"{ZHIHU_ANSWER_URL}?"},
         {"detail_reference": f"{ZHIHU_ANSWER_URL}?utm_source=drift"},
         {"creator_reference": ZHIHU_ANSWER_URL},
+        {"creator_max_items": 1},
+    ):
+        tampered = dict(base)
+        tampered.update(changes)
+        with pytest.raises(detail_runner_module._ChildConfigurationError):
+            detail_runner_module._ChildRequest.load(json.dumps(tampered, separators=(",", ":")).encode())
+
+
+def test_tieba_detail_parent_accepts_only_plain_canonical_thread_authority() -> None:
+    request = MediaCrawlerDetailRequest(
+        account_id=ACCOUNT_ID,
+        subscription_id=SUBSCRIPTION_ID,
+        platform=Platform.TIEBA,
+        login_method=LoginMethod.QR,
+        content_remote_id=TIEBA_NOTE_ID,
+        author_remote_id="creator-42",
+        detail_reference=TIEBA_THREAD_URL,
+    )
+
+    assert request.resolved_detail_reference() == TIEBA_THREAD_URL
+    assert request.creator_reference is None
+    assert request.creator_max_items is None
+
+
+@pytest.mark.parametrize(
+    "detail_reference",
+    [
+        None,
+        SecretValue(TIEBA_THREAD_URL),
+        "https://tieba.baidu.com/p/10376710030",
+        f"{TIEBA_THREAD_URL}?",
+        f"{TIEBA_THREAD_URL}?pn=1",
+        f"http://tieba.baidu.com/p/{TIEBA_NOTE_ID}",
+        f"{TIEBA_THREAD_URL}/",
+        f"https://TIEBA.BAIDU.COM/p/{TIEBA_NOTE_ID}",
+    ],
+)
+def test_tieba_detail_parent_rejects_missing_secret_or_unbound_reference(
+    detail_reference: str | SecretValue | None,
+) -> None:
+    with pytest.raises(MediaDownloadError, match="locator_refresh_configuration_invalid"):
+        MediaCrawlerDetailRequest(
+            account_id=ACCOUNT_ID,
+            subscription_id=SUBSCRIPTION_ID,
+            platform=Platform.TIEBA,
+            login_method=LoginMethod.QR,
+            content_remote_id=TIEBA_NOTE_ID,
+            author_remote_id="creator-42",
+            detail_reference=detail_reference,
+        )
+
+
+def test_tieba_detail_child_revalidates_canonical_thread_identity(tmp_path: Path) -> None:
+    account_root = tmp_path / "accounts" / "tieba" / str(ACCOUNT_ID)
+    profile_root = account_root / "browser_data" / "tieba_user_data_dir"
+    job_root = tmp_path / "jobs" / "attempt"
+    limits = WatchdogLimits()
+    base: dict[str, object] = {
+        "schema_version": detail_runner_module.DETAIL_RUNNER_SCHEMA_VERSION,
+        "checkout_root": str(Path.cwd().resolve()),
+        "account_root": str(account_root),
+        "profile_root": str(profile_root),
+        "job_root": str(job_root),
+        "output_root": str(job_root / "output"),
+        "platform": Platform.TIEBA.value,
+        "login_method": LoginMethod.QR.value,
+        "content_remote_id": TIEBA_NOTE_ID,
+        "author_remote_id": "creator-42",
+        "detail_reference": TIEBA_THREAD_URL,
+        "creator_reference": None,
+        "creator_max_items": None,
+        "cookie": None,
+        "headless": True,
+        "request_delay_seconds": 0.25,
+        "bili_progressive_detail": False,
+        "watchdogs": {
+            "max_seconds": limits.max_seconds,
+            "max_output_bytes": limits.max_output_bytes,
+            "max_output_items": limits.max_output_items,
+            "max_output_files": limits.max_output_files,
+            "max_line_bytes": limits.max_line_bytes,
+            "poll_seconds": limits.poll_seconds,
+        },
+    }
+
+    valid = detail_runner_module._ChildRequest.load(json.dumps(base, separators=(",", ":")).encode())
+    assert valid.detail_reference == TIEBA_THREAD_URL
+
+    for changes in (
+        {"content_remote_id": "10376710030"},
+        {"detail_reference": f"{TIEBA_THREAD_URL}?"},
+        {"detail_reference": f"{TIEBA_THREAD_URL}?pn=1"},
+        {"detail_reference": f"http://tieba.baidu.com/p/{TIEBA_NOTE_ID}"},
+        {"creator_reference": TIEBA_THREAD_URL},
         {"creator_max_items": 1},
     ):
         tampered = dict(base)

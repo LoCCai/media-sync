@@ -38,7 +38,7 @@ ASSET_DOWNLOAD_JOB_TYPE = "asset_download"
 
 
 def _requires_static_image(platform: str, kind: str) -> bool:
-    return platform == Platform.ZHIHU.value and kind == AssetKind.IMAGE.value
+    return platform in {Platform.TIEBA.value, Platform.ZHIHU.value} and kind == AssetKind.IMAGE.value
 
 
 _ORCHESTRATION_ERRORS: dict[str, tuple[str, bool]] = {

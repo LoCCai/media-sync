@@ -43,7 +43,33 @@ from media_sync.media import (
 
 PNG = b"\x89PNG\r\n\x1a\n" + b"offline-application-download"
 STATIC_PNG = b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=")
+STATIC_JPEG = b64decode(
+    "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAx"
+    "NDQ0Hyc5PTgyPC4zNDL/2wBDAQkJCQwLDBgNDRgyIRwhMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIy"
+    "MjIyMjIyMjL/wAARCAABAAEDASIAAhEBAxEB/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUFBA"
+    "QAAAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVWV1"
+    "hZWmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+"
+    "Tl5ufo6erx8vP09fb3+Pn6/8QAHwEAAwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoL/8QAtREAAgECBAQDBAcFBAQAAQJ3AAECAxEE"
+    "BSExBhJBUQdhcRMiMoEIFEKRobHBCSMzUvAVYnLRChYkNOEl8RcYGRomJygpKjU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hp"
+    "anN0dXZ3eHl6goOEhYaHiImKkpOUlZaXmJmaoqOkpaanqKmqsrO0tba3uLm6wsPExcbHyMnK0tPU1dbX2Nna4uPk5ebn6Onq8vP"
+    "09fb3+Pn6/9oADAMBAAIRAxEAPwDi6KKK+ZP3E//Z"
+)
+STATIC_WEBP = b64decode("UklGRjwAAABXRUJQVlA4IDAAAADQAQCdASoBAAEAAUAmJaACdLoB+AADsAD+8ut//NgVzXPv9//S4P0uD9Lg/9KQAAA=")
 GIF = b"GIF89a" + b"\x00" * 32
+_APNG_INSERT = STATIC_PNG.index(b"IDAT") - 4
+ANIMATED_PNG = STATIC_PNG[:_APNG_INSERT] + b"\x00\x00\x00\x08acTL" + b"\x00" * 12 + STATIC_PNG[_APNG_INSERT:]
+_ANIMATED_WEBP_BODY = (
+    b"WEBP"
+    + b"VP8X"
+    + (10).to_bytes(4, "little")
+    + b"\x02"
+    + b"\x00" * 9
+    + b"VP8 "
+    + (2).to_bytes(4, "little")
+    + b"\x00\x00"
+)
+ANIMATED_WEBP = b"RIFF" + len(_ANIMATED_WEBP_BODY).to_bytes(4, "little") + _ANIMATED_WEBP_BODY
+AVIF = b"\x00\x00\x00\x18ftypavif" + b"\x00" * 16
 MP4 = b"\x00\x00\x00\x18ftypisom" + b"offline-application-video"
 ETAG = '"application-v1"'
 STARTED_AT = datetime(2026, 8, 30, 6, tzinfo=UTC)
@@ -284,12 +310,49 @@ def test_seed_to_download_is_atomic_and_already_verified_is_idempotent(
         assert str(request.archive_root) not in repr(job.payload)
 
 
-def test_zhihu_image_automatically_rejects_animated_bytes_before_archive(
+@pytest.mark.parametrize(
+    "payload",
+    [STATIC_JPEG, STATIC_PNG, STATIC_WEBP],
+    ids=["jpeg", "png", "webp"],
+)
+def test_tieba_image_automatically_accepts_static_bytes(
+    payload: bytes,
     database: Database,
     tmp_path: Path,
 ) -> None:
-    asset_id = _seed_asset(database, platform="zhihu", url="https://picx.zhimg.com/static-name.jpg")
-    service = AssetDownloadService(database, _downloader(lambda _request: _ok_response(GIF)), clock=lambda: STARTED_AT)
+    asset_id = _seed_asset(
+        database,
+        platform="tieba",
+        url="https://tiebapic.baidu.com/forum/pic/item/489c9a3df8dcd1009420153b348b4710b8122fc3.jpg",
+    )
+    outcome = AssetDownloadService(
+        database,
+        _downloader(lambda _request: _ok_response(payload)),
+        clock=lambda: STARTED_AT,
+    ).run(_request(tmp_path, asset_id))
+
+    assert outcome.disposition == "downloaded"
+    assert outcome.archive_path.read_bytes() == payload
+
+
+@pytest.mark.parametrize("platform", ["zhihu", "tieba"])
+@pytest.mark.parametrize(
+    "payload",
+    [GIF, ANIMATED_PNG, ANIMATED_WEBP, AVIF],
+    ids=["gif", "apng", "animated-webp", "avif"],
+)
+def test_refreshable_static_image_platforms_automatically_reject_animation_or_container_drift(
+    platform: str,
+    payload: bytes,
+    database: Database,
+    tmp_path: Path,
+) -> None:
+    asset_id = _seed_asset(database, platform=platform, url="https://image.example.test/static-name.jpg")
+    service = AssetDownloadService(
+        database,
+        _downloader(lambda _request: _ok_response(payload)),
+        clock=lambda: STARTED_AT,
+    )
 
     with pytest.raises(AssetDownloadOrchestrationError) as caught:
         service.run(_request(tmp_path, asset_id))
@@ -1291,12 +1354,14 @@ def test_job_completion_failure_rolls_back_asset_verification(
         assert job.finished_at is None
 
 
+@pytest.mark.parametrize("platform", ["zhihu", "tieba"])
 def test_reclaimed_retryable_attempt_recovers_prepared_result_before_next_claim(
+    platform: str,
     database: Database,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    asset_id = _seed_asset(database, platform="zhihu")
+    asset_id = _seed_asset(database, platform=platform)
     clock = _MutableClock(STARTED_AT)
     initial_network_calls = 0
 
@@ -1376,6 +1441,7 @@ def test_reclaimed_retryable_attempt_recovers_prepared_result_before_next_claim(
     recovery_downloader = _downloader(forbidden_network)
     real_recover_published = recovery_downloader.recover_published
     recovery_static_flags: list[bool] = []
+    takeover_static_flags: list[tuple[bool, bool]] = []
 
     def capture_recovery(request: DownloadRequest) -> object:
         recovery_static_flags.append(request.require_static_image)
@@ -1383,6 +1449,19 @@ def test_reclaimed_retryable_attempt_recovers_prepared_result_before_next_claim(
 
     monkeypatch.setattr(recovery_downloader, "recover_published", capture_recovery)
     recovery_service = AssetDownloadService(database, recovery_downloader, clock=clock)
+    real_takeover = recovery_service._takeover_prepared_recovery
+
+    def capture_takeover(request: AssetDownloadRequest, recovery: object) -> object:
+        prepared = real_takeover(request, recovery)  # type: ignore[arg-type]
+        takeover_static_flags.append(
+            (
+                recovery.require_static_image,  # type: ignore[attr-defined]
+                prepared.require_static_image,
+            )
+        )
+        return prepared
+
+    monkeypatch.setattr(recovery_service, "_takeover_prepared_recovery", capture_takeover)
 
     recovered = recovery_service.run(recovery_request)
     replayed = recovery_service.run(recovery_request)
@@ -1393,6 +1472,7 @@ def test_reclaimed_retryable_attempt_recovers_prepared_result_before_next_claim(
     assert recovered.archive_path.read_bytes() == STATIC_PNG
     assert recovery_network_calls == 0
     assert recovery_static_flags == [True]
+    assert takeover_static_flags == [(True, True)]
     assert not tuple((tmp_path / "work" / "parts").iterdir())
     with database.session() as session:
         asset = AssetRepository(session).require(str(asset_id))

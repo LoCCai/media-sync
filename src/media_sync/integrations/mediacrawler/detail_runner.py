@@ -52,6 +52,10 @@ from media_sync.integrations.mediacrawler.runner import (
     _close_process_tree,
     _WindowsJob,
 )
+from media_sync.integrations.mediacrawler.tieba_media import (
+    install_tieba_media_capture,
+    validate_tieba_thread_url,
+)
 from media_sync.integrations.mediacrawler.weibo_media import (
     install_weibo_media_capture,
     is_weibo_numeric_note_id,
@@ -73,7 +77,9 @@ DETAIL_RUNNER_SCHEMA_VERSION = 3
 MAX_DETAIL_REQUEST_BYTES = 128 * 1024
 MAX_DETAIL_FRAME_OVERHEAD = 8 * 1024
 
-_SUPPORTED_PLATFORMS = frozenset({Platform.XHS, Platform.DY, Platform.KS, Platform.BILI, Platform.WB, Platform.ZHIHU})
+_SUPPORTED_PLATFORMS = frozenset(
+    {Platform.XHS, Platform.DY, Platform.KS, Platform.BILI, Platform.WB, Platform.TIEBA, Platform.ZHIHU}
+)
 _DETAIL_CONFIG_ATTRIBUTES = {
     Platform.XHS: "XHS_SPECIFIED_NOTE_URL_LIST",
     Platform.DY: "DY_SPECIFIED_ID_LIST",
@@ -132,6 +138,17 @@ def _is_zhihu_detail_reference(value: object, content_remote_id: str) -> bool:
         return False
     try:
         return validate_zhihu_answer_url(value, answer_id=content_remote_id) == value
+    except ValueError:
+        return False
+
+
+def _is_tieba_detail_reference(value: object, content_remote_id: str) -> bool:
+    """Accept only one canonical, non-secret Tieba thread URL bound to this ID."""
+
+    if type(value) is not str:
+        return False
+    try:
+        return validate_tieba_thread_url(value, note_id=content_remote_id) == value
     except ValueError:
         return False
 
@@ -216,6 +233,8 @@ class MediaCrawlerDetailRequest:
             raise MediaDownloadError("locator_refresh_configuration_invalid")
         if platform is Platform.WB and not _is_weibo_detail_reference(self.detail_reference, content_remote_id):
             raise MediaDownloadError("locator_refresh_configuration_invalid")
+        if platform is Platform.TIEBA and not _is_tieba_detail_reference(self.detail_reference, content_remote_id):
+            raise MediaDownloadError("locator_refresh_configuration_invalid")
         if platform is Platform.ZHIHU and not _is_zhihu_detail_reference(self.detail_reference, content_remote_id):
             raise MediaDownloadError("locator_refresh_configuration_invalid")
         if login_method is LoginMethod.COOKIE and self.cookie is None:
@@ -253,6 +272,12 @@ class MediaCrawlerDetailRequest:
             return value
         if self.platform is Platform.ZHIHU:
             if not _is_zhihu_detail_reference(value, self.content_remote_id):
+                raise MediaDownloadError("locator_refresh_configuration_invalid")
+            if type(value) is not str:  # Defensive narrowing after the exact-type predicate.
+                raise MediaDownloadError("locator_refresh_configuration_invalid")
+            return value
+        if self.platform is Platform.TIEBA:
+            if not _is_tieba_detail_reference(value, self.content_remote_id):
                 raise MediaDownloadError("locator_refresh_configuration_invalid")
             if type(value) is not str:  # Defensive narrowing after the exact-type predicate.
                 raise MediaDownloadError("locator_refresh_configuration_invalid")
@@ -696,6 +721,8 @@ class _ChildRequest:
             raise _ChildConfigurationError
         if platform is Platform.WB and not _is_weibo_detail_reference(detail_reference, content_remote_id):
             raise _ChildConfigurationError
+        if platform is Platform.TIEBA and not _is_tieba_detail_reference(detail_reference, content_remote_id):
+            raise _ChildConfigurationError
         if platform is Platform.ZHIHU and not _is_zhihu_detail_reference(detail_reference, content_remote_id):
             raise _ChildConfigurationError
         if bili_progressive_detail and content_remote_id != detail_reference:
@@ -818,7 +845,8 @@ def _configure_upstream(config: Any, request: _ChildRequest) -> None:
         config.CRAWLER_TYPE = "detail"
         config.CREATOR_MODE = False
         config.CRAWLER_MAX_NOTES_COUNT = 1
-        setattr(config, _DETAIL_CONFIG_ATTRIBUTES[request.platform], [request.detail_reference])
+        detail_value = request.content_remote_id if request.platform is Platform.TIEBA else request.detail_reference
+        setattr(config, _DETAIL_CONFIG_ATTRIBUTES[request.platform], [detail_value])
 
 
 def _positive_bili_id(value: object) -> int:
@@ -930,6 +958,8 @@ async def _run_upstream(request: _ChildRequest) -> tuple[Any, _BiliProgressiveRe
         raise _ChildConfigurationError
     if request.platform is Platform.WB:
         install_weibo_media_capture(request.checkout_root)
+    elif request.platform is Platform.TIEBA:
+        install_tieba_media_capture(request.checkout_root)
     elif request.platform is Platform.ZHIHU:
         install_zhihu_media_capture(request.checkout_root)
 

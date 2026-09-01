@@ -35,6 +35,10 @@ from media_sync.integrations.mediacrawler.subscription_policy import (
     MediaCrawlerSubscriptionPolicyError,
     from_subscription_policy,
 )
+from media_sync.integrations.mediacrawler.tieba_media import (
+    validate_tieba_image_source_hint,
+    validate_tieba_thread_url,
+)
 from media_sync.integrations.mediacrawler.zhihu_media import validate_zhihu_answer_url, validate_zhihu_image_url
 from media_sync.media import (
     AdapterRefreshLocator,
@@ -191,6 +195,13 @@ class LazyMediaCrawlerLocatorRefresher:
                     validate_zhihu_image_url(asset.source_url)
                 except ValueError as exc:
                     raise MediaDownloadError("locator_refresh_configuration_invalid") from exc
+            if platform is Platform.TIEBA:
+                if type(asset.source_url) is not str:
+                    raise MediaDownloadError("locator_refresh_configuration_invalid")
+                try:
+                    validate_tieba_image_source_hint(asset.source_url)
+                except ValueError as exc:
+                    raise MediaDownloadError("locator_refresh_configuration_invalid") from exc
             source_hint = asset_source_hint(asset.source_url)
             bili_video_slot = (
                 platform is Platform.BILI
@@ -238,6 +249,19 @@ class LazyMediaCrawlerLocatorRefresher:
                 detail_reference = validate_zhihu_answer_url(
                     content.canonical_url,
                     answer_id=content.remote_id,
+                )
+            elif platform is Platform.TIEBA:
+                if self._detail_reference_ref is not None:
+                    raise MediaDownloadError("locator_refresh_configuration_invalid")
+                if (
+                    content.kind != ContentKind.ARTICLE.value
+                    or content.remote_type != "content"
+                    or type(content.canonical_url) is not str
+                ):
+                    raise MediaDownloadError("locator_refresh_configuration_invalid")
+                detail_reference = validate_tieba_thread_url(
+                    content.canonical_url,
+                    note_id=content.remote_id,
                 )
             elif self._detail_reference_ref is not None:
                 raise MediaDownloadError("locator_refresh_configuration_invalid")

@@ -29,6 +29,7 @@ from media_sync.integrations.mediacrawler.normalizers import (
     normalize_jsonl,
     normalize_record,
 )
+from media_sync.integrations.mediacrawler.tieba_media import TIEBA_IMAGE_FIELD
 from media_sync.integrations.mediacrawler.weibo_media import WEIBO_IMAGES_FIELD
 from media_sync.integrations.mediacrawler.zhihu_media import ZHIHU_IMAGE_FIELD
 
@@ -382,6 +383,65 @@ def test_pinned_jsonl_asset_omissions_are_explicit_not_inferred_as_downloads() -
         "zhihu-video-002",
     ):
         assert records[remote_id].assets == ()
+
+
+def test_tieba_private_first_floor_image_materializes_one_article_owned_asset_and_is_stripped() -> None:
+    note_id = "10376710029"
+    identity = "489c9a3df8dcd1009420153b348b4710b8122fc3"
+    signed = f"https://tiebapic.baidu.com/forum/pic/item/{identity}.jpg?tbpicau=2026-09-02-17_contract"
+    payload = source_record("tieba/contents.v1.jsonl")
+    payload.update(
+        {
+            "note_id": note_id,
+            "note_url": f"https://tieba.baidu.com/p/{note_id}",
+            TIEBA_IMAGE_FIELD: signed,
+            "nested": [{TIEBA_IMAGE_FIELD: signed}],
+        }
+    )
+
+    item = normalize_record(payload, context(Platform.TIEBA))
+
+    assert item.content.kind is ContentKind.ARTICLE
+    assert item.content.canonical_url == f"https://tieba.baidu.com/p/{note_id}"
+    assert len(item.assets) == 1
+    assert item.assets[0].kind is AssetKind.IMAGE
+    assert item.assets[0].position == 0
+    assert item.assets[0].remote_id == f"{note_id}:image:0"
+    assert item.assets[0].source_url == signed
+    assert item.assets[0].mime_type == "image/jpeg"
+    assert TIEBA_IMAGE_FIELD not in item.content.raw["record"]
+    assert TIEBA_IMAGE_FIELD not in item.content.raw["record"]["nested"][0]
+    assert all(TIEBA_IMAGE_FIELD not in asset.raw["record"] for asset in item.assets)
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"note_id": "01"},
+        {"note_url": "https://tieba.baidu.com/p/10376710030"},
+        {"note_url": "https://tieba.baidu.com/p/10376710029?pn=1"},
+        {TIEBA_IMAGE_FIELD: ("https://tiebapic.baidu.com/forum/pic/item/489c9a3df8dcd1009420153b348b4710b8122fc3.jpg")},
+    ],
+)
+def test_tieba_claimed_image_schema_drift_is_quarantined(changes: dict[str, object]) -> None:
+    note_id = "10376710029"
+    payload = source_record("tieba/contents.v1.jsonl")
+    payload.update(
+        {
+            "note_id": note_id,
+            "note_url": f"https://tieba.baidu.com/p/{note_id}",
+            TIEBA_IMAGE_FIELD: (
+                "https://tiebapic.baidu.com/forum/pic/item/"
+                "489c9a3df8dcd1009420153b348b4710b8122fc3.jpg?tbpicau=2026-09-02-17_contract"
+            ),
+        }
+    )
+    payload.update(changes)
+
+    with pytest.raises(RecordNormalizationError) as caught:
+        normalize_record(payload, context(Platform.TIEBA))
+
+    assert caught.value.reason is QuarantineReason.INVALID_RECORD
 
 
 def test_bili_video_and_dynamic_ids_use_distinct_persistence_namespaces() -> None:

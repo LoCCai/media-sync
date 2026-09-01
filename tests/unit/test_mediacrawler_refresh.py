@@ -18,6 +18,7 @@ from media_sync.integrations.mediacrawler.refresh import (
     MediaCrawlerLocatorRefresher,
     MediaCrawlerRefreshContext,
 )
+from media_sync.integrations.mediacrawler.tieba_media import TIEBA_IMAGE_FIELD
 from media_sync.integrations.mediacrawler.weibo_media import WEIBO_IMAGES_FIELD
 from media_sync.integrations.mediacrawler.xhs_media import validate_xhs_video_url
 from media_sync.integrations.mediacrawler.zhihu_media import ZHIHU_IMAGE_FIELD
@@ -883,21 +884,38 @@ def test_xhs_creator_authority_rejects_invalid_or_ambiguous_inputs(
         )
 
 
-def test_tieba_without_normalized_assets_returns_unsupported_without_runner_call() -> None:
+def test_tieba_refresh_uses_canonical_thread_authority_and_exact_current_image() -> None:
+    content_id = "10376710029"
+    canonical_url = f"https://tieba.baidu.com/p/{content_id}"
+    identity = "489c9a3df8dcd1009420153b348b4710b8122fc3"
+    previous_url = f"https://tiebapic.baidu.com/forum/pic/item/{identity}.jpg?tbpicau=2026-09-02-17_previous"
+    current_url = f"https://tiebapic.baidu.com/forum/pic/item/{identity}.jpg?tbpicau=2026-09-02-17_current"
     context = _context(
         platform=Platform.TIEBA,
-        content_id="content-42",
+        content_id=content_id,
         kind=AssetKind.IMAGE,
         position=0,
-        signed_url="https://i.example.test/no-asset/image.jpg?token=sentinel",
+        signed_url=previous_url,
+        detail_reference=canonical_url,
     )
-    runner = _FakeDetailRunner(b"")
+    runner = _FakeDetailRunner(
+        _jsonl(
+            {
+                "note_id": content_id,
+                "title": "fixture",
+                "desc": "fixture body",
+                "note_url": canonical_url,
+                TIEBA_IMAGE_FIELD: current_url,
+            }
+        )
+    )
 
-    with pytest.raises(MediaDownloadError) as caught:
-        MediaCrawlerLocatorRefresher(context, runner).resolve(context.locator)
+    resolved = MediaCrawlerLocatorRefresher(context, runner, clock=lambda: NOW).resolve(context.locator)
 
-    assert caught.value.code == "locator_refresh_unsupported"
-    assert runner.calls == []
+    assert resolved.url == current_url
+    assert resolved.request_profile is MediaRequestProfile.DEFAULT
+    assert len(runner.calls) == 1
+    assert runner.calls[0].resolved_detail_reference() == canonical_url
 
 
 def test_zhihu_refresh_uses_canonical_answer_authority_and_exact_current_image() -> None:
