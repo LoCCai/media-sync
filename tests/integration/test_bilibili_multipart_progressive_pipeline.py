@@ -50,10 +50,18 @@ CIDS = (24680, 97531, 86420)
 REMOTE_IDS = tuple(f"{CONTENT_ID}:video:cid:{cid}" for cid in CIDS)
 PAGES = tuple({"page": index, "cid": cid} for index, cid in enumerate(CIDS, 1))
 SIGNED_SENTINEL = "EXECUTION-0023-SIGNED-URL-MUST-STAY-EPHEMERAL"
+BACKUP_SENTINEL = "EXECUTION-0026-BACKUP-URL-MUST-STAY-EPHEMERAL"
 SIGNED_URLS = {
     cid: (
         f"https://cn-bj-cm-0{index}.bilivideo.com/upgcxcode/offline/p{index}.mp4"
         f"?deadline=1798765432&upsig={SIGNED_SENTINEL}-P{index}"
+    )
+    for index, cid in enumerate(CIDS, 1)
+}
+BACKUP_URLS = {
+    cid: (
+        f"https://backup-cn-bj-cm-0{index}.bilivideo.com/upgcxcode/offline/p{index}.mp4"
+        f"?deadline=1798765432&upsig={BACKUP_SENTINEL}-P{index}"
     )
     for index, cid in enumerate(CIDS, 1)
 }
@@ -82,7 +90,11 @@ def _detail_jsonl(cid: int) -> bytes:
     return _jsonl(
         {
             BILIBILI_PAGES_FIELD: PAGES,
-            BILIBILI_PROGRESSIVE_PAGE_FIELD: {"cid": cid, "url": SIGNED_URLS[cid]},
+            BILIBILI_PROGRESSIVE_PAGE_FIELD: {
+                "cid": cid,
+                "url": SIGNED_URLS[cid],
+                "backup_urls": [BACKUP_URLS[cid]],
+            },
             "desc": "Execution 0023 ordinary bounded three-page upload.",
             "title": "Offline three-page progressive upload",
             "video_id": CONTENT_ID,
@@ -193,6 +205,7 @@ def _tree(root: Path) -> dict[str, bytes]:
 def _assert_ephemeral_absent(*roots: Path) -> None:
     forbidden = (
         SIGNED_SENTINEL.encode(),
+        BACKUP_SENTINEL.encode(),
         BILIBILI_PAGES_FIELD.encode(),
         BILIBILI_PROGRESSIVE_PAGE_FIELD.encode(),
     )
@@ -202,7 +215,7 @@ def _assert_ephemeral_absent(*roots: Path) -> None:
             assert all(token not in payload for token in forbidden), relative_path
 
 
-def test_three_bilibili_pages_reach_emby_and_replay_without_new_work(
+def test_three_bilibili_pages_fail_over_to_backups_reach_emby_and_replay_without_new_work(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -264,17 +277,19 @@ def test_three_bilibili_pages_reach_emby_and_replay_without_new_work(
         resolver = _RecordingResolver()
         probe = _ControlledProbe()
         http_requests: list[httpx.Request] = []
-        expected_by_url = {url: MEDIA_BYTES[cid] for cid, url in SIGNED_URLS.items()}
+        expected_by_url = {url: MEDIA_BYTES[cid] for cid, url in BACKUP_URLS.items()}
 
         def handler(request: httpx.Request) -> httpx.Response:
             http_requests.append(request)
             url = str(request.url)
-            payload = expected_by_url[url]
             assert request.headers["referer"] == "https://www.bilibili.com/"
             assert request.headers["origin"] == "https://www.bilibili.com"
             assert request.headers["user-agent"].startswith("Mozilla/5.0")
             assert request.headers["accept-encoding"] == "identity"
             assert "cookie" not in request.headers and "authorization" not in request.headers
+            if url in SIGNED_URLS.values():
+                return httpx.Response(503)
+            payload = expected_by_url[url]
             return httpx.Response(
                 200,
                 headers={
@@ -322,7 +337,11 @@ def test_three_bilibili_pages_reach_emby_and_replay_without_new_work(
         assert all(outcome.disposition == "downloaded" for outcome in first_downloads)
         assert [request.bili_video_cid for request in _TargetedDetailRunner.calls] == list(CIDS)
         assert all(request.bili_progressive_detail for request in _TargetedDetailRunner.calls)
-        assert len(http_requests) == len(resolver.calls) == len(probe.payloads) == 3
+        assert len(http_requests) == len(resolver.calls) == 6
+        assert len(probe.payloads) == 3
+        assert [str(request.url) for request in http_requests] == [
+            candidate for cid in CIDS for candidate in (SIGNED_URLS[cid], BACKUP_URLS[cid])
+        ]
         assert {outcome.checksum_sha256 for outcome in first_downloads} == {
             hashlib.sha256(payload).hexdigest() for payload in MEDIA_BYTES.values()
         }
@@ -370,7 +389,8 @@ def test_three_bilibili_pages_reach_emby_and_replay_without_new_work(
         assert (second_ingest.accepted_count, second_ingest.discovered_count, second_ingest.asset_count) == (1, 0, 0)
         assert all(outcome.disposition == "already_verified" for outcome in second_downloads)
         assert second_export.already_exported is True
-        assert len(_TargetedDetailRunner.calls) == len(http_requests) == len(resolver.calls) == len(probe.payloads) == 3
+        assert len(_TargetedDetailRunner.calls) == len(probe.payloads) == 3
+        assert len(http_requests) == len(resolver.calls) == 6
         assert _tree(archive_root) == first_archive_tree
         assert _tree(author_directory) == first_library_tree
 
@@ -398,6 +418,7 @@ def test_three_bilibili_pages_reach_emby_and_replay_without_new_work(
                 sort_keys=True,
             )
             assert SIGNED_SENTINEL not in durable
+            assert BACKUP_SENTINEL not in durable
             assert BILIBILI_PAGES_FIELD not in durable
             assert BILIBILI_PROGRESSIVE_PAGE_FIELD not in durable
 

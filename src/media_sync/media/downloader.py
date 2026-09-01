@@ -51,7 +51,7 @@ _CONTENT_RANGE = re.compile(r"bytes ([0-9]+)-([0-9]+)/([0-9]+)\Z")
 _UNSATISFIED_RANGE = re.compile(r"bytes \*/([0-9]+)\Z")
 _DIGITS = re.compile(r"[0-9]+\Z")
 _RETRYABLE_STATUSES = frozenset({408, 425, 429})
-_DASH_CANDIDATE_FAILURES = frozenset(
+_CANDIDATE_FAILURES = frozenset(
     {
         "network_dns_failed",
         "download_timeout",
@@ -505,86 +505,48 @@ class SecureMediaDownloader:
         if not isinstance(locator, ResolvedLocator):  # pragma: no cover - closed resolver contract
             raise MediaDownloadError("locator_invalid")
         can_refresh_auth = isinstance(request.locator, AdapterRefreshLocator) and self._refresher is not None
-        auth_refreshes = 0
         fingerprint = locator_fingerprint(request.locator)
         started = self._monotonic()
-        restarts = 0
-        while True:
-            try:
-                state = store.load(request, fingerprint)
-            except _RestartRequired:
-                if restarts >= self._limits.max_restarts:
-                    raise MediaDownloadError("download_restart_limit") from None
-                store.discard()
-                restarts += 1
-                state = None
-            remaining = self._remaining(started)
-            headers = self._resume_headers(state)
-            try:
-                with self._http.stream(
-                    locator.url,
-                    headers=headers,
-                    request_profile=locator.request_profile,
-                    timeout_seconds=remaining,
-                ) as (response, _target):
-                    if can_refresh_auth and response.status_code in {401, 403}:
-                        if auth_refreshes >= 1:
-                            raise MediaDownloadError("locator_refresh_auth_expired")
-                        refreshed = resolve_locator(request.locator, self._refresher)
-                        if not isinstance(refreshed, ResolvedLocator):
-                            raise MediaDownloadError("locator_refresh_schema_changed")
-                        locator = refreshed
-                        auth_refreshes += 1
-                        continue
-                    outcome = self._consume_response(
-                        response,
-                        store=store,
-                        request=request,
-                        fingerprint=fingerprint,
-                        state=state,
-                        started=started,
-                        max_bytes=self._limits.max_bytes,
-                    )
-            except _RestartRequired:
-                if restarts >= self._limits.max_restarts:
-                    raise MediaDownloadError("download_restart_limit") from None
-                store.discard()
-                restarts += 1
-                continue
-            completed_state, advertised_mime = outcome
-            digest, size = hash_file(store.part, root=store.root)
-            if size != completed_state.current_length:
-                raise MediaDownloadError("download_state_invalid")
-            verified = verify_media(
-                store.part,
-                root=store.root,
-                expected_kind=request.expected_kind,
-                advertised_mime=advertised_mime,
-                probe=self._probe,
-                require_static_image=request.require_static_image,
-                sniff_bytes=self._limits.sniff_bytes,
-                probe_timeout_seconds=self._limits.probe_timeout_seconds,
-                probe_output_bytes=self._limits.probe_output_bytes,
-            )
-            blob = archive.publish(
-                store.part,
-                source_root=store.root,
-                sha256=digest,
-                size_bytes=size,
-                extension=verified.extension,
-                before_commit=request.before_archive_commit,
-            )
-            return DownloadResult(
-                archive_path=blob.path,
-                sha256=digest,
-                size_bytes=size,
-                mime_type=verified.mime_type,
-                extension=verified.extension,
-                etag=completed_state.validator if completed_state.validator_kind == "etag" else None,
-                last_modified=(
-                    completed_state.validator if completed_state.validator_kind == "last_modified" else None
-                ),
-            )
+        completed_state, advertised_mime = self._download_candidates(
+            request,
+            locator=locator,
+            store=store,
+            fingerprint=fingerprint,
+            started=started,
+            max_bytes=self._limits.max_bytes,
+            auth_mode="refresh" if can_refresh_auth else "http",
+        )
+        digest, size = hash_file(store.part, root=store.root)
+        if size != completed_state.current_length:
+            raise MediaDownloadError("download_state_invalid")
+        verified = verify_media(
+            store.part,
+            root=store.root,
+            expected_kind=request.expected_kind,
+            advertised_mime=advertised_mime,
+            probe=self._probe,
+            require_static_image=request.require_static_image,
+            sniff_bytes=self._limits.sniff_bytes,
+            probe_timeout_seconds=self._limits.probe_timeout_seconds,
+            probe_output_bytes=self._limits.probe_output_bytes,
+        )
+        blob = archive.publish(
+            store.part,
+            source_root=store.root,
+            sha256=digest,
+            size_bytes=size,
+            extension=verified.extension,
+            before_commit=request.before_archive_commit,
+        )
+        return DownloadResult(
+            archive_path=blob.path,
+            sha256=digest,
+            size_bytes=size,
+            mime_type=verified.mime_type,
+            extension=verified.extension,
+            etag=completed_state.validator if completed_state.validator_kind == "etag" else None,
+            last_modified=completed_state.validator if completed_state.validator_kind == "last_modified" else None,
+        )
 
     def _download_dash_locked(
         self,
@@ -710,12 +672,51 @@ class SecureMediaDownloader:
     ) -> tuple[PartMetadata, int]:
         """Resume and structurally verify one ephemeral DASH component."""
 
+        completed, advertised_mime = self._download_candidates(
+            request,
+            locator=locator,
+            store=store,
+            fingerprint=fingerprint,
+            started=started,
+            max_bytes=max_bytes,
+            auth_mode="expire",
+        )
+        _digest, size = hash_file(store.part, root=store.root)
+        if size != completed.current_length:
+            raise MediaDownloadError("download_state_invalid")
+        verify_media(
+            store.part,
+            root=store.root,
+            expected_kind=expected_kind,
+            advertised_mime=advertised_mime,
+            probe=self._probe,
+            require_static_image=False,
+            sniff_bytes=self._limits.sniff_bytes,
+            probe_timeout_seconds=min(self._limits.probe_timeout_seconds, self._remaining(started)),
+            probe_output_bytes=self._limits.probe_output_bytes,
+        )
+        return completed, size
+
+    def _download_candidates(
+        self,
+        request: DownloadRequest,
+        *,
+        locator: ResolvedLocator,
+        store: _PartStore,
+        fingerprint: str,
+        started: float,
+        max_bytes: int,
+        auth_mode: Literal["http", "expire", "refresh"],
+    ) -> tuple[PartMetadata, str | None]:
+        """Download one resolved target through an ordered bounded candidate pass."""
+
         if max_bytes <= 0:
             raise MediaDownloadError("download_size_limit")
         restarts = 0
+        auth_refreshes = 0
         while True:
             try:
-                state = store.load(request, fingerprint)
+                store.load(request, fingerprint)
             except _RestartRequired:
                 if restarts >= self._limits.max_restarts:
                     raise MediaDownloadError("download_restart_limit") from None
@@ -739,7 +740,7 @@ class SecureMediaDownloader:
                         request_profile=locator.request_profile,
                         timeout_seconds=self._remaining(started),
                     ) as (response, _target):
-                        if response.status_code in {401, 403}:
+                        if auth_mode != "http" and response.status_code in {401, 403}:
                             auth_failures += 1
                             last_failure = MediaDownloadError("locator_refresh_auth_expired")
                             continue
@@ -762,25 +763,11 @@ class SecureMediaDownloader:
                         incompatible_candidates += 1
                         last_failure = error
                         continue
-                    if error.code not in _DASH_CANDIDATE_FAILURES:
+                    if error.code not in _CANDIDATE_FAILURES:
                         raise
                     last_failure = error
                     continue
-                _digest, size = hash_file(store.part, root=store.root)
-                if size != completed.current_length:
-                    raise MediaDownloadError("download_state_invalid")
-                verify_media(
-                    store.part,
-                    root=store.root,
-                    expected_kind=expected_kind,
-                    advertised_mime=advertised_mime,
-                    probe=self._probe,
-                    require_static_image=False,
-                    sniff_bytes=self._limits.sniff_bytes,
-                    probe_timeout_seconds=min(self._limits.probe_timeout_seconds, self._remaining(started)),
-                    probe_output_bytes=self._limits.probe_output_bytes,
-                )
-                return completed, size
+                return completed, advertised_mime
 
             if state_restart_required or incompatible_candidates == len(candidates):
                 if restarts >= self._limits.max_restarts:
@@ -788,7 +775,14 @@ class SecureMediaDownloader:
                 store.discard()
                 restarts += 1
                 continue
-            if auth_failures == len(candidates):
+            if auth_mode != "http" and auth_failures == len(candidates):
+                if auth_mode == "refresh" and auth_refreshes < 1:
+                    refreshed = resolve_locator(request.locator, self._refresher)
+                    if not isinstance(refreshed, ResolvedLocator):
+                        raise MediaDownloadError("locator_refresh_schema_changed")
+                    locator = refreshed
+                    auth_refreshes += 1
+                    continue
                 raise MediaDownloadError("locator_refresh_auth_expired")
             if last_failure is not None:
                 raise last_failure

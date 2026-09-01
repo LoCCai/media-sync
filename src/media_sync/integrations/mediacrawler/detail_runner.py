@@ -35,6 +35,7 @@ from media_sync.domain import LoginMethod, Platform
 from media_sync.integrations.mediacrawler.bilibili_media import (
     BILIBILI_DASH_PAGE_FIELD,
     BILIBILI_PAGES_FIELD,
+    BILIBILI_PROGRESSIVE_BACKUPS_FIELD,
     BILIBILI_PROGRESSIVE_PAGE_FIELD,
     BilibiliPageIdentity,
     parse_bilibili_view_pages,
@@ -80,7 +81,7 @@ from media_sync.media.errors import MediaDownloadError
 from media_sync.security import SecretValue
 from media_sync.security.secrets import MAX_SECRET_BYTES
 
-DETAIL_RUNNER_SCHEMA_VERSION = 5
+DETAIL_RUNNER_SCHEMA_VERSION = 6
 MAX_DETAIL_REQUEST_BYTES = 128 * 1024
 MAX_DETAIL_FRAME_OVERHEAD = 8 * 1024
 
@@ -931,6 +932,28 @@ def _bili_stream_locator(stream: Mapping[str, object]) -> ResolvedLocator:
         raise ValueError("invalid Bilibili stream URL") from exc
 
 
+def _bili_progressive_locator(segment: Mapping[str, object]) -> ResolvedLocator:
+    """Validate one single-segment progressive primary/backup target."""
+
+    primary = segment.get("url")
+    backup_values = [segment[key] for key in ("backup_url", "backupUrl") if key in segment]
+    if backup_values and any(value != backup_values[0] for value in backup_values):
+        raise ValueError("invalid Bilibili progressive backup URLs")
+    raw_backups = backup_values[0] if backup_values else []
+    if (
+        type(primary) is not str
+        or not isinstance(raw_backups, Sequence)
+        or isinstance(raw_backups, bytes | bytearray | str)
+        or len(raw_backups) > 8
+        or any(type(item) is not str for item in raw_backups)
+    ):
+        raise ValueError("invalid Bilibili progressive URL")
+    try:
+        return ResolvedLocator(primary, MediaRequestProfile.BILIBILI_MEDIA, tuple(raw_backups))
+    except MediaDownloadError as exc:
+        raise ValueError("invalid Bilibili progressive URL") from exc
+
+
 def _bili_audio_sort_key(quality: int) -> int:
     return quality + 40 if quality in {30250, 30251, 30255} else quality
 
@@ -1044,12 +1067,9 @@ def _bili_playback_result(
     if len(durl) != 1:
         raise _ChildUnsupportedError
     segment = durl[0]
-    if not isinstance(segment, Mapping) or not isinstance(segment.get("url"), str):
+    if not isinstance(segment, Mapping):
         raise ValueError("invalid Bilibili durl segment")
-    try:
-        target = ResolvedLocator(segment["url"], MediaRequestProfile.BILIBILI_MEDIA)
-    except MediaDownloadError as exc:
-        raise ValueError("invalid Bilibili progressive URL") from exc
+    target = _bili_progressive_locator(segment)
     return _BiliPlaybackResult(aid=aid, pages=pages, cid=cid, target=target)
 
 
@@ -1264,12 +1284,17 @@ def _augment_bili_progressive_jsonl(
                 if isinstance(progressive.target, ResolvedLocator):
                     if len(progressive.pages) == 1:
                         enriched[_BILI_PROGRESSIVE_FIELD] = progressive.target.url
+                        if progressive.target.backup_urls:
+                            enriched[BILIBILI_PROGRESSIVE_BACKUPS_FIELD] = list(progressive.target.backup_urls)
                     else:
                         assert progressive.cid is not None
-                        enriched[BILIBILI_PROGRESSIVE_PAGE_FIELD] = {
+                        page_target: dict[str, object] = {
                             "cid": progressive.cid,
                             "url": progressive.target.url,
                         }
+                        if progressive.target.backup_urls:
+                            page_target["backup_urls"] = list(progressive.target.backup_urls)
+                        enriched[BILIBILI_PROGRESSIVE_PAGE_FIELD] = page_target
                 elif isinstance(progressive.target, ResolvedDashLocator):
                     assert progressive.cid is not None
                     target = progressive.target
@@ -1313,6 +1338,7 @@ def _contains_private_detail_field(value: object) -> bool:
             {
                 BILIBILI_DASH_PAGE_FIELD,
                 BILIBILI_PAGES_FIELD,
+                BILIBILI_PROGRESSIVE_BACKUPS_FIELD,
                 BILIBILI_PROGRESSIVE_PAGE_FIELD,
                 _BILI_PROGRESSIVE_FIELD,
             }

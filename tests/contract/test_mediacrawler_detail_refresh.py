@@ -11,6 +11,7 @@ import pytest
 from media_sync.domain import AssetKind, LoginMethod, Platform
 from media_sync.infrastructure.db.asset_identity import asset_source_hint, stable_asset_key
 from media_sync.integrations.mediacrawler import detail_runner as detail_runner_module
+from media_sync.integrations.mediacrawler.bilibili_media import BILIBILI_PROGRESSIVE_BACKUPS_FIELD
 from media_sync.integrations.mediacrawler.checkout import VerifiedCheckout, VerifiedPython
 from media_sync.integrations.mediacrawler.detail_runner import (
     MediaCrawlerDetailProcessRunner,
@@ -45,6 +46,7 @@ DY_COVER_SENTINEL = "DETAIL-COVER-SENTINEL-a8f2c1"
 DY_COVER_URL = f"https://image.example.test/douyin/cover.jpg?sign={DY_COVER_SENTINEL}"
 BILI_COVER = "https://image.example.test/bili/cover.jpg?token=bili-detail-sentinel"
 BILI_VIDEO_URL = "https://video.example.test/bili/first.mp4?" + "deadline=4102444800&sig=ephemeral-sentinel"
+BILI_VIDEO_BACKUP = "https://backup.example.test/bili/first.mp4?deadline=4102444800&sig=progressive-backup-sentinel"
 BILI_DASH_AVC_URL = "https://video.example.test/bili/avc.m4s?deadline=4102444800&sig=dash-avc-sentinel"
 BILI_DASH_AVC_BACKUP = "https://backup.example.test/bili/avc.m4s?deadline=4102444800&sig=dash-backup-sentinel"
 BILI_DASH_AUDIO_URL = "https://audio.example.test/bili/hires.m4s?deadline=4102444800&sig=dash-audio-sentinel"
@@ -867,7 +869,7 @@ def _fake_bili_checkout(
             "stat": {},
         }
     active_play = (
-        {"durl": [{"url": BILI_VIDEO_URL, "backup_url": ["https://unused.example.test/backup"]}]}
+        {"durl": [{"url": BILI_VIDEO_URL, "backup_url": [BILI_VIDEO_BACKUP]}]}
         if play_response is _DEFAULT_BILI_PLAY
         else play_response
     )
@@ -2090,6 +2092,7 @@ def test_bilibili_first_page_single_durl_is_injected_only_in_memory(tmp_path: Pa
     resolved = MediaCrawlerLocatorRefresher(context, _bili_process_runner(tmp_path, checkout)).resolve(context.locator)
 
     assert resolved.url == BILI_VIDEO_URL
+    assert resolved.backup_urls == (BILI_VIDEO_BACKUP,)
     assert resolved.request_profile is MediaRequestProfile.BILIBILI_MEDIA
     assert "ephemeral-sentinel" not in repr(resolved)
     jobs_root = tmp_path / "runtime" / "jobs"
@@ -2097,7 +2100,9 @@ def test_bilibili_first_page_single_durl_is_injected_only_in_memory(tmp_path: Pa
     assert list(jobs_root.iterdir()) == []
     retained = b"".join(path.read_bytes() for path in (tmp_path / "runtime").rglob("*") if path.is_file())
     assert BILI_VIDEO_URL.encode("utf-8") not in retained
+    assert BILI_VIDEO_BACKUP.encode("utf-8") not in retained
     assert b"__media_sync_bili_progressive_url" not in retained
+    assert BILIBILI_PROGRESSIVE_BACKUPS_FIELD.encode("utf-8") not in retained
 
 
 def test_bilibili_empty_pages_falls_back_to_validated_view_cid(tmp_path: Path) -> None:
@@ -2117,6 +2122,7 @@ def test_bilibili_empty_pages_falls_back_to_validated_view_cid(tmp_path: Path) -
     resolved = MediaCrawlerLocatorRefresher(context, _bili_process_runner(tmp_path, checkout)).resolve(context.locator)
 
     assert resolved.url == BILI_VIDEO_URL
+    assert resolved.backup_urls == (BILI_VIDEO_BACKUP,)
 
 
 def test_bilibili_multipart_child_fetches_only_the_requested_cid_and_returns_the_complete_tuple(
@@ -2139,6 +2145,7 @@ def test_bilibili_multipart_child_fetches_only_the_requested_cid_and_returns_the
     resolved = MediaCrawlerLocatorRefresher(context, _bili_process_runner(tmp_path, checkout)).resolve(context.locator)
 
     assert resolved.url == BILI_VIDEO_URL
+    assert resolved.backup_urls == (BILI_VIDEO_BACKUP,)
     assert resolved.request_profile is MediaRequestProfile.BILIBILI_MEDIA
     request = context.detail_request()
     assert request.bili_video_cid == cids[1]
@@ -2244,7 +2251,11 @@ def test_bilibili_private_jsonl_bridge_is_bounded_collision_safe_and_repr_safe()
         aid=987654321,
         pages=(detail_runner_module.BilibiliPageIdentity(page=1, cid=24680),),
         cid=24680,
-        target=ResolvedLocator(BILI_VIDEO_URL, MediaRequestProfile.BILIBILI_MEDIA),
+        target=ResolvedLocator(
+            BILI_VIDEO_URL,
+            MediaRequestProfile.BILIBILI_MEDIA,
+            (BILI_VIDEO_BACKUP,),
+        ),
     )
     limits = WatchdogLimits(
         max_output_bytes=8 * 1024,
@@ -2255,6 +2266,7 @@ def test_bilibili_private_jsonl_bridge_is_bounded_collision_safe_and_repr_safe()
     enriched = detail_runner_module._augment_bili_progressive_jsonl(ordinary, progressive, limits)
 
     assert BILI_VIDEO_URL.encode() in enriched
+    assert BILI_VIDEO_BACKUP.encode() in enriched
     assert BILI_VIDEO_URL.encode() not in ordinary
     assert "ephemeral-sentinel" not in repr(progressive)
 
@@ -2262,7 +2274,7 @@ def test_bilibili_private_jsonl_bridge_is_bounded_collision_safe_and_repr_safe()
         json.dumps(
             {
                 "video_id": "987654321",
-                "nested": {"__media_sync_bili_progressive_url": "https://attacker.invalid/value"},
+                "nested": {BILIBILI_PROGRESSIVE_BACKUPS_FIELD: ["https://attacker.invalid/value"]},
             },
             separators=(",", ":"),
         ).encode()
@@ -2285,6 +2297,29 @@ def test_bilibili_private_jsonl_bridge_is_bounded_collision_safe_and_repr_safe()
             progressive,
             WatchdogLimits(max_output_bytes=8 * 1024, max_line_bytes=len(ordinary)),
         )
+
+
+def test_bilibili_progressive_equivalent_backup_aliases_produce_one_runtime_candidate_list() -> None:
+    pages = (detail_runner_module.BilibiliPageIdentity(page=1, cid=24680),)
+
+    result = detail_runner_module._bili_playback_result(
+        {
+            "durl": [
+                {
+                    "url": BILI_VIDEO_URL,
+                    "backup_url": [BILI_VIDEO_BACKUP],
+                    "backupUrl": [BILI_VIDEO_BACKUP],
+                }
+            ]
+        },
+        aid=987654321,
+        pages=pages,
+        cid=24680,
+    )
+
+    assert isinstance(result.target, ResolvedLocator)
+    assert result.target.urls == (BILI_VIDEO_URL, BILI_VIDEO_BACKUP)
+    assert "progressive-backup-sentinel" not in repr(result)
 
 
 @pytest.mark.parametrize(
@@ -2362,6 +2397,57 @@ def test_bilibili_private_jsonl_bridge_is_bounded_collision_safe_and_repr_safe()
         ("item-type", {"durl": ["not-an-object"]}, False, "locator_refresh_result_invalid"),
         ("url-type", {"durl": [{"url": 42}]}, False, "locator_refresh_result_invalid"),
         ("url-invalid", {"durl": [{"url": "file:///private/video.mp4"}]}, False, "locator_refresh_result_invalid"),
+        (
+            "backup-type",
+            {"durl": [{"url": BILI_VIDEO_URL, "backup_url": BILI_VIDEO_BACKUP}]},
+            False,
+            "locator_refresh_result_invalid",
+        ),
+        (
+            "backup-item-type",
+            {"durl": [{"url": BILI_VIDEO_URL, "backup_url": [42]}]},
+            False,
+            "locator_refresh_result_invalid",
+        ),
+        (
+            "backup-limit",
+            {
+                "durl": [
+                    {
+                        "url": BILI_VIDEO_URL,
+                        "backup_url": [f"https://backup-{index}.example.test/video.mp4" for index in range(9)],
+                    }
+                ]
+            },
+            False,
+            "locator_refresh_result_invalid",
+        ),
+        (
+            "backup-duplicate",
+            {"durl": [{"url": BILI_VIDEO_URL, "backup_url": [BILI_VIDEO_BACKUP, BILI_VIDEO_BACKUP]}]},
+            False,
+            "locator_refresh_result_invalid",
+        ),
+        (
+            "backup-primary-duplicate",
+            {"durl": [{"url": BILI_VIDEO_URL, "backup_url": [BILI_VIDEO_URL]}]},
+            False,
+            "locator_refresh_result_invalid",
+        ),
+        (
+            "backup-alias-conflict",
+            {
+                "durl": [
+                    {
+                        "url": BILI_VIDEO_URL,
+                        "backup_url": [BILI_VIDEO_BACKUP],
+                        "backupUrl": ["https://other-backup.example.test/video.mp4"],
+                    }
+                ]
+            },
+            False,
+            "locator_refresh_result_invalid",
+        ),
     ],
 )
 def test_bilibili_play_response_shapes_have_fixed_outcomes(

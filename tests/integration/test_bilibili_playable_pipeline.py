@@ -43,6 +43,7 @@ from media_sync.infrastructure.db.models import (
     SyncRun,
 )
 from media_sync.integrations.mediacrawler import MediaCrawlerDetailRequest, MediaCrawlerDetailResult
+from media_sync.integrations.mediacrawler.bilibili_media import BILIBILI_PROGRESSIVE_BACKUPS_FIELD
 from media_sync.integrations.mediacrawler.normalizers import NormalizationContext, normalize_jsonl_bytes
 from media_sync.media import (
     AdapterRefreshLocator,
@@ -66,6 +67,11 @@ SIGNED_SENTINEL = "EXECUTION-0013-" + "SIGNED-URL-MUST-STAY-EPHEMERAL"
 SIGNED_URL = (
     f"https://cn-bj-cm-01.bilivideo.com/upgcxcode/offline/first-page.mp4?deadline=1798765432&upsig={SIGNED_SENTINEL}"
 )
+BACKUP_SENTINEL = "EXECUTION-0026-BACKUP-URL-MUST-STAY-EPHEMERAL"
+BACKUP_URL = (
+    "https://backup-cn-bj-cm-01.bilivideo.com/upgcxcode/offline/first-page.mp4"
+    f"?deadline=1798765432&upsig={BACKUP_SENTINEL}"
+)
 MP4 = b"\x00\x00\x00\x18ftypisom" + b"execution-0013-offline-progressive-video"
 
 
@@ -85,6 +91,7 @@ FORWARD_JSONL = _jsonl(
 DETAIL_JSONL = _jsonl(
     {
         PRIVATE_PROGRESSIVE_FIELD: SIGNED_URL,
+        BILIBILI_PROGRESSIVE_BACKUPS_FIELD: [BACKUP_URL],
         "desc": "Execution 0013 ordinary upload, logical first page.",
         "title": "Offline first-page progressive video",
         "video_id": CONTENT_ID,
@@ -202,7 +209,14 @@ def _tree(root: Path) -> dict[str, bytes]:
 
 
 def _assert_signed_url_absent(*roots: Path) -> None:
-    forbidden = (SIGNED_URL.encode(), SIGNED_SENTINEL.encode(), b"upsig=EXECUTION-0013")
+    forbidden = (
+        SIGNED_URL.encode(),
+        SIGNED_SENTINEL.encode(),
+        BACKUP_URL.encode(),
+        BACKUP_SENTINEL.encode(),
+        b"upsig=EXECUTION-0013",
+        b"upsig=EXECUTION-0026",
+    )
     for root in roots:
         retained = {root.name: root.read_bytes()} if root.is_file() else _tree(root)
         for relative_path, payload in retained.items():
@@ -304,14 +318,17 @@ def test_bilibili_progressive_video_reaches_emby_without_persisting_signed_url(
 
         def handler(request: httpx.Request) -> httpx.Response:
             requests.append(request)
-            assert str(request.url) == SIGNED_URL
-            assert request.headers["host"] == "cn-bj-cm-01.bilivideo.com"
+            assert str(request.url) in {SIGNED_URL, BACKUP_URL}
             assert request.headers["referer"] == "https://www.bilibili.com/"
             assert request.headers["origin"] == "https://www.bilibili.com"
             assert request.headers["user-agent"].startswith("Mozilla/5.0")
             assert request.headers["accept-encoding"] == "identity"
             assert "cookie" not in request.headers
             assert "authorization" not in request.headers
+            if str(request.url) == SIGNED_URL:
+                assert request.headers["host"] == "cn-bj-cm-01.bilivideo.com"
+                return httpx.Response(503)
+            assert request.headers["host"] == "backup-cn-bj-cm-01.bilivideo.com"
             return httpx.Response(
                 200,
                 headers={
@@ -350,11 +367,15 @@ def test_bilibili_progressive_video_reaches_emby_without_persisting_signed_url(
         assert first_download.checksum_sha256 == expected_checksum
         assert first_download.mime_type == "video/mp4"
         assert len(probe.calls) == 1
-        assert resolver.calls == [("cn-bj-cm-01.bilivideo.com", 443)]
-        assert [target.address for target in targets] == ["8.8.8.8"]
-        assert len(requests) == 1
+        assert resolver.calls == [
+            ("cn-bj-cm-01.bilivideo.com", 443),
+            ("backup-cn-bj-cm-01.bilivideo.com", 443),
+        ]
+        assert [target.address for target in targets] == ["8.8.8.8", "8.8.8.8"]
+        assert [str(request.url) for request in requests] == [SIGNED_URL, BACKUP_URL]
         assert len(refresher.results) == 1
         assert refresher.results[0].url == SIGNED_URL
+        assert refresher.results[0].backup_urls == (BACKUP_URL,)
         assert refresher.results[0].request_profile is MediaRequestProfile.BILIBILI_MEDIA
         assert SIGNED_SENTINEL not in repr(refresher.results[0])
         assert len(_FakeDetailRunner.instances) == 1
@@ -414,7 +435,8 @@ def test_bilibili_progressive_video_reaches_emby_without_persisting_signed_url(
         assert second_export.job_id == first_export.job_id
         assert second_export.source_fingerprint == first_export.source_fingerprint
         assert second_export.rendered_fingerprint == first_export.rendered_fingerprint
-        assert len(requests) == len(refresher.results) == len(detail_runner.calls) == 1
+        assert len(requests) == 2
+        assert len(refresher.results) == len(detail_runner.calls) == 1
         assert len(probe.calls) == 1
         assert _tree(archive_root) == first_archive_tree
         assert _tree(author_directory) == first_library_tree
@@ -460,6 +482,8 @@ def test_bilibili_progressive_video_reaches_emby_without_persisting_signed_url(
             assert PRIVATE_PROGRESSIVE_FIELD not in durable_json
             assert SIGNED_SENTINEL not in durable_json
             assert SIGNED_URL not in durable_json
+            assert BACKUP_SENTINEL not in durable_json
+            assert BACKUP_URL not in durable_json
 
         _assert_signed_url_absent(runtime_root, download_work_root, archive_root, export_work_root, library_root)
     finally:

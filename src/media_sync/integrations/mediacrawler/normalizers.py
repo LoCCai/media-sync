@@ -30,6 +30,7 @@ from media_sync.media.locator import (
 from .bilibili_media import (
     BILIBILI_DASH_PAGE_FIELD,
     BILIBILI_PAGES_FIELD,
+    BILIBILI_PROGRESSIVE_BACKUPS_FIELD,
     BILIBILI_PROGRESSIVE_PAGE_FIELD,
     bilibili_video_remote_ids,
     parse_bilibili_page_payload,
@@ -75,6 +76,7 @@ _PRIVATE_MEDIA_FIELDS = frozenset(
     {
         BILIBILI_PAGES_FIELD,
         BILIBILI_DASH_PAGE_FIELD,
+        BILIBILI_PROGRESSIVE_BACKUPS_FIELD,
         BILIBILI_PROGRESSIVE_PAGE_FIELD,
         _BILI_PROGRESSIVE_FIELD,
         TIEBA_GALLERY_FIELD,
@@ -536,14 +538,21 @@ def _bili_video_assets(
             BILIBILI_PROGRESSIVE_PAGE_FIELD in record or BILIBILI_DASH_PAGE_FIELD in record
         ):
             return (), (), {}
-        url = _safe_url(record.get(_BILI_PROGRESSIVE_FIELD)) if allow_progressive_detail else None
-        targets: dict[str, ResolvedMediaTarget] = {}
-        if url is not None:
+        progressive = None
+        if allow_progressive_detail and (
+            _BILI_PROGRESSIVE_FIELD in record or BILIBILI_PROGRESSIVE_BACKUPS_FIELD in record
+        ):
             try:
-                targets[remote_ids[0]] = ResolvedLocator(url, MediaRequestProfile.BILIBILI_MEDIA)
-            except Exception:
+                progressive = _bili_progressive_locator(
+                    record.get(_BILI_PROGRESSIVE_FIELD),
+                    record.get(BILIBILI_PROGRESSIVE_BACKUPS_FIELD, ()),
+                )
+            except ValueError:
                 return (), (), {}
-        return (url,), remote_ids, targets
+        targets: dict[str, ResolvedMediaTarget] = {}
+        if progressive is not None:
+            targets[remote_ids[0]] = progressive
+        return (None if progressive is None else progressive.url,), remote_ids, targets
 
     try:
         pages = parse_bilibili_page_payload(record.get(BILIBILI_PAGES_FIELD))
@@ -552,7 +561,11 @@ def _bili_video_assets(
         return (), (), {}
 
     if allow_progressive_detail and BILIBILI_DASH_PAGE_FIELD in record:
-        if _BILI_PROGRESSIVE_FIELD in record or BILIBILI_PROGRESSIVE_PAGE_FIELD in record:
+        if (
+            _BILI_PROGRESSIVE_FIELD in record
+            or BILIBILI_PROGRESSIVE_BACKUPS_FIELD in record
+            or BILIBILI_PROGRESSIVE_PAGE_FIELD in record
+        ):
             return (), (), {}
         try:
             cid, dash_target = _bili_dash_target(record[BILIBILI_DASH_PAGE_FIELD])
@@ -568,37 +581,68 @@ def _bili_video_assets(
     if len(pages) == 1:
         if allow_progressive_detail and BILIBILI_PROGRESSIVE_PAGE_FIELD in record:
             return (), (), {}
-        url = _safe_url(record.get(_BILI_PROGRESSIVE_FIELD)) if allow_progressive_detail else None
-        targets = {}
-        if url is not None:
+        progressive = None
+        if allow_progressive_detail and (
+            _BILI_PROGRESSIVE_FIELD in record or BILIBILI_PROGRESSIVE_BACKUPS_FIELD in record
+        ):
             try:
-                targets[remote_ids[0]] = ResolvedLocator(url, MediaRequestProfile.BILIBILI_MEDIA)
-            except Exception:
+                progressive = _bili_progressive_locator(
+                    record.get(_BILI_PROGRESSIVE_FIELD),
+                    record.get(BILIBILI_PROGRESSIVE_BACKUPS_FIELD, ()),
+                )
+            except ValueError:
                 return (), (), {}
-        return (url,), remote_ids, targets
+        targets = {}
+        if progressive is not None:
+            targets[remote_ids[0]] = progressive
+        return (None if progressive is None else progressive.url,), remote_ids, targets
 
     urls: list[str | None] = [None] * len(pages)
     targets = {}
     if allow_progressive_detail:
-        if _BILI_PROGRESSIVE_FIELD in record:
+        if _BILI_PROGRESSIVE_FIELD in record or BILIBILI_PROGRESSIVE_BACKUPS_FIELD in record:
             return (), (), {}
         progressive_payload = record.get(BILIBILI_PROGRESSIVE_PAGE_FIELD)
-        if not isinstance(progressive_payload, Mapping) or set(progressive_payload) != {"cid", "url"}:
+        if not isinstance(progressive_payload, Mapping) or set(progressive_payload) not in (
+            {"cid", "url"},
+            {"cid", "url", "backup_urls"},
+        ):
             return (), (), {}
         progressive_cid = progressive_payload.get("cid")
-        url = _safe_url(progressive_payload.get("url"))
+        try:
+            progressive = _bili_progressive_locator(
+                progressive_payload.get("url"),
+                progressive_payload.get("backup_urls", ()),
+            )
+        except ValueError:
+            return (), (), {}
         page_index = next(
             (index for index, page in enumerate(pages) if type(progressive_cid) is int and page.cid == progressive_cid),
             None,
         )
-        if page_index is None or url is None:
+        if page_index is None:
             return (), (), {}
-        urls[page_index] = url
-        try:
-            targets[remote_ids[page_index]] = ResolvedLocator(url, MediaRequestProfile.BILIBILI_MEDIA)
-        except Exception:
-            return (), (), {}
+        urls[page_index] = progressive.url
+        targets[remote_ids[page_index]] = progressive
     return tuple(urls), remote_ids, targets
+
+
+def _bili_progressive_locator(url_value: object, backup_value: object) -> ResolvedLocator:
+    """Parse the private primary-only or primary-plus-backups progressive bridge."""
+
+    url = _safe_url(url_value)
+    if (
+        url is None
+        or not isinstance(backup_value, Sequence)
+        or isinstance(backup_value, bytes | bytearray | str)
+        or len(backup_value) > 8
+        or any(type(item) is not str for item in backup_value)
+    ):
+        raise ValueError("invalid Bilibili progressive target")
+    try:
+        return ResolvedLocator(url, MediaRequestProfile.BILIBILI_MEDIA, tuple(backup_value))
+    except Exception as exc:
+        raise ValueError("invalid Bilibili progressive target") from exc
 
 
 def _bili_dash_target(value: object) -> tuple[int, ResolvedDashLocator]:

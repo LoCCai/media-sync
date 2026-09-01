@@ -12,6 +12,7 @@ from media_sync.infrastructure.db.asset_identity import asset_source_hint, stabl
 from media_sync.integrations.mediacrawler.bilibili_media import (
     BILIBILI_DASH_PAGE_FIELD,
     BILIBILI_PAGES_FIELD,
+    BILIBILI_PROGRESSIVE_BACKUPS_FIELD,
     BILIBILI_PROGRESSIVE_PAGE_FIELD,
 )
 from media_sync.integrations.mediacrawler.detail_runner import (
@@ -368,6 +369,7 @@ def test_weibo_refresh_context_rejects_mismatched_or_secret_detail_reference(
 
 def test_bilibili_locator_only_video_uses_private_detail_gate_and_media_profile() -> None:
     signed_url = "https://v.example.test/bili/first.mp4?" + "signature=private-sentinel"
+    backup_url = "https://backup.example.test/bili/first.mp4?signature=backup-private-sentinel"
     context = _context(
         platform=Platform.BILI,
         content_id="987654321",
@@ -383,6 +385,7 @@ def test_bilibili_locator_only_video_uses_private_detail_gate_and_media_profile(
                 "title": "video",
                 "video_cover_url": "https://i.example.test/bili/cover.jpg",
                 "__media_sync_bili_progressive_url": signed_url,
+                BILIBILI_PROGRESSIVE_BACKUPS_FIELD: [backup_url],
             }
         )
     )
@@ -390,9 +393,73 @@ def test_bilibili_locator_only_video_uses_private_detail_gate_and_media_profile(
     resolved = MediaCrawlerLocatorRefresher(context, runner, clock=lambda: NOW).resolve(context.locator)
 
     assert resolved.url == signed_url
+    assert resolved.backup_urls == (backup_url,)
     assert resolved.request_profile is MediaRequestProfile.BILIBILI_MEDIA
     assert runner.calls[0].bili_progressive_detail is True
     assert "private-sentinel" not in repr(resolved)
+
+
+def test_bilibili_primary_only_progressive_bridge_remains_compatible() -> None:
+    signed_url = "https://v.example.test/bili/legacy.mp4?signature=legacy-private"
+    context = _context(
+        platform=Platform.BILI,
+        content_id="987654321",
+        kind=AssetKind.VIDEO,
+        position=0,
+        signed_url=None,
+    )
+    runner = _FakeDetailRunner(
+        _jsonl(
+            {
+                "video_id": "987654321",
+                "video_type": "video",
+                "title": "legacy primary-only video",
+                "__media_sync_bili_progressive_url": signed_url,
+            }
+        )
+    )
+
+    resolved = MediaCrawlerLocatorRefresher(context, runner, clock=lambda: NOW).resolve(context.locator)
+
+    assert resolved.urls == (signed_url,)
+
+
+@pytest.mark.parametrize(
+    "backup_value",
+    [
+        "https://backup.example.test/not-a-list.mp4",
+        [42],
+        ["https://v.example.test/bili/main.mp4?signature=private"],
+        ["https://backup.example.test/duplicate.mp4"] * 2,
+        [f"https://backup-{index}.example.test/video.mp4" for index in range(9)],
+    ],
+)
+def test_bilibili_single_page_progressive_bridge_rejects_invalid_backup_shapes(backup_value: object) -> None:
+    signed_url = "https://v.example.test/bili/main.mp4?signature=private"
+    context = _context(
+        platform=Platform.BILI,
+        content_id="987654321",
+        kind=AssetKind.VIDEO,
+        position=0,
+        signed_url=None,
+    )
+    runner = _FakeDetailRunner(
+        _jsonl(
+            {
+                "video_id": "987654321",
+                "video_type": "video",
+                "title": "invalid progressive backups",
+                "__media_sync_bili_progressive_url": signed_url,
+                BILIBILI_PROGRESSIVE_BACKUPS_FIELD: backup_value,
+            }
+        )
+    )
+
+    with pytest.raises(MediaDownloadError) as caught:
+        MediaCrawlerLocatorRefresher(context, runner, clock=lambda: NOW).resolve(context.locator)
+
+    assert caught.value.code == "locator_refresh_schema_changed"
+    assert "backup.example.test" not in str(caught.value)
 
 
 def test_bilibili_multipart_refresh_targets_one_cid_and_binds_the_complete_page_tuple() -> None:
@@ -403,6 +470,7 @@ def test_bilibili_multipart_refresh_targets_one_cid_and_binds_the_complete_page_
         f"{content_id}:video:cid:86420",
     )
     signed_url = "https://v.example.test/bili/p2.mp4?signature=private-p2-sentinel"
+    backup_url = "https://backup.example.test/bili/p2.mp4?signature=backup-p2-sentinel"
     context = _context(
         platform=Platform.BILI,
         content_id=content_id,
@@ -423,7 +491,11 @@ def test_bilibili_multipart_refresh_targets_one_cid_and_binds_the_complete_page_
                     {"page": 2, "cid": 97531},
                     {"page": 3, "cid": 86420},
                 ],
-                BILIBILI_PROGRESSIVE_PAGE_FIELD: {"cid": 97531, "url": signed_url},
+                BILIBILI_PROGRESSIVE_PAGE_FIELD: {
+                    "cid": 97531,
+                    "url": signed_url,
+                    "backup_urls": [backup_url],
+                },
             }
         )
     )
@@ -431,6 +503,7 @@ def test_bilibili_multipart_refresh_targets_one_cid_and_binds_the_complete_page_
     resolved = MediaCrawlerLocatorRefresher(context, runner, clock=lambda: NOW).resolve(context.locator)
 
     assert resolved.url == signed_url
+    assert resolved.backup_urls == (backup_url,)
     assert resolved.request_profile is MediaRequestProfile.BILIBILI_MEDIA
     assert runner.calls[0].bili_progressive_detail is True
     assert runner.calls[0].bili_video_cid == 97531

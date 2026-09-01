@@ -28,6 +28,7 @@ from media_sync.media import (
     SafeHttpClient,
     SecureMediaDownloader,
     ValidatedTarget,
+    locator_fingerprint,
 )
 from media_sync.security.paths import (
     PathSecurityError,
@@ -67,6 +68,8 @@ MP4 = b"\x00\x00\x00\x18ftypisom" + b"offline-video-payload"
 SRT = b"1\n00:00:00,000 --> 00:00:01,000\nOffline subtitle\n"
 VTT = b"WEBVTT\n\n00:00.000 --> 00:01.000\nOffline subtitle\n"
 ETAG = '"fixture-v1"'
+PROGRESSIVE_PRIMARY = "https://primary.progressive.test/video.mp4?signature=primary-private"
+PROGRESSIVE_BACKUP = "https://backup.progressive.test/video.mp4?signature=backup-private"
 
 
 class _Resolver:
@@ -824,6 +827,323 @@ class _ChangingProfileRefresh:
         self.calls += 1
         profile = MediaRequestProfile.DEFAULT if self.calls == 1 else MediaRequestProfile.BILIBILI_MEDIA
         return ResolvedLocator(f"https://media.test/runtime?signature={self.calls}", profile)
+
+
+class _ProgressiveBackupRefresh:
+    def __init__(self, *, rotating: bool = False) -> None:
+        self.calls = 0
+        self.rotating = rotating
+
+    def resolve(self, _locator: AdapterRefreshLocator) -> ResolvedLocator:
+        self.calls += 1
+        suffix = f"-{self.calls}" if self.rotating else ""
+        return ResolvedLocator(
+            PROGRESSIVE_PRIMARY.replace("/video.mp4", f"/video{suffix}.mp4"),
+            MediaRequestProfile.BILIBILI_MEDIA,
+            (PROGRESSIVE_BACKUP.replace("/video.mp4", f"/video{suffix}.mp4"),),
+        )
+
+
+def _progressive_request(tmp_path: Path) -> DownloadRequest:
+    return DownloadRequest(
+        asset_id=uuid4(),
+        generation=1,
+        locator=AdapterRefreshLocator("mediacrawler", "bili/987654321/video/0"),
+        work_root=tmp_path / "jobs",
+        archive_root=tmp_path / "archive",
+        expected_kind=AssetKind.IMAGE,
+    )
+
+
+def test_progressive_primary_success_does_not_touch_backup(tmp_path: Path) -> None:
+    seen: list[str] = []
+    refresher = _ProgressiveBackupRefresh()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        assert str(request.url) == PROGRESSIVE_PRIMARY
+        return _ok()
+
+    downloader = SecureMediaDownloader(
+        SafeHttpClient(_Resolver(), transport_factory=lambda _target: httpx.MockTransport(handler)),
+        refresher=refresher,
+    )
+
+    assert downloader.download(_progressive_request(tmp_path)).archive_path.read_bytes() == PNG
+    assert seen == [PROGRESSIVE_PRIMARY]
+    assert refresher.calls == 1
+
+
+def test_progressive_primary_http_failure_advances_to_backup(tmp_path: Path) -> None:
+    seen: list[str] = []
+    refresher = _ProgressiveBackupRefresh()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        return httpx.Response(503) if str(request.url) == PROGRESSIVE_PRIMARY else _ok()
+
+    downloader = SecureMediaDownloader(
+        SafeHttpClient(_Resolver(), transport_factory=lambda _target: httpx.MockTransport(handler)),
+        refresher=refresher,
+    )
+
+    assert downloader.download(_progressive_request(tmp_path)).archive_path.read_bytes() == PNG
+    assert seen == [PROGRESSIVE_PRIMARY, PROGRESSIVE_BACKUP]
+    assert refresher.calls == 1
+
+
+def test_progressive_primary_dns_failure_advances_to_backup(tmp_path: Path) -> None:
+    class _FailingPrimaryResolver:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, int]] = []
+
+        def resolve(self, hostname: str, port: int) -> Sequence[str]:
+            self.calls.append((hostname, port))
+            if hostname == "primary.progressive.test":
+                raise OSError("private DNS detail must not escape")
+            return ("8.8.8.8",)
+
+    resolver = _FailingPrimaryResolver()
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        return _ok()
+
+    downloader = SecureMediaDownloader(
+        SafeHttpClient(resolver, transport_factory=lambda _target: httpx.MockTransport(handler)),
+        refresher=_ProgressiveBackupRefresh(),
+    )
+
+    assert downloader.download(_progressive_request(tmp_path)).archive_path.read_bytes() == PNG
+    assert resolver.calls == [
+        ("primary.progressive.test", 443),
+        ("backup.progressive.test", 443),
+    ]
+    assert seen == [PROGRESSIVE_BACKUP]
+
+
+def test_progressive_primary_transport_failure_advances_to_backup(tmp_path: Path) -> None:
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        if request.url.host == "primary.progressive.test":
+            raise httpx.ConnectError("private transport detail must not escape", request=request)
+        return _ok()
+
+    downloader = SecureMediaDownloader(
+        SafeHttpClient(_Resolver(), transport_factory=lambda _target: httpx.MockTransport(handler)),
+        refresher=_ProgressiveBackupRefresh(),
+    )
+
+    assert downloader.download(_progressive_request(tmp_path)).archive_path.read_bytes() == PNG
+    assert seen == [PROGRESSIVE_PRIMARY, PROGRESSIVE_BACKUP]
+
+
+def test_progressive_mixed_candidate_exhaustion_returns_last_fixed_failure(tmp_path: Path) -> None:
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        return httpx.Response(503 if request.url.host == "primary.progressive.test" else 404)
+
+    downloader = SecureMediaDownloader(
+        SafeHttpClient(_Resolver(), transport_factory=lambda _target: httpx.MockTransport(handler)),
+        refresher=_ProgressiveBackupRefresh(),
+    )
+
+    with pytest.raises(MediaDownloadError) as caught:
+        downloader.download(_progressive_request(tmp_path))
+
+    assert caught.value.code == "download_http_terminal"
+    assert "progressive.test" not in str(caught.value)
+    assert seen == [PROGRESSIVE_PRIMARY, PROGRESSIVE_BACKUP]
+
+
+def test_progressive_interrupted_primary_resumes_from_backup_with_exact_validator(tmp_path: Path) -> None:
+    split = 8
+    seen: list[str] = []
+    refresher = _ProgressiveBackupRefresh()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        if str(request.url) == PROGRESSIVE_PRIMARY:
+            assert "range" not in request.headers
+            return httpx.Response(
+                200,
+                headers={"Content-Length": str(len(PNG)), "ETag": ETAG},
+                stream=_BreakingStream(PNG[:split]),
+            )
+        assert request.headers["range"] == f"bytes={split}-"
+        assert request.headers["if-range"] == ETAG
+        return httpx.Response(
+            206,
+            headers={
+                "Content-Length": str(len(PNG) - split),
+                "Content-Range": f"bytes {split}-{len(PNG) - 1}/{len(PNG)}",
+                "ETag": ETAG,
+            },
+            content=PNG[split:],
+        )
+
+    downloader = SecureMediaDownloader(
+        SafeHttpClient(_Resolver(), transport_factory=lambda _target: httpx.MockTransport(handler)),
+        refresher=refresher,
+    )
+
+    assert downloader.download(_progressive_request(tmp_path)).archive_path.read_bytes() == PNG
+    assert seen == [PROGRESSIVE_PRIMARY, PROGRESSIVE_BACKUP]
+
+
+def test_progressive_all_auth_pass_refreshes_once_then_uses_new_backup(tmp_path: Path) -> None:
+    seen: list[str] = []
+    refresher = _ProgressiveBackupRefresh(rotating=True)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        if "video-1.mp4" in request.url.path:
+            return httpx.Response(403)
+        if request.url.host == "primary.progressive.test":
+            return httpx.Response(503)
+        return _ok()
+
+    downloader = SecureMediaDownloader(
+        SafeHttpClient(_Resolver(), transport_factory=lambda _target: httpx.MockTransport(handler)),
+        refresher=refresher,
+    )
+
+    assert downloader.download(_progressive_request(tmp_path)).archive_path.read_bytes() == PNG
+    assert [httpx.URL(url).path for url in seen] == [
+        "/video-1.mp4",
+        "/video-1.mp4",
+        "/video-2.mp4",
+        "/video-2.mp4",
+    ]
+    assert [httpx.URL(url).host for url in seen] == [
+        "primary.progressive.test",
+        "backup.progressive.test",
+        "primary.progressive.test",
+        "backup.progressive.test",
+    ]
+    assert refresher.calls == 2
+
+
+def test_progressive_second_all_auth_pass_returns_fixed_expired_error(tmp_path: Path) -> None:
+    seen: list[str] = []
+    refresher = _ProgressiveBackupRefresh(rotating=True)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        return httpx.Response(401)
+
+    downloader = SecureMediaDownloader(
+        SafeHttpClient(_Resolver(), transport_factory=lambda _target: httpx.MockTransport(handler)),
+        refresher=refresher,
+    )
+
+    with pytest.raises(MediaDownloadError) as caught:
+        downloader.download(_progressive_request(tmp_path))
+
+    assert caught.value.code == "locator_refresh_auth_expired"
+    assert "progressive.test" not in str(caught.value)
+    assert len(seen) == 4
+    assert refresher.calls == 2
+
+
+def test_progressive_size_limit_fails_without_touching_backup(tmp_path: Path) -> None:
+    seen: list[str] = []
+    refresher = _ProgressiveBackupRefresh()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        return _ok()
+
+    downloader = SecureMediaDownloader(
+        SafeHttpClient(_Resolver(), transport_factory=lambda _target: httpx.MockTransport(handler)),
+        refresher=refresher,
+        limits=DownloadLimits(max_bytes=len(PNG) - 1),
+    )
+
+    with pytest.raises(MediaDownloadError) as caught:
+        downloader.download(_progressive_request(tmp_path))
+
+    assert caught.value.code == "download_size_limit"
+    assert seen == [PROGRESSIVE_PRIMARY]
+
+
+def test_progressive_partial_restarts_only_after_every_candidate_rejects_range(tmp_path: Path) -> None:
+    split = 8
+    request = _progressive_request(tmp_path)
+    parts = request.work_root / "parts"
+    parts.mkdir(parents=True)
+    stem = f"{request.asset_id}.{request.generation}"
+    (parts / f"{stem}.part").write_bytes(PNG[:split])
+    state = PartMetadata(
+        asset_id=request.asset_id,
+        generation=request.generation,
+        locator_fingerprint=locator_fingerprint(request.locator),
+        validator_kind="etag",
+        validator=ETAG,
+        expected_length=len(PNG),
+        current_length=split,
+    )
+    (parts / f"{stem}.part.json").write_bytes(state.to_bytes())
+    seen: list[tuple[str, str | None]] = []
+    refresher = _ProgressiveBackupRefresh()
+
+    def handler(candidate: httpx.Request) -> httpx.Response:
+        seen.append((candidate.url.host or "", candidate.headers.get("range")))
+        if "range" in candidate.headers:
+            assert candidate.headers["range"] == f"bytes={split}-"
+            assert candidate.headers["if-range"] == ETAG
+            return _ok()
+        if candidate.url.host == "primary.progressive.test":
+            return httpx.Response(503)
+        return _ok()
+
+    downloader = SecureMediaDownloader(
+        SafeHttpClient(_Resolver(), transport_factory=lambda _target: httpx.MockTransport(handler)),
+        refresher=refresher,
+    )
+
+    assert downloader.download(request).archive_path.read_bytes() == PNG
+    assert seen == [
+        ("primary.progressive.test", f"bytes={split}-"),
+        ("backup.progressive.test", f"bytes={split}-"),
+        ("primary.progressive.test", None),
+        ("backup.progressive.test", None),
+    ]
+
+
+def test_progressive_forbidden_primary_fails_closed_without_touching_backup(tmp_path: Path) -> None:
+    class _PolicyResolver:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, int]] = []
+
+        def resolve(self, hostname: str, port: int) -> Sequence[str]:
+            self.calls.append((hostname, port))
+            return ("127.0.0.1",) if hostname == "primary.progressive.test" else ("8.8.8.8",)
+
+    resolver = _PolicyResolver()
+    http_calls = 0
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal http_calls
+        http_calls += 1
+        raise AssertionError("network policy must fail before HTTP")
+
+    downloader = SecureMediaDownloader(
+        SafeHttpClient(resolver, transport_factory=lambda _target: httpx.MockTransport(handler)),
+        refresher=_ProgressiveBackupRefresh(),
+    )
+
+    with pytest.raises(MediaDownloadError) as caught:
+        downloader.download(_progressive_request(tmp_path))
+
+    assert caught.value.code == "network_address_forbidden"
+    assert resolver.calls == [("primary.progressive.test", 443)]
+    assert http_calls == 0
 
 
 def test_adapter_refresh_re_resolves_once_after_auth_failure(tmp_path: Path) -> None:
