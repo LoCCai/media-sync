@@ -1,8 +1,10 @@
 # Execution 0025 goal / 执行 0025 目标
 
-- Status / 状态：Frozen plan; implementation not started / 计划已冻结；实现尚未开始
+- Status / 状态：Frozen offline scope delivered; live qualification remains `NOT_RUN` / 冻结离线范围已交付；真人验收保持 `NOT_RUN`
 - Date / 日期：2026-09-02
 - Predecessor / 前置：Execution 0024 closeout `46905a50bbba19b7c4b74a0f7a274d5efdb013d6`
+- Plan commit / 计划提交：`8e9467d2ecbedfd8f87e8d1d2ffb5a66d6d15591`
+- Implementation commit / 实现提交：`fe45abcb7262c3d70437aff82a05609e43902af4`
 - Scope / 范围：Ordered, bounded primary-to-backup CDN failover for the already-selected ephemeral Bilibili DASH video and optional audio components / 对已选择的瞬态 Bilibili DASH 视频与可选音频组件执行有序、有界的主 CDN → 备用 CDN 故障切换
 
 ## Outcome / 目标结果
