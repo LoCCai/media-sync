@@ -35,7 +35,13 @@ _PIPELINE_ERRORS: dict[str, tuple[str, bool]] = {
     "pipeline_mediacrawler_not_enabled": ("MediaCrawler refresh is not enabled for required assets", True),
     "pipeline_mediacrawler_license_required": ("MediaCrawler license acknowledgement is required", True),
     "pipeline_mediacrawler_runtime_unavailable": ("MediaCrawler runtime is unavailable", True),
-    "pipeline_xhs_detail_authority_required": ("XHS note detail authority is required", True),
+    "pipeline_xhs_detail_authority_required": ("XHS creator or note detail authority is required", True),
+    "pipeline_locator_refresh_configuration_invalid": ("asset locator refresh configuration is invalid", False),
+    "pipeline_locator_refresh_credentials_unavailable": ("asset locator refresh credentials are unavailable", True),
+    "pipeline_locator_refresh_temporary": ("asset locator refresh is temporarily unavailable", True),
+    "pipeline_locator_refresh_asset_not_found": ("asset was not found during locator refresh", False),
+    "pipeline_locator_refresh_retryable": ("asset locator refresh could not complete and may be retried", True),
+    "pipeline_locator_refresh_terminal": ("asset locator refresh cannot be completed", False),
     "pipeline_media_probe_unavailable": ("required local media probe is unavailable", True),
 }
 

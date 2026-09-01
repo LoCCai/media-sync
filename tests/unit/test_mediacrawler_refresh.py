@@ -55,6 +55,8 @@ def _context(
     content_remote_type: str = "content",
     remote_id: str | None = None,
     detail_reference: str | SecretValue | None = None,
+    creator_reference: SecretValue | None = None,
+    creator_max_items: int | None = None,
     locator: AdapterRefreshLocator | None = None,
 ) -> MediaCrawlerRefreshContext:
     active_remote_id = remote_id or f"{content_id}:{kind.value}:{position}"
@@ -88,6 +90,8 @@ def _context(
         source_hint=source_hint,
         locator=active_locator,
         detail_reference=detail_reference,
+        creator_reference=creator_reference,
+        creator_max_items=creator_max_items,
         watchdogs=WatchdogLimits(
             max_seconds=5,
             max_output_bytes=64 * 1024,
@@ -505,6 +509,179 @@ def test_xhs_requires_explicit_secret_detail_reference_and_uses_it() -> None:
         MediaCrawlerLocatorRefresher(video_context, video_runner, clock=lambda: NOW).resolve(video_context.locator).url
         == video_signed
     )
+
+
+def test_xhs_creator_authority_returns_multiple_records_and_selects_exact_note() -> None:
+    content_id = "66fad51c000000001b0224b8"
+    signed = "https://i.example.test/xhs/photo.jpg?sign=xhs-creator-image-sentinel"
+    creator = SecretValue(
+        "https://www.xiaohongshu.com/user/profile/creator-42?xsec_token=xhs-creator-secret&xsec_source=pc_user"
+    )
+    context = _context(
+        platform=Platform.XHS,
+        content_id=content_id,
+        kind=AssetKind.IMAGE,
+        position=0,
+        signed_url=signed,
+        creator_reference=creator,
+        creator_max_items=2,
+    )
+    runner = _FakeDetailRunner(
+        _jsonl(
+            {
+                "note_id": "different-note",
+                "type": "normal",
+                "title": "other",
+                "image_list": "https://i.example.test/xhs/other.jpg?sign=other",
+            },
+            {
+                "note_id": content_id,
+                "type": "normal",
+                "title": "target",
+                "image_list": signed,
+            },
+        )
+    )
+
+    resolved = MediaCrawlerLocatorRefresher(context, runner, clock=lambda: NOW).resolve(context.locator)
+
+    request = runner.calls[0]
+    assert resolved.url == signed
+    assert request.detail_reference is None
+    assert request.resolved_detail_reference() is None
+    assert request.resolved_creator_reference() == creator.reveal()
+    assert request.creator_max_items == 2
+    assert "xhs-creator-secret" not in repr(context)
+    assert "xhs-creator-secret" not in repr(request)
+
+
+@pytest.mark.parametrize(
+    "target_record",
+    [
+        {
+            "note_id": "66fad51c000000001b0224b8",
+            "type": "video",
+            "title": "nonordinary image",
+            "image_list": "https://i.example.test/xhs/photo.jpg?sign=xhs-creator-image-sentinel",
+        },
+        {
+            "note_id": "66fad51c000000001b0224b8",
+            "type": "normal",
+            "title": "mixed media",
+            "image_list": "https://i.example.test/xhs/photo.jpg?sign=xhs-creator-image-sentinel",
+            "video_url": "https://v.example.test/xhs/video.mp4?sign=xhs-creator-video-sentinel",
+        },
+    ],
+    ids=["nonordinary-type", "mixed-media"],
+)
+def test_xhs_creator_authority_rejects_nonordinary_or_nonstatic_target(
+    target_record: dict[str, object],
+) -> None:
+    content_id = "66fad51c000000001b0224b8"
+    signed = "https://i.example.test/xhs/photo.jpg?sign=xhs-creator-image-sentinel"
+    context = _context(
+        platform=Platform.XHS,
+        content_id=content_id,
+        kind=AssetKind.IMAGE,
+        position=0,
+        signed_url=signed,
+        creator_reference=SecretValue(
+            "https://www.xiaohongshu.com/user/profile/creator-42?xsec_token=xhs-creator-secret&xsec_source=pc_user"
+        ),
+        creator_max_items=2,
+    )
+
+    with pytest.raises(MediaDownloadError) as caught:
+        MediaCrawlerLocatorRefresher(
+            context,
+            _FakeDetailRunner(_jsonl(target_record)),
+            clock=lambda: NOW,
+        ).resolve(context.locator)
+
+    assert caught.value.code == "locator_refresh_schema_changed"
+
+
+def test_refresh_rejects_duplicate_target_content_before_asset_matching() -> None:
+    content_id = "66fad51c000000001b0224b8"
+    signed = "https://i.example.test/xhs/photo.jpg?sign=xhs-creator-image-sentinel"
+    context = _context(
+        platform=Platform.XHS,
+        content_id=content_id,
+        kind=AssetKind.IMAGE,
+        position=0,
+        signed_url=signed,
+        creator_reference=SecretValue(
+            "https://www.xiaohongshu.com/user/profile/creator-42?xsec_token=xhs-creator-secret&xsec_source=pc_user"
+        ),
+        creator_max_items=2,
+    )
+    runner = _FakeDetailRunner(
+        _jsonl(
+            {
+                "note_id": content_id,
+                "type": "normal",
+                "image_list": "https://i.example.test/xhs/other.jpg?sign=other",
+            },
+            {
+                "note_id": content_id,
+                "type": "normal",
+                "image_list": signed,
+            },
+        )
+    )
+
+    with pytest.raises(MediaDownloadError) as caught:
+        MediaCrawlerLocatorRefresher(context, runner, clock=lambda: NOW).resolve(context.locator)
+
+    assert caught.value.code == "locator_refresh_asset_mismatch"
+
+
+@pytest.mark.parametrize(
+    ("creator", "maximum", "detail"),
+    [
+        (
+            "http://www.xiaohongshu.com/user/profile/creator-42?xsec_token=t&xsec_source=s",
+            2,
+            None,
+        ),
+        (
+            "https://www.xiaohongshu.com/user/profile/wrong?xsec_token=t&xsec_source=s",
+            2,
+            None,
+        ),
+        (
+            "https://www.xiaohongshu.com/user/profile/creator-42?xsec_token=t&xsec_token=u&xsec_source=s",
+            2,
+            None,
+        ),
+        (
+            "https://www.xiaohongshu.com/user/profile/creator-42?xsec_token=t&xsec_source=s",
+            11,
+            None,
+        ),
+        (
+            "https://www.xiaohongshu.com/user/profile/creator-42?xsec_token=t&xsec_source=s",
+            2,
+            SecretValue("https://www.xiaohongshu.com/explore/66fad51c000000001b0224b8?xsec_token=t&xsec_source=s"),
+        ),
+    ],
+)
+def test_xhs_creator_authority_rejects_invalid_or_ambiguous_inputs(
+    creator: str,
+    maximum: int,
+    detail: SecretValue | None,
+) -> None:
+    with pytest.raises(MediaDownloadError, match="locator_refresh_configuration_invalid"):
+        _context(
+            platform=Platform.XHS,
+            content_id="66fad51c000000001b0224b8",
+            kind=AssetKind.IMAGE,
+            position=0,
+            signed_url="https://i.example.test/xhs/photo.jpg?sign=fixture",
+            detail_reference=detail,
+            creator_reference=SecretValue(creator),
+            creator_max_items=maximum,
+        )
 
 
 @pytest.mark.parametrize("platform", [Platform.TIEBA, Platform.ZHIHU])

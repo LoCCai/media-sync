@@ -243,10 +243,14 @@ class AssetDownloadService:
         downloader: SecureMediaDownloader,
         *,
         clock: Callable[[], datetime] = _utc_now,
+        verified_archive_recovery_preflight: Callable[[], None] | None = None,
     ) -> None:
+        if verified_archive_recovery_preflight is not None and not callable(verified_archive_recovery_preflight):
+            raise TypeError("verified_archive_recovery_preflight must be callable")
         self._database = database
         self._downloader = downloader
         self._clock = clock
+        self._verified_archive_recovery_preflight = verified_archive_recovery_preflight
 
     def run(self, request: AssetDownloadRequest) -> AssetDownloadOutcome:
         """Download one asset or return its already-verified state."""
@@ -472,6 +476,8 @@ class AssetDownloadService:
                 size_bytes=outcome.size_bytes,
             )
         except MediaDownloadError as error:
+            if error.code in {"archive_blob_missing", "archive_blob_invalid"}:
+                self._preflight_verified_archive_recovery()
             if error.code == "archive_blob_invalid":
                 try:
                     quarantined = ArchivePublisher(request.archive_root).quarantine_invalid(
@@ -508,6 +514,21 @@ class AssetDownloadService:
                 except Exception:
                     raise AssetDownloadOrchestrationError("asset_download_archive_reset_failed") from None
             raise AssetDownloadOrchestrationError._from_media(error, retryable=error.retryable) from None
+
+    def _preflight_verified_archive_recovery(self) -> None:
+        """Authorize a needed repair before quarantine or durable generation reset."""
+
+        preflight = self._verified_archive_recovery_preflight
+        if preflight is None:
+            return
+        try:
+            preflight()
+        except AssetDownloadOrchestrationError:
+            raise
+        except MediaDownloadError as error:
+            raise AssetDownloadOrchestrationError._from_media(error, retryable=error.retryable) from None
+        except Exception:
+            raise AssetDownloadOrchestrationError("asset_download_start_failed") from None
 
     def _begin(
         self,

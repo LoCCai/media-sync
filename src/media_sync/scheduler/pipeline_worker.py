@@ -117,8 +117,38 @@ _FAILURES: Mapping[str, PipelineFailureClassification] = MappingProxyType(
             ),
             PipelineFailureClassification(
                 "pipeline_xhs_detail_authority_required",
-                "XHS note detail authority is required",
+                "XHS creator or note detail authority is required",
                 True,
+            ),
+            PipelineFailureClassification(
+                "pipeline_locator_refresh_configuration_invalid",
+                "asset locator refresh configuration is invalid",
+                False,
+            ),
+            PipelineFailureClassification(
+                "pipeline_locator_refresh_credentials_unavailable",
+                "asset locator refresh credentials are unavailable",
+                True,
+            ),
+            PipelineFailureClassification(
+                "pipeline_locator_refresh_temporary",
+                "asset locator refresh is temporarily unavailable",
+                True,
+            ),
+            PipelineFailureClassification(
+                "pipeline_locator_refresh_asset_not_found",
+                "asset was not found during locator refresh",
+                False,
+            ),
+            PipelineFailureClassification(
+                "pipeline_locator_refresh_retryable",
+                "asset locator refresh could not complete and may be retried",
+                True,
+            ),
+            PipelineFailureClassification(
+                "pipeline_locator_refresh_terminal",
+                "asset locator refresh cannot be completed",
+                False,
             ),
             PipelineFailureClassification(
                 "pipeline_media_probe_unavailable",

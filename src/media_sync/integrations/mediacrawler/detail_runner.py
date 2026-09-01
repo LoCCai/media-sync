@@ -40,6 +40,7 @@ from media_sync.integrations.mediacrawler.checkout import (
 )
 from media_sync.integrations.mediacrawler.normalizers import _BILI_PROGRESSIVE_FIELD
 from media_sync.integrations.mediacrawler.policies import (
+    CREATOR_CONFIG_ATTRIBUTES,
     RunPaths,
     WatchdogLimits,
     build_run_paths,
@@ -55,12 +56,16 @@ from media_sync.integrations.mediacrawler.weibo_media import (
     install_weibo_media_capture,
     is_weibo_numeric_note_id,
 )
+from media_sync.integrations.mediacrawler.xhs_authority import (
+    validate_xhs_creator_reference,
+    validate_xhs_detail_reference,
+)
 from media_sync.media import ResolvedLocator
 from media_sync.media.errors import MediaDownloadError
 from media_sync.security import SecretValue
 from media_sync.security.secrets import MAX_SECRET_BYTES
 
-DETAIL_RUNNER_SCHEMA_VERSION = 2
+DETAIL_RUNNER_SCHEMA_VERSION = 3
 MAX_DETAIL_REQUEST_BYTES = 128 * 1024
 MAX_DETAIL_FRAME_OVERHEAD = 8 * 1024
 
@@ -116,6 +121,34 @@ def _is_weibo_detail_reference(value: object, content_remote_id: str) -> bool:
     )
 
 
+def _validate_xhs_request_authority(
+    *,
+    detail_reference: object,
+    creator_reference: object,
+    creator_max_items: object,
+    content_remote_id: str,
+    author_remote_id: str,
+    watchdogs: WatchdogLimits,
+) -> None:
+    try:
+        if detail_reference is not None:
+            if not isinstance(detail_reference, SecretValue):
+                raise ValueError
+            if creator_reference is not None or creator_max_items is not None:
+                raise ValueError
+            validate_xhs_detail_reference(detail_reference.reveal(), content_remote_id)
+            return
+        if not isinstance(creator_reference, SecretValue):
+            raise ValueError
+        if type(creator_max_items) is not int or not 1 <= creator_max_items <= 1_000:
+            raise ValueError
+        if creator_max_items > watchdogs.max_output_items:
+            raise ValueError
+        validate_xhs_creator_reference(creator_reference.reveal(), author_remote_id)
+    except ValueError as exc:
+        raise MediaDownloadError("locator_refresh_configuration_invalid") from exc
+
+
 @dataclass(frozen=True, slots=True)
 class MediaCrawlerDetailRequest:
     """One frozen, account-bound detail lookup with no database dependency."""
@@ -125,7 +158,10 @@ class MediaCrawlerDetailRequest:
     platform: Platform
     login_method: LoginMethod
     content_remote_id: str
+    author_remote_id: str
     detail_reference: str | SecretValue | None = field(default=None, repr=False)
+    creator_reference: SecretValue | None = field(default=None, repr=False)
+    creator_max_items: int | None = None
     cookie: SecretValue | None = field(default=None, repr=False)
     headless: bool = True
     request_delay_seconds: float = 2.0
@@ -141,12 +177,28 @@ class MediaCrawlerDetailRequest:
         except (TypeError, ValueError) as exc:
             raise MediaDownloadError("locator_refresh_configuration_invalid") from exc
         content_remote_id = _bounded_text(self.content_remote_id)
+        author_remote_id = _bounded_text(self.author_remote_id, maximum=255)
         if platform not in _SUPPORTED_PLATFORMS or login_method is LoginMethod.PHONE:
             raise MediaDownloadError("locator_refresh_unsupported")
         if self.detail_reference is not None and not isinstance(self.detail_reference, str | SecretValue):
             raise MediaDownloadError("locator_refresh_configuration_invalid")
         if isinstance(self.detail_reference, str):
             _bounded_text(self.detail_reference, maximum=4_096)
+        if self.creator_reference is not None and not isinstance(self.creator_reference, SecretValue):
+            raise MediaDownloadError("locator_refresh_configuration_invalid")
+        if not isinstance(self.watchdogs, WatchdogLimits):
+            raise MediaDownloadError("locator_refresh_configuration_invalid")
+        if platform is Platform.XHS:
+            _validate_xhs_request_authority(
+                detail_reference=self.detail_reference,
+                creator_reference=self.creator_reference,
+                creator_max_items=self.creator_max_items,
+                content_remote_id=content_remote_id,
+                author_remote_id=author_remote_id,
+                watchdogs=self.watchdogs,
+            )
+        elif self.creator_reference is not None or self.creator_max_items is not None:
+            raise MediaDownloadError("locator_refresh_configuration_invalid")
         if platform is Platform.WB and not _is_weibo_detail_reference(self.detail_reference, content_remote_id):
             raise MediaDownloadError("locator_refresh_configuration_invalid")
         if login_method is LoginMethod.COOKIE and self.cookie is None:
@@ -165,12 +217,15 @@ class MediaCrawlerDetailRequest:
         object.__setattr__(self, "platform", platform)
         object.__setattr__(self, "login_method", login_method)
         object.__setattr__(self, "content_remote_id", content_remote_id)
+        object.__setattr__(self, "author_remote_id", author_remote_id)
         object.__setattr__(self, "request_delay_seconds", float(delay))
 
-    def resolved_detail_reference(self) -> str:
+    def resolved_detail_reference(self) -> str | None:
         """Reveal an explicit reference only at the child-request boundary."""
 
         value = self.detail_reference
+        if self.platform is Platform.XHS and self.creator_reference is not None:
+            return None
         if self.platform is Platform.WB:
             if not _is_weibo_detail_reference(value, self.content_remote_id):
                 raise MediaDownloadError("locator_refresh_configuration_invalid")
@@ -186,6 +241,17 @@ class MediaCrawlerDetailRequest:
         else:
             resolved = self.content_remote_id
         return resolved
+
+    def resolved_creator_reference(self) -> str | None:
+        """Reveal creator authority only for an already-validated XHS lookup."""
+
+        value = self.creator_reference
+        if value is None:
+            return None
+        try:
+            return validate_xhs_creator_reference(value.reveal(), self.author_remote_id)
+        except ValueError as exc:
+            raise MediaDownloadError("locator_refresh_configuration_invalid") from exc
 
 
 @dataclass(frozen=True, slots=True)
@@ -300,7 +366,10 @@ class MediaCrawlerDetailProcessRunner:
                 "platform": request.platform.value,
                 "login_method": request.login_method.value,
                 "content_remote_id": request.content_remote_id,
+                "author_remote_id": request.author_remote_id,
                 "detail_reference": request.resolved_detail_reference(),
+                "creator_reference": request.resolved_creator_reference(),
+                "creator_max_items": request.creator_max_items,
                 "cookie": cookie,
                 "headless": request.headless,
                 "request_delay_seconds": request.request_delay_seconds,
@@ -497,7 +566,10 @@ class _ChildRequest:
     platform: Platform
     login_method: LoginMethod
     content_remote_id: str
-    detail_reference: str = field(repr=False)
+    detail_reference: str | None = field(repr=False)
+    author_remote_id: str = "unknown"
+    creator_reference: str | None = field(default=None, repr=False)
+    creator_max_items: int | None = None
     cookie: str | None = field(default=None, repr=False)
     headless: bool = True
     request_delay_seconds: float = 2.0
@@ -520,7 +592,10 @@ class _ChildRequest:
             "platform",
             "login_method",
             "content_remote_id",
+            "author_remote_id",
             "detail_reference",
+            "creator_reference",
+            "creator_max_items",
             "cookie",
             "headless",
             "request_delay_seconds",
@@ -542,7 +617,12 @@ class _ChildRequest:
             job_root = Path(_child_text(raw["job_root"], 32_767)).resolve()
             output_root = Path(_child_text(raw["output_root"], 32_767)).resolve()
             content_remote_id = _child_text(raw["content_remote_id"], 512)
-            detail_reference = _child_text(raw["detail_reference"], 4_096)
+            author_remote_id = _child_text(raw["author_remote_id"], 255)
+            detail_value = raw["detail_reference"]
+            detail_reference = None if detail_value is None else _child_text(detail_value, 4_096)
+            creator_value = raw["creator_reference"]
+            creator_reference = None if creator_value is None else _child_text(creator_value, 4_096)
+            creator_max_items = raw["creator_max_items"]
             cookie_value = raw["cookie"]
             cookie = None if cookie_value is None else _child_text(cookie_value, MAX_SECRET_BYTES)
             watchdog_values = raw["watchdogs"]
@@ -573,6 +653,24 @@ class _ChildRequest:
             raise _ChildConfigurationError
         if (login_method is LoginMethod.COOKIE) != (cookie is not None):
             raise _ChildConfigurationError
+        if platform is Platform.XHS:
+            try:
+                if detail_reference is not None:
+                    if creator_reference is not None or creator_max_items is not None:
+                        raise ValueError
+                    validate_xhs_detail_reference(detail_reference, content_remote_id)
+                else:
+                    if creator_reference is None:
+                        raise ValueError
+                    if type(creator_max_items) is not int or not 1 <= creator_max_items <= 1_000:
+                        raise ValueError
+                    if creator_max_items > watchdogs.max_output_items:
+                        raise ValueError
+                    validate_xhs_creator_reference(creator_reference, author_remote_id)
+            except ValueError as exc:
+                raise _ChildConfigurationError from exc
+        elif creator_reference is not None or creator_max_items is not None or detail_reference is None:
+            raise _ChildConfigurationError
         if platform is Platform.WB and not _is_weibo_detail_reference(detail_reference, content_remote_id):
             raise _ChildConfigurationError
         if bili_progressive_detail and content_remote_id != detail_reference:
@@ -590,7 +688,10 @@ class _ChildRequest:
             platform=platform,
             login_method=login_method,
             content_remote_id=content_remote_id,
+            author_remote_id=author_remote_id,
             detail_reference=detail_reference,
+            creator_reference=creator_reference,
+            creator_max_items=creator_max_items,
             cookie=cookie,
             headless=headless,
             request_delay_seconds=float(delay),
@@ -652,12 +753,10 @@ def _configure_upstream(config: Any, request: _ChildRequest) -> None:
 
     config.PLATFORM = request.platform.value
     config.LOGIN_TYPE = upstream_login_type(request.login_method)
-    config.CRAWLER_TYPE = "detail"
     config.COOKIES = request.cookie or ""
     config.SAVE_DATA_PATH = str(request.output_root)
     config.USER_DATA_DIR = template
     config.START_PAGE = 1
-    config.CRAWLER_MAX_NOTES_COUNT = 1
     config.SAVE_DATA_OPTION = "jsonl"
     config.ENABLE_CDP_MODE = False
     config.CDP_CONNECT_EXISTING = False
@@ -675,12 +774,26 @@ def _configure_upstream(config: Any, request: _ChildRequest) -> None:
     config.HEADLESS = headless
     config.CDP_HEADLESS = headless
     config.AUTO_CLOSE_BROWSER = True
-    config.CREATOR_MODE = False
     config.XHS_INTERNATIONAL = False
     config.DISABLE_SSL_VERIFY = False
+    for attribute in CREATOR_CONFIG_ATTRIBUTES.values():
+        setattr(config, attribute, [])
     for attribute in _DETAIL_CONFIG_ATTRIBUTES.values():
         setattr(config, attribute, [])
-    setattr(config, _DETAIL_CONFIG_ATTRIBUTES[request.platform], [request.detail_reference])
+    if request.platform is Platform.XHS and request.creator_reference is not None:
+        if request.creator_max_items is None:
+            raise _ChildConfigurationError
+        config.CRAWLER_TYPE = "creator"
+        config.CREATOR_MODE = True
+        config.CRAWLER_MAX_NOTES_COUNT = request.creator_max_items
+        config.XHS_CREATOR_ID_LIST = [request.creator_reference]
+    else:
+        if request.detail_reference is None:
+            raise _ChildConfigurationError
+        config.CRAWLER_TYPE = "detail"
+        config.CREATOR_MODE = False
+        config.CRAWLER_MAX_NOTES_COUNT = 1
+        setattr(config, _DETAIL_CONFIG_ATTRIBUTES[request.platform], [request.detail_reference])
 
 
 def _positive_bili_id(value: object) -> int:
@@ -720,6 +833,8 @@ async def _run_bilibili_aid(upstream_main: Any, request: _ChildRequest) -> _Bili
     """Use the pinned client's aid-capable detail entry when discovery stored av."""
 
     crawler = upstream_main.CrawlerFactory.create_crawler(platform=request.platform.value)
+    if request.detail_reference is None:
+        raise _ChildConfigurationError
     try:
         requested_aid = int(request.detail_reference)
     except ValueError as exc:
@@ -792,7 +907,11 @@ async def _run_upstream(request: _ChildRequest) -> tuple[Any, _BiliProgressiveRe
         install_weibo_media_capture(request.checkout_root)
 
     async def dispatch() -> _BiliProgressiveResult | None:
-        if request.platform is Platform.BILI and request.detail_reference.isdigit():
+        if (
+            request.platform is Platform.BILI
+            and request.detail_reference is not None
+            and request.detail_reference.isdigit()
+        ):
             return await _run_bilibili_aid(upstream_main, request)
         await upstream_main.main()
         return None

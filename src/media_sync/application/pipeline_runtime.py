@@ -106,6 +106,8 @@ class _PerAssetDownloadRunner:
         self._database = database
         self._subscription_id = subscription_id
         self._config = config
+        self._refreshers: dict[UUID, LocatorRefreshPort | None] = {}
+        self._xhs_refresh_assets: set[UUID] = set()
 
     def run(self, request: AssetDownloadRequest) -> AssetDownloadOutcome:
         refresher = self._refresher(request.asset_id)
@@ -127,26 +129,41 @@ class _PerAssetDownloadRunner:
             probe=probe,
             limits=limits,
         )
-        return AssetDownloadService(self._database, downloader).run(request)
+        recovery_preflight = (
+            (lambda: self.preflight(request.asset_id)) if request.asset_id in self._xhs_refresh_assets else None
+        )
+        return AssetDownloadService(
+            self._database,
+            downloader,
+            verified_archive_recovery_preflight=recovery_preflight,
+        ).run(request)
 
     def _refresher(self, asset_id: UUID) -> LocatorRefreshPort | None:
+        if asset_id in self._refreshers:
+            return self._refreshers[asset_id]
         with self._database.session() as session:
             asset_scope = session.execute(
                 select(Asset.locator, Asset.platform).where(Asset.id == str(asset_id))
             ).one_or_none()
         if asset_scope is None:
+            self._refreshers[asset_id] = None
             return None
         raw_locator, asset_platform = asset_scope
         try:
             locator = parse_locator(raw_locator)
         except MediaDownloadError:
+            self._refreshers[asset_id] = None
             return None
         if not isinstance(locator, AdapterRefreshLocator) or locator.adapter != "mediacrawler":
+            self._refreshers[asset_id] = None
             return None
+        if asset_platform == Platform.XHS.value:
+            self._xhs_refresh_assets.add(asset_id)
         config = self._config
         if not config.enable_mediacrawler or not config.accept_mediacrawler_license:
+            self._refreshers[asset_id] = None
             return None
-        return LazyMediaCrawlerLocatorRefresher(
+        refresher = LazyMediaCrawlerLocatorRefresher(
             self._database,
             asset_id=asset_id,
             subscription_id=self._subscription_id,
@@ -157,6 +174,16 @@ class _PerAssetDownloadRunner:
             license_acknowledged=True,
             detail_reference_ref=(config.xhs_detail_reference_ref if asset_platform == Platform.XHS.value else None),
         )
+        self._refreshers[asset_id] = refresher
+        return refresher
+
+    def preflight(self, asset_id: UUID) -> None:
+        """Resolve exact XHS authority before durable download work begins."""
+
+        refresher = self._refresher(asset_id)
+        if not isinstance(refresher, LazyMediaCrawlerLocatorRefresher):
+            raise MediaDownloadError("locator_refresh_configuration_invalid")
+        refresher.preflight()
 
 
 class SubscriptionPipelineExecutor:
@@ -177,9 +204,10 @@ class SubscriptionPipelineExecutor:
         download_worker_id = _scoped_worker_id(worker_id, "asset")
         export_worker_id = _scoped_worker_id(worker_id, "emby")
         config = self._config
+        download_runner = _PerAssetDownloadRunner(self._database, subscription_id, config)
         service = SubscriptionPipelineService(
             SubscriptionAssetSelector(self._database),
-            _PerAssetDownloadRunner(self._database, subscription_id, config),
+            download_runner,
             EmbyExportService(
                 self._database,
                 EmbyExporter(config.export_root, staging_root=config.export_staging_root),
@@ -194,7 +222,11 @@ class SubscriptionPipelineExecutor:
                 config=config,
                 worker_id=export_worker_id,
             ),
-            selection_preflight=lambda selection: _preflight_selection(selection, config=config),
+            selection_preflight=lambda selection: _preflight_selection(
+                selection,
+                config=config,
+                download_runner=download_runner,
+            ),
         )
         return service.run(
             SubscriptionPipelineRequest(
@@ -209,6 +241,7 @@ def _preflight_selection(
     selection: SubscriptionAssetSelection,
     *,
     config: LocalPipelineRuntimeConfig,
+    download_runner: _PerAssetDownloadRunner,
 ) -> None:
     """Reject missing local capabilities before any child Job is consumed."""
 
@@ -224,8 +257,11 @@ def _preflight_selection(
                 raise SubscriptionPipelineError("pipeline_mediacrawler_license_required")
             if config.mediacrawler_python_executable is None:
                 raise SubscriptionPipelineError("pipeline_mediacrawler_runtime_unavailable")
-            if asset.platform == Platform.XHS.value and config.xhs_detail_reference_ref is None:
-                raise SubscriptionPipelineError("pipeline_xhs_detail_authority_required")
+            if asset.platform == Platform.XHS.value:
+                try:
+                    download_runner.preflight(asset.asset_id)
+                except MediaDownloadError as error:
+                    raise _xhs_preflight_pipeline_error(error) from None
             requires_mediacrawler = True
         if asset.kind in {"video", "audio"}:
             if config.ffprobe_executable is None:
@@ -246,6 +282,27 @@ def _preflight_selection(
 
     if requires_media_probe and not _ffprobe_ready(config.ffprobe_executable):
         raise SubscriptionPipelineError("pipeline_media_probe_unavailable")
+
+
+def _xhs_preflight_pipeline_error(error: MediaDownloadError) -> SubscriptionPipelineError:
+    """Retain fixed refresh cause and retryability at the pipeline boundary."""
+
+    exact_codes = {
+        "locator_refresh_authority_required": "pipeline_xhs_detail_authority_required",
+        "locator_refresh_configuration_invalid": "pipeline_locator_refresh_configuration_invalid",
+        "locator_refresh_asset_mismatch": "pipeline_locator_refresh_configuration_invalid",
+        "locator_refresh_credentials_unavailable": "pipeline_locator_refresh_credentials_unavailable",
+        "locator_refresh_temporary": "pipeline_locator_refresh_temporary",
+        "locator_refresh_asset_not_found": "pipeline_locator_refresh_asset_not_found",
+        "locator_refresh_source_unavailable": "pipeline_asset_source_ineligible",
+        "locator_refresh_source_ambiguous": "pipeline_asset_source_ineligible",
+        "locator_refresh_source_mismatch": "pipeline_asset_source_ineligible",
+    }
+    code = exact_codes.get(
+        error.code,
+        "pipeline_locator_refresh_retryable" if error.retryable else "pipeline_locator_refresh_terminal",
+    )
+    return SubscriptionPipelineError(code)
 
 
 def _ffprobe_ready(executable: str | None) -> bool:

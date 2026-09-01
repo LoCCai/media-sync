@@ -14,7 +14,7 @@ import re
 import shutil
 import signal
 import sys
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -114,6 +114,7 @@ from media_sync.integrations.mediacrawler.subscription_policy import (
 from media_sync.media import (
     DownloadLimits,
     FFprobeMediaProbe,
+    MediaDownloadError,
     NetworkLimits,
     SafeHttpClient,
     SecureMediaDownloader,
@@ -1997,6 +1998,12 @@ def download_asset(
         asset_kind = asset_preflight[1] if asset_preflight is not None else None
         asset_locator = asset_preflight[2] if asset_preflight is not None else None
         asset_platform = asset_preflight[3] if asset_preflight is not None else None
+        if (
+            normalized_detail_reference_ref is not None
+            and asset_platform is not None
+            and asset_platform != Platform.XHS.value
+        ):
+            raise typer.BadParameter("XHS detail reference is available only for XHS assets")
         requires_download = asset_status not in {
             None,
             AssetStatus.VERIFIED.value,
@@ -2061,26 +2068,6 @@ def download_asset(
                 label="Asset download",
             )
             raise typer.Exit(code=1)
-        if (
-            requires_download
-            and mediacrawler_refresh
-            and asset_platform == Platform.XHS.value
-            and normalized_detail_reference_ref is None
-        ):
-            _emit_record(
-                {
-                    "asset_id": str(asset_id),
-                    "status": "blocked",
-                    "disposition": "not_started",
-                    "persisted_status": asset_status,
-                    "error_code": "locator_refresh_configuration_invalid",
-                    "retryable": False,
-                },
-                json_output=json_output,
-                label="Asset download",
-            )
-            raise typer.Exit(code=1)
-
         ffprobe = shutil.which("ffprobe")
         if requires_download and asset_kind in {"video", "audio"} and ffprobe is None:
             _emit_record(
@@ -2099,6 +2086,7 @@ def download_asset(
 
         limits = DownloadLimits()
         refresher = None
+        verified_archive_recovery_preflight: Callable[[], None] | None = None
         if mediacrawler_refresh and enable_mediacrawler and accept_mediacrawler_license:
             refresher = LazyMediaCrawlerLocatorRefresher(
                 database,
@@ -2109,8 +2097,26 @@ def download_asset(
                 python_executable=settings.mediacrawler_python_executable,
                 secret_resolver=SecretResolver.local(file_root=settings.resolved_secret_file_dir),
                 license_acknowledged=True,
-                detail_reference_ref=normalized_detail_reference_ref,
+                detail_reference_ref=(
+                    normalized_detail_reference_ref if asset_platform == Platform.XHS.value else None
+                ),
             )
+            if requires_download and asset_platform == Platform.XHS.value:
+                refresher.preflight()
+        if mediacrawler_refresh and asset_platform == Platform.XHS.value:
+            if refresher is not None:
+                verified_archive_recovery_preflight = refresher.preflight
+            else:
+
+                def unavailable_xhs_recovery_preflight() -> None:
+                    code = (
+                        "locator_refresh_unsupported"
+                        if not enable_mediacrawler
+                        else "locator_refresh_configuration_invalid"
+                    )
+                    raise MediaDownloadError(code)
+
+                verified_archive_recovery_preflight = unavailable_xhs_recovery_preflight
         http = SafeHttpClient(
             SocketAddressResolver(),
             limits=NetworkLimits(timeout_seconds=min(limits.total_timeout_seconds, 120.0)),
@@ -2120,7 +2126,11 @@ def download_asset(
             downloader = SecureMediaDownloader(http, probe=probe, limits=limits)
         else:
             downloader = SecureMediaDownloader(http, refresher=refresher, probe=probe, limits=limits)
-        outcome = AssetDownloadService(database, downloader).run(
+        outcome = AssetDownloadService(
+            database,
+            downloader,
+            verified_archive_recovery_preflight=verified_archive_recovery_preflight,
+        ).run(
             AssetDownloadRequest(
                 asset_id=asset_id,
                 worker_id=_required_option(worker_id, "worker_id"),
@@ -2138,6 +2148,20 @@ def download_asset(
             "retryable": error.retryable,
         }
         _emit_record(payload, json_output=json_output, label="Asset download")
+        raise typer.Exit(code=1) from None
+    except MediaDownloadError as error:
+        _emit_record(
+            {
+                "asset_id": str(asset_id),
+                "status": "blocked",
+                "disposition": "not_started",
+                "persisted_status": asset_status,
+                "error_code": error.code,
+                "retryable": error.retryable,
+            },
+            json_output=json_output,
+            label="Asset download",
+        )
         raise typer.Exit(code=1) from None
     except SQLAlchemyError:
         raise typer.BadParameter("asset download database operation failed safely") from None

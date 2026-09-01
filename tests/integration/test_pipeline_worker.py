@@ -55,6 +55,24 @@ def test_runtime_preflight_failures_are_fixed_retryable_worker_results(error_cod
     assert classify_pipeline_failure(error_code).retryable is True
 
 
+@pytest.mark.parametrize(
+    ("error_code", "retryable"),
+    [
+        ("pipeline_locator_refresh_configuration_invalid", False),
+        ("pipeline_locator_refresh_credentials_unavailable", True),
+        ("pipeline_locator_refresh_temporary", True),
+        ("pipeline_locator_refresh_asset_not_found", False),
+        ("pipeline_locator_refresh_retryable", True),
+        ("pipeline_locator_refresh_terminal", False),
+    ],
+)
+def test_locator_refresh_preflight_failures_keep_closed_worker_retryability(
+    error_code: str,
+    retryable: bool,
+) -> None:
+    assert classify_pipeline_failure(error_code).retryable is retryable
+
+
 class _Clock:
     def __init__(self, value: datetime = NOW) -> None:
         self.value = value

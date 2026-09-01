@@ -5,6 +5,7 @@ _ERRORS: dict[str, tuple[str, bool]] = {
     "locator_secret_forbidden": ("asset locator contains non-persistable data", False),
     "locator_refresh_unsupported": ("asset locator refresh is not supported", True),
     "locator_refresh_configuration_invalid": ("asset locator refresh configuration is invalid", False),
+    "locator_refresh_authority_required": ("XHS locator refresh authority is required", True),
     "locator_refresh_source_unavailable": ("asset has no current locator refresh source", True),
     "locator_refresh_source_ambiguous": ("asset has multiple eligible locator refresh sources", True),
     "locator_refresh_source_mismatch": ("selected locator refresh source is not eligible", True),

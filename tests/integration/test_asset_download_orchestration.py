@@ -508,6 +508,81 @@ def test_already_verified_shortcut_revalidates_and_fences_invalid_archive_genera
         assert job is not None and job.status == "succeeded" and job.attempts == 1
 
 
+@pytest.mark.parametrize("mutation", ["delete", "replace"])
+def test_verified_archive_recovery_preflight_is_lazy_and_precedes_repair(
+    database: Database,
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    asset_id = _seed_asset(database)
+    network_calls = 0
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal network_calls
+        network_calls += 1
+        return _ok_response()
+
+    request = _request(tmp_path, asset_id)
+    first = AssetDownloadService(
+        database,
+        _downloader(handler),
+        clock=lambda: STARTED_AT,
+    ).run(request)
+    preflight_calls = 0
+
+    def recovery_preflight() -> None:
+        nonlocal preflight_calls
+        preflight_calls += 1
+        with database.session() as session:
+            asset = AssetRepository(session).require(str(asset_id))
+            assert asset.status == AssetStatus.VERIFIED.value
+            assert asset.generation == first.generation
+            assert asset.local_path == str(first.archive_path)
+            assert asset.checksum_sha256 == first.checksum_sha256
+        assert not (tmp_path / "archive" / ".quarantine").exists()
+        if mutation == "replace":
+            assert first.archive_path.read_bytes() == b"X" * first.size_bytes
+        else:
+            assert not first.archive_path.exists()
+        raise MediaDownloadError("locator_refresh_credentials_unavailable")
+
+    guarded = AssetDownloadService(
+        database,
+        _downloader(handler),
+        clock=lambda: STARTED_AT,
+        verified_archive_recovery_preflight=recovery_preflight,
+    )
+
+    replayed = guarded.run(request)
+    assert replayed.disposition == "already_verified"
+    assert preflight_calls == 0
+
+    if mutation == "delete":
+        first.archive_path.chmod(0o600)
+        first.archive_path.unlink()
+    else:
+        first.archive_path.chmod(0o600)
+        first.archive_path.write_bytes(b"X" * first.size_bytes)
+
+    with pytest.raises(AssetDownloadOrchestrationError) as blocked:
+        guarded.run(request)
+
+    assert blocked.value.code == "locator_refresh_credentials_unavailable"
+    assert blocked.value.retryable is True
+    assert preflight_calls == 1
+    assert network_calls == 1
+    assert not (tmp_path / "archive" / ".quarantine").exists()
+    if mutation == "replace":
+        assert first.archive_path.read_bytes() == b"X" * first.size_bytes
+    with database.session() as session:
+        asset = AssetRepository(session).require(str(asset_id))
+        assert asset.status == AssetStatus.VERIFIED.value
+        assert asset.generation == first.generation
+        assert asset.local_path == str(first.archive_path)
+        assert asset.checksum_sha256 == first.checksum_sha256
+        assert asset.size_bytes == first.size_bytes
+
+
 def test_corrupt_archive_is_quarantined_then_same_hash_redownload_recovers(
     database: Database,
     tmp_path: Path,

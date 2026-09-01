@@ -105,14 +105,22 @@ class _RuntimeSeed:
     source_subscription_ids: tuple[UUID, ...]
 
 
-def _policy(*, headless: bool = False, request_delay_seconds: float = 7.25) -> dict[str, object]:
+def _policy(
+    *,
+    headless: bool = False,
+    request_delay_seconds: float = 7.25,
+    creator_secret_ref: str | None = None,
+) -> dict[str, object]:
+    policy: dict[str, object] = {
+        "schema_version": 1,
+        "allow_full_history": False,
+        "request_delay_seconds": request_delay_seconds,
+        "headless": headless,
+    }
+    if creator_secret_ref is not None:
+        policy["creator_input"] = {"secret_ref": creator_secret_ref}
     return {
-        "mediacrawler": {
-            "schema_version": 1,
-            "allow_full_history": False,
-            "request_delay_seconds": request_delay_seconds,
-            "headless": headless,
-        }
+        "mediacrawler": policy,
     }
 
 
@@ -127,6 +135,8 @@ def _seed(
     asset_position: int = 0,
     asset_remote_id: str = ASSET_REMOTE_ID,
     source_url: str | None = SOURCE_HINT,
+    creator_secret_refs: tuple[str | None, ...] = (),
+    subscription_max_items: tuple[int, ...] = (),
 ) -> _RuntimeSeed:
     with database.session() as session:
         author, contents = AuthorRepository(session).upsert_with_contents(
@@ -175,7 +185,10 @@ def _seed(
             subscription = SubscriptionRepository(session).create(
                 account_id=account.id,
                 author_id=author.id,
-                policy=_policy(),
+                max_items=(subscription_max_items[index] if index < len(subscription_max_items) else 30),
+                policy=_policy(
+                    creator_secret_ref=(creator_secret_refs[index] if index < len(creator_secret_refs) else None)
+                ),
             )
             if first_account_id is None:
                 first_account_id = UUID(account.id)
@@ -201,6 +214,7 @@ def _lazy(
     tmp_path: Path,
     *,
     subscription_id: UUID | None,
+    detail_reference_ref: str | None = None,
 ) -> LazyMediaCrawlerLocatorRefresher:
     return LazyMediaCrawlerLocatorRefresher(
         database,
@@ -211,7 +225,156 @@ def _lazy(
         python_executable=tmp_path / "python",
         secret_resolver=resolver,
         license_acknowledged=True,
+        detail_reference_ref=detail_reference_ref,
     )
+
+
+def _xhs_payload(source_url: str) -> bytes:
+    return (
+        json.dumps(
+            {
+                "note_id": CONTENT_ID,
+                "type": "normal",
+                "title": "Runtime XHS image",
+                "image_list": source_url,
+                "video_url": "",
+            },
+            separators=(",", ":"),
+        ).encode("utf-8")
+        + b"\n"
+    )
+
+
+def test_xhs_creator_authority_uses_exact_source_subscription_and_max_items(
+    database: Database,
+    tmp_path: Path,
+    fake_detail_runner: type[_FakeMediaCrawlerDetailProcessRunner],
+) -> None:
+    refreshed_url = "https://cdn.runtime.test/xhs/image.jpg?token=current"
+    source_hint = asset_source_hint(refreshed_url)
+    assert source_hint is not None
+    seed = _seed(
+        database,
+        source_count=2,
+        login_method=LoginMethod.QR,
+        platform=Platform.XHS,
+        asset_kind=AssetKind.IMAGE,
+        asset_remote_id=f"{CONTENT_ID}:image:0",
+        source_url=source_hint,
+        creator_secret_refs=("env:XHS_CREATOR_ONE", "env:XHS_CREATOR_TWO"),
+        subscription_max_items=(11, 47),
+    )
+    creator_two = "https://www.xiaohongshu.com/user/profile/runtime-author?xsec_token=creator-two&xsec_source=pc_user"
+    provider = _RecordingSecretProvider(
+        {
+            "XHS_CREATOR_ONE": (
+                "https://www.xiaohongshu.com/user/profile/runtime-author?xsec_token=creator-one&xsec_source=pc_user"
+            ),
+            "XHS_CREATOR_TWO": creator_two,
+        }
+    )
+    fake_detail_runner.payload = _xhs_payload(refreshed_url)
+    refresher = _lazy(
+        database,
+        seed,
+        SecretResolver({SecretScheme.ENV: provider}),
+        tmp_path,
+        subscription_id=seed.source_subscription_ids[1],
+    )
+
+    assert refresher.resolve(seed.locator).url == refreshed_url
+
+    assert provider.calls == ["env:XHS_CREATOR_TWO"]
+    request = fake_detail_runner.instances[0].calls[0]
+    assert request.author_remote_id == "runtime-author"
+    assert request.detail_reference is None
+    assert request.creator_reference is not None
+    assert request.creator_reference.reveal() == creator_two
+    assert request.creator_max_items == 47
+
+
+def test_xhs_explicit_detail_authority_has_priority_without_creator_secret_resolution(
+    database: Database,
+    tmp_path: Path,
+    fake_detail_runner: type[_FakeMediaCrawlerDetailProcessRunner],
+) -> None:
+    refreshed_url = "https://cdn.runtime.test/xhs/explicit.jpg?token=current"
+    source_hint = asset_source_hint(refreshed_url)
+    assert source_hint is not None
+    seed = _seed(
+        database,
+        source_count=1,
+        login_method=LoginMethod.QR,
+        platform=Platform.XHS,
+        asset_kind=AssetKind.IMAGE,
+        asset_remote_id=f"{CONTENT_ID}:image:0",
+        source_url=source_hint,
+        creator_secret_refs=("env:XHS_CREATOR_MUST_NOT_BE_READ",),
+        subscription_max_items=(29,),
+    )
+    detail_url = f"https://www.xiaohongshu.com/explore/{CONTENT_ID}?xsec_token=explicit-detail&xsec_source=pc_feed"
+    provider = _RecordingSecretProvider({"XHS_DETAIL": detail_url})
+    fake_detail_runner.payload = _xhs_payload(refreshed_url)
+    refresher = _lazy(
+        database,
+        seed,
+        SecretResolver({SecretScheme.ENV: provider}),
+        tmp_path,
+        subscription_id=seed.source_subscription_ids[0],
+        detail_reference_ref="env:XHS_DETAIL",
+    )
+
+    assert refresher.resolve(seed.locator).url == refreshed_url
+
+    assert provider.calls == ["env:XHS_DETAIL"]
+    request = fake_detail_runner.instances[0].calls[0]
+    assert request.detail_reference is not None
+    assert request.detail_reference.reveal() == detail_url
+    assert request.creator_reference is None
+    assert request.creator_max_items is None
+
+
+@pytest.mark.parametrize(
+    ("creator_secret_ref", "resolver", "expected_code"),
+    [
+        (None, SecretResolver({}), "locator_refresh_authority_required"),
+        ("env:XHS_CREATOR_MISSING", SecretResolver({}), "locator_refresh_credentials_unavailable"),
+    ],
+)
+def test_xhs_missing_creator_authority_fails_preflight_before_child_spawn(
+    database: Database,
+    tmp_path: Path,
+    fake_detail_runner: type[_FakeMediaCrawlerDetailProcessRunner],
+    creator_secret_ref: str | None,
+    resolver: SecretResolver,
+    expected_code: str,
+) -> None:
+    refreshed_url = "https://cdn.runtime.test/xhs/missing.jpg?token=current"
+    source_hint = asset_source_hint(refreshed_url)
+    assert source_hint is not None
+    seed = _seed(
+        database,
+        source_count=1,
+        login_method=LoginMethod.QR,
+        platform=Platform.XHS,
+        asset_kind=AssetKind.IMAGE,
+        asset_remote_id=f"{CONTENT_ID}:image:0",
+        source_url=source_hint,
+        creator_secret_refs=(creator_secret_ref,),
+    )
+    refresher = _lazy(
+        database,
+        seed,
+        resolver,
+        tmp_path,
+        subscription_id=seed.source_subscription_ids[0],
+    )
+
+    with pytest.raises(MediaDownloadError) as caught:
+        refresher.preflight()
+
+    assert caught.value.code == expected_code
+    assert fake_detail_runner.instances == []
 
 
 def test_exact_single_source_builds_once_and_resolves_with_exact_runtime_scope(

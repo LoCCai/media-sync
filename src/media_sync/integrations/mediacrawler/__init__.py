@@ -79,6 +79,7 @@ from .subscription_policy import (
     MediaCrawlerSubscriptionPolicyError,
     from_subscription_policy,
 )
+from .xhs_authority import validate_xhs_creator_reference, validate_xhs_detail_reference
 
 __all__ = [
     "COMPLETION_RECEIPT_SCHEMA_VERSION",
@@ -141,6 +142,8 @@ __all__ = [
     "fence_saved_session_qr_fallback",
     "from_subscription_policy",
     "load_validated_output_snapshot",
+    "validate_xhs_creator_reference",
+    "validate_xhs_detail_reference",
     "verify_mediacrawler_checkout",
     "verify_mediacrawler_python",
 ]

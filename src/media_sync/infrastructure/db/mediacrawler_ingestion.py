@@ -17,11 +17,11 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from media_sync.domain import AssetSnapshot, AuthorSnapshot, ContentSnapshot, RunStatus, freeze_mapping
+from media_sync.domain import AssetSnapshot, AuthorSnapshot, ContentSnapshot, Platform, RunStatus, freeze_mapping
 from media_sync.integrations.mediacrawler.normalizers import NormalizedMediaRecord
 from media_sync.media.locator import AdapterRefreshLocator
 
-from .asset_identity import stable_asset_key
+from .asset_identity import asset_source_hint, stable_asset_key
 from .base import utc_now
 from .database import Database
 from .models import Asset, Content
@@ -87,6 +87,45 @@ def _database_id(value: str | UUID) -> str:
     return str(value)
 
 
+def _query_free_xhs_urls(value: object) -> object:
+    """Remove XHS URL authority without changing the upstream field shape."""
+
+    def sanitized_url(item: str) -> str:
+        return "" if not item else (asset_source_hint(item) or "")
+
+    if isinstance(value, str):
+        # MediaCrawler has emitted both one URL and comma-delimited URLs in
+        # scalar fields.  Keep either representation scalar while replacing
+        # every invalid or authority-bearing candidate with a safe string.
+        return ",".join(sanitized_url(item) for item in value.split(","))
+    if isinstance(value, tuple):
+        return tuple(sanitized_url(item) if isinstance(item, str) else None for item in value)
+    if isinstance(value, list):
+        return [sanitized_url(item) if isinstance(item, str) else None for item in value]
+    return None
+
+
+def _durable_raw(platform: Platform, raw: Mapping[str, Any]) -> Mapping[str, Any]:
+    """Keep XHS discovery replay data in memory while persisting no xsec/query authority."""
+
+    if platform is not Platform.XHS:
+        return raw
+    record = raw.get("record")
+    if not isinstance(record, Mapping):
+        return raw
+    sanitized_record: dict[str, object] = {}
+    for key, value in record.items():
+        if key in {"xsec_token", "xsec_source"}:
+            continue
+        if key in {"note_url", "image_list", "video_url"}:
+            sanitized_record[str(key)] = _query_free_xhs_urls(value)
+        else:
+            sanitized_record[str(key)] = value
+    sanitized_raw = dict(raw)
+    sanitized_raw["record"] = sanitized_record
+    return sanitized_raw
+
+
 def _author_upsert(snapshot: AuthorSnapshot) -> AuthorUpsert:
     return AuthorUpsert(
         platform=snapshot.platform.value,
@@ -95,7 +134,7 @@ def _author_upsert(snapshot: AuthorSnapshot) -> AuthorUpsert:
         handle=snapshot.handle,
         profile_url=snapshot.profile_url,
         avatar_url=snapshot.avatar_url,
-        raw=snapshot.raw,
+        raw=_durable_raw(snapshot.platform, snapshot.raw),
     )
 
 
@@ -109,7 +148,7 @@ def _content_upsert(snapshot: ContentSnapshot) -> ContentUpsert:
         canonical_url=snapshot.canonical_url,
         published_at=snapshot.published_at,
         metrics=snapshot.metrics,
-        raw=snapshot.raw,
+        raw=_durable_raw(snapshot.platform, snapshot.raw),
     )
 
 
@@ -134,7 +173,7 @@ def _asset_upsert(snapshot: AssetSnapshot, *, content_remote_type: str) -> Asset
         position=snapshot.position,
         source_url=snapshot.source_url,
         locator=locator,
-        raw=snapshot.raw,
+        raw=_durable_raw(snapshot.platform, snapshot.raw),
     )
 
 

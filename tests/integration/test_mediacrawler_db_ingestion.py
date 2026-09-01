@@ -156,6 +156,39 @@ def _record(
     return NormalizedMediaRecord(author=author, content=content, assets=(asset,))
 
 
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        pytest.param(
+            "https://one.xhs.test/image.jpg?xsec_token=first,https://two.xhs.test/image.jpg?xsec_token=second",
+            "https://one.xhs.test/image.jpg,https://two.xhs.test/image.jpg",
+            id="comma-delimited-scalar",
+        ),
+        pytest.param("", "", id="empty-string"),
+        pytest.param(None, None, id="none"),
+        pytest.param(
+            ["https://one.xhs.test/image.jpg?xsec_token=first", "", 7],
+            ["https://one.xhs.test/image.jpg", "", None],
+            id="list",
+        ),
+        pytest.param(
+            ("https://one.xhs.test/image.jpg?xsec_token=first", "", object()),
+            ("https://one.xhs.test/image.jpg", "", None),
+            id="tuple",
+        ),
+        pytest.param("not-a-url", "", id="invalid-scalar-remains-scalar"),
+    ],
+)
+def test_xhs_durable_url_sanitizer_preserves_scalar_empty_and_sequence_shapes(
+    value: object,
+    expected: object,
+) -> None:
+    sanitized = ingestion_module._query_free_xhs_urls(value)
+
+    assert sanitized == expected
+    assert type(sanitized) is type(expected)
+
+
 def test_kuaishou_media_queries_are_ephemeral_across_normalization_and_sqlite(
     database: Database,
 ) -> None:

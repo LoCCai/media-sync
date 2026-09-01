@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Iterator, Sequence
 from pathlib import Path
 from uuid import UUID
@@ -11,12 +12,17 @@ import pytest
 from sqlalchemy import select
 
 import media_sync.application.pipeline_runtime as pipeline_runtime
-from media_sync.application.pipeline import SubscriptionPipelineError
+from media_sync.application.downloads import AssetDownloadOrchestrationError
+from media_sync.application.pipeline import (
+    SelectedPipelineAsset,
+    SubscriptionAssetSelection,
+    SubscriptionPipelineError,
+)
 from media_sync.application.pipeline_runtime import (
     LocalPipelineRuntimeConfig,
     SubscriptionPipelineExecutor,
 )
-from media_sync.domain import Platform
+from media_sync.domain import AssetStatus, Platform
 from media_sync.infrastructure.db import (
     AccountRepository,
     AssetRefreshSourceRepository,
@@ -30,7 +36,7 @@ from media_sync.infrastructure.db import (
 )
 from media_sync.infrastructure.db.asset_identity import stable_asset_key
 from media_sync.infrastructure.db.models import Asset, ExportRecord, Job
-from media_sync.media import AdapterRefreshLocator, DirectLocator, SafeHttpClient, ValidatedTarget
+from media_sync.media import AdapterRefreshLocator, DirectLocator, MediaDownloadError, SafeHttpClient, ValidatedTarget
 from media_sync.security import SecretResolver
 
 ASSET_URL = "https://media.pipeline-runtime.test/image.png"
@@ -102,6 +108,8 @@ def _seed_refresh_asset(
     platform: str,
     kind: str,
     suffix: str,
+    creator_secret_ref: str | None = None,
+    max_items: int = 30,
 ) -> tuple[UUID, UUID, UUID]:
     with database.session() as session:
         account = AccountRepository(session).create(
@@ -151,9 +159,20 @@ def _seed_refresh_asset(
                 locator=locator.as_dict(),
             ),
         )
+        mediacrawler_policy: dict[str, object] = {
+            "schema_version": 1,
+            "allow_full_history": False,
+            "request_delay_seconds": 2.0,
+            "headless": True,
+        }
+        if creator_secret_ref is not None:
+            mediacrawler_policy["creator_input"] = {"secret_ref": creator_secret_ref}
+        policy: dict[str, object] = {"mediacrawler": mediacrawler_policy}
         subscription = SubscriptionRepository(session).create(
             account_id=account.id,
             author_id=author.id,
+            max_items=max_items,
+            policy=policy,
         )
         AssetRefreshSourceRepository(session).upsert_observation(
             asset_id=asset.id,
@@ -494,6 +513,270 @@ def test_runtime_preflight_requires_xhs_detail_authority_and_ffprobe_without_chi
             assert asset is not None and (asset.status, asset.download_job_id) == ("discovered", None)
         assert list(session.scalars(select(Job)).all()) == []
     assert network_calls == 0
+
+
+@pytest.mark.parametrize(
+    ("media_code", "pipeline_code", "retryable"),
+    [
+        pytest.param(
+            "locator_refresh_authority_required",
+            "pipeline_xhs_detail_authority_required",
+            True,
+            id="authority",
+        ),
+        pytest.param(
+            "locator_refresh_configuration_invalid",
+            "pipeline_locator_refresh_configuration_invalid",
+            False,
+            id="configuration",
+        ),
+        pytest.param(
+            "locator_refresh_credentials_unavailable",
+            "pipeline_locator_refresh_credentials_unavailable",
+            True,
+            id="credentials",
+        ),
+        pytest.param(
+            "locator_refresh_temporary",
+            "pipeline_locator_refresh_temporary",
+            True,
+            id="temporary",
+        ),
+        pytest.param(
+            "locator_refresh_source_mismatch",
+            "pipeline_asset_source_ineligible",
+            True,
+            id="source-mismatch",
+        ),
+        pytest.param(
+            "locator_refresh_asset_not_found",
+            "pipeline_locator_refresh_asset_not_found",
+            False,
+            id="asset-not-found",
+        ),
+        pytest.param(
+            "locator_refresh_unsupported",
+            "pipeline_locator_refresh_retryable",
+            True,
+            id="retryable-fallback",
+        ),
+        pytest.param(
+            "locator_refresh_result_invalid",
+            "pipeline_locator_refresh_terminal",
+            False,
+            id="terminal-fallback",
+        ),
+    ],
+)
+def test_xhs_preflight_retains_fixed_refresh_failure_classification(
+    tmp_path: Path,
+    media_code: str,
+    pipeline_code: str,
+    retryable: bool,
+) -> None:
+    asset_id = UUID("00000000-0000-0000-0000-000000000091")
+    selection = SubscriptionAssetSelection(
+        subscription_id=UUID("00000000-0000-0000-0000-000000000092"),
+        account_id=UUID("00000000-0000-0000-0000-000000000093"),
+        author_id=UUID("00000000-0000-0000-0000-000000000094"),
+        platform=Platform.XHS.value,
+        account_adapter="mediacrawler",
+        assets=(
+            SelectedPipelineAsset(
+                asset_id=asset_id,
+                content_id=UUID("00000000-0000-0000-0000-000000000095"),
+                generation=1,
+                platform=Platform.XHS.value,
+                kind="image",
+                position=0,
+                status=AssetStatus.DISCOVERED,
+                requires_mediacrawler_refresh=True,
+            ),
+        ),
+    )
+    config = LocalPipelineRuntimeConfig(
+        work_root=tmp_path / "work",
+        archive_root=tmp_path / "archive",
+        export_root=tmp_path / "emby",
+        export_staging_root=tmp_path / "export-work",
+        mediacrawler_lock_path=tmp_path / "upstreams.lock.json",
+        mediacrawler_runtime_root=tmp_path / "mediacrawler",
+        mediacrawler_python_executable=tmp_path / "python",
+        secret_resolver=SecretResolver.local(file_root=tmp_path / "secrets"),
+        enable_mediacrawler=True,
+        accept_mediacrawler_license=True,
+    )
+
+    class _FailingDownloadRunner:
+        def preflight(self, requested_asset_id: UUID) -> None:
+            assert requested_asset_id == asset_id
+            raise MediaDownloadError(media_code)
+
+    with pytest.raises(SubscriptionPipelineError) as captured:
+        pipeline_runtime._preflight_selection(
+            selection,
+            config=config,
+            download_runner=_FailingDownloadRunner(),  # type: ignore[arg-type]
+        )
+
+    assert captured.value.code == pipeline_code
+    assert captured.value.retryable is retryable
+
+
+@pytest.mark.parametrize("explicit_detail", [False, True], ids=["creator-fallback", "explicit-detail"])
+def test_runtime_preflight_accepts_exact_xhs_subscription_authority_without_child_jobs(
+    database: Database,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    explicit_detail: bool,
+) -> None:
+    suffix = "xhs-explicit" if explicit_detail else "xhs-creator"
+    creator_ref = "env:XHS_CREATOR_MUST_NOT_BE_READ" if explicit_detail else "env:XHS_CREATOR_AUTHORITY"
+    subscription_id, account_id, asset_id = _seed_refresh_asset(
+        database,
+        platform=Platform.XHS.value,
+        kind="image",
+        suffix=suffix,
+        creator_secret_ref=creator_ref,
+        max_items=43,
+    )
+    author_remote_id = f"pipeline-refresh-author-{suffix}"
+    content_remote_id = f"pipeline-refresh-content-{suffix}"
+    if explicit_detail:
+        monkeypatch.setenv(
+            "XHS_NOTE_DETAIL_AUTHORITY",
+            (f"https://www.xiaohongshu.com/explore/{content_remote_id}?xsec_token=detail-current&xsec_source=pc_feed"),
+        )
+        detail_reference_ref = "env:XHS_NOTE_DETAIL_AUTHORITY"
+    else:
+        monkeypatch.setenv(
+            "XHS_CREATOR_AUTHORITY",
+            (
+                f"https://www.xiaohongshu.com/user/profile/{author_remote_id}"
+                "?xsec_token=creator-current&xsec_source=pc_user"
+            ),
+        )
+        detail_reference_ref = None
+
+    monkeypatch.setattr(pipeline_runtime, "verify_mediacrawler_checkout", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(pipeline_runtime, "verify_mediacrawler_python", lambda *_args, **_kwargs: object())
+    config = LocalPipelineRuntimeConfig(
+        work_root=tmp_path / "work",
+        archive_root=tmp_path / "archive",
+        export_root=tmp_path / "emby",
+        export_staging_root=tmp_path / "export-work",
+        mediacrawler_lock_path=tmp_path / "upstreams.lock.json",
+        mediacrawler_runtime_root=tmp_path / "mediacrawler",
+        mediacrawler_python_executable=tmp_path / "python",
+        secret_resolver=SecretResolver.local(file_root=tmp_path / "secrets"),
+        enable_mediacrawler=True,
+        accept_mediacrawler_license=True,
+        xhs_detail_reference_ref=detail_reference_ref,
+    )
+    selection = pipeline_runtime.SubscriptionAssetSelector(database).select(subscription_id)
+    download_runner = pipeline_runtime._PerAssetDownloadRunner(database, subscription_id, config)
+
+    pipeline_runtime._preflight_selection(selection, config=config, download_runner=download_runner)
+
+    cached_refresher = download_runner._refresher(asset_id)
+    assert cached_refresher is download_runner._refresher(asset_id)
+
+    with database.session() as session:
+        asset = session.get(Asset, str(asset_id))
+        assert asset is not None and (asset.status, asset.download_job_id) == ("discovered", None)
+        assert list(session.scalars(select(Job)).all()) == []
+    assert selection.account_id == account_id
+
+
+@pytest.mark.parametrize("archive_state", ["valid", "missing", "corrupt"])
+def test_verified_xhs_archive_recovery_preflights_authority_only_when_repair_is_needed(
+    database: Database,
+    tmp_path: Path,
+    archive_state: str,
+) -> None:
+    subscription_id, account_id, asset_id = _seed_refresh_asset(
+        database,
+        platform=Platform.XHS.value,
+        kind="image",
+        suffix=f"verified-{archive_state}",
+        creator_secret_ref=None,
+    )
+    archive_root = tmp_path / "archive"
+    digest = hashlib.sha256(PNG).hexdigest()
+    archive_path = (archive_root / "sha256" / digest[:2] / f"{digest}.png").absolute()
+    archive_path.parent.mkdir(parents=True)
+    if archive_state == "valid":
+        archive_path.write_bytes(PNG)
+    elif archive_state == "corrupt":
+        archive_path.write_bytes(b"X" * len(PNG))
+
+    with database.session() as session:
+        asset = session.get(Asset, str(asset_id))
+        assert asset is not None
+        asset.status = "verified"
+        asset.mime_type = "image/png"
+        asset.size_bytes = len(PNG)
+        asset.checksum_sha256 = digest
+        asset.local_path = str(archive_path)
+        asset.downloaded_at = asset.updated_at
+        asset.verified_at = asset.updated_at
+
+    network_calls = 0
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal network_calls
+        network_calls += 1
+        raise AssertionError("verified archive handling must not contact the network")
+
+    config = LocalPipelineRuntimeConfig(
+        work_root=tmp_path / "work",
+        archive_root=archive_root,
+        export_root=tmp_path / "emby",
+        export_staging_root=tmp_path / "export-work",
+        mediacrawler_lock_path=tmp_path / "upstreams.lock.json",
+        mediacrawler_runtime_root=tmp_path / "mediacrawler",
+        mediacrawler_python_executable=tmp_path / "python",
+        secret_resolver=SecretResolver.local(file_root=tmp_path / "secrets"),
+        enable_mediacrawler=True,
+        accept_mediacrawler_license=True,
+        http_client_factory=lambda: SafeHttpClient(
+            _PublicResolver(),
+            transport_factory=lambda _target: httpx.MockTransport(handler),
+        ),
+    )
+    executor = SubscriptionPipelineExecutor(database, config)
+
+    if archive_state == "valid":
+        outcome = executor.run(
+            subscription_id,
+            expected_account_id=account_id,
+            expected_platform=Platform.XHS.value,
+            worker_id="verified-xhs-valid",
+        )
+        assert [item.disposition for item in outcome.downloads] == ["already_verified"]
+    else:
+        with pytest.raises(AssetDownloadOrchestrationError) as blocked:
+            executor.run(
+                subscription_id,
+                expected_account_id=account_id,
+                expected_platform=Platform.XHS.value,
+                worker_id=f"verified-xhs-{archive_state}",
+            )
+        assert blocked.value.code == "locator_refresh_authority_required"
+
+    assert network_calls == 0
+    with database.session() as session:
+        asset = session.get(Asset, str(asset_id))
+        assert asset is not None
+        assert asset.status == "verified"
+        assert asset.generation == 1
+        assert asset.local_path == str(archive_path)
+        assert asset.checksum_sha256 == digest
+        job_types = [job.job_type for job in session.scalars(select(Job)).all()]
+        assert job_types == (["export.emby"] if archive_state == "valid" else [])
+    assert not (archive_root / ".quarantine").exists()
+    if archive_state == "corrupt":
+        assert archive_path.read_bytes() == b"X" * len(PNG)
 
 
 def test_xhs_detail_reference_is_not_forwarded_to_non_xhs_refresh_assets(

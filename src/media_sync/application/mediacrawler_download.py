@@ -80,19 +80,29 @@ class LazyMediaCrawlerLocatorRefresher:
     def resolve(self, locator: AdapterRefreshLocator) -> ResolvedLocator:
         """Build the bound refresher once, then allow its one-retry caller."""
 
-        delegate = self._delegate
-        if delegate is None:
-            with self._lock:
-                delegate = self._delegate
-                if delegate is None:
-                    delegate = self._build()
-                    self._delegate = delegate
+        delegate = self._bound_delegate()
         try:
             return delegate.resolve(locator)
         except MediaDownloadError as error:
             if error.code == "locator_refresh_auth_expired":
                 self._record_saved_session_expiry()
             raise
+
+    def preflight(self) -> None:
+        """Bind exact durable scope and secrets without starting child or Job work."""
+
+        self._bound_delegate()
+
+    def _bound_delegate(self) -> MediaCrawlerLocatorRefresher:
+        delegate = self._delegate
+        if delegate is not None:
+            return delegate
+        with self._lock:
+            delegate = self._delegate
+            if delegate is None:
+                delegate = self._build()
+                self._delegate = delegate
+        return delegate
 
     def _build(self) -> MediaCrawlerLocatorRefresher:
         if self._python_executable is None or not self._license_acknowledged:
@@ -198,10 +208,18 @@ class LazyMediaCrawlerLocatorRefresher:
                 cookie = self._secret_resolver.resolve(account.credential_ref)
 
             detail_reference = None
-            if self._detail_reference_ref is not None:
-                if platform is not Platform.XHS:
-                    raise MediaDownloadError("locator_refresh_configuration_invalid")
-                detail_reference = self._secret_resolver.resolve(self._detail_reference_ref)
+            creator_reference = None
+            creator_max_items = None
+            if platform is Platform.XHS:
+                if self._detail_reference_ref is not None:
+                    detail_reference = self._secret_resolver.resolve(self._detail_reference_ref)
+                else:
+                    if policy.creator_secret_ref is None:
+                        raise MediaDownloadError("locator_refresh_authority_required")
+                    creator_reference = self._secret_resolver.resolve(policy.creator_secret_ref)
+                    creator_max_items = subscription.max_items
+            elif self._detail_reference_ref is not None:
+                raise MediaDownloadError("locator_refresh_configuration_invalid")
 
             try:
                 return MediaCrawlerRefreshContext(
@@ -220,6 +238,8 @@ class LazyMediaCrawlerLocatorRefresher:
                     source_hint=source_hint,
                     locator=locator,
                     detail_reference=detail_reference,
+                    creator_reference=creator_reference,
+                    creator_max_items=creator_max_items,
                     cookie=cookie,
                     headless=policy.headless,
                     request_delay_seconds=policy.request_delay_seconds,

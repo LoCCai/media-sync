@@ -40,6 +40,16 @@ BILI_VIDEO_URL = "https://video.example.test/bili/first.mp4?" + "deadline=410244
 KS_VIDEO_ID = "3x3zxz4mjrsc8ke"
 KS_VIDEO_URL = "https://video.example.test/ks/main.mp4?auth=ks-video-sentinel"
 KS_COVER_URL = "https://image.example.test/ks/cover.jpg?auth=ks-cover-sentinel"
+XHS_NOTE_ID = "66fad51c000000001b0224b8"
+XHS_AUTHOR_ID = "5f0123450000000001000001"
+XHS_CREATOR_URL = (
+    f"https://www.xiaohongshu.com/user/profile/{XHS_AUTHOR_ID}?"
+    "xsec_token=xhs-creator-authority-sentinel&xsec_source=pc_user"
+)
+XHS_DETAIL_URL = (
+    f"https://www.xiaohongshu.com/explore/{XHS_NOTE_ID}?xsec_token=xhs-detail-authority-sentinel&xsec_source=pc_feed"
+)
+XHS_IMAGE_URL = "https://image.example.test/xhs/target.jpg?sign=xhs-image-sentinel"
 _DEFAULT_BILI_VIEW = object()
 _DEFAULT_BILI_PLAY = object()
 
@@ -99,6 +109,88 @@ class CrawlerFactory:
     @staticmethod
     def create_crawler(platform):
         assert platform == "dy"
+        return FakeCrawler()
+
+
+async def main():
+    global crawler
+    crawler = CrawlerFactory.create_crawler(config.PLATFORM)
+    await crawler.start()
+
+
+async def async_cleanup():
+    return None
+"""
+
+_XHS_MAIN = r"""
+import json
+import os
+from pathlib import Path
+
+import config
+
+crawler = None
+CREATOR_MODE = __CREATOR_MODE__
+CREATOR_URL = __CREATOR_URL__
+DETAIL_URL = __DETAIL_URL__
+RECORDS = __RECORDS__
+
+
+class FakeCrawler:
+    async def start(self):
+        assert config.PLATFORM == "xhs"
+        assert config.LOGIN_TYPE == "qrcode"
+        assert config.SAVE_DATA_OPTION == "jsonl"
+        assert config.MAX_CONCURRENCY_NUM == 1
+        assert config.ENABLE_GET_COMMENTS is False
+        assert config.ENABLE_GET_SUB_COMMENTS is False
+        assert config.ENABLE_GET_MEIDAS is False
+        assert config.ENABLE_GET_MEDIAS is False
+        assert config.SAVE_LOGIN_STATE is True
+        creator_names = (
+            "XHS_CREATOR_ID_LIST", "DY_CREATOR_ID_LIST", "KS_CREATOR_ID_LIST",
+            "BILI_CREATOR_ID_LIST", "WEIBO_CREATOR_ID_LIST", "TIEBA_CREATOR_URL_LIST",
+            "ZHIHU_CREATOR_URL_LIST",
+        )
+        detail_names = (
+            "XHS_SPECIFIED_NOTE_URL_LIST", "DY_SPECIFIED_ID_LIST", "KS_SPECIFIED_ID_LIST",
+            "BILI_SPECIFIED_ID_LIST", "WEIBO_SPECIFIED_ID_LIST", "TIEBA_SPECIFIED_ID_LIST",
+            "ZHIHU_SPECIFIED_ID_LIST",
+        )
+        if CREATOR_MODE:
+            assert config.CRAWLER_TYPE == "creator"
+            assert config.CREATOR_MODE is True
+            assert config.CRAWLER_MAX_NOTES_COUNT == 2
+            assert config.XHS_CREATOR_ID_LIST == [CREATOR_URL]
+            for name in creator_names[1:]:
+                assert getattr(config, name) == []
+            for name in detail_names:
+                assert getattr(config, name) == []
+        else:
+            assert config.CRAWLER_TYPE == "detail"
+            assert config.CREATOR_MODE is False
+            assert config.CRAWLER_MAX_NOTES_COUNT == 1
+            assert config.XHS_SPECIFIED_NOTE_URL_LIST == [DETAIL_URL]
+            for name in creator_names:
+                assert getattr(config, name) == []
+            for name in detail_names[1:]:
+                assert getattr(config, name) == []
+        profile = Path(
+            os.path.join(os.getcwd(), "browser_data", config.USER_DATA_DIR % config.PLATFORM)
+        ).resolve()
+        profile.mkdir(parents=True, exist_ok=True)
+        (profile / "session.marker").write_text("stable fixture profile", encoding="utf-8")
+        root = Path(config.SAVE_DATA_PATH) / "xhs" / "jsonl"
+        root.mkdir(parents=True, exist_ok=True)
+        for index, record in enumerate(RECORDS):
+            target = root / ("creator_contents_" + str(index) + ".jsonl")
+            target.write_text(json.dumps(record, separators=(",", ":")) + "\n", encoding="utf-8")
+
+
+class CrawlerFactory:
+    @staticmethod
+    def create_crawler(platform):
+        assert platform == "xhs"
         return FakeCrawler()
 
 
@@ -354,6 +446,38 @@ def _fake_checkout(root: Path) -> Path:
     return checkout.resolve()
 
 
+def _fake_xhs_checkout(root: Path, *, creator_mode: bool) -> Path:
+    checkout = root / "fake-mediacrawler-xhs"
+    (checkout / "config").mkdir(parents=True)
+    (checkout / "config" / "__init__.py").write_text(textwrap.dedent(_CONFIG).lstrip(), encoding="utf-8")
+    records = [
+        {
+            "note_id": "different-note",
+            "type": "normal",
+            "title": "other",
+            "image_list": "https://image.example.test/xhs/other.jpg?sign=other",
+        },
+        {
+            "note_id": XHS_NOTE_ID,
+            "type": "normal",
+            "title": "target",
+            "image_list": XHS_IMAGE_URL,
+        },
+    ]
+    if not creator_mode:
+        records = records[1:]
+    main_source = (
+        textwrap.dedent(_XHS_MAIN)
+        .lstrip()
+        .replace("__CREATOR_MODE__", repr(creator_mode))
+        .replace("__CREATOR_URL__", repr(XHS_CREATOR_URL))
+        .replace("__DETAIL_URL__", repr(XHS_DETAIL_URL))
+        .replace("__RECORDS__", repr(records))
+    )
+    (checkout / "main.py").write_text(main_source, encoding="utf-8")
+    return checkout.resolve()
+
+
 def _dy_context(kind: AssetKind, signed_url: str) -> MediaCrawlerRefreshContext:
     remote_id = f"{CONTENT_ID}:{kind.value}:0"
     locator = AdapterRefreshLocator(
@@ -521,6 +645,69 @@ def _bili_process_runner(tmp_path: Path, checkout: Path) -> MediaCrawlerDetailPr
     )
 
 
+def _xhs_process_runner(tmp_path: Path, checkout: Path) -> MediaCrawlerDetailProcessRunner:
+    lock_path = tmp_path / "upstreams.lock.json"
+    lock_path.write_text("{}", encoding="utf-8")
+    return MediaCrawlerDetailProcessRunner(
+        lock_path=lock_path,
+        integration_root=tmp_path / "runtime",
+        python_executable=Path(sys.executable),
+        license_acknowledged=True,
+        checkout_verifier=lambda _path, _accepted: VerifiedCheckout(
+            root=checkout,
+            commit=UPSTREAM_SHA,
+            repository="https://github.com/NanmiCoder/MediaCrawler.git",
+            license_name="NON-COMMERCIAL LEARNING LICENSE 1.1",
+            lock_path=lock_path,
+        ),
+        python_verifier=lambda path: VerifiedPython(path),
+    )
+
+
+def _xhs_context(*, creator_mode: bool) -> MediaCrawlerRefreshContext:
+    remote_id = f"{XHS_NOTE_ID}:image:0"
+    locator = AdapterRefreshLocator(
+        adapter="mediacrawler",
+        asset_key=stable_asset_key(
+            platform="xhs",
+            content_remote_type="content",
+            content_remote_id=XHS_NOTE_ID,
+            kind="image",
+            position=0,
+            remote_id=remote_id,
+        ),
+    )
+    source_hint = asset_source_hint(XHS_IMAGE_URL)
+    assert source_hint is not None
+    return MediaCrawlerRefreshContext(
+        asset_id=ASSET_ID,
+        account_id=ACCOUNT_ID,
+        subscription_id=SUBSCRIPTION_ID,
+        platform=Platform.XHS,
+        login_method=LoginMethod.QR,
+        content_remote_type="content",
+        content_remote_id=XHS_NOTE_ID,
+        author_remote_id=XHS_AUTHOR_ID,
+        author_display_name="XHS fixture creator",
+        asset_remote_id=remote_id,
+        asset_kind=AssetKind.IMAGE,
+        asset_position=0,
+        source_hint=source_hint,
+        locator=locator,
+        detail_reference=None if creator_mode else SecretValue(XHS_DETAIL_URL),
+        creator_reference=SecretValue(XHS_CREATOR_URL) if creator_mode else None,
+        creator_max_items=2 if creator_mode else None,
+        watchdogs=WatchdogLimits(
+            max_seconds=10,
+            max_output_bytes=64 * 1024,
+            max_output_items=2,
+            max_output_files=4,
+            max_line_bytes=16 * 1024,
+            poll_seconds=0.01,
+        ),
+    )
+
+
 def _wb_process_runner(tmp_path: Path, checkout: Path) -> MediaCrawlerDetailProcessRunner:
     lock_path = tmp_path / "upstreams.lock.json"
     lock_path.write_text("{}", encoding="utf-8")
@@ -632,6 +819,25 @@ def _ks_context(kind: AssetKind, signed_url: str) -> MediaCrawlerRefreshContext:
     )
 
 
+@pytest.mark.parametrize("creator_mode", [True, False], ids=["creator-fallback", "explicit-detail"])
+def test_xhs_creator_fallback_and_explicit_detail_are_isolated_and_cleaned(
+    tmp_path: Path,
+    creator_mode: bool,
+) -> None:
+    checkout = _fake_xhs_checkout(tmp_path, creator_mode=creator_mode)
+    context = _xhs_context(creator_mode=creator_mode)
+
+    resolved = MediaCrawlerLocatorRefresher(context, _xhs_process_runner(tmp_path, checkout)).resolve(context.locator)
+
+    assert resolved.url == XHS_IMAGE_URL
+    assert resolved.request_profile is MediaRequestProfile.DEFAULT
+    assert list((tmp_path / "runtime" / "jobs").iterdir()) == []
+    retained = b"".join(path.read_bytes() for path in (tmp_path / "runtime").rglob("*") if path.is_file())
+    assert b"xhs-creator-authority-sentinel" not in retained
+    assert b"xhs-detail-authority-sentinel" not in retained
+    assert b"xhs-image-sentinel" not in retained
+
+
 def test_detail_process_runner_uses_detail_mode_and_cleans_signed_jsonl(tmp_path: Path) -> None:
     checkout = _fake_checkout(tmp_path)
     lock_path = tmp_path / "upstreams.lock.json"
@@ -723,6 +929,7 @@ def test_weibo_numeric_detail_installs_media_shim_and_runs_cleanup(tmp_path: Pat
             platform=Platform.WB,
             login_method=LoginMethod.QR,
             content_remote_id=CONTENT_ID,
+            author_remote_id="creator-42",
             request_delay_seconds=0.25,
             watchdogs=WatchdogLimits(max_seconds=10, poll_seconds=0.01),
         )
@@ -770,6 +977,7 @@ def test_weibo_detail_capture_rejects_nonstatic_or_foreign_source(
             platform=Platform.WB,
             login_method=LoginMethod.QR,
             content_remote_id=CONTENT_ID,
+            author_remote_id="creator-42",
             watchdogs=WatchdogLimits(max_seconds=10, poll_seconds=0.01),
         )
     )
@@ -802,6 +1010,7 @@ def test_weibo_detail_rejects_noncanonical_or_nonmatching_references(
             platform=Platform.WB,
             login_method=LoginMethod.QR,
             content_remote_id=content_remote_id,
+            author_remote_id="creator-42",
             detail_reference=detail_reference,
         )
 
@@ -814,6 +1023,7 @@ def test_weibo_detail_accepts_implicit_or_exact_plain_reference(detail_reference
         platform=Platform.WB,
         login_method=LoginMethod.QR,
         content_remote_id=CONTENT_ID,
+        author_remote_id="creator-42",
         detail_reference=detail_reference,
     )
 
@@ -837,7 +1047,10 @@ def test_weibo_detail_child_rejects_mismatched_numeric_reference(tmp_path: Path)
             "platform": Platform.WB.value,
             "login_method": LoginMethod.QR.value,
             "content_remote_id": CONTENT_ID,
+            "author_remote_id": "creator-42",
             "detail_reference": "7525082444551310603",
+            "creator_reference": None,
+            "creator_max_items": None,
             "cookie": None,
             "headless": True,
             "request_delay_seconds": 0.25,
@@ -856,6 +1069,53 @@ def test_weibo_detail_child_rejects_mismatched_numeric_reference(tmp_path: Path)
 
     with pytest.raises(detail_runner_module._ChildConfigurationError):
         detail_runner_module._ChildRequest.load(payload)
+
+
+def test_xhs_detail_child_revalidates_creator_authority_xor_and_bounds(tmp_path: Path) -> None:
+    account_root = tmp_path / "accounts" / "xhs" / str(ACCOUNT_ID)
+    profile_root = account_root / "browser_data" / "xhs_user_data_dir"
+    job_root = tmp_path / "jobs" / "attempt"
+    limits = WatchdogLimits(max_output_items=2)
+    base: dict[str, object] = {
+        "schema_version": detail_runner_module.DETAIL_RUNNER_SCHEMA_VERSION,
+        "checkout_root": str(Path.cwd().resolve()),
+        "account_root": str(account_root),
+        "profile_root": str(profile_root),
+        "job_root": str(job_root),
+        "output_root": str(job_root / "output"),
+        "platform": Platform.XHS.value,
+        "login_method": LoginMethod.QR.value,
+        "content_remote_id": XHS_NOTE_ID,
+        "author_remote_id": XHS_AUTHOR_ID,
+        "detail_reference": None,
+        "creator_reference": XHS_CREATOR_URL,
+        "creator_max_items": 2,
+        "cookie": None,
+        "headless": True,
+        "request_delay_seconds": 0.25,
+        "bili_progressive_detail": False,
+        "watchdogs": {
+            "max_seconds": limits.max_seconds,
+            "max_output_bytes": limits.max_output_bytes,
+            "max_output_items": limits.max_output_items,
+            "max_output_files": limits.max_output_files,
+            "max_line_bytes": limits.max_line_bytes,
+            "poll_seconds": limits.poll_seconds,
+        },
+    }
+    valid = detail_runner_module._ChildRequest.load(json.dumps(base, separators=(",", ":")).encode())
+    assert "xhs-creator-authority-sentinel" not in repr(valid)
+
+    tampered = [
+        {"author_remote_id": "different-author"},
+        {"detail_reference": XHS_DETAIL_URL},
+        {"creator_max_items": 3},
+    ]
+    for changes in tampered:
+        payload = dict(base)
+        payload.update(changes)
+        with pytest.raises(detail_runner_module._ChildConfigurationError):
+            detail_runner_module._ChildRequest.load(json.dumps(payload, separators=(",", ":")).encode())
 
 
 def test_kuaishou_detail_refresh_resolves_video_and_cover_without_retaining_signed_urls(tmp_path: Path) -> None:

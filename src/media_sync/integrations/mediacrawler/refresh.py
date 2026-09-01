@@ -8,13 +8,12 @@ normalizer as ingestion.  No persistence API is reachable from this layer.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from urllib.parse import parse_qsl, urlsplit
 from uuid import UUID
 
-from media_sync.domain import AssetKind, LoginMethod, Platform
+from media_sync.domain import AssetKind, ContentKind, LoginMethod, Platform
 from media_sync.infrastructure.db.asset_identity import asset_source_hint, stable_asset_key
 from media_sync.media import (
     AdapterRefreshLocator,
@@ -32,6 +31,7 @@ from .detail_runner import (
 )
 from .normalizers import NormalizationContext, normalize_jsonl_bytes
 from .policies import WatchdogLimits
+from .xhs_authority import validate_xhs_creator_reference, validate_xhs_detail_reference
 
 _SUPPORTED_PLATFORMS = frozenset({Platform.XHS, Platform.DY, Platform.KS, Platform.BILI, Platform.WB})
 _NO_ASSET_PLATFORMS = frozenset({Platform.TIEBA, Platform.ZHIHU})
@@ -56,6 +56,8 @@ class MediaCrawlerRefreshContext:
     source_hint: str | None = field(repr=False)
     locator: AdapterRefreshLocator = field(repr=False)
     detail_reference: str | SecretValue | None = field(default=None, repr=False)
+    creator_reference: SecretValue | None = field(default=None, repr=False)
+    creator_max_items: int | None = None
     cookie: SecretValue | None = field(default=None, repr=False)
     headless: bool = True
     request_delay_seconds: float = 2.0
@@ -115,8 +117,19 @@ class MediaCrawlerRefreshContext:
             raise MediaDownloadError("locator_refresh_unsupported")
         if platform is Platform.BILI and asset_kind is AssetKind.VIDEO and self.asset_position != 0:
             raise MediaDownloadError("locator_refresh_unsupported")
+        if not isinstance(self.watchdogs, WatchdogLimits):
+            raise MediaDownloadError("locator_refresh_configuration_invalid")
         if platform is Platform.XHS:
-            _validate_xhs_detail_reference(self.detail_reference, self.content_remote_id)
+            _validate_xhs_authority(
+                detail_reference=self.detail_reference,
+                creator_reference=self.creator_reference,
+                creator_max_items=self.creator_max_items,
+                content_remote_id=self.content_remote_id,
+                author_remote_id=self.author_remote_id,
+                watchdogs=self.watchdogs,
+            )
+        elif self.creator_reference is not None or self.creator_max_items is not None:
+            raise MediaDownloadError("locator_refresh_configuration_invalid")
         if platform is Platform.WB and not _is_weibo_detail_reference(self.detail_reference, self.content_remote_id):
             raise MediaDownloadError("locator_refresh_configuration_invalid")
         if login_method is LoginMethod.PHONE:
@@ -155,7 +168,10 @@ class MediaCrawlerRefreshContext:
             platform=self.platform,
             login_method=self.login_method,
             content_remote_id=self.content_remote_id,
+            author_remote_id=self.author_remote_id,
             detail_reference=self.detail_reference,
+            creator_reference=self.creator_reference,
+            creator_max_items=self.creator_max_items,
             cookie=self.cookie,
             headless=self.headless,
             request_delay_seconds=self.request_delay_seconds,
@@ -232,6 +248,20 @@ class MediaCrawlerLocatorRefresher:
         ]
         if not matching_content:
             raise MediaDownloadError("locator_refresh_asset_not_found")
+        if len(matching_content) != 1:
+            raise MediaDownloadError("locator_refresh_asset_mismatch")
+        if context.platform is Platform.XHS and context.creator_reference is not None:
+            target = matching_content[0]
+            envelope = target.content.raw
+            source_record = envelope.get("record") if isinstance(envelope, Mapping) else None
+            if (
+                not isinstance(source_record, Mapping)
+                or source_record.get("type") != "normal"
+                or target.content.kind not in {ContentKind.IMAGE, ContentKind.GALLERY}
+                or not target.assets
+                or any(asset.kind is not AssetKind.IMAGE for asset in target.assets)
+            ):
+                raise MediaDownloadError("locator_refresh_schema_changed")
         candidates = [
             asset
             for record in matching_content
@@ -302,39 +332,32 @@ def _context_text(value: object, *, maximum: int = 255) -> str:
     return normalized
 
 
-def _validate_xhs_detail_reference(value: object, content_remote_id: str) -> None:
-    if not isinstance(value, SecretValue):
-        raise MediaDownloadError("locator_refresh_configuration_invalid")
-    raw = value.reveal()
+def _validate_xhs_authority(
+    *,
+    detail_reference: object,
+    creator_reference: object,
+    creator_max_items: object,
+    content_remote_id: str,
+    author_remote_id: str,
+    watchdogs: WatchdogLimits,
+) -> None:
     try:
-        parsed = urlsplit(raw)
-        port = parsed.port
-        query = parse_qsl(parsed.query, keep_blank_values=True, strict_parsing=True)
+        if detail_reference is not None:
+            if not isinstance(detail_reference, SecretValue):
+                raise ValueError
+            if creator_reference is not None or creator_max_items is not None:
+                raise ValueError
+            validate_xhs_detail_reference(detail_reference.reveal(), content_remote_id)
+            return
+        if not isinstance(creator_reference, SecretValue):
+            raise ValueError
+        if type(creator_max_items) is not int or not 1 <= creator_max_items <= 1_000:
+            raise ValueError
+        if creator_max_items > watchdogs.max_output_items:
+            raise ValueError
+        validate_xhs_creator_reference(creator_reference.reveal(), author_remote_id)
     except ValueError as exc:
         raise MediaDownloadError("locator_refresh_configuration_invalid") from exc
-    path_parts = parsed.path.rstrip("/").split("/")
-    allowed_path = (
-        len(path_parts) == 3
-        and path_parts[0] == ""
-        and path_parts[1] in {"explore", "discovery"}
-        and path_parts[2] == content_remote_id
-    ) or (len(path_parts) == 4 and path_parts[:3] == ["", "discovery", "item"] and path_parts[3] == content_remote_id)
-    if (
-        parsed.scheme.lower() != "https"
-        or parsed.hostname not in {"xiaohongshu.com", "www.xiaohongshu.com"}
-        or parsed.username is not None
-        or parsed.password is not None
-        or port is not None
-        or parsed.fragment
-        or not allowed_path
-    ):
-        raise MediaDownloadError("locator_refresh_configuration_invalid")
-    values: dict[str, list[str]] = {}
-    for key, item in query:
-        values.setdefault(key, []).append(item)
-    for required in ("xsec_token", "xsec_source"):
-        if len(values.get(required, [])) != 1 or not values[required][0]:
-            raise MediaDownloadError("locator_refresh_configuration_invalid")
 
 
 __all__ = ["MediaCrawlerLocatorRefresher", "MediaCrawlerRefreshContext"]

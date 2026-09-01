@@ -1657,8 +1657,18 @@ def test_asset_download_without_ffprobe_allows_image_magic_validation(
             captured.update(client=client, probe=probe, limits=limits)
 
     class _FakeService:
-        def __init__(self, database: object, downloader: object) -> None:
-            captured.update(database=database, downloader=downloader)
+        def __init__(
+            self,
+            database: object,
+            downloader: object,
+            *,
+            verified_archive_recovery_preflight: object,
+        ) -> None:
+            captured.update(
+                database=database,
+                downloader=downloader,
+                verified_archive_recovery_preflight=verified_archive_recovery_preflight,
+            )
 
         def run(self, request: object) -> object:
             captured["request"] = request
@@ -1683,6 +1693,7 @@ def test_asset_download_without_ffprobe_allows_image_magic_validation(
     assert result.exit_code == 0, result.output
     assert json.loads(result.output)["status"] == "verified"
     assert captured["probe"] is None
+    assert captured["verified_archive_recovery_preflight"] is None
 
 
 def test_asset_download_adapter_refresh_preflight_has_zero_sqlite_state_change(
@@ -1799,10 +1810,89 @@ def test_asset_download_adapter_refresh_preflight_has_zero_sqlite_state_change(
     assert service_calls == []
 
 
+@pytest.mark.parametrize("platform", ["dy", "bili"])
+def test_asset_download_rejects_xhs_detail_reference_for_non_xhs_asset(
+    initialized_cli_database: str,
+    monkeypatch: pytest.MonkeyPatch,
+    platform: str,
+) -> None:
+    asset_id = UUID("00000000-0000-0000-0000-000000000081")
+    author_id = "00000000-0000-0000-0000-000000000082"
+    content_id = "00000000-0000-0000-0000-000000000083"
+    database = Database(initialized_cli_database)
+    try:
+        with database.session() as session:
+            session.add_all(
+                [
+                    Author(
+                        id=author_id,
+                        platform=platform,
+                        remote_id="non-xhs-reference-author",
+                        display_name="Non-XHS Reference Author",
+                    ),
+                    Content(
+                        id=content_id,
+                        author_id=author_id,
+                        platform=platform,
+                        remote_type="content",
+                        remote_id="non-xhs-reference-content",
+                        kind="image",
+                    ),
+                    Asset(
+                        id=str(asset_id),
+                        content_id=content_id,
+                        platform=platform,
+                        kind="image",
+                        position=0,
+                        locator={
+                            "version": 1,
+                            "type": "adapter_refresh",
+                            "adapter": "mediacrawler",
+                            "asset_key": "stable-non-xhs-reference-key",
+                        },
+                        semantic_fingerprint="7" * 64,
+                        locator_fingerprint="8" * 64,
+                        status="discovered",
+                    ),
+                ]
+            )
+    finally:
+        database.dispose()
+
+    service_calls: list[object] = []
+
+    def unexpected_service(*args: object, **kwargs: object) -> None:
+        service_calls.append((args, kwargs))
+        raise AssertionError("non-XHS detail reference must be rejected before service construction")
+
+    monkeypatch.setattr(cli_module, "AssetDownloadService", unexpected_service)
+
+    result = runner.invoke(
+        app,
+        [
+            "asset",
+            "download",
+            "--asset-id",
+            str(asset_id),
+            "--enable-mediacrawler",
+            "--xhs-detail-reference-ref",
+            "env:XHS_NOTE_DETAIL",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert "XHS detail reference is available only for XHS assets" in result.output
+    assert service_calls == []
+
+
+@pytest.mark.parametrize(("platform", "expected_preflight_calls"), [("dy", 0), ("xhs", 1)])
 def test_asset_download_explicitly_wires_lazy_mediacrawler_refresh(
     initialized_cli_database: str,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    platform: str,
+    expected_preflight_calls: int,
 ) -> None:
     asset_id = UUID("00000000-0000-0000-0000-000000000071")
     author_id = "00000000-0000-0000-0000-000000000072"
@@ -1815,14 +1905,14 @@ def test_asset_download_explicitly_wires_lazy_mediacrawler_refresh(
                 [
                     Author(
                         id=author_id,
-                        platform="dy",
+                        platform=platform,
                         remote_id="refresh-author",
                         display_name="Refresh Author",
                     ),
                     Content(
                         id=content_id,
                         author_id=author_id,
-                        platform="dy",
+                        platform=platform,
                         remote_type="content",
                         remote_id="refresh-content",
                         kind="image",
@@ -1830,7 +1920,7 @@ def test_asset_download_explicitly_wires_lazy_mediacrawler_refresh(
                     Asset(
                         id=str(asset_id),
                         content_id=content_id,
-                        platform="dy",
+                        platform=platform,
                         kind="image",
                         position=0,
                         locator={
@@ -1855,6 +1945,9 @@ def test_asset_download_explicitly_wires_lazy_mediacrawler_refresh(
             captured["refresh_database"] = database
             captured["refresh_kwargs"] = kwargs
 
+        def preflight(self) -> None:
+            captured["preflight_calls"] = int(captured.get("preflight_calls", 0)) + 1
+
     class _FakeDownloader:
         def __init__(
             self,
@@ -1867,8 +1960,18 @@ def test_asset_download_explicitly_wires_lazy_mediacrawler_refresh(
             captured.update(client=client, refresher=refresher, probe=probe, limits=limits)
 
     class _FakeService:
-        def __init__(self, database: object, downloader: object) -> None:
-            captured.update(database=database, downloader=downloader)
+        def __init__(
+            self,
+            database: object,
+            downloader: object,
+            *,
+            verified_archive_recovery_preflight: object,
+        ) -> None:
+            captured.update(
+                database=database,
+                downloader=downloader,
+                verified_archive_recovery_preflight=verified_archive_recovery_preflight,
+            )
 
         def run(self, request: object) -> object:
             captured["request"] = request
@@ -1916,6 +2019,10 @@ def test_asset_download_explicitly_wires_lazy_mediacrawler_refresh(
     assert refresh_kwargs["subscription_id"] == subscription_id
     assert refresh_kwargs["python_executable"] == python_executable
     assert refresh_kwargs["license_acknowledged"] is True
+    assert refresh_kwargs["detail_reference_ref"] is None
+    assert captured.get("preflight_calls", 0) == expected_preflight_calls
+    recovery_preflight = captured["verified_archive_recovery_preflight"]
+    assert callable(recovery_preflight) is (platform == Platform.XHS.value)
 
 
 @pytest.mark.parametrize(
