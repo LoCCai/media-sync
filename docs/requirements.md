@@ -46,7 +46,7 @@
 ### Media and Emby/Jellyfin / 媒体与 Emby/Jellyfin
 
 - **MEDIA-001** — Download assets atomically through a temporary file with resume support where HTTP permits it.
-- **MEDIA-002** — Validate scheme, redirect target, content type and configured size limit; calculate SHA-256 after completion.
+- **MEDIA-002** — Validate scheme, redirect target, content type and configured size limit; structurally probe audio/video, use bounded FFmpeg stream-copy when separate components require muxing, and calculate SHA-256 only after final validation.
 - **MEDIA-003** — Keep original assets and record provenance, download state and failure reason.
 - **EMBY-001** — Export each creator as an Emby/Jellyfin TV show with `tvshow.nfo`, creator poster and year-based seasons.
 - **EMBY-002** — Export playable video posts as episodes with stable `SyyyyE...` names and matching episode NFO.

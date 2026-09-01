@@ -1,8 +1,10 @@
 # Execution 0024 goal / 执行 0024 目标
 
-- Status / 状态：Frozen plan; implementation not started / 计划已冻结；实现尚未开始
+- Status / 状态：Frozen offline scope delivered; live qualification remains `NOT_RUN` / 冻结离线范围已交付；真人验收保持 `NOT_RUN`
 - Date / 日期：2026-09-02
 - Predecessor / 前置：Execution 0023 closeout `d4c9941d2d5fb1206cd9b1a60ce2cc344a9e66e3`
+- Plan commit / 计划提交：`a7d038e383c76f2c29825c6f42ac7ff29b967693`
+- Implementation commit / 实现提交：`12314b927dcaac97dc9ae184c03f98153f3ef687`
 - Scope / 范围：Ordinary numeric-aid Bilibili single-page and 2–64-page DASH video/audio selection, bounded component download, ffmpeg stream-copy mux and existing Emby/Jellyfin publication / 普通 numeric-aid Bilibili 单 P 与 2–64 分 P 的 DASH 音视频选择、有界组件下载、ffmpeg stream-copy 合并及既有 Emby/Jellyfin 发布
 
 ## Outcome / 目标结果

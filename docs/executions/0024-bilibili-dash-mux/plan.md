@@ -1,9 +1,11 @@
 # Execution 0024 plan / 执行 0024 计划
 
-- Status / 状态：Frozen and ready to execute / 已冻结并可执行
+- Status / 状态：Executed for the frozen offline scope / 冻结离线范围已执行完成
 - Plan date / 计划日期：2026-09-02
 - Predecessor / 前置：`d4c9941d2d5fb1206cd9b1a60ce2cc344a9e66e3`
-- Database migration / 数据库迁移：None planned / 计划无
+- Plan commit / 计划提交：`a7d038e383c76f2c29825c6f42ac7ff29b967693`
+- Implementation commit / 实现提交：`12314b927dcaac97dc9ae184c03f98153f3ef687`
+- Database migration / 数据库迁移：None required or added / 无需且未增加
 
 ## Baseline and audit / 基线与审计
 
