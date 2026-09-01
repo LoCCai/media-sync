@@ -1,10 +1,11 @@
-"""Verified capture of one static first-floor image from pinned Tieba detail.
+"""Verified capture of one or two static first-floor images from pinned Tieba detail.
 
 The pinned MediaCrawler detail API receives structured ``first_floor.content``
 items and then reduces them to text before ``TiebaNote`` reaches JSONL.  This
-integration-owned shim captures one narrowly frozen type-3 image, binds it to
-the exact returned model across the upstream gather-child/parent-store
-boundary, and exposes it only to the matching nested JSONL store call.
+integration-owned shim captures one narrowly frozen type-3 image or one exact
+ordered pair, binds the capture to the exact returned model across the upstream
+gather-child/parent-store boundary, and exposes it only to the matching nested
+JSONL store call.
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ from typing import Any, cast
 from urllib.parse import urlsplit, urlunsplit
 
 TIEBA_IMAGE_FIELD = "__media_sync_tieba_first_floor_image_v1"
+TIEBA_IMAGES_FIELD = "__media_sync_tieba_first_floor_images_v2"
 
 _INSTALL_MARKER = "__media_sync_tieba_media_capture_v1__"
 _CREATOR_CAP_MARKER = "__media_sync_tieba_creator_cap_v1__"
@@ -61,7 +63,7 @@ _IMAGE_ITEM_KEYS = frozenset(
 @dataclass(frozen=True, slots=True)
 class _RawCapture:
     note_id: str
-    image_url: str
+    image_urls: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,7 +71,7 @@ class _BoundCapture:
     content_object: object
     note_id: str
     canonical_url: str
-    image_url: str
+    image_urls: tuple[str, ...]
 
 
 _ACTIVE_CAPTURE: ContextVar[_BoundCapture | None] = ContextVar(
@@ -228,7 +230,7 @@ def install_tieba_media_capture(
             content_object=result,
             note_id=raw_capture.note_id,
             canonical_url=canonical_url,
-            image_url=raw_capture.image_url,
+            image_urls=raw_capture.image_urls,
         )
         sentinel = object()
         if getattr(result, _OBJECT_CAPTURE_FIELD, sentinel) is not sentinel:
@@ -268,7 +270,10 @@ def install_tieba_media_capture(
         if capture is None or not _matches_stored_row(capture, content_item):
             return await store_content(instance, content_item)
         enriched = dict(content_item)
-        enriched[TIEBA_IMAGE_FIELD] = capture.image_url
+        if len(capture.image_urls) == 1:
+            enriched[TIEBA_IMAGE_FIELD] = capture.image_urls[0]
+        else:
+            enriched[TIEBA_IMAGES_FIELD] = list(capture.image_urls)
         return await store_content(instance, enriched)
 
     setattr(extract_with_image, _INSTALL_MARKER, _INSTALL_VERSION)
@@ -405,7 +410,7 @@ def _capture_first_floor(api_data: object) -> _RawCapture | None:
     if note_id is None or type(content) is not list or not 1 <= len(content) <= _MAX_FIRST_FLOOR_ITEMS:
         return None
 
-    image: Mapping[str, object] | None = None
+    image_items: list[Mapping[str, object]] = []
     text_count = 0
     for item in content:
         if not isinstance(item, Mapping) or type(item.get("type")) is not int:
@@ -416,18 +421,21 @@ def _capture_first_floor(api_data: object) -> _RawCapture | None:
                 return None
             text_count += 1
         elif item_type == 3:
-            if image is not None:
+            if len(image_items) == 2:
                 return None
-            image = item
+            image_items.append(cast(Mapping[str, object], item))
         else:
             return None
-    if text_count == 0 or image is None:
+    if text_count == 0 or not image_items:
         return None
     try:
-        image_url = _validate_image_item(image)
+        image_urls = tuple(_validate_image_item(item) for item in image_items)
+        source_hints = tuple(tieba_image_source_hint(url) for url in image_urls)
     except ValueError:
         return None
-    return _RawCapture(note_id=note_id, image_url=image_url)
+    if len(set(source_hints)) != len(source_hints):
+        return None
+    return _RawCapture(note_id=note_id, image_urls=image_urls)
 
 
 def _consistent_note_id(api_data: Mapping[object, object]) -> str | None:
@@ -522,7 +530,10 @@ def _matches_stored_row(capture: _BoundCapture, content_item: Mapping[object, ob
 
 def _contains_private_field(value: object) -> bool:
     if isinstance(value, Mapping):
-        return any(key == TIEBA_IMAGE_FIELD or _contains_private_field(item) for key, item in value.items())
+        return any(
+            key in {TIEBA_IMAGE_FIELD, TIEBA_IMAGES_FIELD} or _contains_private_field(item)
+            for key, item in value.items()
+        )
     if isinstance(value, Sequence) and not isinstance(value, bytes | bytearray | str):
         return any(_contains_private_field(item) for item in value)
     return False
@@ -590,6 +601,7 @@ def _module_belongs_to_checkout(module: object, checkout_root: Path) -> bool:
 
 
 __all__ = [
+    "TIEBA_IMAGES_FIELD",
     "TIEBA_IMAGE_FIELD",
     "install_tieba_media_capture",
     "is_tieba_positive_id",

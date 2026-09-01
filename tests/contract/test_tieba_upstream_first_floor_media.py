@@ -20,6 +20,10 @@ DETAIL_RUNNER_PATH = PROJECT_ROOT / "src" / "media_sync" / "integrations" / "med
 NOTE_ID = "10376710029"
 IMAGE_ID = "489c9a3df8dcd1009420153b348b4710b8122fc3"
 IMAGE_URL = f"https://tiebapic.baidu.com/forum/pic/item/{IMAGE_ID}.jpg?tbpicau=2026-09-02-17_contract"
+SECOND_IMAGE_ID = "0123456789abcdef0123456789abcdef01234567"
+SECOND_IMAGE_URL = (
+    f"https://tiebapic.baidu.com/forum/pic/item/{SECOND_IMAGE_ID}.jpg?tbpicau=2026-09-02-17_contract_second"
+)
 
 
 def _pinned_tree(relative_path: Path) -> tuple[Path, ast.Module]:
@@ -59,14 +63,14 @@ def _one_class_method(
     return matches[0]
 
 
-def _image_item() -> dict[str, object]:
-    query = "tbpicau=2026-09-02-17_contract"
+def _image_item(*, identity: str = IMAGE_ID, image_url: str = IMAGE_URL) -> dict[str, object]:
+    query = image_url.split("?", 1)[1]
     return {
         "type": 3,
-        "origin_src": IMAGE_URL,
-        "cdn_src": f"https://tiebapic.baidu.com/forum/w%3D720/sign=a/{IMAGE_ID}.jpg?{query}",
-        "big_cdn_src": f"https://tiebapic.baidu.com/forum/w%3D1920/sign=b/{IMAGE_ID}.jpg?{query}",
-        "cdn_src_active": f"https://tiebapic.baidu.com/forum/w%3D720/sign=c/{IMAGE_ID}.jpg?{query}",
+        "origin_src": image_url,
+        "cdn_src": f"https://tiebapic.baidu.com/forum/w%3D720/sign=a/{identity}.jpg?{query}",
+        "big_cdn_src": f"https://tiebapic.baidu.com/forum/w%3D1920/sign=b/{identity}.jpg?{query}",
+        "cdn_src_active": f"https://tiebapic.baidu.com/forum/w%3D720/sign=c/{identity}.jpg?{query}",
         "pic_id": 300_933_013_320,
         "bsize": "560,303",
         "origin_size": 65_144,
@@ -116,7 +120,11 @@ def test_pinned_extractor_receives_current_structured_item_then_discards_every_l
         "first_floor": {
             "tid": NOTE_ID,
             "time": 1_725_000_000,
-            "content": [{"type": 0, "text": "plain text"}, _image_item()],
+            "content": [
+                {"type": 0, "text": "plain text"},
+                _image_item(),
+                _image_item(identity=SECOND_IMAGE_ID, image_url=SECOND_IMAGE_URL),
+            ],
         },
         "forum": {"name": "测试"},
         "page": {"total_page": 1},
@@ -128,6 +136,7 @@ def test_pinned_extractor_receives_current_structured_item_then_discards_every_l
     assert extracted.note_url == f"https://tieba.baidu.com/p/{NOTE_ID}"
     assert extracted.desc == "plain text"
     assert IMAGE_URL not in vars(extracted).values()
+    assert SECOND_IMAGE_URL not in vars(extracted).values()
     assert not any("image" in key or "media" in key or "src" in key for key in vars(extracted))
 
 

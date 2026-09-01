@@ -185,6 +185,7 @@ class LazyMediaCrawlerLocatorRefresher:
                 raise MediaDownloadError("locator_refresh_configuration_invalid")
             login_method = LoginMethod(account.login_method)
             asset_kind = AssetKind(asset.kind)
+            tieba_image_source_hints: tuple[str, ...] = ()
             locator = parse_locator(asset.locator)
             if not isinstance(locator, AdapterRefreshLocator) or locator.adapter != "mediacrawler":
                 raise MediaDownloadError("locator_refresh_source_mismatch")
@@ -202,6 +203,35 @@ class LazyMediaCrawlerLocatorRefresher:
                     validate_tieba_image_source_hint(asset.source_url)
                 except ValueError as exc:
                     raise MediaDownloadError("locator_refresh_configuration_invalid") from exc
+                tieba_assets = tuple(
+                    session.scalars(
+                        select(Asset).where(Asset.content_id == content.id).order_by(Asset.position, Asset.id)
+                    ).all()
+                )
+                if (
+                    len(tieba_assets) not in {1, 2}
+                    or asset.position >= len(tieba_assets)
+                    or tieba_assets[asset.position].id != asset.id
+                ):
+                    raise MediaDownloadError("locator_refresh_configuration_invalid")
+                hints: list[str] = []
+                for position, sibling in enumerate(tieba_assets):
+                    if (
+                        sibling.platform != Platform.TIEBA.value
+                        or sibling.kind != AssetKind.IMAGE.value
+                        or sibling.position != position
+                        or sibling.remote_id != f"{content.remote_id}:image:{position}"
+                        or type(sibling.source_url) is not str
+                    ):
+                        raise MediaDownloadError("locator_refresh_configuration_invalid")
+                    try:
+                        hint = validate_tieba_image_source_hint(sibling.source_url)
+                    except ValueError as exc:
+                        raise MediaDownloadError("locator_refresh_configuration_invalid") from exc
+                    hints.append(hint)
+                if len(set(hints)) != len(hints):
+                    raise MediaDownloadError("locator_refresh_configuration_invalid")
+                tieba_image_source_hints = tuple(hints)
             source_hint = asset_source_hint(asset.source_url)
             bili_video_slot = (
                 platform is Platform.BILI
@@ -282,6 +312,7 @@ class LazyMediaCrawlerLocatorRefresher:
                     asset_position=asset.position,
                     source_hint=source_hint,
                     locator=locator,
+                    tieba_image_source_hints=tieba_image_source_hints,
                     detail_reference=detail_reference,
                     creator_reference=creator_reference,
                     creator_max_items=creator_max_items,

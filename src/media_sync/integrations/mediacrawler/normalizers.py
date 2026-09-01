@@ -34,7 +34,9 @@ from .jsonl import (
 )
 from .tieba_media import (
     TIEBA_IMAGE_FIELD,
+    TIEBA_IMAGES_FIELD,
     is_tieba_positive_id,
+    tieba_image_source_hint,
     validate_tieba_image_url,
     validate_tieba_thread_url,
 )
@@ -53,7 +55,15 @@ from .zhihu_media import (
 _GIT_SHA = re.compile(r"[0-9a-fA-F]{40}\Z")
 _CHINA_TZ = timezone(timedelta(hours=8))
 _BILI_PROGRESSIVE_FIELD = "__media_sync_bili_progressive_url"
-_PRIVATE_MEDIA_FIELDS = frozenset({_BILI_PROGRESSIVE_FIELD, TIEBA_IMAGE_FIELD, WEIBO_IMAGES_FIELD, ZHIHU_IMAGE_FIELD})
+_PRIVATE_MEDIA_FIELDS = frozenset(
+    {
+        _BILI_PROGRESSIVE_FIELD,
+        TIEBA_IMAGE_FIELD,
+        TIEBA_IMAGES_FIELD,
+        WEIBO_IMAGES_FIELD,
+        ZHIHU_IMAGE_FIELD,
+    }
+)
 _DY_EPHEMERAL_MEDIA_URL_FIELDS = frozenset({"video_download_url", "cover_url", "music_download_url"})
 _DY_NOTE_MEDIA_URL_FIELD = "note_download_url"
 _KS_EPHEMERAL_MEDIA_URL_FIELDS = frozenset({"video_play_url", "video_cover_url"})
@@ -573,15 +583,33 @@ def _normalize_tieba(record: Mapping[str, object]) -> _ContentParts:
     remote_id = _required_id(record, "note_id")
     canonical_url = _safe_url(record.get("note_url")) or f"https://tieba.baidu.com/p/{remote_id}"
     images: tuple[str, ...] = ()
-    if TIEBA_IMAGE_FIELD in record:
+    claimed_fields = tuple(field for field in (TIEBA_IMAGE_FIELD, TIEBA_IMAGES_FIELD) if field in record)
+    if len(claimed_fields) > 1:
+        raise RecordNormalizationError(QuarantineReason.INVALID_RECORD)
+    if claimed_fields:
         note_id = record.get("note_id")
         note_url = record.get("note_url")
-        image_url = record.get(TIEBA_IMAGE_FIELD)
-        if not is_tieba_positive_id(note_id) or type(note_url) is not str or type(image_url) is not str:
+        if not is_tieba_positive_id(note_id) or type(note_url) is not str:
             raise RecordNormalizationError(QuarantineReason.INVALID_RECORD)
         assert isinstance(note_id, str)
         canonical_url = validate_tieba_thread_url(note_url, note_id=note_id)
-        images = (validate_tieba_image_url(image_url),)
+        if claimed_fields[0] == TIEBA_IMAGE_FIELD:
+            image_url = record.get(TIEBA_IMAGE_FIELD)
+            if type(image_url) is not str:
+                raise RecordNormalizationError(QuarantineReason.INVALID_RECORD)
+            images = (validate_tieba_image_url(image_url),)
+        else:
+            image_urls = record.get(TIEBA_IMAGES_FIELD)
+            if (
+                not isinstance(image_urls, Sequence)
+                or isinstance(image_urls, bytes | bytearray | str)
+                or len(image_urls) != 2
+                or any(type(value) is not str for value in image_urls)
+            ):
+                raise RecordNormalizationError(QuarantineReason.INVALID_RECORD)
+            images = tuple(validate_tieba_image_url(value) for value in image_urls if isinstance(value, str))
+            if len(images) != 2 or len({tieba_image_source_hint(value) for value in images}) != 2:
+                raise RecordNormalizationError(QuarantineReason.INVALID_RECORD)
     return _ContentParts(
         remote_id=remote_id,
         kind=ContentKind.ARTICLE,

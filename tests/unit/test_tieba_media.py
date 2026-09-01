@@ -12,6 +12,7 @@ import pytest
 from media_sync.integrations.mediacrawler import tieba_media
 from media_sync.integrations.mediacrawler.tieba_media import (
     TIEBA_IMAGE_FIELD,
+    TIEBA_IMAGES_FIELD,
     install_tieba_media_capture,
     is_tieba_positive_id,
     tieba_image_source_hint,
@@ -22,8 +23,10 @@ from media_sync.integrations.mediacrawler.tieba_media import (
 
 NOTE_ID = "10376710029"
 IMAGE_ID = "489c9a3df8dcd1009420153b348b4710b8122fc3"
+SECOND_IMAGE_ID = "0123456789abcdef0123456789abcdef01234567"
 TOKEN = "2026-09-02-17_deadbeef"
 IMAGE_URL = f"https://tiebapic.baidu.com/forum/pic/item/{IMAGE_ID}.jpg?tbpicau={TOKEN}"
+SECOND_IMAGE_URL = f"https://tiebapic.baidu.com/forum/pic/item/{SECOND_IMAGE_ID}.jpg?tbpicau={TOKEN}"
 IMAGE_HINT = f"https://tiebapic.baidu.com/forum/pic/item/{IMAGE_ID}.jpg"
 
 
@@ -42,12 +45,13 @@ class _FakeCheckout:
 
 def _image_item(*, image_url: str = IMAGE_URL) -> dict[str, object]:
     query = image_url.split("?", 1)[1]
+    identity = image_url.split("/item/", 1)[1].split(".", 1)[0]
     return {
         "type": 3,
         "origin_src": image_url,
-        "cdn_src": (f"https://tiebapic.baidu.com/forum/w%3D720%3Bq%3D60/sign=a/{IMAGE_ID}.jpg?{query}"),
-        "big_cdn_src": (f"https://tiebapic.baidu.com/forum/w%3D1920%3Bq%3D100/sign=b/{IMAGE_ID}.jpg?{query}"),
-        "cdn_src_active": (f"https://tiebapic.baidu.com/forum/w%3D720%3Bq%3D60/sign=c/{IMAGE_ID}.jpg?{query}"),
+        "cdn_src": (f"https://tiebapic.baidu.com/forum/w%3D720%3Bq%3D60/sign=a/{identity}.jpg?{query}"),
+        "big_cdn_src": (f"https://tiebapic.baidu.com/forum/w%3D1920%3Bq%3D100/sign=b/{identity}.jpg?{query}"),
+        "cdn_src_active": (f"https://tiebapic.baidu.com/forum/w%3D720%3Bq%3D60/sign=c/{identity}.jpg?{query}"),
         "pic_id": 300_933_013_320,
         "bsize": "560,303",
         "origin_size": 65_144,
@@ -257,6 +261,67 @@ async def test_capture_injects_one_exact_type_three_origin(monkeypatch: pytest.M
     ]
 
 
+async def test_capture_injects_exact_ordered_two_image_gallery(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    checkout = _fake_checkout(monkeypatch, tmp_path)
+    install_tieba_media_capture(checkout.root)
+    note = checkout.extractor_class().extract_note_detail_from_api(
+        _api_data(
+            content=[
+                _image_item(image_url=SECOND_IMAGE_URL),
+                {"type": 0, "text": "fixture body"},
+                _image_item(),
+            ]
+        )
+    )
+
+    await checkout.modules["store.tieba"].update_tieba_note(note)
+
+    assert checkout.rows == [
+        {
+            "note_id": NOTE_ID,
+            "note_url": f"https://tieba.baidu.com/p/{NOTE_ID}",
+            "title": "fixture",
+            TIEBA_IMAGES_FIELD: [SECOND_IMAGE_URL, IMAGE_URL],
+        }
+    ]
+    assert TIEBA_IMAGE_FIELD not in checkout.rows[0]
+
+
+async def test_capture_rejects_three_distinct_images_and_duplicate_durable_identity(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    checkout = _fake_checkout(monkeypatch, tmp_path)
+    install_tieba_media_capture(checkout.root)
+    third_id = "abcdef0123456789abcdef0123456789abcdef01"
+    third_url = f"https://tiebapic.baidu.com/forum/pic/item/{third_id}.jpg?tbpicau={TOKEN}"
+    duplicate_query = IMAGE_URL.replace(TOKEN, "2026-09-02-17_other")
+    for content in (
+        [
+            {"type": 0, "text": "fixture body"},
+            _image_item(),
+            _image_item(image_url=SECOND_IMAGE_URL),
+            _image_item(image_url=third_url),
+        ],
+        [
+            {"type": 0, "text": "fixture body"},
+            _image_item(),
+            _image_item(image_url=duplicate_query),
+        ],
+    ):
+        note = checkout.extractor_class().extract_note_detail_from_api(_api_data(content=content))
+        await checkout.modules["store.tieba"].update_tieba_note(note)
+
+    assert len(checkout.rows) == 2
+    assert all(
+        isinstance(row, dict) and TIEBA_IMAGE_FIELD not in row and TIEBA_IMAGES_FIELD not in row
+        for row in checkout.rows
+    )
+
+
 @pytest.mark.parametrize(
     "content",
     [
@@ -337,6 +402,41 @@ async def test_capture_crosses_gather_child_to_parent_store_boundary(
     assert second_id in by_id["10376710030"][TIEBA_IMAGE_FIELD]
 
 
+async def test_two_image_capture_is_isolated_across_concurrent_gather_children(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    checkout = _fake_checkout(monkeypatch, tmp_path)
+    install_tieba_media_capture(checkout.root)
+
+    async def extract(note_id: str, first_url: str, second_url: str) -> object:
+        await asyncio.sleep(0)
+        return checkout.extractor_class().extract_note_detail_from_api(
+            _api_data(
+                note_id=note_id,
+                content=[
+                    {"type": 0, "text": "text"},
+                    _image_item(image_url=first_url),
+                    _image_item(image_url=second_url),
+                ],
+            )
+        )
+
+    third_id = "abcdef0123456789abcdef0123456789abcdef01"
+    fourth_id = "fedcba9876543210fedcba9876543210fedcba98"
+    third_url = f"https://tiebapic.baidu.com/forum/pic/item/{third_id}.jpg?tbpicau={TOKEN}"
+    fourth_url = f"https://tiebapic.baidu.com/forum/pic/item/{fourth_id}.jpg?tbpicau={TOKEN}"
+    notes = await asyncio.gather(
+        extract(NOTE_ID, IMAGE_URL, SECOND_IMAGE_URL),
+        extract("10376710030", third_url, fourth_url),
+    )
+    await asyncio.gather(*(checkout.modules["store.tieba"].update_tieba_note(note) for note in notes))
+
+    by_id = {row["note_id"]: row for row in checkout.rows if isinstance(row, dict)}
+    assert by_id[NOTE_ID][TIEBA_IMAGES_FIELD] == [IMAGE_URL, SECOND_IMAGE_URL]
+    assert by_id["10376710030"][TIEBA_IMAGES_FIELD] == [third_url, fourth_url]
+
+
 async def test_store_exception_consumes_capture_and_clears_context(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -355,14 +455,16 @@ async def test_store_exception_consumes_capture_and_clears_context(
     assert TIEBA_IMAGE_FIELD not in checkout.rows[0]
 
 
+@pytest.mark.parametrize("private_field", [TIEBA_IMAGE_FIELD, TIEBA_IMAGES_FIELD])
 async def test_private_field_collision_is_rejected_recursively(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    private_field: str,
 ) -> None:
     checkout = _fake_checkout(monkeypatch, tmp_path)
     install_tieba_media_capture(checkout.root)
     with pytest.raises(RuntimeError, match="private Tieba media field collision"):
-        await checkout.store_class().store_content({"nested": [{TIEBA_IMAGE_FIELD: IMAGE_URL}]})
+        await checkout.store_class().store_content({"nested": [{private_field: IMAGE_URL}]})
 
 
 def test_install_is_idempotent_for_the_same_creator_cap(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

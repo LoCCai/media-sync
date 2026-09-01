@@ -29,7 +29,7 @@ from media_sync.integrations.mediacrawler.normalizers import (
     normalize_jsonl,
     normalize_record,
 )
-from media_sync.integrations.mediacrawler.tieba_media import TIEBA_IMAGE_FIELD
+from media_sync.integrations.mediacrawler.tieba_media import TIEBA_IMAGE_FIELD, TIEBA_IMAGES_FIELD
 from media_sync.integrations.mediacrawler.weibo_media import WEIBO_IMAGES_FIELD
 from media_sync.integrations.mediacrawler.zhihu_media import ZHIHU_IMAGE_FIELD
 
@@ -412,6 +412,77 @@ def test_tieba_private_first_floor_image_materializes_one_article_owned_asset_an
     assert TIEBA_IMAGE_FIELD not in item.content.raw["record"]
     assert TIEBA_IMAGE_FIELD not in item.content.raw["record"]["nested"][0]
     assert all(TIEBA_IMAGE_FIELD not in asset.raw["record"] for asset in item.assets)
+
+
+def test_tieba_private_two_image_gallery_materializes_ordered_article_assets_and_is_stripped() -> None:
+    note_id = "10376710029"
+    identities = (
+        "489c9a3df8dcd1009420153b348b4710b8122fc3",
+        "0123456789abcdef0123456789abcdef01234567",
+    )
+    signed = [
+        f"https://tiebapic.baidu.com/forum/pic/item/{identity}.jpg?tbpicau=2026-09-02-17_contract_{position}"
+        for position, identity in enumerate(identities)
+    ]
+    payload = source_record("tieba/contents.v1.jsonl")
+    payload.update(
+        {
+            "note_id": note_id,
+            "note_url": f"https://tieba.baidu.com/p/{note_id}",
+            TIEBA_IMAGES_FIELD: signed,
+            "nested": [{TIEBA_IMAGES_FIELD: list(reversed(signed)), TIEBA_IMAGE_FIELD: signed[0]}],
+        }
+    )
+
+    item = normalize_record(payload, context(Platform.TIEBA))
+
+    assert item.content.kind is ContentKind.ARTICLE
+    assert [(asset.kind, asset.position, asset.remote_id, asset.source_url) for asset in item.assets] == [
+        (AssetKind.IMAGE, 0, f"{note_id}:image:0", signed[0]),
+        (AssetKind.IMAGE, 1, f"{note_id}:image:1", signed[1]),
+    ]
+    assert TIEBA_IMAGES_FIELD not in item.content.raw["record"]
+    assert TIEBA_IMAGES_FIELD not in item.content.raw["record"]["nested"][0]
+    assert TIEBA_IMAGE_FIELD not in item.content.raw["record"]["nested"][0]
+    assert all(TIEBA_IMAGES_FIELD not in asset.raw["record"] for asset in item.assets)
+
+
+def test_tieba_two_image_claim_rejects_cardinality_duplicates_and_dual_fields() -> None:
+    note_id = "10376710029"
+    first = (
+        "https://tiebapic.baidu.com/forum/pic/item/"
+        "489c9a3df8dcd1009420153b348b4710b8122fc3.jpg?tbpicau=2026-09-02-17_first"
+    )
+    second = (
+        "https://tiebapic.baidu.com/forum/pic/item/"
+        "0123456789abcdef0123456789abcdef01234567.jpg?tbpicau=2026-09-02-17_second"
+    )
+    third = (
+        "https://tiebapic.baidu.com/forum/pic/item/"
+        "abcdef0123456789abcdef0123456789abcdef01.jpg?tbpicau=2026-09-02-17_third"
+    )
+    duplicate_hint = first.replace("17_first", "17_changed")
+    claims = (
+        {TIEBA_IMAGES_FIELD: []},
+        {TIEBA_IMAGES_FIELD: [first]},
+        {TIEBA_IMAGES_FIELD: [first, second, third]},
+        {TIEBA_IMAGES_FIELD: [first, duplicate_hint]},
+        {TIEBA_IMAGES_FIELD: [first, second], TIEBA_IMAGE_FIELD: first},
+    )
+    for claim in claims:
+        payload = source_record("tieba/contents.v1.jsonl")
+        payload.update(
+            {
+                "note_id": note_id,
+                "note_url": f"https://tieba.baidu.com/p/{note_id}",
+                **claim,
+            }
+        )
+
+        with pytest.raises(RecordNormalizationError) as caught:
+            normalize_record(payload, context(Platform.TIEBA))
+
+        assert caught.value.reason is QuarantineReason.INVALID_RECORD
 
 
 @pytest.mark.parametrize(

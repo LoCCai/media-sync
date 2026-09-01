@@ -18,11 +18,11 @@ from media_sync.integrations.mediacrawler.refresh import (
     MediaCrawlerLocatorRefresher,
     MediaCrawlerRefreshContext,
 )
-from media_sync.integrations.mediacrawler.tieba_media import TIEBA_IMAGE_FIELD
+from media_sync.integrations.mediacrawler.tieba_media import TIEBA_IMAGE_FIELD, TIEBA_IMAGES_FIELD
 from media_sync.integrations.mediacrawler.weibo_media import WEIBO_IMAGES_FIELD
 from media_sync.integrations.mediacrawler.xhs_media import validate_xhs_video_url
 from media_sync.integrations.mediacrawler.zhihu_media import ZHIHU_IMAGE_FIELD
-from media_sync.media import AdapterRefreshLocator, MediaDownloadError, MediaRequestProfile
+from media_sync.media import AdapterRefreshLocator, MediaDownloadError, MediaRequestProfile, ResolvedLocator
 from media_sync.security import SecretValue
 
 UPSTREAM_SHA = "d6f7c5bb906b6dac40ddf343ef9e26438a3de092"
@@ -61,6 +61,7 @@ def _context(
     creator_reference: SecretValue | None = None,
     creator_max_items: int | None = None,
     locator: AdapterRefreshLocator | None = None,
+    tieba_image_source_hints: tuple[str, ...] = (),
 ) -> MediaCrawlerRefreshContext:
     active_remote_id = remote_id or f"{content_id}:{kind.value}:{position}"
     active_locator = locator or AdapterRefreshLocator(
@@ -90,6 +91,7 @@ def _context(
         asset_position=position,
         source_hint=source_hint,
         locator=active_locator,
+        tieba_image_source_hints=tieba_image_source_hints,
         detail_reference=detail_reference,
         creator_reference=creator_reference,
         creator_max_items=creator_max_items,
@@ -916,6 +918,125 @@ def test_tieba_refresh_uses_canonical_thread_authority_and_exact_current_image()
     assert resolved.request_profile is MediaRequestProfile.DEFAULT
     assert len(runner.calls) == 1
     assert runner.calls[0].resolved_detail_reference() == canonical_url
+
+
+@pytest.mark.parametrize("position", [0, 1])
+def test_tieba_refresh_revalidates_complete_ordered_two_image_gallery(position: int) -> None:
+    content_id = "10376710029"
+    canonical_url = f"https://tieba.baidu.com/p/{content_id}"
+    identities = (
+        "489c9a3df8dcd1009420153b348b4710b8122fc3",
+        "0123456789abcdef0123456789abcdef01234567",
+    )
+    hints = tuple(f"https://tiebapic.baidu.com/forum/pic/item/{identity}.jpg" for identity in identities)
+    previous = tuple(f"{hint}?tbpicau=2026-09-02-17_previous_{index}" for index, hint in enumerate(hints))
+    current = tuple(f"{hint}?tbpicau=2026-09-02-17_current_{index}" for index, hint in enumerate(hints))
+    context = _context(
+        platform=Platform.TIEBA,
+        content_id=content_id,
+        kind=AssetKind.IMAGE,
+        position=position,
+        signed_url=previous[position],
+        detail_reference=canonical_url,
+        tieba_image_source_hints=hints,
+    )
+    runner = _FakeDetailRunner(
+        _jsonl(
+            {
+                "note_id": content_id,
+                "title": "fixture",
+                "desc": "fixture body",
+                "note_url": canonical_url,
+                TIEBA_IMAGES_FIELD: list(current),
+            }
+        )
+    )
+
+    resolved = MediaCrawlerLocatorRefresher(context, runner, clock=lambda: NOW).resolve(context.locator)
+
+    assert resolved == ResolvedLocator(current[position], MediaRequestProfile.DEFAULT)
+    assert runner.calls[0].resolved_detail_reference() == canonical_url
+
+
+@pytest.mark.parametrize("drift", ["reordered", "replacement", "missing", "dual-claim"])
+def test_tieba_two_image_refresh_rejects_complete_gallery_drift(drift: str) -> None:
+    content_id = "10376710029"
+    canonical_url = f"https://tieba.baidu.com/p/{content_id}"
+    hints = (
+        "https://tiebapic.baidu.com/forum/pic/item/489c9a3df8dcd1009420153b348b4710b8122fc3.jpg",
+        "https://tiebapic.baidu.com/forum/pic/item/0123456789abcdef0123456789abcdef01234567.jpg",
+    )
+    current = [f"{hint}?tbpicau=2026-09-02-17_current_{index}" for index, hint in enumerate(hints)]
+    record: dict[str, object] = {
+        "note_id": content_id,
+        "title": "fixture",
+        "desc": "fixture body",
+        "note_url": canonical_url,
+    }
+    if drift == "reordered":
+        record[TIEBA_IMAGES_FIELD] = list(reversed(current))
+    elif drift == "replacement":
+        replacement = (
+            "https://tiebapic.baidu.com/forum/pic/item/"
+            "abcdef0123456789abcdef0123456789abcdef01.jpg?tbpicau=2026-09-02-17_replaced"
+        )
+        record[TIEBA_IMAGES_FIELD] = [current[0], replacement]
+    elif drift == "missing":
+        record[TIEBA_IMAGE_FIELD] = current[0]
+    else:
+        record[TIEBA_IMAGES_FIELD] = current
+        record[TIEBA_IMAGE_FIELD] = current[0]
+    context = _context(
+        platform=Platform.TIEBA,
+        content_id=content_id,
+        kind=AssetKind.IMAGE,
+        position=0,
+        signed_url=current[0],
+        detail_reference=canonical_url,
+        tieba_image_source_hints=hints,
+    )
+
+    with pytest.raises(MediaDownloadError) as caught:
+        MediaCrawlerLocatorRefresher(context, _FakeDetailRunner(_jsonl(record)), clock=lambda: NOW).resolve(
+            context.locator
+        )
+
+    assert caught.value.code == "locator_refresh_schema_changed"
+
+
+@pytest.mark.parametrize(
+    ("position", "hints"),
+    [
+        (1, ()),
+        (1, ("https://tiebapic.baidu.com/forum/pic/item/0123456789abcdef0123456789abcdef01234567.jpg",)),
+        (
+            0,
+            (
+                "https://tiebapic.baidu.com/forum/pic/item/489c9a3df8dcd1009420153b348b4710b8122fc3.jpg",
+                "https://tiebapic.baidu.com/forum/pic/item/489c9a3df8dcd1009420153b348b4710b8122fc3.jpg",
+            ),
+        ),
+    ],
+)
+def test_tieba_refresh_context_rejects_unbound_or_duplicate_gallery(position: int, hints: tuple[str, ...]) -> None:
+    content_id = "10376710029"
+    selected_hint = (
+        "https://tiebapic.baidu.com/forum/pic/item/489c9a3df8dcd1009420153b348b4710b8122fc3.jpg"
+        if position == 0
+        else "https://tiebapic.baidu.com/forum/pic/item/0123456789abcdef0123456789abcdef01234567.jpg"
+    )
+    with pytest.raises(MediaDownloadError) as caught:
+        _context(
+            platform=Platform.TIEBA,
+            content_id=content_id,
+            kind=AssetKind.IMAGE,
+            position=position,
+            signed_url=f"{selected_hint}?tbpicau=2026-09-02-17_previous",
+            detail_reference=f"https://tieba.baidu.com/p/{content_id}",
+            tieba_image_source_hints=hints,
+        )
+
+    assert caught.value.code == "locator_refresh_configuration_invalid"
 
 
 def test_zhihu_refresh_uses_canonical_answer_authority_and_exact_current_image() -> None:

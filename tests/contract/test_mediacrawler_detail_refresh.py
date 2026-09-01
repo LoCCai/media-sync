@@ -22,7 +22,7 @@ from media_sync.integrations.mediacrawler.refresh import (
     MediaCrawlerLocatorRefresher,
     MediaCrawlerRefreshContext,
 )
-from media_sync.integrations.mediacrawler.tieba_media import TIEBA_IMAGE_FIELD
+from media_sync.integrations.mediacrawler.tieba_media import TIEBA_IMAGE_FIELD, TIEBA_IMAGES_FIELD
 from media_sync.integrations.mediacrawler.weibo_media import WEIBO_IMAGES_FIELD
 from media_sync.integrations.mediacrawler.zhihu_media import ZHIHU_IMAGE_FIELD
 from media_sync.media import AdapterRefreshLocator, MediaDownloadError, MediaRequestProfile
@@ -64,6 +64,12 @@ TIEBA_IMAGE_ID = "489c9a3df8dcd1009420153b348b4710b8122fc3"
 TIEBA_TOKEN = "tieba-detail-sentinel-2026-09-02"
 TIEBA_IMAGE_URL = f"https://tiebapic.baidu.com/forum/pic/item/{TIEBA_IMAGE_ID}.jpg?tbpicau={TIEBA_TOKEN}"
 TIEBA_IMAGE_HINT = f"https://tiebapic.baidu.com/forum/pic/item/{TIEBA_IMAGE_ID}.jpg"
+TIEBA_SECOND_IMAGE_ID = "0123456789abcdef0123456789abcdef01234567"
+TIEBA_SECOND_TOKEN = "tieba-detail-sentinel-second-2026-09-02"
+TIEBA_SECOND_IMAGE_URL = (
+    f"https://tiebapic.baidu.com/forum/pic/item/{TIEBA_SECOND_IMAGE_ID}.jpg?tbpicau={TIEBA_SECOND_TOKEN}"
+)
+TIEBA_SECOND_IMAGE_HINT = f"https://tiebapic.baidu.com/forum/pic/item/{TIEBA_SECOND_IMAGE_ID}.jpg"
 _DEFAULT_BILI_VIEW = object()
 _DEFAULT_BILI_PLAY = object()
 
@@ -668,6 +674,7 @@ class FakeCrawler:
                         "is_long_pic": 0,
                         "show_original_btn": 1,
                     },
+                    __TIEBA_SECOND_IMAGE_ITEM__
                 ],
             },
         }
@@ -925,7 +932,7 @@ def _fake_zhihu_checkout(root: Path) -> Path:
     return checkout.resolve()
 
 
-def _fake_tieba_checkout(root: Path) -> Path:
+def _fake_tieba_checkout(root: Path, *, two_images: bool = False) -> Path:
     checkout = root / "fake-mediacrawler-tieba"
     for package in (
         checkout / "config",
@@ -948,6 +955,21 @@ def _fake_tieba_checkout(root: Path) -> Path:
     )
     (checkout / "store" / "tieba" / "__init__.py").write_text(textwrap.dedent(_TIEBA_STORE).lstrip(), encoding="utf-8")
     query = f"tbpicau={TIEBA_TOKEN}"
+    second_query = f"tbpicau={TIEBA_SECOND_TOKEN}"
+    second_item = {
+        "type": 3,
+        "origin_src": TIEBA_SECOND_IMAGE_URL,
+        "cdn_src": f"https://tiebapic.baidu.com/forum/w%3D720/sign=d/{TIEBA_SECOND_IMAGE_ID}.jpg?{second_query}",
+        "big_cdn_src": (f"https://tiebapic.baidu.com/forum/w%3D1920/sign=e/{TIEBA_SECOND_IMAGE_ID}.jpg?{second_query}"),
+        "cdn_src_active": (
+            f"https://tiebapic.baidu.com/forum/w%3D720/sign=f/{TIEBA_SECOND_IMAGE_ID}.jpg?{second_query}"
+        ),
+        "pic_id": 300_933_013_321,
+        "bsize": "640,360",
+        "origin_size": 72_144,
+        "is_long_pic": 0,
+        "show_original_btn": 1,
+    }
     main_source = (
         textwrap.dedent(_TIEBA_MAIN)
         .lstrip()
@@ -965,6 +987,7 @@ def _fake_tieba_checkout(root: Path) -> Path:
             "__TIEBA_ACTIVE_CDN_URL__",
             repr(f"https://tiebapic.baidu.com/forum/w%3D720/sign=c/{TIEBA_IMAGE_ID}.jpg?{query}"),
         )
+        .replace("__TIEBA_SECOND_IMAGE_ITEM__", repr(second_item) if two_images else "")
     )
     (checkout / "main.py").write_text(main_source, encoding="utf-8")
     return checkout.resolve()
@@ -1146,8 +1169,9 @@ def _zhihu_context() -> MediaCrawlerRefreshContext:
     )
 
 
-def _tieba_context() -> MediaCrawlerRefreshContext:
-    remote_id = f"{TIEBA_NOTE_ID}:image:0"
+def _tieba_context(*, position: int = 0, two_images: bool = False) -> MediaCrawlerRefreshContext:
+    hints = (TIEBA_IMAGE_HINT, TIEBA_SECOND_IMAGE_HINT) if two_images else (TIEBA_IMAGE_HINT,)
+    remote_id = f"{TIEBA_NOTE_ID}:image:{position}"
     return MediaCrawlerRefreshContext(
         asset_id=ASSET_ID,
         account_id=ACCOUNT_ID,
@@ -1160,8 +1184,8 @@ def _tieba_context() -> MediaCrawlerRefreshContext:
         author_display_name="Tieba fixture creator",
         asset_remote_id=remote_id,
         asset_kind=AssetKind.IMAGE,
-        asset_position=0,
-        source_hint=TIEBA_IMAGE_HINT,
+        asset_position=position,
+        source_hint=hints[position],
         locator=AdapterRefreshLocator(
             adapter="mediacrawler",
             asset_key=stable_asset_key(
@@ -1169,10 +1193,11 @@ def _tieba_context() -> MediaCrawlerRefreshContext:
                 content_remote_type="content",
                 content_remote_id=TIEBA_NOTE_ID,
                 kind="image",
-                position=0,
+                position=position,
                 remote_id=remote_id,
             ),
         ),
+        tieba_image_source_hints=hints,
         detail_reference=TIEBA_THREAD_URL,
         request_delay_seconds=0.25,
         watchdogs=WatchdogLimits(max_seconds=10, poll_seconds=0.01),
@@ -1465,6 +1490,27 @@ def test_tieba_detail_installs_first_floor_shim_binds_numeric_config_and_cleans_
     retained = b"".join(path.read_bytes() for path in (tmp_path / "runtime").rglob("*") if path.is_file())
     assert TIEBA_IMAGE_FIELD.encode("utf-8") not in retained
     assert TIEBA_TOKEN.encode("utf-8") not in retained
+
+
+@pytest.mark.parametrize("position", [0, 1])
+def test_tieba_detail_carries_exact_two_image_gallery_across_gather_and_refreshes_each_position(
+    tmp_path: Path,
+    position: int,
+) -> None:
+    checkout = _fake_tieba_checkout(tmp_path, two_images=True)
+    context = _tieba_context(position=position, two_images=True)
+
+    resolved = MediaCrawlerLocatorRefresher(
+        context,
+        _tieba_process_runner(tmp_path, checkout),
+    ).resolve(context.locator)
+
+    assert resolved.url == (TIEBA_IMAGE_URL, TIEBA_SECOND_IMAGE_URL)[position]
+    assert resolved.request_profile is MediaRequestProfile.DEFAULT
+    assert list((tmp_path / "runtime" / "jobs").iterdir()) == []
+    retained = b"".join(path.read_bytes() for path in (tmp_path / "runtime").rglob("*") if path.is_file())
+    for transient in (TIEBA_IMAGE_FIELD, TIEBA_IMAGES_FIELD, TIEBA_TOKEN, TIEBA_SECOND_TOKEN):
+        assert transient.encode("utf-8") not in retained
 
 
 @pytest.mark.parametrize(

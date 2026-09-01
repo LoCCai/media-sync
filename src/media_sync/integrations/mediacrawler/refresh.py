@@ -61,6 +61,7 @@ class MediaCrawlerRefreshContext:
     asset_position: int
     source_hint: str | None = field(repr=False)
     locator: AdapterRefreshLocator = field(repr=False)
+    tieba_image_source_hints: tuple[str, ...] = field(default=(), repr=False)
     detail_reference: str | SecretValue | None = field(default=None, repr=False)
     creator_reference: SecretValue | None = field(default=None, repr=False)
     creator_max_items: int | None = None
@@ -125,6 +126,8 @@ class MediaCrawlerRefreshContext:
             raise MediaDownloadError("locator_refresh_unsupported")
         if not isinstance(self.watchdogs, WatchdogLimits):
             raise MediaDownloadError("locator_refresh_configuration_invalid")
+        if type(self.tieba_image_source_hints) is not tuple:
+            raise MediaDownloadError("locator_refresh_configuration_invalid")
         if platform is Platform.XHS:
             _validate_xhs_authority(
                 detail_reference=self.detail_reference,
@@ -142,8 +145,8 @@ class MediaCrawlerRefreshContext:
             if (
                 self.content_remote_type != "content"
                 or asset_kind is not AssetKind.IMAGE
-                or self.asset_position != 0
-                or self.asset_remote_id != f"{self.content_remote_id}:image:0"
+                or self.asset_position not in {0, 1}
+                or self.asset_remote_id != f"{self.content_remote_id}:image:{self.asset_position}"
                 or not _is_tieba_detail_reference(self.detail_reference, self.content_remote_id)
             ):
                 raise MediaDownloadError("locator_refresh_configuration_invalid")
@@ -154,6 +157,25 @@ class MediaCrawlerRefreshContext:
                 validate_tieba_image_source_hint(source_hint)
             except ValueError as exc:
                 raise MediaDownloadError("locator_refresh_configuration_invalid") from exc
+            gallery_hints = self.tieba_image_source_hints
+            if not gallery_hints:
+                if self.asset_position != 0:
+                    raise MediaDownloadError("locator_refresh_configuration_invalid")
+                gallery_hints = (source_hint,)
+            if len(gallery_hints) not in {1, 2} or self.asset_position >= len(gallery_hints):
+                raise MediaDownloadError("locator_refresh_configuration_invalid")
+            try:
+                for hint in gallery_hints:
+                    if type(hint) is not str:
+                        raise ValueError
+                    validate_tieba_image_source_hint(hint)
+            except ValueError as exc:
+                raise MediaDownloadError("locator_refresh_configuration_invalid") from exc
+            if gallery_hints[self.asset_position] != source_hint or len(set(gallery_hints)) != len(gallery_hints):
+                raise MediaDownloadError("locator_refresh_configuration_invalid")
+            object.__setattr__(self, "tieba_image_source_hints", gallery_hints)
+        elif self.tieba_image_source_hints:
+            raise MediaDownloadError("locator_refresh_configuration_invalid")
         if platform is Platform.ZHIHU:
             if (
                 self.content_remote_type != "content"
@@ -298,14 +320,19 @@ class MediaCrawlerLocatorRefresher:
                 raise MediaDownloadError("locator_refresh_schema_changed")
         if context.platform is Platform.TIEBA:
             target = matching_content[0]
+            expected_hints = context.tieba_image_source_hints
             if (
                 target.content.kind is not ContentKind.ARTICLE
                 or target.content.remote_type != "content"
                 or target.content.canonical_url != context.detail_reference
-                or len(target.assets) != 1
-                or target.assets[0].kind is not AssetKind.IMAGE
-                or target.assets[0].position != 0
-                or target.assets[0].remote_id != f"{context.content_remote_id}:image:0"
+                or len(target.assets) != len(expected_hints)
+                or any(
+                    asset.kind is not AssetKind.IMAGE
+                    or asset.position != position
+                    or asset.remote_id != f"{context.content_remote_id}:image:{position}"
+                    or asset_source_hint(asset.source_url) != expected_hint
+                    for position, (asset, expected_hint) in enumerate(zip(target.assets, expected_hints, strict=True))
+                )
             ):
                 raise MediaDownloadError("locator_refresh_schema_changed")
         xhs_creator_video = False
