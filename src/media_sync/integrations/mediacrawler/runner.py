@@ -1417,7 +1417,13 @@ async def _execute_child(
         upstream_main = importlib.import_module("main")
         if not _module_belongs_to_checkout(upstream_main, verified.root):
             return EXIT_CONFIGURATION
-        if manifest.platform.value == "wb":
+        if manifest.platform.value == "bili":
+            from media_sync.integrations.mediacrawler.bilibili_media import (
+                install_bilibili_media_capture,
+            )
+
+            install_bilibili_media_capture(verified.root)
+        elif manifest.platform.value == "wb":
             from media_sync.integrations.mediacrawler.weibo_media import (
                 install_weibo_media_capture,
             )

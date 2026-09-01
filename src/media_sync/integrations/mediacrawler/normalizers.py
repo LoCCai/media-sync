@@ -20,6 +20,12 @@ from media_sync.domain import (
     Platform,
 )
 
+from .bilibili_media import (
+    BILIBILI_PAGES_FIELD,
+    BILIBILI_PROGRESSIVE_PAGE_FIELD,
+    bilibili_video_remote_ids,
+    parse_bilibili_page_payload,
+)
 from .envelope import MediaCrawlerEnvelope
 from .jsonl import (
     DEFAULT_MAX_BYTES,
@@ -59,6 +65,8 @@ _CHINA_TZ = timezone(timedelta(hours=8))
 _BILI_PROGRESSIVE_FIELD = "__media_sync_bili_progressive_url"
 _PRIVATE_MEDIA_FIELDS = frozenset(
     {
+        BILIBILI_PAGES_FIELD,
+        BILIBILI_PROGRESSIVE_PAGE_FIELD,
         _BILI_PROGRESSIVE_FIELD,
         TIEBA_GALLERY_FIELD,
         TIEBA_IMAGE_FIELD,
@@ -140,6 +148,7 @@ class _ContentParts:
     published_at: datetime | None
     metrics: Mapping[str, int | float]
     asset_groups: tuple[tuple[AssetKind, tuple[str | None, ...]], ...] = ()
+    asset_remote_ids: Mapping[AssetKind, tuple[str, ...]] | None = None
     remote_type: str = "content"
 
 
@@ -496,6 +505,53 @@ def _normalize_ks(record: Mapping[str, object]) -> _ContentParts:
     )
 
 
+def _bili_video_assets(
+    record: Mapping[str, object],
+    *,
+    aid: str,
+    allow_progressive_detail: bool,
+) -> tuple[tuple[str | None, ...], tuple[str, ...]]:
+    if BILIBILI_PAGES_FIELD not in record:
+        if allow_progressive_detail and BILIBILI_PROGRESSIVE_PAGE_FIELD in record:
+            return (), ()
+        return (
+            (_safe_url(record.get(_BILI_PROGRESSIVE_FIELD)) if allow_progressive_detail else None,),
+            (f"{aid}:video:0",),
+        )
+
+    try:
+        pages = parse_bilibili_page_payload(record.get(BILIBILI_PAGES_FIELD))
+        remote_ids = bilibili_video_remote_ids(aid, pages)
+    except ValueError:
+        return (), ()
+
+    if len(pages) == 1:
+        if allow_progressive_detail and BILIBILI_PROGRESSIVE_PAGE_FIELD in record:
+            return (), ()
+        return (
+            (_safe_url(record.get(_BILI_PROGRESSIVE_FIELD)) if allow_progressive_detail else None,),
+            remote_ids,
+        )
+
+    urls: list[str | None] = [None] * len(pages)
+    if allow_progressive_detail:
+        if _BILI_PROGRESSIVE_FIELD in record:
+            return (), ()
+        target = record.get(BILIBILI_PROGRESSIVE_PAGE_FIELD)
+        if not isinstance(target, Mapping) or set(target) != {"cid", "url"}:
+            return (), ()
+        cid = target.get("cid")
+        url = _safe_url(target.get("url"))
+        page_index = next(
+            (index for index, page in enumerate(pages) if type(cid) is int and page.cid == cid),
+            None,
+        )
+        if page_index is None or url is None:
+            return (), ()
+        urls[page_index] = url
+    return tuple(urls), remote_ids
+
+
 def _normalize_bili(record: Mapping[str, object], *, allow_progressive_detail: bool = False) -> _ContentParts:
     if _text(record.get("dynamic_id")) is not None:
         remote_id = _required_id(record, "dynamic_id")
@@ -520,6 +576,11 @@ def _normalize_bili(record: Mapping[str, object], *, allow_progressive_detail: b
 
     remote_id = _required_id(record, "video_id")
     body = _text(record.get("desc"))
+    video_urls, video_remote_ids = _bili_video_assets(
+        record,
+        aid=remote_id,
+        allow_progressive_detail=allow_progressive_detail,
+    )
     return _ContentParts(
         remote_id=remote_id,
         kind=ContentKind.VIDEO,
@@ -544,12 +605,10 @@ def _normalize_bili(record: Mapping[str, object], *, allow_progressive_detail: b
         # private detail field is only trusted by an explicitly gated detail
         # flow; otherwise the slot remains locator-only for a later refresh.
         asset_groups=(
-            (
-                AssetKind.VIDEO,
-                (_safe_url(record.get(_BILI_PROGRESSIVE_FIELD)) if allow_progressive_detail else None,),
-            ),
+            (AssetKind.VIDEO, video_urls),
             (AssetKind.COVER, _url_list(record.get("video_cover_url"))),
         ),
+        asset_remote_ids={AssetKind.VIDEO: video_remote_ids},
     )
 
 
@@ -718,19 +777,34 @@ def _build_assets(
     content_remote_id: str,
     groups: Sequence[tuple[AssetKind, Sequence[str | None]]],
     raw: Mapping[str, object],
+    remote_ids: Mapping[AssetKind, Sequence[str]] | None = None,
 ) -> tuple[AssetSnapshot, ...]:
     assets: list[AssetSnapshot] = []
     for kind, urls in groups:
+        custom_remote_ids = remote_ids.get(kind) if remote_ids is not None else None
+        if custom_remote_ids is not None and len(custom_remote_ids) != len(urls):
+            raise ValueError("asset remote identity count mismatch")
         seen: set[str | None] = set()
+        seen_remote_ids: set[str] = set()
         position = 0
-        for source_url in urls:
-            if source_url in seen:
-                continue
-            seen.add(source_url)
+        for source_index, source_url in enumerate(urls):
+            remote_id = (
+                custom_remote_ids[source_index]
+                if custom_remote_ids is not None
+                else f"{content_remote_id}:{kind.value}:{position}"
+            )
+            if custom_remote_ids is not None:
+                if remote_id in seen_remote_ids:
+                    raise ValueError("duplicate asset remote identity")
+                seen_remote_ids.add(remote_id)
+            else:
+                if source_url in seen:
+                    continue
+                seen.add(source_url)
             assets.append(
                 AssetSnapshot(
                     platform=platform,
-                    remote_id=f"{content_remote_id}:{kind.value}:{position}",
+                    remote_id=remote_id,
                     content_remote_id=content_remote_id,
                     kind=kind,
                     source_url=source_url,
@@ -786,7 +860,13 @@ def normalize_record(record: Mapping[str, object], context: NormalizationContext
             metrics=parts.metrics,
             raw=raw,
         )
-        assets = _build_assets(context.platform, parts.remote_id, parts.asset_groups, raw)
+        assets = _build_assets(
+            context.platform,
+            parts.remote_id,
+            parts.asset_groups,
+            raw,
+            remote_ids=parts.asset_remote_ids,
+        )
     except RecordNormalizationError:
         raise
     except (DomainError, TypeError, ValueError):

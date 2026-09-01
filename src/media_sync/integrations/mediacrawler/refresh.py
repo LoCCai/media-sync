@@ -23,6 +23,7 @@ from media_sync.media import (
 )
 from media_sync.security import SecretValue
 
+from .bilibili_media import BILIBILI_MAX_PAGES, bilibili_video_cid
 from .detail_runner import (
     MediaCrawlerDetailPayloadRunner,
     MediaCrawlerDetailRequest,
@@ -61,6 +62,7 @@ class MediaCrawlerRefreshContext:
     asset_position: int
     source_hint: str | None = field(repr=False)
     locator: AdapterRefreshLocator = field(repr=False)
+    bili_video_remote_ids: tuple[str, ...] = field(default=(), repr=False)
     tieba_image_source_hints: tuple[str, ...] = field(default=(), repr=False)
     detail_reference: str | SecretValue | None = field(default=None, repr=False)
     creator_reference: SecretValue | None = field(default=None, repr=False)
@@ -92,6 +94,32 @@ class MediaCrawlerRefreshContext:
             raise MediaDownloadError("locator_refresh_configuration_invalid")
         if not isinstance(self.locator, AdapterRefreshLocator) or self.locator.adapter != "mediacrawler":
             raise MediaDownloadError("locator_refresh_configuration_invalid")
+        if type(self.bili_video_remote_ids) is not tuple:
+            raise MediaDownloadError("locator_refresh_configuration_invalid")
+        bili_video_slot = _is_bili_video_slot(platform, self.content_remote_type, asset_kind)
+        bili_video_remote_ids = self.bili_video_remote_ids
+        if bili_video_slot:
+            legacy_remote_id = f"{self.content_remote_id}:video:0"
+            if not bili_video_remote_ids and self.asset_position == 0 and self.asset_remote_id == legacy_remote_id:
+                bili_video_remote_ids = (legacy_remote_id,)
+            if (
+                not 1 <= len(bili_video_remote_ids) <= BILIBILI_MAX_PAGES
+                or self.asset_position >= len(bili_video_remote_ids)
+                or bili_video_remote_ids[self.asset_position] != self.asset_remote_id
+                or len(set(bili_video_remote_ids)) != len(bili_video_remote_ids)
+            ):
+                raise MediaDownloadError("locator_refresh_configuration_invalid")
+            try:
+                cids = tuple(
+                    bilibili_video_cid(self.content_remote_id, remote_id) for remote_id in bili_video_remote_ids
+                )
+            except ValueError as exc:
+                raise MediaDownloadError("locator_refresh_configuration_invalid") from exc
+            if (len(cids) == 1) != (cids == (None,)) or (len(cids) > 1 and any(cid is None for cid in cids)):
+                raise MediaDownloadError("locator_refresh_configuration_invalid")
+            object.__setattr__(self, "bili_video_remote_ids", bili_video_remote_ids)
+        elif bili_video_remote_ids:
+            raise MediaDownloadError("locator_refresh_configuration_invalid")
         expected_key = stable_asset_key(
             platform=platform.value,
             content_remote_type=self.content_remote_type,
@@ -110,19 +138,16 @@ class MediaCrawlerRefreshContext:
             kind=asset_kind,
             position=self.asset_position,
             source_hint=self.source_hint,
+            video_remote_ids=bili_video_remote_ids,
         )
         if self.source_hint is None:
             if not locator_only_bili_video:
                 raise MediaDownloadError("locator_refresh_configuration_invalid")
         elif asset_source_hint(self.source_hint) != self.source_hint:
             raise MediaDownloadError("locator_refresh_configuration_invalid")
-        if _is_bili_video_slot(platform, self.content_remote_type, asset_kind, self.asset_position) and not (
-            locator_only_bili_video
-        ):
+        if bili_video_slot and not locator_only_bili_video:
             raise MediaDownloadError("locator_refresh_configuration_invalid")
         if platform in _SUPPORTED_PLATFORMS and asset_kind not in _supported_kinds(platform):
-            raise MediaDownloadError("locator_refresh_unsupported")
-        if platform is Platform.BILI and asset_kind is AssetKind.VIDEO and self.asset_position != 0:
             raise MediaDownloadError("locator_refresh_unsupported")
         if not isinstance(self.watchdogs, WatchdogLimits):
             raise MediaDownloadError("locator_refresh_configuration_invalid")
@@ -217,7 +242,16 @@ class MediaCrawlerRefreshContext:
             kind=self.asset_kind,
             position=self.asset_position,
             source_hint=self.source_hint,
+            video_remote_ids=self.bili_video_remote_ids,
         )
+
+    def _bili_video_cid(self) -> int | None:
+        if not self._bili_progressive_detail() or self.asset_remote_id is None:
+            return None
+        try:
+            return bilibili_video_cid(self.content_remote_id, self.asset_remote_id)
+        except ValueError as exc:  # pragma: no cover - __post_init__ already fences this
+            raise MediaDownloadError("locator_refresh_configuration_invalid") from exc
 
     def detail_request(self) -> MediaCrawlerDetailRequest:
         """Project only child/runtime facts; discovery metadata stays parent-side."""
@@ -236,6 +270,7 @@ class MediaCrawlerRefreshContext:
             headless=self.headless,
             request_delay_seconds=self.request_delay_seconds,
             bili_progressive_detail=self._bili_progressive_detail(),
+            bili_video_cid=self._bili_video_cid(),
             watchdogs=self.watchdogs,
         )
 
@@ -335,6 +370,20 @@ class MediaCrawlerLocatorRefresher:
                 )
             ):
                 raise MediaDownloadError("locator_refresh_schema_changed")
+        if context.platform is Platform.BILI and context._bili_progressive_detail():
+            target = matching_content[0]
+            videos = tuple(asset for asset in target.assets if asset.kind is AssetKind.VIDEO)
+            if (
+                target.content.kind is not ContentKind.VIDEO
+                or len(videos) != len(context.bili_video_remote_ids)
+                or any(
+                    asset.position != position or asset.remote_id != expected_remote_id
+                    for position, (asset, expected_remote_id) in enumerate(
+                        zip(videos, context.bili_video_remote_ids, strict=True)
+                    )
+                )
+            ):
+                raise MediaDownloadError("locator_refresh_schema_changed")
         xhs_creator_video = False
         if context.platform is Platform.XHS and context.creator_reference is not None:
             target = matching_content[0]
@@ -409,9 +458,8 @@ def _is_bili_video_slot(
     platform: Platform,
     content_remote_type: str,
     kind: AssetKind,
-    position: int,
 ) -> bool:
-    return platform is Platform.BILI and content_remote_type == "content" and kind is AssetKind.VIDEO and position == 0
+    return platform is Platform.BILI and content_remote_type == "content" and kind is AssetKind.VIDEO
 
 
 def _is_locator_only_bili_video(
@@ -423,10 +471,12 @@ def _is_locator_only_bili_video(
     kind: AssetKind,
     position: int,
     source_hint: str | None,
+    video_remote_ids: tuple[str, ...],
 ) -> bool:
     return (
-        _is_bili_video_slot(platform, content_remote_type, kind, position)
-        and asset_remote_id == f"{content_remote_id}:video:0"
+        _is_bili_video_slot(platform, content_remote_type, kind)
+        and 0 <= position < len(video_remote_ids)
+        and asset_remote_id == video_remote_ids[position]
         and source_hint is None
     )
 

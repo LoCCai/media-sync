@@ -1226,8 +1226,13 @@ def _tieba_context(*, position: int = 0, gallery_size: int = 1) -> MediaCrawlerR
     )
 
 
-def _bili_video_context() -> MediaCrawlerRefreshContext:
-    remote_id = "987654321:video:0"
+def _bili_video_context(
+    *,
+    cids: tuple[int, ...] = (),
+    position: int = 0,
+) -> MediaCrawlerRefreshContext:
+    remote_ids = tuple(f"987654321:video:cid:{cid}" for cid in cids) if len(cids) > 1 else ("987654321:video:0",)
+    remote_id = remote_ids[position]
     locator = AdapterRefreshLocator(
         adapter="mediacrawler",
         asset_key=stable_asset_key(
@@ -1235,7 +1240,7 @@ def _bili_video_context() -> MediaCrawlerRefreshContext:
             content_remote_type="content",
             content_remote_id="987654321",
             kind="video",
-            position=0,
+            position=position,
             remote_id=remote_id,
         ),
     )
@@ -1251,9 +1256,10 @@ def _bili_video_context() -> MediaCrawlerRefreshContext:
         author_display_name="Fixture creator",
         asset_remote_id=remote_id,
         asset_kind=AssetKind.VIDEO,
-        asset_position=0,
+        asset_position=position,
         source_hint=None,
         locator=locator,
+        bili_video_remote_ids=remote_ids,
         watchdogs=WatchdogLimits(max_seconds=10, poll_seconds=0.01),
     )
 
@@ -1660,6 +1666,7 @@ def test_weibo_detail_child_rejects_mismatched_numeric_reference(tmp_path: Path)
             "headless": True,
             "request_delay_seconds": 0.25,
             "bili_progressive_detail": False,
+            "bili_video_cid": None,
             "watchdogs": {
                 "max_seconds": limits.max_seconds,
                 "max_output_bytes": limits.max_output_bytes,
@@ -1757,6 +1764,7 @@ def test_zhihu_detail_child_revalidates_canonical_answer_identity(tmp_path: Path
         "headless": True,
         "request_delay_seconds": 0.25,
         "bili_progressive_detail": False,
+        "bili_video_cid": None,
         "watchdogs": {
             "max_seconds": limits.max_seconds,
             "max_output_bytes": limits.max_output_bytes,
@@ -1850,6 +1858,7 @@ def test_tieba_detail_child_revalidates_canonical_thread_identity(tmp_path: Path
         "headless": True,
         "request_delay_seconds": 0.25,
         "bili_progressive_detail": False,
+        "bili_video_cid": None,
         "watchdogs": {
             "max_seconds": limits.max_seconds,
             "max_output_bytes": limits.max_output_bytes,
@@ -1900,6 +1909,7 @@ def test_xhs_detail_child_revalidates_creator_authority_xor_and_bounds(tmp_path:
         "headless": True,
         "request_delay_seconds": 0.25,
         "bili_progressive_detail": False,
+        "bili_video_cid": None,
         "watchdogs": {
             "max_seconds": limits.max_seconds,
             "max_output_bytes": limits.max_output_bytes,
@@ -2045,7 +2055,7 @@ def test_bilibili_first_page_single_durl_is_injected_only_in_memory(tmp_path: Pa
     view = {
         "aid": 987654321,
         "cid": 99999,
-        "pages": [{"cid": 24680}, {"cid": 97531}],
+        "pages": [{"page": 1, "cid": 24680}],
         "title": "fixture",
         "desc": "fixture",
         "pic": BILI_COVER,
@@ -2087,9 +2097,40 @@ def test_bilibili_empty_pages_falls_back_to_validated_view_cid(tmp_path: Path) -
     assert resolved.url == BILI_VIDEO_URL
 
 
+def test_bilibili_multipart_child_fetches_only_the_requested_cid_and_returns_the_complete_tuple(
+    tmp_path: Path,
+) -> None:
+    cids = (24680, 97531, 86420)
+    view = {
+        "aid": 987654321,
+        "cid": cids[0],
+        "pages": [{"page": index, "cid": cid} for index, cid in enumerate(cids, 1)],
+        "title": "three page fixture",
+        "desc": "fixture",
+        "pic": BILI_COVER,
+        "owner": {"mid": 42, "name": "fixture"},
+        "stat": {},
+    }
+    checkout = _fake_bili_checkout(tmp_path, view=view, expected_cid=cids[1])
+    context = _bili_video_context(cids=cids, position=1)
+
+    resolved = MediaCrawlerLocatorRefresher(context, _bili_process_runner(tmp_path, checkout)).resolve(context.locator)
+
+    assert resolved.url == BILI_VIDEO_URL
+    assert resolved.request_profile is MediaRequestProfile.BILIBILI_MEDIA
+    request = context.detail_request()
+    assert request.bili_video_cid == cids[1]
+    assert "ephemeral-sentinel" not in repr(request)
+
+
 def test_bilibili_private_jsonl_bridge_is_bounded_collision_safe_and_repr_safe() -> None:
     ordinary = json.dumps({"video_id": "987654321", "title": "fixture"}, separators=(",", ":")).encode() + b"\n"
-    progressive = detail_runner_module._BiliProgressiveResult(987654321, 24680, BILI_VIDEO_URL)
+    progressive = detail_runner_module._BiliProgressiveResult(
+        aid=987654321,
+        pages=(detail_runner_module.BilibiliPageIdentity(page=1, cid=24680),),
+        cid=24680,
+        url=BILI_VIDEO_URL,
+    )
     limits = WatchdogLimits(
         max_output_bytes=8 * 1024,
         max_output_items=2,

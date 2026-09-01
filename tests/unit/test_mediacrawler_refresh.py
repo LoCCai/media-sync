@@ -9,6 +9,10 @@ import pytest
 
 from media_sync.domain import AssetKind, LoginMethod, Platform
 from media_sync.infrastructure.db.asset_identity import asset_source_hint, stable_asset_key
+from media_sync.integrations.mediacrawler.bilibili_media import (
+    BILIBILI_PAGES_FIELD,
+    BILIBILI_PROGRESSIVE_PAGE_FIELD,
+)
 from media_sync.integrations.mediacrawler.detail_runner import (
     MediaCrawlerDetailRequest,
     MediaCrawlerDetailResult,
@@ -66,6 +70,7 @@ def _context(
     creator_reference: SecretValue | None = None,
     creator_max_items: int | None = None,
     locator: AdapterRefreshLocator | None = None,
+    bili_video_remote_ids: tuple[str, ...] = (),
     tieba_image_source_hints: tuple[str, ...] = (),
 ) -> MediaCrawlerRefreshContext:
     active_remote_id = remote_id or f"{content_id}:{kind.value}:{position}"
@@ -96,6 +101,7 @@ def _context(
         asset_position=position,
         source_hint=source_hint,
         locator=active_locator,
+        bili_video_remote_ids=bili_video_remote_ids,
         tieba_image_source_hints=tieba_image_source_hints,
         detail_reference=detail_reference,
         creator_reference=creator_reference,
@@ -380,6 +386,108 @@ def test_bilibili_locator_only_video_uses_private_detail_gate_and_media_profile(
     assert resolved.request_profile is MediaRequestProfile.BILIBILI_MEDIA
     assert runner.calls[0].bili_progressive_detail is True
     assert "private-sentinel" not in repr(resolved)
+
+
+def test_bilibili_multipart_refresh_targets_one_cid_and_binds_the_complete_page_tuple() -> None:
+    content_id = "987654321"
+    remote_ids = (
+        f"{content_id}:video:cid:24680",
+        f"{content_id}:video:cid:97531",
+        f"{content_id}:video:cid:86420",
+    )
+    signed_url = "https://v.example.test/bili/p2.mp4?signature=private-p2-sentinel"
+    context = _context(
+        platform=Platform.BILI,
+        content_id=content_id,
+        kind=AssetKind.VIDEO,
+        position=1,
+        signed_url=None,
+        remote_id=remote_ids[1],
+        bili_video_remote_ids=remote_ids,
+    )
+    runner = _FakeDetailRunner(
+        _jsonl(
+            {
+                "video_id": content_id,
+                "video_type": "video",
+                "title": "three pages",
+                BILIBILI_PAGES_FIELD: [
+                    {"page": 1, "cid": 24680},
+                    {"page": 2, "cid": 97531},
+                    {"page": 3, "cid": 86420},
+                ],
+                BILIBILI_PROGRESSIVE_PAGE_FIELD: {"cid": 97531, "url": signed_url},
+            }
+        )
+    )
+
+    resolved = MediaCrawlerLocatorRefresher(context, runner, clock=lambda: NOW).resolve(context.locator)
+
+    assert resolved.url == signed_url
+    assert resolved.request_profile is MediaRequestProfile.BILIBILI_MEDIA
+    assert runner.calls[0].bili_progressive_detail is True
+    assert runner.calls[0].bili_video_cid == 97531
+
+
+@pytest.mark.parametrize(
+    "pages",
+    [
+        [{"page": 1, "cid": 24680}, {"page": 2, "cid": 97531}],
+        [
+            {"page": 1, "cid": 97531},
+            {"page": 2, "cid": 24680},
+            {"page": 3, "cid": 86420},
+        ],
+        [
+            {"page": 1, "cid": 24680},
+            {"page": 2, "cid": 11111},
+            {"page": 3, "cid": 86420},
+        ],
+        [
+            {"page": 1, "cid": 24680},
+            {"page": 2, "cid": 97531},
+            {"page": 3, "cid": 86420},
+            {"page": 4, "cid": 75310},
+        ],
+    ],
+)
+def test_bilibili_multipart_refresh_rejects_missing_reordered_replaced_or_added_pages(
+    pages: list[dict[str, int]],
+) -> None:
+    content_id = "987654321"
+    remote_ids = (
+        f"{content_id}:video:cid:24680",
+        f"{content_id}:video:cid:97531",
+        f"{content_id}:video:cid:86420",
+    )
+    context = _context(
+        platform=Platform.BILI,
+        content_id=content_id,
+        kind=AssetKind.VIDEO,
+        position=1,
+        signed_url=None,
+        remote_id=remote_ids[1],
+        bili_video_remote_ids=remote_ids,
+    )
+    runner = _FakeDetailRunner(
+        _jsonl(
+            {
+                "video_id": content_id,
+                "video_type": "video",
+                "title": "drifted pages",
+                BILIBILI_PAGES_FIELD: pages,
+                BILIBILI_PROGRESSIVE_PAGE_FIELD: {
+                    "cid": 97531,
+                    "url": "https://v.example.test/bili/p2.mp4?signature=drift",
+                },
+            }
+        )
+    )
+
+    with pytest.raises(MediaDownloadError) as caught:
+        MediaCrawlerLocatorRefresher(context, runner, clock=lambda: NOW).resolve(context.locator)
+
+    assert caught.value.code == "locator_refresh_schema_changed"
 
 
 def test_bilibili_locator_only_video_requires_the_private_progressive_result() -> None:

@@ -31,6 +31,10 @@ from media_sync.integrations.mediacrawler import (
     MediaCrawlerLocatorRefresher,
     MediaCrawlerRefreshContext,
 )
+from media_sync.integrations.mediacrawler.bilibili_media import (
+    BILIBILI_MAX_PAGES,
+    bilibili_video_cid,
+)
 from media_sync.integrations.mediacrawler.subscription_policy import (
     MediaCrawlerSubscriptionPolicyError,
     from_subscription_policy,
@@ -186,6 +190,7 @@ class LazyMediaCrawlerLocatorRefresher:
                 raise MediaDownloadError("locator_refresh_configuration_invalid")
             login_method = LoginMethod(account.login_method)
             asset_kind = AssetKind(asset.kind)
+            bili_video_remote_ids: tuple[str, ...] = ()
             tieba_image_source_hints: tuple[str, ...] = ()
             locator = parse_locator(asset.locator)
             if not isinstance(locator, AdapterRefreshLocator) or locator.adapter != "mediacrawler":
@@ -233,16 +238,47 @@ class LazyMediaCrawlerLocatorRefresher:
                 if len(set(hints)) != len(hints):
                     raise MediaDownloadError("locator_refresh_configuration_invalid")
                 tieba_image_source_hints = tuple(hints)
-            source_hint = asset_source_hint(asset.source_url)
             bili_video_slot = (
-                platform is Platform.BILI
-                and content.remote_type == "content"
-                and asset_kind is AssetKind.VIDEO
-                and asset.position == 0
+                platform is Platform.BILI and content.remote_type == "content" and asset_kind is AssetKind.VIDEO
             )
-            locator_only_bili_video = (
-                bili_video_slot and asset.remote_id == f"{content.remote_id}:video:0" and asset.source_url is None
-            )
+            if bili_video_slot:
+                bili_assets = tuple(
+                    session.scalars(
+                        select(Asset)
+                        .where(Asset.content_id == content.id, Asset.kind == AssetKind.VIDEO.value)
+                        .order_by(Asset.position, Asset.id)
+                    ).all()
+                )
+                if (
+                    not 1 <= len(bili_assets) <= BILIBILI_MAX_PAGES
+                    or asset.position >= len(bili_assets)
+                    or bili_assets[asset.position].id != asset.id
+                ):
+                    raise MediaDownloadError("locator_refresh_configuration_invalid")
+                remote_ids: list[str] = []
+                cids: list[int | None] = []
+                for position, sibling in enumerate(bili_assets):
+                    if (
+                        sibling.platform != Platform.BILI.value
+                        or sibling.kind != AssetKind.VIDEO.value
+                        or sibling.position != position
+                        or type(sibling.remote_id) is not str
+                        or sibling.source_url is not None
+                    ):
+                        raise MediaDownloadError("locator_refresh_configuration_invalid")
+                    try:
+                        cid = bilibili_video_cid(content.remote_id, sibling.remote_id)
+                    except ValueError as exc:
+                        raise MediaDownloadError("locator_refresh_configuration_invalid") from exc
+                    remote_ids.append(sibling.remote_id)
+                    cids.append(cid)
+                if (len(cids) == 1 and cids != [None]) or (
+                    len(cids) > 1 and (any(cid is None for cid in cids) or len(set(cids)) != len(cids))
+                ):
+                    raise MediaDownloadError("locator_refresh_configuration_invalid")
+                bili_video_remote_ids = tuple(remote_ids)
+            source_hint = asset_source_hint(asset.source_url)
+            locator_only_bili_video = bili_video_slot and bool(bili_video_remote_ids) and asset.source_url is None
             if source_hint is None:
                 if asset.source_url is not None or not locator_only_bili_video:
                     raise MediaDownloadError("locator_refresh_configuration_invalid")
@@ -313,6 +349,7 @@ class LazyMediaCrawlerLocatorRefresher:
                     asset_position=asset.position,
                     source_hint=source_hint,
                     locator=locator,
+                    bili_video_remote_ids=bili_video_remote_ids,
                     tieba_image_source_hints=tieba_image_source_hints,
                     detail_reference=detail_reference,
                     creator_reference=creator_reference,

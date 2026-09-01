@@ -10,6 +10,10 @@ from pathlib import Path
 import pytest
 
 from media_sync.domain import AssetKind, ContentKind, Platform
+from media_sync.integrations.mediacrawler.bilibili_media import (
+    BILIBILI_PAGES_FIELD,
+    BILIBILI_PROGRESSIVE_PAGE_FIELD,
+)
 from media_sync.integrations.mediacrawler.envelope import (
     ADAPTER_NAME,
     ENVELOPE_SCHEMA,
@@ -642,6 +646,96 @@ def test_bili_progressive_detail_field_is_closed_and_detail_gated() -> None:
     assert detail.assets[0].source_url == progressive_url
     assert "__media_sync_bili_progressive_url" not in detail.content.raw["record"]
     assert all("__media_sync_bili_progressive_url" not in asset.raw["record"] for asset in detail.assets)
+
+
+def test_bili_multipart_pages_materialize_ordered_cid_bound_locator_only_assets() -> None:
+    payload = source_record("bili/contents.v1.jsonl")
+    payload[BILIBILI_PAGES_FIELD] = [
+        {"page": 1, "cid": 24680},
+        {"page": 2, "cid": 97531},
+        {"page": 3, "cid": 86420},
+    ]
+    payload["nested_private_copy"] = {BILIBILI_PAGES_FIELD: [{"page": 1, "cid": 11111}]}
+
+    item = normalize_record(payload, context(Platform.BILI))
+
+    assert [(asset.kind, asset.position, asset.remote_id, asset.source_url) for asset in item.assets[:3]] == [
+        (AssetKind.VIDEO, 0, "987654321:video:cid:24680", None),
+        (AssetKind.VIDEO, 1, "987654321:video:cid:97531", None),
+        (AssetKind.VIDEO, 2, "987654321:video:cid:86420", None),
+    ]
+    assert BILIBILI_PAGES_FIELD not in item.content.raw["record"]
+    assert BILIBILI_PAGES_FIELD not in item.content.raw["record"]["nested_private_copy"]
+
+
+def test_bili_captured_single_page_keeps_the_delivered_legacy_asset_identity() -> None:
+    payload = source_record("bili/contents.v1.jsonl")
+    progressive_url = "https://cdn.example.test/bili/single.mp4?signature=ephemeral-single"
+    payload[BILIBILI_PAGES_FIELD] = [{"page": 1, "cid": 24680}]
+    payload["__media_sync_bili_progressive_url"] = progressive_url
+
+    ordinary = normalize_record(payload, context(Platform.BILI))
+    detail = normalize_record(payload, context(Platform.BILI, allow_bili_progressive_detail=True))
+
+    assert [(asset.remote_id, asset.position, asset.source_url) for asset in ordinary.assets[:1]] == [
+        ("987654321:video:0", 0, None)
+    ]
+    assert [(asset.remote_id, asset.position, asset.source_url) for asset in detail.assets[:1]] == [
+        ("987654321:video:0", 0, progressive_url)
+    ]
+
+
+def test_bili_sixty_four_page_capture_materializes_every_ordered_video_slot() -> None:
+    payload = source_record("bili/contents.v1.jsonl")
+    payload[BILIBILI_PAGES_FIELD] = [
+        {"page": index, "cid": 20_000 + index} for index in range(1, 65)
+    ]
+
+    item = normalize_record(payload, context(Platform.BILI))
+    videos = tuple(asset for asset in item.assets if asset.kind is AssetKind.VIDEO)
+
+    assert len(videos) == 64
+    assert videos[0].remote_id == "987654321:video:cid:20001"
+    assert videos[-1].remote_id == "987654321:video:cid:20064"
+    assert [asset.position for asset in videos] == list(range(64))
+
+
+def test_bili_multipart_detail_materializes_only_the_requested_ephemeral_page_url() -> None:
+    payload = source_record("bili/contents.v1.jsonl")
+    target_url = "https://cdn.example.test/bili/p2.mp4?signature=ephemeral-p2"
+    payload[BILIBILI_PAGES_FIELD] = [
+        {"page": 1, "cid": 24680},
+        {"page": 2, "cid": 97531},
+        {"page": 3, "cid": 86420},
+    ]
+    payload[BILIBILI_PROGRESSIVE_PAGE_FIELD] = {"cid": 97531, "url": target_url}
+
+    ordinary = normalize_record(payload, context(Platform.BILI))
+    detail = normalize_record(payload, context(Platform.BILI, allow_bili_progressive_detail=True))
+
+    assert [asset.source_url for asset in ordinary.assets[:3]] == [None, None, None]
+    assert [asset.source_url for asset in detail.assets[:3]] == [None, target_url, None]
+    assert BILIBILI_PROGRESSIVE_PAGE_FIELD not in detail.content.raw["record"]
+
+
+@pytest.mark.parametrize(
+    "pages",
+    [
+        [],
+        [{"page": 1, "cid": 24680}, {"page": 2, "cid": 24680}],
+        [{"page": 2, "cid": 24680}],
+        [{"page": index, "cid": 10_000 + index} for index in range(1, 66)],
+    ],
+)
+def test_bili_invalid_or_unsupported_page_claims_never_fall_back_to_the_legacy_video_slot(
+    pages: list[dict[str, int]],
+) -> None:
+    payload = source_record("bili/contents.v1.jsonl")
+    payload[BILIBILI_PAGES_FIELD] = pages
+
+    item = normalize_record(payload, context(Platform.BILI))
+
+    assert all(asset.kind is not AssetKind.VIDEO for asset in item.assets)
 
 
 def test_bili_dynamic_never_materializes_progressive_detail_asset() -> None:

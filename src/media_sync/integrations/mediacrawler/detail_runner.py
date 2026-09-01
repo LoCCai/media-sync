@@ -32,6 +32,12 @@ if __name__ == "__main__" and (__package__ is None or __package__ == ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from media_sync.domain import LoginMethod, Platform
+from media_sync.integrations.mediacrawler.bilibili_media import (
+    BILIBILI_PAGES_FIELD,
+    BILIBILI_PROGRESSIVE_PAGE_FIELD,
+    BilibiliPageIdentity,
+    parse_bilibili_view_pages,
+)
 from media_sync.integrations.mediacrawler.checkout import (
     VerifiedCheckout,
     VerifiedPython,
@@ -73,7 +79,7 @@ from media_sync.media.errors import MediaDownloadError
 from media_sync.security import SecretValue
 from media_sync.security.secrets import MAX_SECRET_BYTES
 
-DETAIL_RUNNER_SCHEMA_VERSION = 3
+DETAIL_RUNNER_SCHEMA_VERSION = 4
 MAX_DETAIL_REQUEST_BYTES = 128 * 1024
 MAX_DETAIL_FRAME_OVERHEAD = 8 * 1024
 
@@ -198,6 +204,7 @@ class MediaCrawlerDetailRequest:
     headless: bool = True
     request_delay_seconds: float = 2.0
     bili_progressive_detail: bool = False
+    bili_video_cid: int | None = None
     watchdogs: WatchdogLimits = field(default_factory=WatchdogLimits)
 
     def __post_init__(self) -> None:
@@ -245,6 +252,12 @@ class MediaCrawlerDetailRequest:
             raise MediaDownloadError("locator_refresh_configuration_invalid")
         if not isinstance(self.bili_progressive_detail, bool) or (
             self.bili_progressive_detail and platform is not Platform.BILI
+        ):
+            raise MediaDownloadError("locator_refresh_configuration_invalid")
+        if self.bili_video_cid is not None and (
+            type(self.bili_video_cid) is not int
+            or not 1 <= self.bili_video_cid <= 2**63 - 1
+            or not self.bili_progressive_detail
         ):
             raise MediaDownloadError("locator_refresh_configuration_invalid")
         delay = self.request_delay_seconds
@@ -422,6 +435,7 @@ class MediaCrawlerDetailProcessRunner:
                 "headless": request.headless,
                 "request_delay_seconds": request.request_delay_seconds,
                 "bili_progressive_detail": request.bili_progressive_detail,
+                "bili_video_cid": request.bili_video_cid,
                 "watchdogs": {
                     "max_seconds": limits.max_seconds,
                     "max_output_bytes": limits.max_output_bytes,
@@ -588,14 +602,27 @@ class _ChildUnsupportedError(RuntimeError):
 
 @dataclass(frozen=True, slots=True)
 class _BiliProgressiveResult:
-    """One validated play URL whose value must stay out of repr and disk."""
+    """One current page tuple and optional requested URL kept only in memory."""
 
     aid: int
-    cid: int
-    url: str = field(repr=False)
+    pages: tuple[BilibiliPageIdentity, ...]
+    cid: int | None
+    url: str | None = field(repr=False)
 
     def __post_init__(self) -> None:
-        if type(self.aid) is not int or self.aid <= 0 or type(self.cid) is not int or self.cid <= 0:
+        if (
+            type(self.aid) is not int
+            or self.aid <= 0
+            or type(self.pages) is not tuple
+            or not self.pages
+            or any(not isinstance(page, BilibiliPageIdentity) for page in self.pages)
+        ):
+            raise ValueError("invalid Bilibili identity")
+        if self.cid is None:
+            if self.url is not None:
+                raise ValueError("invalid Bilibili progressive result")
+            return
+        if type(self.cid) is not int or self.cid not in {page.cid for page in self.pages} or self.url is None:
             raise ValueError("invalid Bilibili identity")
         try:
             validated = ResolvedLocator(self.url)
@@ -622,6 +649,7 @@ class _ChildRequest:
     headless: bool = True
     request_delay_seconds: float = 2.0
     bili_progressive_detail: bool = False
+    bili_video_cid: int | None = None
     watchdogs: WatchdogLimits = field(default_factory=WatchdogLimits)
 
     @classmethod
@@ -648,6 +676,7 @@ class _ChildRequest:
             "headless",
             "request_delay_seconds",
             "bili_progressive_detail",
+            "bili_video_cid",
             "watchdogs",
         }
         if (
@@ -693,6 +722,11 @@ class _ChildRequest:
             bili_progressive_detail = raw["bili_progressive_detail"]
             if not isinstance(bili_progressive_detail, bool) or (
                 bili_progressive_detail and platform is not Platform.BILI
+            ):
+                raise _ChildConfigurationError
+            bili_video_cid = raw["bili_video_cid"]
+            if bili_video_cid is not None and (
+                type(bili_video_cid) is not int or not 1 <= bili_video_cid <= 2**63 - 1 or not bili_progressive_detail
             ):
                 raise _ChildConfigurationError
         except (KeyError, TypeError, ValueError, OSError) as exc:
@@ -748,6 +782,7 @@ class _ChildRequest:
             headless=headless,
             request_delay_seconds=float(delay),
             bili_progressive_detail=bili_progressive_detail,
+            bili_video_cid=bili_video_cid,
             watchdogs=watchdogs,
         )
 
@@ -856,17 +891,16 @@ def _positive_bili_id(value: object) -> int:
 
 
 def _first_bili_cid(view: Mapping[str, object]) -> int:
-    if "pages" in view:
-        pages = view["pages"]
-        if pages is None or pages == []:
-            return _positive_bili_id(view.get("cid"))
-        if not isinstance(pages, list) or not isinstance(pages[0], Mapping):
-            raise ValueError("invalid Bilibili pages")
-        return _positive_bili_id(pages[0].get("cid"))
-    return _positive_bili_id(view.get("cid"))
+    return parse_bilibili_view_pages(view)[0].cid
 
 
-def _bili_progressive_result(play: object, *, aid: int, cid: int) -> _BiliProgressiveResult:
+def _bili_progressive_result(
+    play: object,
+    *,
+    aid: int,
+    pages: tuple[BilibiliPageIdentity, ...],
+    cid: int,
+) -> _BiliProgressiveResult:
     if not isinstance(play, Mapping):
         raise ValueError("invalid Bilibili play response")
     if "durl" not in play or play.get("durl") is None:
@@ -879,7 +913,7 @@ def _bili_progressive_result(play: object, *, aid: int, cid: int) -> _BiliProgre
     segment = durl[0]
     if not isinstance(segment, Mapping) or not isinstance(segment.get("url"), str):
         raise ValueError("invalid Bilibili durl segment")
-    return _BiliProgressiveResult(aid=aid, cid=cid, url=segment["url"])
+    return _BiliProgressiveResult(aid=aid, pages=pages, cid=cid, url=segment["url"])
 
 
 async def _run_bilibili_aid(upstream_main: Any, request: _ChildRequest) -> _BiliProgressiveResult | None:
@@ -920,7 +954,20 @@ async def _run_bilibili_aid(upstream_main: Any, request: _ChildRequest) -> _Bili
         await store.update_bilibili_video(detail)
         await store.update_up_info(detail)
         if request.bili_progressive_detail:
-            cid = _first_bili_cid(view)
+            pages = parse_bilibili_view_pages(view, expected_aid=request.content_remote_id)
+            cid = request.bili_video_cid
+            if cid is None:
+                cid = pages[0].cid if len(pages) == 1 else None
+            elif cid not in {page.cid for page in pages}:
+                cid = None
+            if cid is None:
+                progressive = _BiliProgressiveResult(
+                    aid=requested_aid,
+                    pages=pages,
+                    cid=None,
+                    url=None,
+                )
+                return
             try:
                 play = await instance.get_video_play_url_task(
                     aid=requested_aid,
@@ -931,7 +978,12 @@ async def _run_bilibili_aid(upstream_main: Any, request: _ChildRequest) -> _Bili
                 raise _ChildTemporaryError from exc
             if play is None:
                 raise _ChildTemporaryError
-            progressive = _bili_progressive_result(play, aid=requested_aid, cid=cid)
+            progressive = _bili_progressive_result(
+                play,
+                aid=requested_aid,
+                pages=pages,
+                cid=cid,
+            )
 
     crawler.get_specified_videos = MethodType(get_specified_videos, crawler)
     upstream_main.crawler = crawler
@@ -1030,7 +1082,7 @@ def _augment_bili_progressive_jsonl(
     progressive: _BiliProgressiveResult,
     limits: WatchdogLimits,
 ) -> bytes:
-    """Inject one private field into bytes only; never reopen or rewrite output."""
+    """Inject current pages and at most one URL into in-memory JSONL only."""
 
     lines = payload.splitlines()
     if len(lines) > limits.max_output_items:
@@ -1057,7 +1109,16 @@ def _augment_bili_progressive_jsonl(
             if decoded.get("video_id") == str(progressive.aid):
                 matches += 1
                 enriched = dict(decoded)
-                enriched[_BILI_PROGRESSIVE_FIELD] = progressive.url
+                enriched[BILIBILI_PAGES_FIELD] = [page.as_mapping() for page in progressive.pages]
+                if progressive.url is not None:
+                    if len(progressive.pages) == 1:
+                        enriched[_BILI_PROGRESSIVE_FIELD] = progressive.url
+                    else:
+                        assert progressive.cid is not None
+                        enriched[BILIBILI_PROGRESSIVE_PAGE_FIELD] = {
+                            "cid": progressive.cid,
+                            "url": progressive.url,
+                        }
                 encoded = json.dumps(
                     enriched,
                     ensure_ascii=False,
@@ -1076,7 +1137,9 @@ def _augment_bili_progressive_jsonl(
 
 def _contains_private_detail_field(value: object) -> bool:
     if isinstance(value, Mapping):
-        return _BILI_PROGRESSIVE_FIELD in value or any(_contains_private_detail_field(item) for item in value.values())
+        return bool(
+            {BILIBILI_PAGES_FIELD, BILIBILI_PROGRESSIVE_PAGE_FIELD, _BILI_PROGRESSIVE_FIELD} & set(value)
+        ) or any(_contains_private_detail_field(item) for item in value.values())
     if isinstance(value, list):
         return any(_contains_private_detail_field(item) for item in value)
     return False
