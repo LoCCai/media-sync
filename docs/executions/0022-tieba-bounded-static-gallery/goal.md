@@ -1,8 +1,10 @@
 # Execution 0022 goal / 执行 0022 目标
 
-- Status / 状态：Frozen offline scope in progress; live qualification `NOT_RUN` / 冻结离线范围推进中；真人验收 `NOT_RUN`
+- Status / 状态：Frozen offline scope delivered and verified; live qualification `NOT_RUN` / 冻结离线范围已交付并验证；真人验收 `NOT_RUN`
 - Date / 日期：2026-09-02
 - Predecessor / 前置：Execution 0021 closeout `817875bdd1902f54c72397fa7da46359fbe33207`
+- Plan commit / 计划提交：`fbcb7cf5c642fc9da210faa5d92b6886b350a9b8`
+- Implementation commit / 实现提交：`b6d03aa1c6705e52c2e47c63086a5b7200c208e7`
 - Scope / 范围：Three through 64 ordered static images in one ordinary Tieba creator thread first floor / 贴吧作者普通主题首楼中的 3 至 64 张有序静态图片
 
 ## Outcome / 目标结果

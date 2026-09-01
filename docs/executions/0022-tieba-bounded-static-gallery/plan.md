@@ -1,8 +1,10 @@
 # Execution 0022 plan / 执行 0022 计划
 
-- Status / 状态：Approved for execution / 已批准执行
+- Status / 状态：Executed for the frozen offline scope / 冻结离线范围已执行
 - Plan date / 计划日期：2026-09-02
 - Predecessor / 前置：`817875bdd1902f54c72397fa7da46359fbe33207`
+- Plan commit / 计划提交：`fbcb7cf5c642fc9da210faa5d92b6886b350a9b8`
+- Implementation commit / 实现提交：`b6d03aa1c6705e52c2e47c63086a5b7200c208e7`
 - Database migration / 数据库迁移：None planned / 计划无
 
 ## Baseline / 前置基线
@@ -19,8 +21,8 @@ Execution 0021 is pushed and reconciled at `817875b`. Its focused regression pas
 
 ## Commit sequence / 提交序列
 
-1. Plan / 计划 — `docs: 启动贴吧有界静态 gallery / start bounded Tieba static gallery`
-2. Implementation / 实现 — `feat: 闭环贴吧有界静态 gallery / close bounded Tieba static gallery`
-3. Documentation closeout / 文档收尾 — `docs: 收尾贴吧有界静态 gallery / close bounded Tieba static gallery`
+1. `fbcb7cf` — `docs: 启动贴吧有界静态 gallery / start bounded Tieba static gallery`
+2. `b6d03aa` — `feat: 闭环贴吧有界静态 gallery / close bounded Tieba static gallery`
+3. This documentation closeout commit; self SHA intentionally omitted / 本文档收尾提交；有意不嵌入自身 SHA — `docs: 收尾贴吧有界静态 gallery / close bounded Tieba static gallery`
 
 `.upstream` remains excluded, unmodified and clean. / `.upstream` 继续排除在跟踪外、保持未修改且干净。
