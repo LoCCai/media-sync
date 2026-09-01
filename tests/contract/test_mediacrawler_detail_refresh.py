@@ -50,6 +50,8 @@ XHS_DETAIL_URL = (
     f"https://www.xiaohongshu.com/explore/{XHS_NOTE_ID}?xsec_token=xhs-detail-authority-sentinel&xsec_source=pc_feed"
 )
 XHS_IMAGE_URL = "https://image.example.test/xhs/target.jpg?sign=xhs-image-sentinel"
+XHS_VIDEO_URL = "http://sns-video-bd.xhscdn.com/video-key.mp4?sign=xhs-video-sentinel"
+XHS_COVER_URL = "https://sns-webpic-qc.xhscdn.com/cover.png?sign=xhs-cover-sentinel"
 _DEFAULT_BILI_VIEW = object()
 _DEFAULT_BILI_PLAY = object()
 
@@ -446,10 +448,26 @@ def _fake_checkout(root: Path) -> Path:
     return checkout.resolve()
 
 
-def _fake_xhs_checkout(root: Path, *, creator_mode: bool) -> Path:
+def _fake_xhs_checkout(root: Path, *, creator_mode: bool, video_mode: bool = False) -> Path:
     checkout = root / "fake-mediacrawler-xhs"
     (checkout / "config").mkdir(parents=True)
     (checkout / "config" / "__init__.py").write_text(textwrap.dedent(_CONFIG).lstrip(), encoding="utf-8")
+    target_record = (
+        {
+            "note_id": XHS_NOTE_ID,
+            "type": "video",
+            "title": "target video",
+            "image_list": XHS_COVER_URL,
+            "video_url": XHS_VIDEO_URL,
+        }
+        if video_mode
+        else {
+            "note_id": XHS_NOTE_ID,
+            "type": "normal",
+            "title": "target",
+            "image_list": XHS_IMAGE_URL,
+        }
+    )
     records = [
         {
             "note_id": "different-note",
@@ -457,12 +475,7 @@ def _fake_xhs_checkout(root: Path, *, creator_mode: bool) -> Path:
             "title": "other",
             "image_list": "https://image.example.test/xhs/other.jpg?sign=other",
         },
-        {
-            "note_id": XHS_NOTE_ID,
-            "type": "normal",
-            "title": "target",
-            "image_list": XHS_IMAGE_URL,
-        },
+        target_record,
     ]
     if not creator_mode:
         records = records[1:]
@@ -664,20 +677,22 @@ def _xhs_process_runner(tmp_path: Path, checkout: Path) -> MediaCrawlerDetailPro
     )
 
 
-def _xhs_context(*, creator_mode: bool) -> MediaCrawlerRefreshContext:
-    remote_id = f"{XHS_NOTE_ID}:image:0"
+def _xhs_context(*, creator_mode: bool, video_mode: bool = False) -> MediaCrawlerRefreshContext:
+    kind = AssetKind.VIDEO if video_mode else AssetKind.IMAGE
+    source_url = XHS_VIDEO_URL if video_mode else XHS_IMAGE_URL
+    remote_id = f"{XHS_NOTE_ID}:{kind.value}:0"
     locator = AdapterRefreshLocator(
         adapter="mediacrawler",
         asset_key=stable_asset_key(
             platform="xhs",
             content_remote_type="content",
             content_remote_id=XHS_NOTE_ID,
-            kind="image",
+            kind=kind.value,
             position=0,
             remote_id=remote_id,
         ),
     )
-    source_hint = asset_source_hint(XHS_IMAGE_URL)
+    source_hint = asset_source_hint(source_url)
     assert source_hint is not None
     return MediaCrawlerRefreshContext(
         asset_id=ASSET_ID,
@@ -690,7 +705,7 @@ def _xhs_context(*, creator_mode: bool) -> MediaCrawlerRefreshContext:
         author_remote_id=XHS_AUTHOR_ID,
         author_display_name="XHS fixture creator",
         asset_remote_id=remote_id,
-        asset_kind=AssetKind.IMAGE,
+        asset_kind=kind,
         asset_position=0,
         source_hint=source_hint,
         locator=locator,
@@ -836,6 +851,23 @@ def test_xhs_creator_fallback_and_explicit_detail_are_isolated_and_cleaned(
     assert b"xhs-creator-authority-sentinel" not in retained
     assert b"xhs-detail-authority-sentinel" not in retained
     assert b"xhs-image-sentinel" not in retained
+
+
+def test_xhs_creator_video_refresh_uses_exact_cdn_asset_and_cleans_ephemera(tmp_path: Path) -> None:
+    checkout = _fake_xhs_checkout(tmp_path, creator_mode=True, video_mode=True)
+    context = _xhs_context(creator_mode=True, video_mode=True)
+
+    resolved = MediaCrawlerLocatorRefresher(context, _xhs_process_runner(tmp_path, checkout)).resolve(context.locator)
+
+    assert resolved.url == XHS_VIDEO_URL
+    assert resolved.request_profile is MediaRequestProfile.DEFAULT
+    assert "xhs-video-sentinel" not in repr(context)
+    assert "xhs-video-sentinel" not in repr(resolved)
+    assert list((tmp_path / "runtime" / "jobs").iterdir()) == []
+    retained = b"".join(path.read_bytes() for path in (tmp_path / "runtime").rglob("*") if path.is_file())
+    assert b"xhs-creator-authority-sentinel" not in retained
+    assert b"xhs-video-sentinel" not in retained
+    assert b"xhs-cover-sentinel" not in retained
 
 
 def test_detail_process_runner_uses_detail_mode_and_cleans_signed_jsonl(tmp_path: Path) -> None:

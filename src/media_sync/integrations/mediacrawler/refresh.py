@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from uuid import UUID
 
-from media_sync.domain import AssetKind, ContentKind, LoginMethod, Platform
+from media_sync.domain import AssetKind, AssetSnapshot, ContentKind, LoginMethod, Platform
 from media_sync.infrastructure.db.asset_identity import asset_source_hint, stable_asset_key
 from media_sync.media import (
     AdapterRefreshLocator,
@@ -32,6 +32,7 @@ from .detail_runner import (
 from .normalizers import NormalizationContext, normalize_jsonl_bytes
 from .policies import WatchdogLimits
 from .xhs_authority import validate_xhs_creator_reference, validate_xhs_detail_reference
+from .xhs_media import validate_xhs_video_url
 
 _SUPPORTED_PLATFORMS = frozenset({Platform.XHS, Platform.DY, Platform.KS, Platform.BILI, Platform.WB})
 _NO_ASSET_PLATFORMS = frozenset({Platform.TIEBA, Platform.ZHIHU})
@@ -250,17 +251,25 @@ class MediaCrawlerLocatorRefresher:
             raise MediaDownloadError("locator_refresh_asset_not_found")
         if len(matching_content) != 1:
             raise MediaDownloadError("locator_refresh_asset_mismatch")
+        xhs_creator_video = False
         if context.platform is Platform.XHS and context.creator_reference is not None:
             target = matching_content[0]
             envelope = target.content.raw
             source_record = envelope.get("record") if isinstance(envelope, Mapping) else None
-            if (
-                not isinstance(source_record, Mapping)
-                or source_record.get("type") != "normal"
-                or target.content.kind not in {ContentKind.IMAGE, ContentKind.GALLERY}
-                or not target.assets
-                or any(asset.kind is not AssetKind.IMAGE for asset in target.assets)
-            ):
+            if not isinstance(source_record, Mapping):
+                raise MediaDownloadError("locator_refresh_schema_changed")
+            source_type = source_record.get("type")
+            if source_type == "normal":
+                if (
+                    target.content.kind not in {ContentKind.IMAGE, ContentKind.GALLERY}
+                    or not target.assets
+                    or any(asset.kind is not AssetKind.IMAGE for asset in target.assets)
+                ):
+                    raise MediaDownloadError("locator_refresh_schema_changed")
+            elif source_type == "video":
+                _validate_xhs_creator_video_target(source_record, target.assets, target.content.kind)
+                xhs_creator_video = True
+            else:
                 raise MediaDownloadError("locator_refresh_schema_changed")
         candidates = [
             asset
@@ -276,6 +285,11 @@ class MediaCrawlerLocatorRefresher:
         source_url = candidates[0].source_url
         if source_url is None:
             raise MediaDownloadError("locator_refresh_result_invalid")
+        if xhs_creator_video and candidates[0].kind is AssetKind.VIDEO:
+            try:
+                source_url = validate_xhs_video_url(source_url)
+            except ValueError as exc:
+                raise MediaDownloadError("locator_refresh_schema_changed") from exc
         profile = (
             MediaRequestProfile.BILIBILI_MEDIA if context._bili_progressive_detail() else MediaRequestProfile.DEFAULT
         )
@@ -358,6 +372,53 @@ def _validate_xhs_authority(
         validate_xhs_creator_reference(creator_reference.reveal(), author_remote_id)
     except ValueError as exc:
         raise MediaDownloadError("locator_refresh_configuration_invalid") from exc
+
+
+def _validate_xhs_creator_video_target(
+    source_record: Mapping[str, object],
+    assets: tuple[AssetSnapshot, ...],
+    content_kind: ContentKind,
+) -> None:
+    """Freeze the pinned store's scalar video row before trusting Assets."""
+
+    try:
+        raw_videos = _validated_xhs_media_scalar(source_record.get("video_url"), allow_empty=False)
+        raw_images = _validated_xhs_media_scalar(source_record.get("image_list"), allow_empty=True)
+    except ValueError as exc:
+        raise MediaDownloadError("locator_refresh_schema_changed") from exc
+
+    video_assets = tuple(asset for asset in assets if asset.kind is AssetKind.VIDEO)
+    image_assets = tuple(asset for asset in assets if asset.kind is AssetKind.IMAGE)
+    if (
+        content_kind not in {ContentKind.VIDEO, ContentKind.MIXED}
+        or (not raw_images and content_kind is not ContentKind.VIDEO)
+        or (len(raw_images) == 1 and content_kind is not ContentKind.MIXED)
+        or len(video_assets) != 1
+        or video_assets[0].position != 0
+        or len(image_assets) > 1
+        or (image_assets and image_assets[0].position != 0)
+        or len(video_assets) + len(image_assets) != len(assets)
+        or tuple(asset.source_url for asset in video_assets) != raw_videos
+        or tuple(asset.source_url for asset in image_assets) != raw_images
+    ):
+        raise MediaDownloadError("locator_refresh_schema_changed")
+
+
+def _validated_xhs_media_scalar(value: object, *, allow_empty: bool) -> tuple[str, ...]:
+    if type(value) is not str:
+        raise ValueError("invalid XHS media scalar")
+    if value == "":
+        if allow_empty:
+            return ()
+        raise ValueError("invalid XHS media scalar")
+    candidates = value.split(",")
+    if any(not candidate or candidate.strip() != candidate for candidate in candidates):
+        raise ValueError("invalid XHS media scalar")
+    if len(set(candidates)) != len(candidates):
+        raise ValueError("invalid XHS media scalar")
+    if len(candidates) != 1:
+        raise ValueError("invalid XHS media scalar")
+    return tuple(validate_xhs_video_url(candidate) for candidate in candidates)
 
 
 __all__ = ["MediaCrawlerLocatorRefresher", "MediaCrawlerRefreshContext"]

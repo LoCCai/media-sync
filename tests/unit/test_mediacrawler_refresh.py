@@ -19,6 +19,7 @@ from media_sync.integrations.mediacrawler.refresh import (
     MediaCrawlerRefreshContext,
 )
 from media_sync.integrations.mediacrawler.weibo_media import WEIBO_IMAGES_FIELD
+from media_sync.integrations.mediacrawler.xhs_media import validate_xhs_video_url
 from media_sync.media import AdapterRefreshLocator, MediaDownloadError, MediaRequestProfile
 from media_sync.security import SecretValue
 
@@ -553,6 +554,205 @@ def test_xhs_creator_authority_returns_multiple_records_and_selects_exact_note()
     assert request.creator_max_items == 2
     assert "xhs-creator-secret" not in repr(context)
     assert "xhs-creator-secret" not in repr(request)
+
+
+@pytest.mark.parametrize(
+    "image_list",
+    [
+        pytest.param("", id="video-only"),
+        pytest.param(
+            "https://sns-webpic-qc.xhscdn.com/cover.png?sign=xhs-cover-sentinel",
+            id="optional-cover",
+        ),
+    ],
+)
+def test_xhs_creator_authority_accepts_one_cdn_video_with_optional_cover(image_list: str) -> None:
+    content_id = "66fad51c000000001b0224b8"
+    video_url = "http://sns-video-bd.xhscdn.com/video-key.mp4?sign=xhs-video-sentinel"
+    context = _context(
+        platform=Platform.XHS,
+        content_id=content_id,
+        kind=AssetKind.VIDEO,
+        position=0,
+        signed_url=video_url,
+        creator_reference=SecretValue(
+            "https://www.xiaohongshu.com/user/profile/creator-42?xsec_token=xhs-creator-secret&xsec_source=pc_user"
+        ),
+        creator_max_items=2,
+    )
+    runner = _FakeDetailRunner(
+        _jsonl(
+            {
+                "note_id": content_id,
+                "type": "video",
+                "title": "target video",
+                "image_list": image_list,
+                "video_url": video_url,
+            }
+        )
+    )
+
+    resolved = MediaCrawlerLocatorRefresher(context, runner, clock=lambda: NOW).resolve(context.locator)
+
+    assert resolved.url == video_url
+    assert resolved.request_profile is MediaRequestProfile.DEFAULT
+    assert "xhs-video-sentinel" not in repr(resolved)
+
+
+@pytest.mark.parametrize(
+    ("video_url", "image_list"),
+    [
+        pytest.param(
+            "http://sns-video-bd.xhscdn.com/target.mp4,http://sns-video-bd.xhscdn.com/second.mp4",
+            "",
+            id="multiple-video-variants",
+        ),
+        pytest.param(
+            "file:///invalid,http://sns-video-bd.xhscdn.com/target.mp4",
+            "",
+            id="malformed-plus-valid-video",
+        ),
+        pytest.param(
+            "http://sns-video-bd.xhscdn.com/target.mp4,http://sns-video-bd.xhscdn.com/target.mp4",
+            "",
+            id="duplicate-video",
+        ),
+        pytest.param("http://sns-video-bd.xhscdn.com/target.mp4,", "", id="empty-video-item"),
+        pytest.param("", "", id="empty-video"),
+        pytest.param(" http://sns-video-bd.xhscdn.com/target.mp4", "", id="leading-video-space"),
+        pytest.param("http://sns-video-bd.xhscdn.com/target.mp4 ", "", id="trailing-video-space"),
+        pytest.param(
+            "http://sns-video-bd.xhscdn.com/target.mp4",
+            "https://sns-webpic-qc.xhscdn.com/first.jpg,https://sns-webpic-qc.xhscdn.com/second.jpg",
+            id="multiple-images",
+        ),
+        pytest.param(
+            "http://sns-video-bd.xhscdn.com/target.mp4",
+            "file:///invalid,https://sns-webpic-qc.xhscdn.com/cover.jpg",
+            id="malformed-plus-valid-image",
+        ),
+        pytest.param(
+            "http://sns-video-bd.xhscdn.com/target.mp4",
+            "https://sns-webpic-qc.xhscdn.com/cover.jpg,https://sns-webpic-qc.xhscdn.com/cover.jpg",
+            id="duplicate-image",
+        ),
+        pytest.param(
+            "http://sns-video-bd.xhscdn.com/target.mp4",
+            "https://sns-webpic-qc.xhscdn.com/cover.jpg,",
+            id="empty-image-item",
+        ),
+        pytest.param(
+            "http://sns-video-bd.xhscdn.com/target.mp4",
+            "https://foreign.example/cover.jpg",
+            id="foreign-image-host",
+        ),
+        pytest.param(None, "", id="non-string-video"),
+        pytest.param("http://sns-video-bd.xhscdn.com/target.mp4", None, id="non-string-image"),
+        pytest.param(
+            ["http://sns-video-bd.xhscdn.com/target.mp4"],
+            "",
+            id="video-container-drift",
+        ),
+        pytest.param(
+            "http://sns-video-bd.xhscdn.com/target.mp4",
+            ["https://sns-webpic-qc.xhscdn.com/cover.jpg"],
+            id="image-container-drift",
+        ),
+    ],
+)
+def test_xhs_creator_video_gate_rejects_ambiguous_raw_scalars(
+    video_url: object,
+    image_list: object,
+) -> None:
+    content_id = "66fad51c000000001b0224b8"
+    selected = "http://sns-video-bd.xhscdn.com/target.mp4"
+    context = _context(
+        platform=Platform.XHS,
+        content_id=content_id,
+        kind=AssetKind.VIDEO,
+        position=0,
+        signed_url=selected,
+        creator_reference=SecretValue(
+            "https://www.xiaohongshu.com/user/profile/creator-42?xsec_token=xhs-creator-secret&xsec_source=pc_user"
+        ),
+        creator_max_items=2,
+    )
+
+    with pytest.raises(MediaDownloadError) as caught:
+        MediaCrawlerLocatorRefresher(
+            context,
+            _FakeDetailRunner(
+                _jsonl(
+                    {
+                        "note_id": content_id,
+                        "type": "video",
+                        "image_list": image_list,
+                        "video_url": video_url,
+                    }
+                )
+            ),
+            clock=lambda: NOW,
+        ).resolve(context.locator)
+
+    assert caught.value.code == "locator_refresh_schema_changed"
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://sns-video-bd.xhscdn.com/video-key",
+        "http://xhscdn.com:80/video-key?sign=private",
+        "https://xhscdn.com:443/video-key?sign=private",
+        "HTTPS://SNS-VIDEO-BD.XHSCDN.COM./video-key?sign=private",
+        "https://例子.xhscdn.com/video-key?sign=private",
+        f"https://{'e' * 63}.xhscdn.com/video-key",
+    ],
+)
+def test_xhs_video_url_validator_accepts_only_bounded_cdn_paths(url: str) -> None:
+    assert validate_xhs_video_url(url) == url
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        pytest.param("", id="empty"),
+        pytest.param("https://xhscdn.com/video key", id="whitespace"),
+        pytest.param("https://xhscdn.com/video\tkey", id="control"),
+        pytest.param("ftp://xhscdn.com/video", id="scheme"),
+        pytest.param("https://user@xhscdn.com/video", id="userinfo"),
+        pytest.param("https://xhscdn.com:444/video", id="custom-port"),
+        pytest.param("https://xhscdn.com:80/video", id="https-http-port"),
+        pytest.param("http://xhscdn.com:443/video", id="http-https-port"),
+        pytest.param("https://xhscdn.com/video#private-fragment", id="fragment"),
+        pytest.param("https://xhscdn.com", id="empty-path"),
+        pytest.param("https://xhscdn.com/", id="root-path"),
+        pytest.param("https://foreign.example/video", id="foreign-host"),
+        pytest.param("https://notxhscdn.com/video", id="suffix-confusion"),
+        pytest.param("https://[2001:db8::1]/video", id="ipv6-host"),
+        pytest.param("https://-edge.xhscdn.com/video", id="leading-label-hyphen"),
+        pytest.param("https://edge-.xhscdn.com/video", id="trailing-label-hyphen"),
+        pytest.param("https://edge_name.xhscdn.com/video", id="label-underscore"),
+        pytest.param(f"https://{'e' * 64}.xhscdn.com/video", id="overlong-label"),
+        pytest.param(
+            f"https://{'.'.join(['e' * 63] * 4)}.xhscdn.com/video",
+            id="overlong-hostname",
+        ),
+        pytest.param("https://xhscdn.com../video", id="multiple-trailing-dots"),
+        pytest.param("https://xhscdn.com:invalid/video", id="malformed-port"),
+        pytest.param("https://%65vil.xhscdn.com/video", id="escaped-host"),
+        pytest.param("https://xhscdn.com/" + "v" * 4_096, id="over-bound"),
+    ],
+)
+def test_xhs_video_url_validator_rejects_ambiguous_or_foreign_values(url: str) -> None:
+    with pytest.raises(ValueError, match="invalid XHS video URL"):
+        validate_xhs_video_url(url)
+
+
+def test_xhs_video_url_validator_rejects_idna_errors_and_non_exact_strings() -> None:
+    with pytest.raises(ValueError, match="invalid XHS video URL"):
+        validate_xhs_video_url("https://\ud800.xhscdn.com/video")
+    with pytest.raises(ValueError, match="invalid XHS video URL"):
+        validate_xhs_video_url(True)  # type: ignore[arg-type]
 
 
 @pytest.mark.parametrize(
