@@ -57,6 +57,7 @@
 | 0035 | 微博 playback_list 画质选择 | 冻结的离线画质选择范围已完成；1–8 项有界列表在 0031 校验器上按封闭 `1080p > 720p > 540p > 480p > 360p` 偏好选择，标量优先保持，不可用形状不捕获；专项 451 项、微博管线 4 项、完整套件 2010 项通过且 1 项跳过；全部真人行保持 `NOT_RUN` | 计划 `ecc08da`；实现 `f2f4bc9`；收尾为包含本记录的提交（不嵌入自身 SHA） |
 | 0036 | 微博视频封面 | 冻结的离线视频封面范围已完成；封闭 `pic_info.pic_big.url` 与标量/playback 视频一同捕获、`{note_id}:cover:0` COVER 资产带 WB COVER 适配器刷新、零工作重放的 Emby 剧 poster 发布；专项 341 项、完整套件 2016 项通过且 1 项跳过；全部真人行保持 `NOT_RUN` | 计划 `1ad49a7`；实现 `72e9f62`；收尾为包含本记录的提交（不嵌入自身 SHA） |
 | 0037 | 小红书多视频 | 冻结的离线有界多视频范围已完成；1–16 个逗号拼接候选物化有序 `{note_id}:video:N` 资产，creator 回退绑定完整元组并关闭替换/超界漂移，两个 Emby 集零工作重放发布；专项 344 项、完整套件 2020 项通过且 1 项跳过；全部真人行保持 `NOT_RUN` | 计划 `d858147`；实现 `c5682e5`；收尾为包含本记录的提交（不嵌入自身 SHA） |
+| 0038 | 小红书实况照片 | 冻结的离线实况照片范围已完成；锁定 store `live_photo.stream.h264[0].master_url` 捕获 shim、MIXED 一图一视频物化、creator 回退形状绑定、零工作重放的 Emby 带海报剧集发布；专项 355 项、detail 契约 116 项、完整套件 2032 项通过且 1 项跳过；全部真人行保持 `NOT_RUN` | 计划 `650c256`；实现 `8c80073`；收尾为包含本记录的提交（不嵌入自身 SHA） |
 
 执行 0005 只验收 mock、夹具与本地文件系统契约。下载器以 I/O scope 哈希、本地 OS 锁及租约/generation CAS 协调单个资产 generation，并能恢复先于数据库收尾完成的归档提交。组合 API/access key 变体及带凭据的 URL 路径会在落点被移除，但普通 `key` 字段不会被误判；direct/source hint 持久化与 `0003` legacy 回填同样拒绝这类路径。Emby 发布器通过持久数据库 Job predecessor chain 及精确 source/tree/manifest 身份确定受管所有权；磁盘 manifest 不能自行建立所有权。`0003 → 0002 → 0003` 往返会移除 generation-bound 下载身份及不可恢复的未成功 Emby 身份，同时保留已成功发布链与结构有效的发布 intent 恢复状态。最终根任务通过 540 项测试，分支感知覆盖率为 79%，全部专项、构建/打包检查及保留 SQLite/归档/导出/运维产物的零匹配扫描均通过。在 0005 边界，调度/API 与生产打包均处于延期状态；执行 0006 现在只补齐调度器的离线/Fake 切片。七平台真人登录/同步/CDN 下载及真实 Emby/Jellyfin 扫描/播放继续为 `NOT_RUN`；不可用的 refresh、平台衍生物、API 与生产打包属于未实现或延期范围，而不是 `NOT_RUN`。
 
@@ -130,6 +131,8 @@
 执行 0036 计划 `1ad49a7`、实现 `72e9f62` 增加微博视频封面：shim 只与可捕获视频（标量或 `playback_list`）一同捕获封闭的 `page_info.pic_info.pic_big.url`，新的私有 `{"url"}` 字段以严格防碰撞与递归移除跨越边界，`_normalize_wb` 物化 `{note_id}:cover:0` COVER 资产且 WB COVER 加入适配器刷新支持集合。生产级双资产 SQLite → 刷新 → 下载 → 归档 → Emby poster 组合通过，零工作重放且不保留签名。专项回归 341 项、完整套件 2016 项通过且 1 项跳过（370.47 秒），全部质量/构建/文档/上游门通过。其他封面尺寸及全部真人行继续延期或保持 `NOT_RUN`。详见 [`executions/0036-weibo-video-poster/`](executions/0036-weibo-video-poster/)。
 
 执行 0037 计划 `d858147`、实现 `c5682e5` 把锁定的小红书逗号拼接 `video_url` 标量冻结为有界 1–16 有序多视频形状：`_normalize_xhs` 隔离超界记录，`_validated_xhs_media_scalar` 接受有界互异元组，`_validate_xhs_creator_video_target` 绑定完整 fresh 视频元组（数量、position 0..N-1、精确 URL 顺序）。一个 0018 时代的拒绝参数被替换为逐 position 接受与漂移覆盖。双视频集成 note 双 position 下载、归档不同摘要并发布两个 Emby 集，零工作重放。专项回归 344 项、完整套件 2020 项通过且 1 项跳过（370.56 秒），全部质量/构建/文档/上游门通过。实况照片及全部真人行继续延期或保持 `NOT_RUN`。详见 [`executions/0037-xhs-multi-video/`](executions/0037-xhs-multi-video/)。
+
+执行 0038 计划 `650c256`、实现 `8c80073` 增加首个小红书实况照片切片：新的锁定 store shim 为恰一张图的 `type="normal"` note 捕获冻结的 `image_list[0].live_photo.stream.h264[0].master_url`，`_normalize_xhs` 物化为一图加一视频的 MIXED，creator 回退绑定精确无歧义形状。共享 fake fixture 补齐 shim 所需最小 store 模块。生产级双资产组合双下载、归档不同摘要并发布带 poster 的 Emby 集，零工作重放。专项回归 355 项、完整套件 2032 项通过且 1 项跳过（371.84 秒），全部质量/构建/文档/上游门通过。多图实况 gallery 及全部真人行继续延期或保持 `NOT_RUN`。详见 [`executions/0038-xhs-live-photo/`](executions/0038-xhs-live-photo/)。
 ## 文档规则
 
 每个里程碑开始前创建 `goal.md`/`plan.md`（英文）与 `goal.zh.md`/`plan.zh.md`（中文）；实现期间持续更新 `progress.md` 与 `progress.zh.md`；提交前把准确命令、退出码和关键输出写入 `verification.md` 与 `verification.zh.md`。两个语言版本必须结构一致、同步维护：任何一版都不得声明另一版没有的内容，语言切换链接必须指向对应版本。旧混排布局的一次性迁移工具是 [`scripts/split_bilingual_docs.pl`](../scripts/split_bilingual_docs.pl)。任何密钥、Cookie 或个人账户数据都不得进入文档。

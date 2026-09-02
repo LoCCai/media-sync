@@ -6,8 +6,8 @@
 - Date: 2026-09-03
 - Predecessor: Execution 0037 closeout `b9c88c4afab6ba2d9d2a43efea63f63cd6cd31ca`
 - Scope: One ordinary XHS `type="normal"` note whose single `image_list` entry carries a live photo, capturing the discarded H.264 master stream at the pinned store boundary and delivering one IMAGE plus one playable VIDEO
-- Plan commit: recorded in the closeout index; never embedded in this file
-- Implementation commit: recorded in the closeout index; never embedded in this file
+- Plan commit: `650c256`
+- Implementation commit: `8c80073`
 
 ## Outcome
 
