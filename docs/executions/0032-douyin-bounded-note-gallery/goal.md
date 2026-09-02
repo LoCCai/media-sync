@@ -6,8 +6,8 @@
 - Date: 2026-09-02
 - Predecessor: Execution 0031 closeout `2e9e3b5378dd8966f56e068dced5f799e115f92b`
 - Scope: One ordinary numeric-ID Douyin note whose pinned store joins an ordered note-image list into the scalar `note_download_url`, delivered as a bounded IMAGE/GALLERY content with per-image adapter refresh, static probing and Emby publication
-- Plan commit: recorded in the closeout index; never embedded in this file
-- Implementation commit: recorded in the closeout index; never embedded in this file
+- Plan commit: `286dac9b78710c8fd99e9ec8f260d0fac6d4f5ac`
+- Implementation commit: `95758c2e6b3623a02f3a035590934da816e3cc6f`
 
 ## Outcome
 
