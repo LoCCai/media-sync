@@ -6,8 +6,8 @@
 - Date: 2026-09-03
 - Predecessor: Execution 0035 closeout `5a27e99949c54a5032454d91b8809d28afad7086`
 - Scope: The poster of an ordinary original Weibo video post — `page_info.pic_info` — captured alongside the 0031/0035 stream URL and delivered as one COVER asset with adapter refresh and Emby poster publication
-- Plan commit: recorded in the closeout index; never embedded in this file
-- Implementation commit: recorded in the closeout index; never embedded in this file
+- Plan commit: `1ad49a7`
+- Implementation commit: `72e9f62`
 
 ## Outcome
 

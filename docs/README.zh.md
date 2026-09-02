@@ -55,6 +55,7 @@
 | 0033 | 知乎回答有界图集 | 冻结的离线回答图集范围已完成；2–64 张有序静态图在 extractor 边界捕获为完整元组、v1 单图字节级兼容、兄弟提示刷新绑定关闭漂移、静态 PNG 门与零工作重放的 Emby poster/backdrop/gallery 发布；专项 538 项、完整套件 1984 项通过且 1 项跳过；全部真人行保持 `NOT_RUN` | 计划 `92651bc`；实现 `966ccef`；收尾为包含本记录的提交（不嵌入自身 SHA） |
 | 0034 | 快手有界图集 | 冻结的离线图集范围已完成；锁定 store `atlas.pics[].cdn` 捕获 shim 加封闭校验器、带有序 `{video_id}:image:N` 资产的 IMAGE/GALLERY 物化、逐 position 适配器刷新、静态 PNG/JPEG 门与零工作重放的 Emby 双图 gallery 发布；专项 445 项、detail 契约 106 项、完整套件 2002 项通过且 1 项跳过；全部真人行保持 `NOT_RUN` | 计划 `eeff45e`；实现 `26c2b3e`；收尾为包含本记录的提交（不嵌入自身 SHA） |
 | 0035 | 微博 playback_list 画质选择 | 冻结的离线画质选择范围已完成；1–8 项有界列表在 0031 校验器上按封闭 `1080p > 720p > 540p > 480p > 360p` 偏好选择，标量优先保持，不可用形状不捕获；专项 451 项、微博管线 4 项、完整套件 2010 项通过且 1 项跳过；全部真人行保持 `NOT_RUN` | 计划 `ecc08da`；实现 `f2f4bc9`；收尾为包含本记录的提交（不嵌入自身 SHA） |
+| 0036 | 微博视频封面 | 冻结的离线视频封面范围已完成；封闭 `pic_info.pic_big.url` 与标量/playback 视频一同捕获、`{note_id}:cover:0` COVER 资产带 WB COVER 适配器刷新、零工作重放的 Emby 剧 poster 发布；专项 341 项、完整套件 2016 项通过且 1 项跳过；全部真人行保持 `NOT_RUN` | 计划 `1ad49a7`；实现 `72e9f62`；收尾为包含本记录的提交（不嵌入自身 SHA） |
 
 执行 0005 只验收 mock、夹具与本地文件系统契约。下载器以 I/O scope 哈希、本地 OS 锁及租约/generation CAS 协调单个资产 generation，并能恢复先于数据库收尾完成的归档提交。组合 API/access key 变体及带凭据的 URL 路径会在落点被移除，但普通 `key` 字段不会被误判；direct/source hint 持久化与 `0003` legacy 回填同样拒绝这类路径。Emby 发布器通过持久数据库 Job predecessor chain 及精确 source/tree/manifest 身份确定受管所有权；磁盘 manifest 不能自行建立所有权。`0003 → 0002 → 0003` 往返会移除 generation-bound 下载身份及不可恢复的未成功 Emby 身份，同时保留已成功发布链与结构有效的发布 intent 恢复状态。最终根任务通过 540 项测试，分支感知覆盖率为 79%，全部专项、构建/打包检查及保留 SQLite/归档/导出/运维产物的零匹配扫描均通过。在 0005 边界，调度/API 与生产打包均处于延期状态；执行 0006 现在只补齐调度器的离线/Fake 切片。七平台真人登录/同步/CDN 下载及真实 Emby/Jellyfin 扫描/播放继续为 `NOT_RUN`；不可用的 refresh、平台衍生物、API 与生产打包属于未实现或延期范围，而不是 `NOT_RUN`。
 
@@ -124,6 +125,8 @@
 
 
 执行 0035 计划 `ecc08da`、实现 `f2f4bc9` 为微博视频捕获扩展有界封闭 `playback_list` 回退：当标量 `stream_url` 缺失时，以封闭 `1080p > 720p > 540p > 480p > 360p` 偏好扫描 1–8 项列表，每个候选都经 0031 封闭校验器重校验，捕获最高的合法项；未知或缺失画质标签、无效 URL、超界列表与错误形状不捕获，标量路径保持第一且字节级兼容。真实子进程契约组合证明最高画质选择与关闭，集成组合证明 playback 来源帖与标量形状同样完成归一化、下载、归档与 Emby 发布并零工作重放。专项回归 451 项、完整套件 2010 项通过且 1 项跳过（360.55 秒），全部质量/构建/文档/上游门通过。杜比/Hi-Res 标签、封面及全部真人行继续延期或保持 `NOT_RUN`。详见 [`executions/0035-weibo-playback-list-quality/`](executions/0035-weibo-playback-list-quality/)。
+
+执行 0036 计划 `1ad49a7`、实现 `72e9f62` 增加微博视频封面：shim 只与可捕获视频（标量或 `playback_list`）一同捕获封闭的 `page_info.pic_info.pic_big.url`，新的私有 `{"url"}` 字段以严格防碰撞与递归移除跨越边界，`_normalize_wb` 物化 `{note_id}:cover:0` COVER 资产且 WB COVER 加入适配器刷新支持集合。生产级双资产 SQLite → 刷新 → 下载 → 归档 → Emby poster 组合通过，零工作重放且不保留签名。专项回归 341 项、完整套件 2016 项通过且 1 项跳过（370.47 秒），全部质量/构建/文档/上游门通过。其他封面尺寸及全部真人行继续延期或保持 `NOT_RUN`。详见 [`executions/0036-weibo-video-poster/`](executions/0036-weibo-video-poster/)。
 ## 文档规则
 
 每个里程碑开始前创建 `goal.md`/`plan.md`（英文）与 `goal.zh.md`/`plan.zh.md`（中文）；实现期间持续更新 `progress.md` 与 `progress.zh.md`；提交前把准确命令、退出码和关键输出写入 `verification.md` 与 `verification.zh.md`。两个语言版本必须结构一致、同步维护：任何一版都不得声明另一版没有的内容，语言切换链接必须指向对应版本。旧混排布局的一次性迁移工具是 [`scripts/split_bilingual_docs.pl`](../scripts/split_bilingual_docs.pl)。任何密钥、Cookie 或个人账户数据都不得进入文档。
