@@ -44,6 +44,7 @@ from media_sync.infrastructure.db.models import Asset, AssetRefreshSource, Autho
 from media_sync.integrations.mediacrawler.normalizers import (
     NormalizationContext,
     NormalizedMediaRecord,
+    QuarantineReason,
     normalize_jsonl_bytes,
 )
 from media_sync.integrations.mediacrawler.weibo_media import WEIBO_IMAGES_FIELD
@@ -370,6 +371,15 @@ def test_douyin_media_url_ephemera_are_removed_across_normalization_and_sqlite(
             "desc": "A sequence-shaped image field",
             "create_time": "1767225602",
             "aweme_url": "https://www.douyin.com/note/dy-image-001",
+            "note_download_url": [sequence_image_url],
+        },
+        {
+            "aweme_id": "dy-gallery-drift-001",
+            "aweme_type": "note",
+            "title": "Douyin gallery drift fixture",
+            "desc": "A drifted gallery sequence must quarantine, not drop items",
+            "create_time": "1767225604",
+            "aweme_url": "https://www.douyin.com/note/dy-gallery-drift-001",
             "note_download_url": [
                 sequence_image_url,
                 comma_drift_url,
@@ -399,7 +409,8 @@ def test_douyin_media_url_ephemera_are_removed_across_normalization_and_sqlite(
         ),
     )
 
-    assert not batch.quarantined
+    assert len(batch.quarantined) == 1
+    assert batch.quarantined[0].reason is QuarantineReason.INVALID_RECORD
     assert len(batch.records) == 4
     video, gallery, image, scalar_drift = batch.records
     assert tuple(asset.source_url for asset in video.assets) == (video_url, audio_url, cover_url)
@@ -426,12 +437,7 @@ def test_douyin_media_url_ephemera_are_removed_across_normalization_and_sqlite(
         "https://image.douyin.test/media/dy-gallery-001-0.jpg",
         "https://image.douyin.test/media/dy-gallery-001-1.jpg",
     )
-    assert image_record["note_download_url"] == (
-        "https://image.douyin.test/media/dy-image-001.jpg",
-        None,
-        None,
-        None,
-    )
+    assert image_record["note_download_url"] == ("https://image.douyin.test/media/dy-image-001.jpg",)
     assert scalar_drift_record["video_download_url"] is None
     for normalized in batch.records:
         assert normalized.author.raw == normalized.content.raw

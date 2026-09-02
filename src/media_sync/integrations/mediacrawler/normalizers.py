@@ -268,6 +268,35 @@ def _dy_url_list(value: object, *, allow_scalar_commas: bool) -> tuple[str, ...]
     return tuple(result)
 
 
+DY_NOTE_GALLERY_MAX = 64
+
+
+def _dy_note_images(value: object) -> tuple[str, ...]:
+    """Parse the frozen comma-joined Douyin note gallery all-or-nothing."""
+
+    if value is None or value == "":
+        return ()
+    if isinstance(value, str):
+        candidates: Sequence[object] = value.split(",")
+    elif isinstance(value, Sequence) and not isinstance(value, bytes | bytearray | str):
+        candidates = value
+    else:
+        raise RecordNormalizationError(QuarantineReason.INVALID_RECORD)
+    result: list[str] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        if not isinstance(candidate, str) or not candidate or "," in candidate:
+            raise RecordNormalizationError(QuarantineReason.INVALID_RECORD)
+        url = _safe_url(candidate)
+        if url is None or url in seen:
+            raise RecordNormalizationError(QuarantineReason.INVALID_RECORD)
+        seen.add(url)
+        result.append(url)
+    if not 1 <= len(result) <= DY_NOTE_GALLERY_MAX:
+        raise RecordNormalizationError(QuarantineReason.INVALID_RECORD)
+    return tuple(result)
+
+
 def _strip_private_media_fields(value: object) -> object:
     """Copy JSON-shaped input while recursively removing shim-only media fields."""
 
@@ -478,7 +507,7 @@ def _normalize_xhs(record: Mapping[str, object]) -> _ContentParts:
 
 def _normalize_dy(record: Mapping[str, object]) -> _ContentParts:
     remote_id = _required_id(record, "aweme_id")
-    images = _dy_url_list(record.get("note_download_url"), allow_scalar_commas=True)
+    images = _dy_note_images(record.get("note_download_url"))
     video = _dy_url_list(record.get("video_download_url"), allow_scalar_commas=False)
     audio = _dy_url_list(record.get("music_download_url"), allow_scalar_commas=False)
     cover = _dy_url_list(record.get("cover_url"), allow_scalar_commas=False)

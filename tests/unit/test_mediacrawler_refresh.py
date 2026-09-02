@@ -2232,3 +2232,57 @@ def test_weibo_video_refresh_rejects_hint_or_identity_drift() -> None:
         MediaCrawlerLocatorRefresher(context, missing_runner, clock=lambda: NOW).resolve(context.locator)
 
     assert caught.value.code == "locator_refresh_asset_mismatch"
+
+
+DY_GALLERY_FIRST = "https://image.example.test/dy/gallery-first.png?sign=dy-gallery-first-sentinel"
+DY_GALLERY_SECOND = "https://image.example.test/dy/gallery-second.png?sign=dy-gallery-second-sentinel"
+
+
+def _dy_gallery_record() -> dict[str, object]:
+    return {
+        "aweme_id": "7525082444551310602",
+        "title": "gallery",
+        "desc": "gallery",
+        "aweme_url": "https://www.douyin.com/video/7525082444551310602",
+        "cover_url": "https://i.example.test/dy/cover.jpg?sign=dy-cover-sentinel",
+        "video_download_url": "",
+        "music_download_url": "",
+        "note_download_url": f"{DY_GALLERY_FIRST},{DY_GALLERY_SECOND}",
+    }
+
+
+@pytest.mark.parametrize("position", [0, 1])
+def test_douyin_note_gallery_refresh_resolves_each_position(position: int) -> None:
+    signed_url = DY_GALLERY_FIRST if position == 0 else DY_GALLERY_SECOND
+    context = _context(
+        platform=Platform.DY,
+        content_id="7525082444551310602",
+        kind=AssetKind.IMAGE,
+        position=position,
+        signed_url=signed_url,
+    )
+    runner = _FakeDetailRunner(_jsonl(_dy_gallery_record()))
+
+    resolved = MediaCrawlerLocatorRefresher(context, runner, clock=lambda: NOW).resolve(context.locator)
+
+    assert resolved.url == signed_url
+    assert resolved.request_profile is MediaRequestProfile.DEFAULT
+    assert "sentinel" not in repr(resolved)
+
+
+def test_douyin_note_gallery_refresh_rejects_position_path_drift() -> None:
+    context = _context(
+        platform=Platform.DY,
+        content_id="7525082444551310602",
+        kind=AssetKind.IMAGE,
+        position=1,
+        signed_url=DY_GALLERY_SECOND,
+    )
+    drifted = _dy_gallery_record()
+    drifted["note_download_url"] = f"{DY_GALLERY_FIRST},https://image.example.test/dy/replaced.png?sign=drift"
+    runner = _FakeDetailRunner(_jsonl(drifted))
+
+    with pytest.raises(MediaDownloadError) as caught:
+        MediaCrawlerLocatorRefresher(context, runner, clock=lambda: NOW).resolve(context.locator)
+
+    assert caught.value.code == "locator_refresh_asset_mismatch"

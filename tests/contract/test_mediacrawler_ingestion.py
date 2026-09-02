@@ -1265,3 +1265,67 @@ def test_reader_rejects_symbolic_link_sources(tmp_path: Path) -> None:
     with pytest.raises(JsonlSourceError) as raised:
         read_jsonl(link)
     assert raised.value.code == "symlink_not_allowed"
+
+
+@pytest.mark.parametrize(
+    ("image_count", "expected_kind"),
+    [(1, ContentKind.IMAGE), (2, ContentKind.GALLERY), (64, ContentKind.GALLERY)],
+)
+def test_douyin_note_gallery_materializes_bounded_ordered_image_assets(
+    image_count: int,
+    expected_kind: ContentKind,
+) -> None:
+    payload = source_record("dy/contents.v1.jsonl")
+    urls = [f"https://image.example.test/dy/gallery-{index}.jpg" for index in range(image_count)]
+    payload["note_download_url"] = ",".join(urls)
+
+    item = normalize_record(payload, context(Platform.DY))
+
+    assert item.content.kind is expected_kind
+    images = tuple(asset for asset in item.assets if asset.kind is AssetKind.IMAGE)
+    assert tuple(asset.position for asset in images) == tuple(range(image_count))
+    assert tuple(asset.remote_id for asset in images) == tuple(
+        f"dy-gallery-001:image:{position}" for position in range(image_count)
+    )
+    assert tuple(asset.source_url for asset in images) == tuple(urls)
+    assert [asset.kind for asset in item.assets if asset.kind is not AssetKind.IMAGE] == [
+        AssetKind.AUDIO,
+        AssetKind.COVER,
+    ]
+
+
+@pytest.mark.parametrize(
+    "note_value",
+    [
+        pytest.param(
+            ",".join(f"https://image.example.test/dy/over-{index}.jpg" for index in range(65)), id="above-bound"
+        ),
+        pytest.param("https://image.example.test/dy/first.jpg,https://image.example.test/dy/first.jpg", id="duplicate"),
+        pytest.param("https://image.example.test/dy/first.jpg,not-a-url", id="invalid-item"),
+        pytest.param(
+            "https://image.example.test/dy/first.jpg,,https://image.example.test/dy/second.jpg", id="empty-item"
+        ),
+        pytest.param(["https://image.example.test/dy/first.jpg", 42], id="non-string-item"),
+        pytest.param(
+            ["https://image.example.test/dy/first.jpg,https://image.example.test/dy/second.jpg"], id="embedded-comma"
+        ),
+        pytest.param(42, id="wrong-type"),
+    ],
+)
+def test_douyin_note_gallery_fails_closed_on_payload_drift(note_value: object) -> None:
+    payload = source_record("dy/contents.v1.jsonl")
+    payload["note_download_url"] = note_value
+
+    with pytest.raises(RecordNormalizationError):
+        normalize_record(payload, context(Platform.DY))
+
+
+def test_douyin_note_gallery_empty_field_keeps_the_frozen_video_fallback() -> None:
+    payload = source_record("dy/contents.v1.jsonl")
+    payload["note_download_url"] = ""
+
+    item = normalize_record(payload, context(Platform.DY))
+
+    assert item.content.kind is ContentKind.VIDEO
+    assert [asset.kind for asset in item.assets] == [AssetKind.VIDEO, AssetKind.AUDIO, AssetKind.COVER]
+    assert item.assets[0].source_url == "https://cdn.example.invalid/dy/not-playable.mp4"

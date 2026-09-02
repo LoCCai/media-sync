@@ -701,3 +701,228 @@ def test_douyin_single_video_and_cover_reach_emby_without_persisting_signed_quer
     sqlite_artifacts = [path for path in tmp_path.glob(f"{database_path.name}*") if path.is_file()]
     assert sqlite_artifacts
     _assert_ephemeral_values_absent(*sqlite_artifacts)
+
+
+GALLERY_FIRST_HINT = "https://gallery-image.example.test/douyin/first.png"
+GALLERY_SECOND_HINT = "https://gallery-image.example.test/douyin/second.png"
+GALLERY_DETAIL_SENTINEL = "EXECUTION-0032-" + "GALLERY-SIGNATURE-MUST-STAY-EPHEMERAL"
+GALLERY_FIRST_DETAIL = f"{GALLERY_FIRST_HINT}?x-bogus={GALLERY_DETAIL_SENTINEL}&size=large"
+GALLERY_SECOND_DETAIL = f"{GALLERY_SECOND_HINT}?x-bogus={GALLERY_DETAIL_SENTINEL}&size=large"
+GALLERY_PNGS = (
+    b"\x89PNG\r\n\x1a\n" + b"execution-0032-offline-douyin-gallery-first",
+    b"\x89PNG\r\n\x1a\n" + b"execution-0032-offline-douyin-gallery-second",
+)
+
+
+def _douyin_gallery_record(*, first: str, second: str) -> dict[str, object]:
+    return {
+        "aweme_id": CONTENT_ID,
+        "aweme_type": "150",
+        "aweme_url": f"https://www.douyin.com/video/{CONTENT_ID}",
+        "cover_url": "",
+        "creator_hash": "untrusted-douyin-creator",
+        "desc": "Execution 0032 ordinary Douyin note gallery.",
+        "music_download_url": "",
+        "nickname": "Untrusted nickname",
+        "note_download_url": f"{first},{second}",
+        "title": "Offline Douyin note gallery",
+        "video_download_url": "",
+    }
+
+
+GALLERY_FORWARD_JSONL = _jsonl(
+    _douyin_gallery_record(
+        first=f"{GALLERY_FIRST_HINT}?x-bogus=forward-gallery-v1",
+        second=f"{GALLERY_SECOND_HINT}?x-bogus=forward-gallery-v1",
+    )
+)
+GALLERY_DETAIL_JSONL = _jsonl(_douyin_gallery_record(first=GALLERY_FIRST_DETAIL, second=GALLERY_SECOND_DETAIL))
+
+
+class _GalleryDetailRunner:
+    instances: ClassVar[list[_GalleryDetailRunner]] = []
+
+    def __init__(self, **kwargs: object) -> None:
+        self.constructor_kwargs = kwargs
+        self.calls: list[MediaCrawlerDetailRequest] = []
+        type(self).instances.append(self)
+
+    def run(self, request: MediaCrawlerDetailRequest) -> MediaCrawlerDetailResult:
+        self.calls.append(request)
+        return MediaCrawlerDetailResult(GALLERY_DETAIL_JSONL, UPSTREAM_SHA)
+
+
+def test_douyin_note_gallery_reaches_emby_without_persisting_signed_queries(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database_path = tmp_path / "douyin-gallery.sqlite3"
+    database_url = f"sqlite+pysqlite:///{database_path.as_posix()}"
+    archive_root = tmp_path / "archive"
+    library_root = tmp_path / "library"
+    runtime_root = tmp_path / "mediacrawler-runtime"
+    download_work_root = tmp_path / "download-work"
+    export_work_root = tmp_path / "export-work"
+    runtime_root.mkdir()
+    upgrade_database(database_url)
+    database = Database(database_url)
+    _GalleryDetailRunner.instances = []
+    monkeypatch.setattr(mediacrawler_runtime, "MediaCrawlerDetailProcessRunner", _GalleryDetailRunner)
+
+    try:
+        seed = _seed_subscription(database)
+        normalized = normalize_jsonl_bytes(GALLERY_FORWARD_JSONL, _normalization_context())
+        assert not normalized.quarantined and not normalized.truncated_tail
+        assert len(normalized.records) == 1
+        record = normalized.records[0]
+        assert record.content.kind is ContentKind.GALLERY
+        assert [(asset.kind, asset.position, asset.remote_id) for asset in record.assets] == [
+            (AssetKind.IMAGE, 0, f"{CONTENT_ID}:image:0"),
+            (AssetKind.IMAGE, 1, f"{CONTENT_ID}:image:1"),
+        ]
+
+        run_id = _start_ingesting_run(database, seed.subscription_id)
+        ingestion = MediaCrawlerIngestionService(database).ingest(
+            normalized.records,
+            subscription_id=seed.subscription_id,
+            run_id=run_id,
+            expected_revision=0,
+            mode=IngestionMode.FORWARD,
+        )
+        assert (ingestion.accepted_count, ingestion.discovered_count, ingestion.asset_count) == (1, 1, 2)
+
+        with database.session() as session:
+            assets = tuple(session.scalars(select(Asset).order_by(Asset.position, Asset.id)).all())
+            assert tuple(asset.source_url for asset in assets) == (GALLERY_FIRST_HINT, GALLERY_SECOND_HINT)
+            asset_ids = [UUID(asset.id) for asset in assets]
+
+        resolver = _RecordingPublicResolver()
+        requests: list[httpx.Request] = []
+        payloads = {GALLERY_FIRST_DETAIL: GALLERY_PNGS[0], GALLERY_SECOND_DETAIL: GALLERY_PNGS[1]}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            url = str(request.url)
+            assert url in payloads
+            assert set(request.headers) == {"accept", "accept-encoding", "connection", "host", "user-agent"}
+            assert request.headers["accept-encoding"] == "identity"
+            assert "cookie" not in request.headers
+            assert "authorization" not in request.headers
+            assert "referer" not in request.headers
+            assert "origin" not in request.headers
+            payload = payloads[url]
+            return httpx.Response(
+                200,
+                headers={
+                    "Content-Length": str(len(payload)),
+                    "Content-Type": "image/png",
+                    "ETag": f'"execution-0032-gallery-{url.rsplit("/", 1)[-1].split(".")[0]}"',
+                },
+                content=payload,
+            )
+
+        harnesses = []
+        for index, asset_id in enumerate(asset_ids):
+            harnesses.append(
+                _download_harness(
+                    database,
+                    asset_id=asset_id,
+                    subscription_id=UUID(seed.subscription_id),
+                    worker_id=f"execution-0032-gallery-download-{index}",
+                    tmp_path=tmp_path,
+                    runtime_root=runtime_root,
+                    download_work_root=download_work_root,
+                    archive_root=archive_root,
+                    http=SafeHttpClient(
+                        resolver,
+                        transport_factory=lambda _target: httpx.MockTransport(handler),
+                    ),
+                    probe=_ControlledMp4Probe(),
+                )
+            )
+
+        downloaded = [harness.service.run(harness.request) for harness in harnesses]
+
+        assert [result.disposition for result in downloaded] == ["downloaded", "downloaded"]
+        assert [result.mime_type for result in downloaded] == ["image/png", "image/png"]
+        assert [result.archive_path.read_bytes() for result in downloaded] == list(GALLERY_PNGS)
+        assert [result.checksum_sha256 for result in downloaded] == [
+            hashlib.sha256(payload).hexdigest() for payload in GALLERY_PNGS
+        ]
+        assert [str(request.url) for request in requests] == [GALLERY_FIRST_DETAIL, GALLERY_SECOND_DETAIL]
+        assert resolver.calls == [("gallery-image.example.test", 443)] * 2
+        assert [harness.refresher.results[0].url for harness in harnesses] == [
+            GALLERY_FIRST_DETAIL,
+            GALLERY_SECOND_DETAIL,
+        ]
+        assert len(_GalleryDetailRunner.instances) == 2
+        assert all(len(runner.calls) == 1 for runner in _GalleryDetailRunner.instances)
+        assert GALLERY_DETAIL_SENTINEL not in repr(harnesses[0].refresher.results[0])
+
+        export_service = EmbyExportService(
+            database,
+            EmbyExporter(library_root, staging_root=export_work_root),
+            clock=lambda: FIXED_AT,
+        )
+        exported = export_service.export_author(
+            EmbyExportRequest(seed.author_id, "execution-0032-export", lease_seconds=60)
+        )
+        assert exported.already_exported is False
+        author_directory = library_root / exported.output_path
+        poster = next(author_directory.glob("Season */*-poster.png"))
+        backdrop = next(author_directory.glob("Season */*-backdrop.png"))
+        gallery = tuple(sorted(author_directory.glob("Season */*.assets/gallery-*.png")))
+        assert len(gallery) == 2
+        assert poster.read_bytes() == GALLERY_PNGS[0]
+        assert backdrop.read_bytes() == GALLERY_PNGS[1]
+        assert tuple(path.read_bytes() for path in gallery) == GALLERY_PNGS
+        assert (author_directory / "tvshow.nfo").is_file()
+        assert next(author_directory.glob("Season */*.nfo")).is_file()
+
+        archive_tree = _tree(archive_root)
+        library_tree = _tree(author_directory)
+        replayed = [harness.service.run(harness.request) for harness in harnesses]
+        replayed_export = export_service.export_author(
+            EmbyExportRequest(seed.author_id, "execution-0032-export-replay", lease_seconds=60)
+        )
+        assert [result.disposition for result in replayed] == ["already_verified", "already_verified"]
+        assert replayed_export.already_exported is True
+        assert len(requests) == 2
+        assert all(len(runner.calls) == 1 for runner in _GalleryDetailRunner.instances)
+        assert _tree(archive_root) == archive_tree
+        assert _tree(author_directory) == library_tree
+
+        with database.session() as session:
+            persisted = tuple(session.scalars(select(Asset).order_by(Asset.position, Asset.id)).all())
+            assert tuple(asset.status for asset in persisted) == ("verified", "verified")
+            assert tuple(asset.source_url for asset in persisted) == (
+                GALLERY_FIRST_HINT,
+                GALLERY_SECOND_HINT,
+            )
+            durable = json.dumps(
+                {
+                    "assets": [
+                        {"locator": asset.locator, "raw": asset.raw, "source_url": asset.source_url}
+                        for asset in persisted
+                    ],
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+            assert GALLERY_DETAIL_SENTINEL not in durable
+            assert GALLERY_FIRST_DETAIL not in durable and GALLERY_SECOND_DETAIL not in durable
+
+        forbidden_roots = (runtime_root, download_work_root, archive_root, export_work_root, library_root)
+        for value in (GALLERY_DETAIL_SENTINEL, GALLERY_FIRST_DETAIL, GALLERY_SECOND_DETAIL):
+            assert all(
+                value.encode() not in payload
+                for root in forbidden_roots
+                for payload in ({root.name: root.read_bytes()} if root.is_file() else _tree(root)).values()
+            )
+    finally:
+        database.dispose()
+
+    sqlite_artifacts = [path for path in tmp_path.glob(f"{database_path.name}*") if path.is_file()]
+    assert sqlite_artifacts
+    for value in (GALLERY_DETAIL_SENTINEL, GALLERY_FIRST_DETAIL, GALLERY_SECOND_DETAIL):
+        assert all(value.encode() not in path.read_bytes() for path in sqlite_artifacts if path.is_file())
