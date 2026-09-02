@@ -6,8 +6,8 @@
 - Date: 2026-09-03
 - Predecessor: Execution 0034 closeout `3cdd0fc` (push pending network recovery)
 - Scope: Weibo video posts whose `media_info` carries a `playback_list` instead of the 0031 scalar `stream_url`, resolved through one closed quality preference
-- Plan commit: recorded in the closeout index; never embedded in this file
-- Implementation commit: recorded in the closeout index; never embedded in this file
+- Plan commit: `ecc08dab850a1e9b4007b4758e7d225f2f7aed15`
+- Implementation commit: `f2f4bc91790fd0cad30a86a644920824ca03a049`
 
 ## Outcome
 
