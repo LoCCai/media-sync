@@ -1,10 +1,11 @@
-"""Task-local capture of image locators discarded by pinned MediaCrawler.
+"""Task-local capture of image and video locators discarded by pinned MediaCrawler.
 
 The locked Weibo store flattens a raw ``mblog`` before writing JSONL and does
-not retain ``pics``.  This shim wraps that exact store boundary: raw images are
-validated while ``update_weibo_note`` is active, then copied into the matching
-JSONL content record under one media-sync-owned private field.  A ContextVar
-keeps concurrently scheduled upstream note tasks isolated.
+not retain ``pics`` or ``page_info``.  This shim wraps that exact store
+boundary: raw media are validated while ``update_weibo_note`` is active, then
+copied into the matching JSONL content record under one media-sync-owned
+private field.  A ContextVar keeps concurrently scheduled upstream note tasks
+isolated.
 """
 
 from __future__ import annotations
@@ -20,6 +21,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 WEIBO_IMAGES_FIELD = "__media_sync_weibo_images_v1"
+WEIBO_VIDEO_FIELD = "__media_sync_weibo_video_v1"
 
 _INSTALL_MARKER = "__media_sync_weibo_media_capture_v1__"
 _MAX_NOTE_ID = 2**63 - 1
@@ -31,6 +33,7 @@ _HOST = re.compile(
 )
 _FILENAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._~-]{0,254}\Z", re.ASCII)
 _STATIC_IMAGE_EXTENSIONS = frozenset({".jpeg", ".jpg", ".png", ".webp"})
+_VIDEO_HOSTS = frozenset({"sinaimg.cn", "f.video.weibocdn.com"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,8 +42,19 @@ class _CapturedImages:
     images: tuple[tuple[str, str], ...]
 
 
+@dataclass(frozen=True, slots=True)
+class _CapturedVideo:
+    note_id: str
+    url: str
+
+
 _ACTIVE_IMAGES: ContextVar[_CapturedImages | None] = ContextVar(
     "media_sync_weibo_images",
+    default=None,
+)
+
+_ACTIVE_VIDEO: ContextVar[_CapturedVideo | None] = ContextVar(
+    "media_sync_weibo_video",
     default=None,
 )
 
@@ -130,6 +144,71 @@ def _proxy_image_url(value: object) -> str | None:
     return f"https://i1.wp.com/{host}/large/{filename}"
 
 
+def _is_weibo_video_host(value: str) -> bool:
+    if value == "f.video.weibocdn.com":
+        return True
+    return value == "sinaimg.cn" or value.endswith(".sinaimg.cn")
+
+
+def validate_weibo_video_url(value: object) -> str:
+    """Validate one canonical signed Weibo stream URL without rewriting it."""
+
+    if not isinstance(value, str) or len(value) > 4_096 or value != value.strip():
+        raise ValueError("invalid Weibo video URL")
+    if "\\" in value or any(ord(character) < 0x20 or ord(character) == 0x7F for character in value):
+        raise ValueError("invalid Weibo video URL")
+    if any(character.isspace() for character in value):
+        raise ValueError("invalid Weibo video URL")
+    try:
+        parsed = urlsplit(value)
+        port = parsed.port
+        host = parsed.hostname
+    except ValueError as exc:
+        raise ValueError("invalid Weibo video URL") from exc
+    if (
+        parsed.scheme != "https"
+        or host is None
+        or not _is_weibo_video_host(host)
+        or parsed.username is not None
+        or parsed.password is not None
+        or port is not None
+        or parsed.fragment
+    ):
+        raise ValueError("invalid Weibo video URL")
+    segments = parsed.path.split("/")
+    if len(segments) < 3 or any(not segment for segment in segments[1:]):
+        raise ValueError("invalid Weibo video URL")
+    filename = segments[-1]
+    if _FILENAME.fullmatch(filename) is None or not filename.lower().endswith(".mp4"):
+        raise ValueError("invalid Weibo video URL")
+    return value
+
+
+def _capture_video(note_item: object) -> _CapturedVideo | None:
+    if not isinstance(note_item, Mapping):
+        return None
+    mblog = note_item.get("mblog")
+    if not isinstance(mblog, Mapping):
+        return None
+    note_id = mblog.get("id")
+    if not is_weibo_numeric_note_id(note_id):
+        return None
+    assert isinstance(note_id, str)
+    if mblog.get("retweeted_status") is not None:
+        return None
+    page_info = mblog.get("page_info")
+    if not isinstance(page_info, Mapping) or page_info.get("page_type") != "video":
+        return None
+    media_info = page_info.get("media_info")
+    if not isinstance(media_info, Mapping):
+        return None
+    try:
+        url = validate_weibo_video_url(media_info.get("stream_url"))
+    except ValueError:
+        return None
+    return _CapturedVideo(note_id=note_id, url=url)
+
+
 def _capture_images(note_item: object) -> _CapturedImages | None:
     if not isinstance(note_item, Mapping):
         return None
@@ -192,22 +271,27 @@ def install_weibo_media_capture(checkout_root: Path) -> None:
 
     @wraps(update_note)
     async def update_with_images(note_item: object) -> Any:
-        token = _ACTIVE_IMAGES.set(_capture_images(note_item))
+        images_token = _ACTIVE_IMAGES.set(_capture_images(note_item))
+        video_token = _ACTIVE_VIDEO.set(_capture_video(note_item))
         try:
             return await update_note(note_item)
         finally:
-            _ACTIVE_IMAGES.reset(token)
+            _ACTIVE_VIDEO.reset(video_token)
+            _ACTIVE_IMAGES.reset(images_token)
 
     @wraps(store_content)
     async def store_with_images(instance: object, content_item: object) -> Any:
         if not isinstance(content_item, Mapping):
             return await store_content(instance, content_item)
-        if WEIBO_IMAGES_FIELD in content_item:
+        if WEIBO_IMAGES_FIELD in content_item or WEIBO_VIDEO_FIELD in content_item:
             raise RuntimeError("private Weibo media field collision")
         enriched = dict(content_item)
-        captured = _ACTIVE_IMAGES.get()
-        if captured is not None and enriched.get("note_id") == captured.note_id:
-            enriched[WEIBO_IMAGES_FIELD] = [{"pid": pid, "url": url} for pid, url in captured.images]
+        captured_images = _ACTIVE_IMAGES.get()
+        if captured_images is not None and enriched.get("note_id") == captured_images.note_id:
+            enriched[WEIBO_IMAGES_FIELD] = [{"pid": pid, "url": url} for pid, url in captured_images.images]
+        captured_video = _ACTIVE_VIDEO.get()
+        if captured_video is not None and enriched.get("note_id") == captured_video.note_id:
+            enriched[WEIBO_VIDEO_FIELD] = {"url": captured_video.url}
         return await store_content(instance, enriched)
 
     setattr(update_with_images, _INSTALL_MARKER, True)
@@ -218,7 +302,9 @@ def install_weibo_media_capture(checkout_root: Path) -> None:
 
 __all__ = [
     "WEIBO_IMAGES_FIELD",
+    "WEIBO_VIDEO_FIELD",
     "install_weibo_media_capture",
     "is_weibo_numeric_note_id",
     "is_weibo_proxy_image_url",
+    "validate_weibo_video_url",
 ]

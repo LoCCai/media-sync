@@ -65,8 +65,10 @@ from .tieba_media import (
 )
 from .weibo_media import (
     WEIBO_IMAGES_FIELD,
+    WEIBO_VIDEO_FIELD,
     is_weibo_numeric_note_id,
     is_weibo_proxy_image_url,
+    validate_weibo_video_url,
 )
 from .zhihu_media import (
     ZHIHU_IMAGE_FIELD,
@@ -91,6 +93,7 @@ _PRIVATE_MEDIA_FIELDS = frozenset(
         TIEBA_IMAGE_FIELD,
         TIEBA_IMAGES_FIELD,
         WEIBO_IMAGES_FIELD,
+        WEIBO_VIDEO_FIELD,
         ZHIHU_IMAGE_FIELD,
     }
 )
@@ -911,6 +914,34 @@ def _normalize_wb(record: Mapping[str, object]) -> _ContentParts:
     eligible_image_post = (
         is_weibo_numeric_note_id(remote_id) and record.get("retweeted_status") is None and page_info in (None, {})
     )
+    video_payload = record.get(WEIBO_VIDEO_FIELD)
+    if video_payload is not None:
+        if (
+            WEIBO_IMAGES_FIELD in record
+            or not is_weibo_numeric_note_id(remote_id)
+            or record.get("retweeted_status") is not None
+            or page_info not in (None, {})
+            or not isinstance(video_payload, Mapping)
+            or set(video_payload) != {"url"}
+        ):
+            raise RecordNormalizationError(QuarantineReason.INVALID_RECORD)
+        try:
+            video_urls: tuple[str, ...] = (validate_weibo_video_url(video_payload.get("url")),)
+        except ValueError as exc:
+            raise RecordNormalizationError(QuarantineReason.INVALID_RECORD) from exc
+        return _ContentParts(
+            remote_id=remote_id,
+            kind=ContentKind.VIDEO,
+            title=_summary(body),
+            body=body,
+            canonical_url=_safe_url(record.get("note_url")) or f"https://m.weibo.cn/detail/{remote_id}",
+            published_at=_published_at(record.get("create_time")),
+            metrics=_metrics(
+                record,
+                {"liked_count": "likes", "comments_count": "comments", "shared_count": "shares"},
+            ),
+            asset_groups=((AssetKind.VIDEO, video_urls),),
+        )
     images = _weibo_image_urls(record.get(WEIBO_IMAGES_FIELD)) if eligible_image_post else ()
     if len(images) > 1:
         kind = ContentKind.GALLERY

@@ -39,7 +39,7 @@ from media_sync.integrations.mediacrawler.tieba_media import (
     TIEBA_IMAGES_FIELD,
     TIEBA_MAX_GALLERY_IMAGES,
 )
-from media_sync.integrations.mediacrawler.weibo_media import WEIBO_IMAGES_FIELD
+from media_sync.integrations.mediacrawler.weibo_media import WEIBO_IMAGES_FIELD, WEIBO_VIDEO_FIELD
 from media_sync.integrations.mediacrawler.zhihu_media import ZHIHU_IMAGE_FIELD
 
 PINNED_SHA = "d6f7c5bb906b6dac40ddf343ef9e26438a3de092"
@@ -902,6 +902,81 @@ def test_weibo_nonordinary_or_noncanonical_posts_cannot_materialize_forged_image
     durable_record = item.content.raw["record"]
     assert isinstance(durable_record, Mapping)
     assert WEIBO_IMAGES_FIELD not in durable_record
+
+
+def test_weibo_private_video_capture_materializes_one_video_asset_without_persisting_the_shim_field() -> None:
+    video_url = "https://f.us.sinaimg.cn/o0/wb-ingest-video.mp4?KID=unistore,video&Expires=4102444800"
+    payload = source_record("wb/contents.v1.jsonl")
+    payload["note_id"] = "5123456789012345"
+    payload[WEIBO_VIDEO_FIELD] = {"url": video_url}
+    payload["future_nested_shape"] = {WEIBO_VIDEO_FIELD: {"url": video_url}}
+
+    item = normalize_record(payload, context(Platform.WB))
+
+    assert item.content.kind is ContentKind.VIDEO
+    assert len(item.assets) == 1
+    asset = item.assets[0]
+    assert asset.kind is AssetKind.VIDEO
+    assert asset.position == 0
+    assert asset.remote_id == "5123456789012345:video:0"
+    assert asset.source_url == video_url
+    assert asset.mime_type == "video/mp4"
+    durable_record = item.content.raw["record"]
+    assert isinstance(durable_record, Mapping)
+    assert WEIBO_VIDEO_FIELD not in durable_record
+    nested = durable_record["future_nested_shape"]
+    assert isinstance(nested, Mapping)
+    assert WEIBO_VIDEO_FIELD not in nested
+    assert asset.raw == item.content.raw
+
+
+@pytest.mark.parametrize(
+    "drift",
+    [
+        pytest.param("https://f.us.sinaimg.cn/o0/scalar.mp4?KID=unistore", id="scalar"),
+        pytest.param({"url": "https://f.us.sinaimg.cn/o0/extra.mp4", "future": "drift"}, id="extra-key"),
+        pytest.param({"url": "https://evil.example.test/o0/foreign.mp4?KID=unistore"}, id="foreign-host"),
+        pytest.param({"url": "https://f.us.sinaimg.cn/o0/not-mp4.flv?KID=unistore"}, id="not-mp4"),
+        pytest.param({"url": 42}, id="url-type"),
+        pytest.param({}, id="missing-url"),
+    ],
+)
+def test_weibo_private_video_capture_fails_closed_on_payload_drift(drift: object) -> None:
+    payload = source_record("wb/contents.v1.jsonl")
+    payload["note_id"] = "5123456789012345"
+    payload[WEIBO_VIDEO_FIELD] = drift
+
+    with pytest.raises(RecordNormalizationError):
+        normalize_record(payload, context(Platform.WB))
+
+
+@pytest.mark.parametrize(
+    "eligibility_drift",
+    [
+        pytest.param({"note_id": "wb-text-001"}, id="non-numeric-id"),
+        pytest.param({"note_id": "05123456789012345"}, id="non-canonical-numeric-id"),
+        pytest.param({"retweeted_status": {}}, id="retweet"),
+        pytest.param({"page_info": {"type": "video"}}, id="page-info"),
+    ],
+)
+def test_weibo_video_capture_rejects_ineligible_or_dual_field_posts(eligibility_drift: dict[str, object]) -> None:
+    payload = source_record("wb/contents.v1.jsonl")
+    payload["note_id"] = "5123456789012345"
+    payload.update(eligibility_drift)
+    payload[WEIBO_VIDEO_FIELD] = {"url": "https://f.us.sinaimg.cn/o0/forged.mp4?KID=unistore"}
+
+    with pytest.raises(RecordNormalizationError):
+        normalize_record(payload, context(Platform.WB))
+
+
+def test_weibo_video_and_image_private_fields_cannot_coexist() -> None:
+    payload = source_record("wb/contents.v1.jsonl")
+    payload["note_id"] = "5123456789012345"
+    payload[WEIBO_VIDEO_FIELD] = {"url": "https://f.us.sinaimg.cn/o0/both.mp4?KID=unistore"}
+    payload[WEIBO_IMAGES_FIELD] = [{"pid": "both", "url": "https://i1.wp.com/wx1.sinaimg.cn/large/both.jpg"}]
+
+    with pytest.raises(RecordNormalizationError):
+        normalize_record(payload, context(Platform.WB))
 
 
 @pytest.mark.parametrize(

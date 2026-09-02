@@ -28,7 +28,7 @@ from media_sync.integrations.mediacrawler.refresh import (
     MediaCrawlerRefreshContext,
 )
 from media_sync.integrations.mediacrawler.tieba_media import TIEBA_GALLERY_FIELD, TIEBA_IMAGE_FIELD, TIEBA_IMAGES_FIELD
-from media_sync.integrations.mediacrawler.weibo_media import WEIBO_IMAGES_FIELD
+from media_sync.integrations.mediacrawler.weibo_media import WEIBO_IMAGES_FIELD, WEIBO_VIDEO_FIELD
 from media_sync.integrations.mediacrawler.zhihu_media import ZHIHU_IMAGE_FIELD
 from media_sync.media import (
     AdapterRefreshLocator,
@@ -458,18 +458,23 @@ class FakeCrawler:
         profile = _profile()
         assert profile.name == "wb_user_data_dir"
         profile.mkdir(parents=True, exist_ok=True)
-        await weibo_store.update_weibo_note(
-            {
-                "mblog": {
-                    "id": "7525082444551310602",
-                    "text": "fixture image note",
-                    "pics": [
-                        {"pid": "firstPid", "url": "https://wx1.sinaimg.cn/orj360/first.jpg"},
-                        {"pid": "secondPid", "url": "https://wx2.sinaimg.cn/mw690/second.png"},
-                    ],
-                }
+        mblog = {
+            "id": "7525082444551310602",
+            "text": "fixture image note",
+        }
+        if __WB_VIDEO_URL__ is not None:
+            mblog["page_info"] = {
+                "page_type": __WB_PAGE_TYPE__,
+                "media_info": {"stream_url": __WB_VIDEO_URL__},
             }
-        )
+            if __WB_RETWEETED__:
+                mblog["retweeted_status"] = {"id": "7525082444551310599"}
+        else:
+            mblog["pics"] = [
+                {"pid": "firstPid", "url": "https://wx1.sinaimg.cn/orj360/first.jpg"},
+                {"pid": "secondPid", "url": "https://wx2.sinaimg.cn/mw690/second.png"},
+            ]
+        await weibo_store.update_weibo_note({"mblog": mblog})
 
 
 class CrawlerFactory:
@@ -914,6 +919,9 @@ def _fake_wb_checkout(
     root: Path,
     *,
     first_url: str = "https://wx1.sinaimg.cn/orj360/first.jpg",
+    video_url: str | None = None,
+    page_type: object = "video",
+    retweeted: bool = False,
 ) -> Path:
     checkout = root / "fake-mediacrawler-wb"
     (checkout / "config").mkdir(parents=True)
@@ -930,6 +938,9 @@ def _fake_wb_checkout(
             "https://wx1.sinaimg.cn/orj360/first.jpg",
             first_url,
         )
+        .replace("__WB_VIDEO_URL__", repr(video_url))
+        .replace("__WB_PAGE_TYPE__", repr(page_type))
+        .replace("__WB_RETWEETED__", repr(retweeted))
     )
     (checkout / "main.py").write_text(main_source, encoding="utf-8")
     return checkout.resolve()
@@ -1629,6 +1640,124 @@ def test_weibo_detail_capture_rejects_nonstatic_or_foreign_source(
     assert records[0]["note_id"] == CONTENT_ID
     assert WEIBO_IMAGES_FIELD not in records[0]
     assert list((tmp_path / "runtime" / "jobs").iterdir()) == []
+
+
+WB_VIDEO_URL = (
+    "https://f.us.sinaimg.cn/o0/wb-offline-video.mp4?KID=unistore,video&Expires=4102444800&ssig=wb-video-sentinel"
+)
+
+
+def test_weibo_video_detail_captures_stream_url_before_the_store_flattens_it(tmp_path: Path) -> None:
+    checkout = _fake_wb_checkout(tmp_path, video_url=WB_VIDEO_URL)
+    result = _wb_process_runner(tmp_path, checkout).run(
+        MediaCrawlerDetailRequest(
+            account_id=ACCOUNT_ID,
+            subscription_id=SUBSCRIPTION_ID,
+            platform=Platform.WB,
+            login_method=LoginMethod.QR,
+            content_remote_id=CONTENT_ID,
+            author_remote_id="creator-42",
+            watchdogs=WatchdogLimits(max_seconds=10, poll_seconds=0.01),
+        )
+    )
+
+    records = [json.loads(line) for line in result.jsonl.splitlines()]
+    assert records == [
+        {
+            "note_id": CONTENT_ID,
+            "content": "fixture image note",
+            "note_url": f"https://m.weibo.cn/detail/{CONTENT_ID}",
+            WEIBO_VIDEO_FIELD: {"url": WB_VIDEO_URL},
+        }
+    ]
+    assert list((tmp_path / "runtime" / "jobs").iterdir()) == []
+    retained = b"".join(path.read_bytes() for path in (tmp_path / "runtime").rglob("*") if path.is_file())
+    assert WB_VIDEO_URL.encode("utf-8") not in retained
+    assert b"wb-video-sentinel" not in retained
+
+
+@pytest.mark.parametrize(
+    ("page_type", "retweeted", "video_url"),
+    [
+        ("article", False, WB_VIDEO_URL),
+        ("video", True, WB_VIDEO_URL),
+        ("video", False, "https://evil.example.test/o0/foreign.mp4?KID=unistore"),
+        ("video", False, "https://f.us.sinaimg.cn/o0/not-mp4.flv?KID=unistore"),
+        (None, False, WB_VIDEO_URL),
+    ],
+)
+def test_weibo_video_detail_capture_closes_on_drifted_shapes(
+    tmp_path: Path,
+    page_type: object,
+    retweeted: bool,
+    video_url: str | None,
+) -> None:
+    assert video_url is not None
+    checkout = _fake_wb_checkout(
+        tmp_path,
+        video_url=video_url,
+        page_type=page_type,
+        retweeted=retweeted,
+    )
+    result = _wb_process_runner(tmp_path, checkout).run(
+        MediaCrawlerDetailRequest(
+            account_id=ACCOUNT_ID,
+            subscription_id=SUBSCRIPTION_ID,
+            platform=Platform.WB,
+            login_method=LoginMethod.QR,
+            content_remote_id=CONTENT_ID,
+            author_remote_id="creator-42",
+            watchdogs=WatchdogLimits(max_seconds=10, poll_seconds=0.01),
+        )
+    )
+
+    records = [json.loads(line) for line in result.jsonl.splitlines()]
+    assert len(records) == 1
+    assert records[0]["note_id"] == CONTENT_ID
+    assert WEIBO_VIDEO_FIELD not in records[0]
+    assert WEIBO_IMAGES_FIELD not in records[0]
+
+
+def test_weibo_video_refresher_resolves_one_fresh_ephemeral_locator(tmp_path: Path) -> None:
+    checkout = _fake_wb_checkout(tmp_path, video_url=WB_VIDEO_URL)
+    locator = AdapterRefreshLocator(
+        adapter="mediacrawler",
+        asset_key=stable_asset_key(
+            platform="wb",
+            content_remote_type="content",
+            content_remote_id=CONTENT_ID,
+            kind="video",
+            position=0,
+            remote_id=f"{CONTENT_ID}:video:0",
+        ),
+    )
+    context = MediaCrawlerRefreshContext(
+        asset_id=ASSET_ID,
+        account_id=ACCOUNT_ID,
+        subscription_id=SUBSCRIPTION_ID,
+        platform=Platform.WB,
+        login_method=LoginMethod.QR,
+        content_remote_type="content",
+        content_remote_id=CONTENT_ID,
+        author_remote_id="creator-42",
+        author_display_name="Fixture creator",
+        asset_remote_id=f"{CONTENT_ID}:video:0",
+        asset_kind=AssetKind.VIDEO,
+        asset_position=0,
+        source_hint="https://f.us.sinaimg.cn/o0/wb-offline-video.mp4",
+        locator=locator,
+        watchdogs=WatchdogLimits(max_seconds=10, poll_seconds=0.01),
+    )
+
+    resolved = MediaCrawlerLocatorRefresher(context, _wb_process_runner(tmp_path, checkout)).resolve(locator)
+
+    assert isinstance(resolved, ResolvedLocator)
+    assert resolved.url == WB_VIDEO_URL
+    assert resolved.request_profile is MediaRequestProfile.DEFAULT
+    assert "wb-video-sentinel" not in repr(resolved)
+    retained = b"".join(path.read_bytes() for path in (tmp_path / "runtime").rglob("*") if path.is_file())
+    assert WB_VIDEO_URL.encode("utf-8") not in retained
+    assert WEIBO_VIDEO_FIELD.encode("utf-8") not in retained
 
 
 @pytest.mark.parametrize(

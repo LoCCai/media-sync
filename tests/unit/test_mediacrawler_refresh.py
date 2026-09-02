@@ -32,7 +32,11 @@ from media_sync.integrations.mediacrawler.tieba_media import (
     TIEBA_IMAGES_FIELD,
     TIEBA_MAX_GALLERY_IMAGES,
 )
-from media_sync.integrations.mediacrawler.weibo_media import WEIBO_IMAGES_FIELD
+from media_sync.integrations.mediacrawler.weibo_media import (
+    WEIBO_IMAGES_FIELD,
+    WEIBO_VIDEO_FIELD,
+    validate_weibo_video_url,
+)
 from media_sync.integrations.mediacrawler.xhs_media import validate_xhs_video_url
 from media_sync.integrations.mediacrawler.zhihu_media import ZHIHU_IMAGE_FIELD
 from media_sync.media import (
@@ -325,17 +329,26 @@ def test_weibo_refresh_requires_exact_ordered_identity_and_source_hint(drift: st
     assert len(runner.calls) == 1
 
 
-def test_weibo_refresh_context_accepts_only_image_assets() -> None:
+def test_weibo_refresh_context_accepts_only_image_and_video_assets() -> None:
     with pytest.raises(MediaDownloadError) as caught:
         _context(
             platform=Platform.WB,
             content_id="5123456789012345",
-            kind=AssetKind.VIDEO,
+            kind=AssetKind.AUDIO,
             position=0,
-            signed_url="https://i1.wp.com/wx1.sinaimg.cn/large/not-video.jpg",
+            signed_url="https://f.us.sinaimg.cn/o0/not-audio.mp4?KID=unistore,video",
         )
 
     assert caught.value.code == "locator_refresh_unsupported"
+
+    video_context = _context(
+        platform=Platform.WB,
+        content_id="5123456789012345",
+        kind=AssetKind.VIDEO,
+        position=0,
+        signed_url="https://f.us.sinaimg.cn/o0/weibo-video.mp4?KID=unistore,video&Expires=4102444800",
+    )
+    assert video_context.detail_request().platform is Platform.WB
 
 
 def test_weibo_refresh_context_accepts_exact_plain_detail_reference() -> None:
@@ -2113,3 +2126,109 @@ def test_bilibili_multipart_flv_segments_bridge_binds_only_the_requested_cid() -
     assert isinstance(resolved, ResolvedFlvSegmentsLocator)
     assert resolved.source.segments[1].url == "https://v.example.test/bili/segment-1.mp4?signature=second-private"
     assert runner.calls[0].bili_video_cid == 97531
+
+
+WEIBO_VIDEO_URL = (
+    "https://f.us.sinaimg.cn/o0/weibo-offline.mp4?KID=unistore,video&Expires=4102444800&ssig=weibo-private"
+)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        WEIBO_VIDEO_URL,
+        "https://f.video.weibocdn.com/o0/alternate.mp4?KID=unistore,video",
+        "https://sinaimg.cn/o0/root-host.mp4",
+        "https://f.us.sinaimg.cn/o0/video.MP4?KID=unistore",
+    ],
+)
+def test_weibo_video_url_validator_accepts_the_closed_signed_shape(value: str) -> None:
+    assert validate_weibo_video_url(value) == value
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "not-a-url",
+        42,
+        None,
+        "http://f.us.sinaimg.cn/o0/insecure.mp4?KID=unistore",
+        "https://f.us.sinaimg.cn/weibo-offline.mp4?KID=unistore",
+        "https://f.us.sinaimg.cn/o0/video.flv?KID=unistore",
+        "https://evil.example.test/o0/weibo-offline.mp4?KID=unistore",
+        "https://f.us.sinaimg.cn/o0/weibo-offline.mp4?KID=unistore#fragment",
+        "https://user:pass@f.us.sinaimg.cn/o0/weibo-offline.mp4?KID=unistore",
+        "https://f.us.sinaimg.cn:8443/o0/weibo-offline.mp4?KID=unistore",
+        "https://f.us.sinaimg.cn/o0//double-slash.mp4",
+        "https://f.us.sinaimg.cn/o0/.dot.mp4",
+        f"https://f.us.sinaimg.cn/o0/{'x' * 300}.mp4",
+    ],
+)
+def test_weibo_video_url_validator_rejects_drifted_shapes(value: object) -> None:
+    with pytest.raises(ValueError, match="invalid Weibo video URL"):
+        validate_weibo_video_url(value)
+
+
+def test_weibo_video_refresh_resolves_the_fresh_signed_locator_in_memory() -> None:
+    context = _context(
+        platform=Platform.WB,
+        content_id="5123456789012345",
+        kind=AssetKind.VIDEO,
+        position=0,
+        signed_url=WEIBO_VIDEO_URL,
+    )
+    runner = _FakeDetailRunner(
+        _jsonl(
+            {
+                "note_id": "5123456789012345",
+                "content": "ordinary original weibo video",
+                WEIBO_VIDEO_FIELD: {"url": WEIBO_VIDEO_URL},
+            }
+        )
+    )
+
+    resolved = MediaCrawlerLocatorRefresher(context, runner, clock=lambda: NOW).resolve(context.locator)
+
+    assert resolved.url == WEIBO_VIDEO_URL
+    assert resolved.backup_urls == ()
+    assert resolved.request_profile is MediaRequestProfile.DEFAULT
+    assert runner.calls[0].bili_progressive_detail is False
+    assert "weibo-private" not in repr(resolved)
+
+
+def test_weibo_video_refresh_rejects_hint_or_identity_drift() -> None:
+    context = _context(
+        platform=Platform.WB,
+        content_id="5123456789012345",
+        kind=AssetKind.VIDEO,
+        position=0,
+        signed_url=WEIBO_VIDEO_URL,
+    )
+    drift_runner = _FakeDetailRunner(
+        _jsonl(
+            {
+                "note_id": "5123456789012345",
+                "content": "replaced video path",
+                WEIBO_VIDEO_FIELD: {"url": "https://f.us.sinaimg.cn/o0/replaced-path.mp4?KID=unistore"},
+            }
+        )
+    )
+
+    with pytest.raises(MediaDownloadError) as caught:
+        MediaCrawlerLocatorRefresher(context, drift_runner, clock=lambda: NOW).resolve(context.locator)
+
+    assert caught.value.code == "locator_refresh_asset_mismatch"
+
+    missing_runner = _FakeDetailRunner(
+        _jsonl(
+            {
+                "note_id": "5123456789012345",
+                "content": "video disappeared",
+            }
+        )
+    )
+
+    with pytest.raises(MediaDownloadError) as caught:
+        MediaCrawlerLocatorRefresher(context, missing_runner, clock=lambda: NOW).resolve(context.locator)
+
+    assert caught.value.code == "locator_refresh_asset_mismatch"

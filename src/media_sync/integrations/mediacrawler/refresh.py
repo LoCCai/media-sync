@@ -477,7 +477,7 @@ def _supported_kinds(platform: Platform) -> frozenset[AssetKind]:
         Platform.DY: frozenset({AssetKind.IMAGE, AssetKind.VIDEO, AssetKind.AUDIO, AssetKind.COVER}),
         Platform.KS: frozenset({AssetKind.VIDEO, AssetKind.COVER}),
         Platform.BILI: frozenset({AssetKind.VIDEO, AssetKind.COVER}),
-        Platform.WB: frozenset({AssetKind.IMAGE}),
+        Platform.WB: frozenset({AssetKind.IMAGE, AssetKind.VIDEO}),
         Platform.TIEBA: frozenset({AssetKind.IMAGE}),
         Platform.ZHIHU: frozenset({AssetKind.IMAGE}),
     }.get(platform, frozenset())
