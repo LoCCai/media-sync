@@ -254,11 +254,32 @@ def test_forward_maps_only_qr_fence_to_auth_expired_and_system_exit_cannot_succe
     upstream = SimpleNamespace(__file__=str(checkout / "main.py"), main=no_op_main, async_cleanup=cleanup)
     original_import = runner.importlib.import_module
 
+    async def _store_content(_instance: object, _item: object) -> None:
+        return None
+
+    async def _update_note(_item: object) -> None:
+        return None
+
+    jsonl_store = SimpleNamespace(store_content=_store_content)
+    store_xhs_impl = SimpleNamespace(
+        __file__=str(checkout / "store" / "xhs" / "_store_impl.py"),
+        XhsJsonlStoreImplement=jsonl_store,
+    )
+    store_xhs = SimpleNamespace(
+        __file__=str(checkout / "store" / "xhs" / "__init__.py"),
+        update_xhs_note=_update_note,
+        XhsJsonlStoreImplement=jsonl_store,
+    )
+
     def fake_import(name: str) -> Any:
         if name == "config":
             return config
         if name == "main":
             return upstream
+        if name == "store.xhs":
+            return store_xhs
+        if name == "store.xhs._store_impl":
+            return store_xhs_impl
         return original_import(name)
 
     monkeypatch.setattr(runner.importlib, "import_module", fake_import)

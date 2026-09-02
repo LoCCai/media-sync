@@ -73,6 +73,8 @@ from .weibo_media import (
     validate_weibo_poster_url,
     validate_weibo_video_url,
 )
+from .xhs_live import XHS_LIVE_VIDEO_FIELD
+from .xhs_media import validate_xhs_video_url
 from .zhihu_media import (
     ZHIHU_IMAGE_FIELD,
     ZHIHU_IMAGES_FIELD,
@@ -101,6 +103,7 @@ _PRIVATE_MEDIA_FIELDS = frozenset(
         WEIBO_IMAGES_FIELD,
         WEIBO_VIDEO_FIELD,
         WEIBO_VIDEO_POSTER_FIELD,
+        XHS_LIVE_VIDEO_FIELD,
         ZHIHU_IMAGE_FIELD,
         ZHIHU_IMAGES_FIELD,
     }
@@ -486,6 +489,41 @@ def _normalize_xhs(record: Mapping[str, object]) -> _ContentParts:
     videos = _url_list(record.get("video_url"))
     if len(videos) > XHS_MAX_VIDEOS:
         raise RecordNormalizationError(QuarantineReason.INVALID_RECORD)
+    live_payload = record.get(XHS_LIVE_VIDEO_FIELD)
+    if live_payload is not None:
+        if (
+            not isinstance(live_payload, Mapping)
+            or set(live_payload) != {"url"}
+            or record.get("type") != "normal"
+            or len(images) != 1
+            or videos
+        ):
+            raise RecordNormalizationError(QuarantineReason.INVALID_RECORD)
+        try:
+            live_url_value = live_payload.get("url")
+            if type(live_url_value) is not str:
+                raise ValueError("invalid XHS live URL")
+            live_videos: tuple[str, ...] = (validate_xhs_video_url(live_url_value),)
+        except ValueError as exc:
+            raise RecordNormalizationError(QuarantineReason.INVALID_RECORD) from exc
+        return _ContentParts(
+            remote_id=remote_id,
+            kind=ContentKind.MIXED,
+            title=_text(record.get("title")) or _summary(_text(record.get("desc"))),
+            body=_text(record.get("desc")),
+            canonical_url=f"https://www.xiaohongshu.com/explore/{remote_id}",
+            published_at=_published_at(record.get("time")),
+            metrics=_metrics(
+                record,
+                {
+                    "liked_count": "likes",
+                    "collected_count": "collections",
+                    "comment_count": "comments",
+                    "share_count": "shares",
+                },
+            ),
+            asset_groups=((AssetKind.IMAGE, images), (AssetKind.VIDEO, live_videos)),
+        )
     if images and videos:
         kind = ContentKind.MIXED
     elif videos:

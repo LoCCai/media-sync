@@ -1453,6 +1453,12 @@ async def _execute_child(
             )
 
             install_kuaishou_media_capture(verified.root)
+        elif manifest.platform.value == "xhs":
+            from media_sync.integrations.mediacrawler.xhs_live import (
+                install_xhs_live_capture,
+            )
+
+            install_xhs_live_capture(verified.root)
         config.__dict__["COOKIES"] = cookie or ""
         cookie = None
         if cancellation is not None and cancellation.is_set():

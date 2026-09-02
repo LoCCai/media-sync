@@ -488,6 +488,21 @@ def _write_lock(project: FakeProject, commit: str) -> None:
     )
 
 
+_XHS_STORE_IMPL_SOURCE = r"""
+class XhsJsonlStoreImplement:
+    async def store_content(self, content_item):
+        raise RuntimeError("not reached in fixtures")
+"""
+
+_XHS_STORE_SOURCE = r"""
+from ._store_impl import XhsJsonlStoreImplement
+
+
+async def update_xhs_note(note_item):
+    raise RuntimeError("not reached in fixtures")
+"""
+
+
 def _make_fake_project(root: Path) -> FakeProject:
     checkout = root / ".upstream" / "MediaCrawler"
     (checkout / "config").mkdir(parents=True)
@@ -496,8 +511,22 @@ def _make_fake_project(root: Path) -> FakeProject:
     (checkout / "LICENSE").write_bytes(license_bytes)
     (checkout / "config" / "__init__.py").write_text(textwrap.dedent(_CONFIG_SOURCE).lstrip(), encoding="utf-8")
     (checkout / "main.py").write_text(textwrap.dedent(_MAIN_SOURCE).lstrip(), encoding="utf-8")
+    (checkout / "store").mkdir(parents=True, exist_ok=True)
+    (checkout / "store" / "__init__.py").write_text("", encoding="utf-8")
+    (checkout / "store" / "xhs").mkdir(parents=True, exist_ok=True)
+    (checkout / "store" / "xhs" / "__init__.py").write_text(_XHS_STORE_SOURCE, encoding="utf-8")
+    (checkout / "store" / "xhs" / "_store_impl.py").write_text(_XHS_STORE_IMPL_SOURCE, encoding="utf-8")
     _git(checkout.parent, "init", str(checkout))
-    _git(checkout, "add", "LICENSE", "main.py", "config/__init__.py")
+    _git(
+        checkout,
+        "add",
+        "LICENSE",
+        "main.py",
+        "config/__init__.py",
+        "store/__init__.py",
+        "store/xhs/__init__.py",
+        "store/xhs/_store_impl.py",
+    )
     _git(
         checkout,
         "-c",

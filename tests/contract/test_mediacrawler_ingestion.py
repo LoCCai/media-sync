@@ -41,6 +41,7 @@ from media_sync.integrations.mediacrawler.tieba_media import (
     TIEBA_MAX_GALLERY_IMAGES,
 )
 from media_sync.integrations.mediacrawler.weibo_media import WEIBO_IMAGES_FIELD, WEIBO_VIDEO_FIELD
+from media_sync.integrations.mediacrawler.xhs_live import XHS_LIVE_VIDEO_FIELD
 from media_sync.integrations.mediacrawler.zhihu_media import ZHIHU_IMAGE_FIELD, ZHIHU_IMAGES_FIELD
 
 PINNED_SHA = "d6f7c5bb906b6dac40ddf343ef9e26438a3de092"
@@ -1437,6 +1438,85 @@ def test_kuaishou_atlas_gallery_fails_closed_on_payload_drift(gallery_value: obj
 
     with pytest.raises(RecordNormalizationError):
         normalize_record(payload, context(Platform.KS))
+
+
+XHS_LIVE_IMAGE = "https://sns-webpic-qc.xhscdn.com/live-photo.jpg"
+XHS_LIVE_VIDEO = "http://sns-video-bd.xhscdn.com/live-photo-stream.mp4"
+
+
+def test_xhs_live_photo_materializes_one_image_plus_one_video() -> None:
+    payload = {
+        "note_id": "xhs-live-001",
+        "type": "normal",
+        "title": "live photo",
+        "desc": "live photo",
+        "video_url": "",
+        "image_list": XHS_LIVE_IMAGE,
+        "time": 1788235200000,
+        XHS_LIVE_VIDEO_FIELD: {"url": XHS_LIVE_VIDEO},
+    }
+
+    item = normalize_record(payload, context(Platform.XHS))
+
+    assert item.content.kind is ContentKind.MIXED
+    assert [(asset.kind, asset.position, asset.remote_id) for asset in item.assets] == [
+        (AssetKind.IMAGE, 0, "xhs-live-001:image:0"),
+        (AssetKind.VIDEO, 0, "xhs-live-001:video:0"),
+    ]
+    assert [asset.source_url for asset in item.assets] == [XHS_LIVE_IMAGE, XHS_LIVE_VIDEO]
+    durable_record = item.content.raw["record"]
+    assert isinstance(durable_record, Mapping)
+    assert XHS_LIVE_VIDEO_FIELD not in durable_record
+
+
+@pytest.mark.parametrize(
+    "drift",
+    [
+        pytest.param("scalar", id="scalar"),
+        pytest.param({"url": XHS_LIVE_VIDEO, "extra": 1}, id="extra-key"),
+        pytest.param({"url": "https://evil.example.test/x.mp4"}, id="foreign-host"),
+        pytest.param({"url": 42}, id="url-type"),
+    ],
+)
+def test_xhs_live_photo_fails_closed_on_payload_drift(drift: object) -> None:
+    payload = {
+        "note_id": "xhs-live-001",
+        "type": "normal",
+        "title": "live photo",
+        "desc": "live photo",
+        "video_url": "",
+        "image_list": XHS_LIVE_IMAGE,
+        "time": 1788235200000,
+        XHS_LIVE_VIDEO_FIELD: drift,
+    }
+
+    with pytest.raises(RecordNormalizationError):
+        normalize_record(payload, context(Platform.XHS))
+
+
+@pytest.mark.parametrize(
+    "shape_drift",
+    [
+        pytest.param({"type": "video"}, id="wrong-type"),
+        pytest.param({"image_list": f"{XHS_LIVE_IMAGE},https://sns-webpic-qc.xhscdn.com/second.jpg"}, id="two-images"),
+        pytest.param({"video_url": XHS_LIVE_VIDEO}, id="video-url-present"),
+    ],
+)
+def test_xhs_live_photo_fails_closed_on_shape_drift(shape_drift: dict[str, object]) -> None:
+    payload = {
+        "note_id": "xhs-live-001",
+        "type": "normal",
+        "title": "live photo",
+        "desc": "live photo",
+        "video_url": "",
+        "image_list": XHS_LIVE_IMAGE,
+        "time": 1788235200000,
+        XHS_LIVE_VIDEO_FIELD: {"url": XHS_LIVE_VIDEO},
+    }
+    payload.update(shape_drift)
+
+    with pytest.raises(RecordNormalizationError):
+        normalize_record(payload, context(Platform.XHS))
 
 
 def test_kuaishou_record_without_gallery_field_keeps_the_video_shape() -> None:

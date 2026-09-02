@@ -37,6 +37,7 @@ from media_sync.integrations.mediacrawler.weibo_media import (
     WEIBO_VIDEO_FIELD,
     validate_weibo_video_url,
 )
+from media_sync.integrations.mediacrawler.xhs_live import XHS_LIVE_VIDEO_FIELD
 from media_sync.integrations.mediacrawler.xhs_media import validate_xhs_video_url
 from media_sync.integrations.mediacrawler.zhihu_media import ZHIHU_IMAGE_FIELD
 from media_sync.media import (
@@ -2345,3 +2346,65 @@ def test_xhs_multi_video_refresh_rejects_replaced_or_above_bound_drift() -> None
             context.locator
         )
     assert caught.value.code == "locator_refresh_schema_changed"
+
+
+XHS_LIVE_DETAIL_IMAGE = "https://sns-webpic-qc.xhscdn.com/live-detail.jpg"
+XHS_LIVE_DETAIL_VIDEO = "http://sns-video-bd.xhscdn.com/live-detail-stream.mp4"
+
+
+def _xhs_live_record() -> dict[str, object]:
+    return {
+        "note_id": "66fad51c000000001b0224b8",
+        "type": "normal",
+        "title": "live photo",
+        "desc": "live photo",
+        "video_url": "",
+        "image_list": XHS_LIVE_DETAIL_IMAGE,
+        XHS_LIVE_VIDEO_FIELD: {"url": XHS_LIVE_DETAIL_VIDEO},
+    }
+
+
+@pytest.mark.parametrize("kind", [AssetKind.IMAGE, AssetKind.VIDEO])
+def test_xhs_live_photo_refresh_resolves_both_assets(kind: AssetKind) -> None:
+    selected = XHS_LIVE_DETAIL_IMAGE if kind is AssetKind.IMAGE else XHS_LIVE_DETAIL_VIDEO
+    context = _context(
+        platform=Platform.XHS,
+        content_id="66fad51c000000001b0224b8",
+        kind=kind,
+        position=0,
+        signed_url=selected,
+        creator_reference=SecretValue(
+            "https://www.xiaohongshu.com/user/profile/creator-42?xsec_token=xhs-creator-secret&xsec_source=pc_user"
+        ),
+        creator_max_items=2,
+    )
+
+    resolved = MediaCrawlerLocatorRefresher(
+        context, _FakeDetailRunner(_jsonl(_xhs_live_record())), clock=lambda: NOW
+    ).resolve(context.locator)
+
+    assert resolved.url == selected
+    assert resolved.request_profile is MediaRequestProfile.DEFAULT
+
+
+def test_xhs_live_photo_refresh_rejects_video_path_drift() -> None:
+    context = _context(
+        platform=Platform.XHS,
+        content_id="66fad51c000000001b0224b8",
+        kind=AssetKind.VIDEO,
+        position=0,
+        signed_url=XHS_LIVE_DETAIL_VIDEO,
+        creator_reference=SecretValue(
+            "https://www.xiaohongshu.com/user/profile/creator-42?xsec_token=xhs-creator-secret&xsec_source=pc_user"
+        ),
+        creator_max_items=2,
+    )
+    drifted = _xhs_live_record()
+    drifted[XHS_LIVE_VIDEO_FIELD] = {"url": "http://sns-video-bd.xhscdn.com/replaced.mp4"}
+
+    with pytest.raises(MediaDownloadError) as caught:
+        MediaCrawlerLocatorRefresher(context, _FakeDetailRunner(_jsonl(drifted)), clock=lambda: NOW).resolve(
+            context.locator
+        )
+
+    assert caught.value.code == "locator_refresh_asset_mismatch"

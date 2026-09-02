@@ -53,6 +53,7 @@ from media_sync.integrations.mediacrawler.normalizers import (
     NormalizedMediaRecord,
     normalize_jsonl_bytes,
 )
+from media_sync.integrations.mediacrawler.xhs_live import XHS_LIVE_VIDEO_FIELD
 from media_sync.media import (
     AdapterRefreshLocator,
     FFprobeMediaProbe,
@@ -1146,6 +1147,193 @@ def test_xhs_multi_video_reaches_emby_with_zero_work_replay(
         replayed = [harness.service.run(harness.request) for harness in harnesses]
         replayed_export = export_service.export_author(
             EmbyExportRequest(seed.author_id, "execution-0037-export-replay", lease_seconds=60)
+        )
+        assert [result.disposition for result in replayed] == ["already_verified", "already_verified"]
+        assert replayed_export.already_exported is True
+        assert len(requests) == 2
+        assert _tree(archive_root) == archive_tree
+        assert _tree(author_directory) == library_tree
+
+        _assert_ephemeral_values_absent(
+            runtime_root,
+            download_work_root,
+            archive_root,
+            export_work_root,
+            library_root,
+        )
+    finally:
+        database.dispose()
+
+    sqlite_artifacts = [path for path in tmp_path.glob(f"{database_path.name}*") if path.is_file()]
+    assert sqlite_artifacts
+    _assert_ephemeral_values_absent(*sqlite_artifacts)
+
+
+LIVE_IMAGE_HINT = "https://sns-webpic-qc.xhscdn.com/live-photo.jpg"
+LIVE_VIDEO_HINT = "http://sns-video-bd.xhscdn.com/live-photo-stream.mp4"
+LIVE_SENTINEL = "EXECUTION0038-" + "LIVE-SIGNATURE-MUST-STAY-EPHEMERAL"
+LIVE_VIDEO_DETAIL = f"{LIVE_VIDEO_HINT}?sign={LIVE_SENTINEL}"
+
+
+def _xhs_live_record() -> dict[str, object]:
+    return {
+        "note_id": CONTENT_ID,
+        "type": "normal",
+        "title": "Execution 0038 XHS live photo",
+        "desc": "Execution 0038 XHS live photo offline fixture",
+        "video_url": "",
+        "image_list": LIVE_IMAGE_HINT,
+        "time": 1788235200000,
+        "last_update_time": 1788235260000,
+        "creator_hash": "untrusted-xhs-creator",
+        "nickname": "Untrusted nickname",
+        "liked_count": "38",
+        "collected_count": "3",
+        "comment_count": "2",
+        "share_count": "1",
+        "tag_list": "offline,live",
+        "last_modify_ts": 1788235320000,
+        "note_url": (
+            f"https://www.xiaohongshu.com/explore/{CONTENT_ID}?xsec_token={REFRESH_NOTE_TOKEN}&xsec_source=pc_search"
+        ),
+        "source_keyword": "fixture",
+        "xsec_token": REFRESH_NOTE_TOKEN,
+        XHS_LIVE_VIDEO_FIELD: {"url": LIVE_VIDEO_DETAIL},
+    }
+
+
+def test_xhs_live_photo_reaches_emby_with_zero_work_replay(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database_path = tmp_path / "xhs-live-photo.sqlite3"
+    database_url = f"sqlite+pysqlite:///{database_path.as_posix()}"
+    archive_root = tmp_path / "archive"
+    library_root = tmp_path / "library"
+    runtime_root = tmp_path / "mediacrawler-runtime"
+    download_work_root = tmp_path / "download-work"
+    export_work_root = tmp_path / "export-work"
+    runtime_root.mkdir()
+    upgrade_database(database_url)
+    database = Database(database_url)
+    detail_jsonl = _jsonl(_xhs_live_record())
+
+    class _LiveDetailRunner(_FakeDetailRunner):
+        def run(self, request: MediaCrawlerDetailRequest) -> MediaCrawlerDetailResult:
+            self.calls.append(request)
+            return MediaCrawlerDetailResult(detail_jsonl, UPSTREAM_SHA)
+
+    _LiveDetailRunner.instances = []
+    monkeypatch.setattr(mediacrawler_runtime, "MediaCrawlerDetailProcessRunner", _LiveDetailRunner)
+    try:
+        seed = _seed_subscription(database)
+        normalized = normalize_jsonl_bytes(detail_jsonl, _normalization_context())
+        assert not normalized.quarantined and not normalized.truncated_tail
+        record = normalized.records[0]
+        assert record.content.kind is ContentKind.MIXED
+        assert [(asset.kind, asset.position, asset.remote_id) for asset in record.assets] == [
+            (AssetKind.IMAGE, 0, f"{CONTENT_ID}:image:0"),
+            (AssetKind.VIDEO, 0, f"{CONTENT_ID}:video:0"),
+        ]
+
+        run_id = _start_ingesting_run(database, seed.subscription_id)
+        ingestion = MediaCrawlerIngestionService(database).ingest(
+            normalized.records,
+            subscription_id=seed.subscription_id,
+            run_id=run_id,
+            expected_revision=0,
+            mode=IngestionMode.FORWARD,
+        )
+        assert (ingestion.accepted_count, ingestion.discovered_count, ingestion.asset_count) == (1, 1, 2)
+
+        with database.session() as session:
+            assets = tuple(session.scalars(select(Asset).order_by(Asset.kind, Asset.id)).all())
+            assert tuple(asset.source_url for asset in assets) == (LIVE_IMAGE_HINT, LIVE_VIDEO_HINT)
+            asset_ids = [UUID(asset.id) for asset in assets]
+
+        resolver = _RecordingPublicResolver()
+        requests: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            if str(request.url) == LIVE_IMAGE_HINT:
+                return httpx.Response(
+                    200,
+                    headers={
+                        "Content-Length": str(len(PNG)),
+                        "Content-Type": "image/png",
+                        "ETag": '"execution-0038-live-image"',
+                    },
+                    content=PNG,
+                )
+            assert str(request.url) == LIVE_VIDEO_DETAIL
+            return httpx.Response(
+                200,
+                headers={
+                    "Content-Length": str(len(MP4)),
+                    "Content-Type": "video/mp4",
+                    "ETag": '"execution-0038-live-video"',
+                },
+                content=MP4,
+            )
+
+        def transport_factory(target: ValidatedTarget) -> httpx.BaseTransport:
+            del target
+            return httpx.MockTransport(handler)
+
+        http = SafeHttpClient(resolver, transport_factory=transport_factory)
+        secret_resolver = SecretResolver(
+            {
+                SecretScheme.ENV: EnvironmentSecretProvider(
+                    {"MEDIA_SYNC_EXECUTION0018_XHS_CREATOR_URL": CREATOR_REFERENCE}
+                )
+            }
+        )
+        harnesses = []
+        for index, asset_id in enumerate(asset_ids):
+            harnesses.append(
+                _download_harness(
+                    database,
+                    asset_id=asset_id,
+                    subscription_id=UUID(seed.subscription_id),
+                    worker_id=f"execution-0038-live-download-{index}",
+                    tmp_path=tmp_path,
+                    runtime_root=runtime_root,
+                    download_work_root=download_work_root,
+                    archive_root=archive_root,
+                    http=http,
+                    probe=_ControlledMp4Probe(),
+                    secret_resolver=secret_resolver,
+                )
+            )
+
+        downloaded = [harness.service.run(harness.request) for harness in harnesses]
+
+        assert [result.disposition for result in downloaded] == ["downloaded", "downloaded"]
+        assert sorted(result.mime_type for result in downloaded) == ["image/png", "video/mp4"]
+        assert sorted(result.archive_path.read_bytes() for result in downloaded) == sorted((MP4, PNG))
+        assert sorted(str(request.url) for request in requests) == [LIVE_VIDEO_DETAIL, LIVE_IMAGE_HINT]
+        assert len(_LiveDetailRunner.instances) == 2
+        assert all(len(runner.calls) == 1 for runner in _LiveDetailRunner.instances)
+
+        export_service = EmbyExportService(
+            database,
+            EmbyExporter(library_root, staging_root=export_work_root),
+            clock=lambda: FIXED_AT,
+        )
+        exported = export_service.export_author(
+            EmbyExportRequest(seed.author_id, "execution-0038-export", lease_seconds=60)
+        )
+        assert exported.already_exported is False
+        author_directory = library_root / exported.output_path
+        assert next(author_directory.glob("Season */*.mp4")).read_bytes() == MP4
+        assert next(author_directory.glob("Season */*-poster.png")).read_bytes() == PNG
+
+        archive_tree = _tree(archive_root)
+        library_tree = _tree(author_directory)
+        replayed = [harness.service.run(harness.request) for harness in harnesses]
+        replayed_export = export_service.export_author(
+            EmbyExportRequest(seed.author_id, "execution-0038-export-replay", lease_seconds=60)
         )
         assert [result.disposition for result in replayed] == ["already_verified", "already_verified"]
         assert replayed_export.already_exported is True

@@ -429,7 +429,26 @@ class MediaCrawlerLocatorRefresher:
                 raise MediaDownloadError("locator_refresh_schema_changed")
             source_type = source_record.get("type")
             if source_type == "normal":
-                if (
+                video_assets = tuple(asset for asset in target.assets if asset.kind is AssetKind.VIDEO)
+                image_assets = tuple(asset for asset in target.assets if asset.kind is AssetKind.IMAGE)
+                if video_assets:
+                    # A normal-type note cannot carry a VIDEO asset except through
+                    # the live-photo bridge, so the exact shape is unambiguous.
+                    if (
+                        target.content.kind is not ContentKind.MIXED
+                        or len(image_assets) != 1
+                        or image_assets[0].position != 0
+                        or len(video_assets) != 1
+                        or video_assets[0].position != 0
+                        or len(target.assets) != 2
+                        or not isinstance(video_assets[0].source_url, str)
+                    ):
+                        raise MediaDownloadError("locator_refresh_schema_changed")
+                    try:
+                        validate_xhs_video_url(video_assets[0].source_url)
+                    except ValueError as exc:
+                        raise MediaDownloadError("locator_refresh_schema_changed") from exc
+                elif (
                     target.content.kind not in {ContentKind.IMAGE, ContentKind.GALLERY}
                     or not target.assets
                     or any(asset.kind is not AssetKind.IMAGE for asset in target.assets)

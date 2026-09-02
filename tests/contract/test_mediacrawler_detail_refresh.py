@@ -171,6 +171,20 @@ async def async_cleanup():
     return None
 """
 
+_XHS_STORE_IMPL = r"""
+class XhsJsonlStoreImplement:
+    async def store_content(self, content_item):
+        raise RuntimeError("not reached in fixtures")
+"""
+
+_XHS_STORE = r"""
+from ._store_impl import XhsJsonlStoreImplement
+
+
+async def update_xhs_note(note_item):
+    raise RuntimeError("not reached in fixtures")
+"""
+
 _XHS_MAIN = r"""
 import json
 import os
@@ -868,6 +882,11 @@ def _fake_xhs_checkout(root: Path, *, creator_mode: bool, video_mode: bool = Fal
     checkout = root / "fake-mediacrawler-xhs"
     (checkout / "config").mkdir(parents=True)
     (checkout / "config" / "__init__.py").write_text(textwrap.dedent(_CONFIG).lstrip(), encoding="utf-8")
+    (checkout / "store").mkdir(parents=True, exist_ok=True)
+    (checkout / "store" / "__init__.py").write_text("", encoding="utf-8")
+    (checkout / "store" / "xhs").mkdir(parents=True, exist_ok=True)
+    (checkout / "store" / "xhs" / "__init__.py").write_text(_XHS_STORE, encoding="utf-8")
+    (checkout / "store" / "xhs" / "_store_impl.py").write_text(_XHS_STORE_IMPL, encoding="utf-8")
     target_record = (
         {
             "note_id": XHS_NOTE_ID,

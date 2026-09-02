@@ -76,6 +76,7 @@ from media_sync.integrations.mediacrawler.xhs_authority import (
     validate_xhs_creator_reference,
     validate_xhs_detail_reference,
 )
+from media_sync.integrations.mediacrawler.xhs_live import install_xhs_live_capture
 from media_sync.integrations.mediacrawler.zhihu_media import (
     install_zhihu_media_capture,
     validate_zhihu_answer_url,
@@ -1246,6 +1247,8 @@ async def _run_upstream(request: _ChildRequest) -> tuple[Any, _BiliPlaybackResul
         install_zhihu_media_capture(request.checkout_root)
     elif request.platform is Platform.KS:
         install_kuaishou_media_capture(request.checkout_root)
+    elif request.platform is Platform.XHS:
+        install_xhs_live_capture(request.checkout_root)
 
     async def dispatch() -> _BiliPlaybackResult | None:
         if (
