@@ -6,8 +6,8 @@
 - Date: 2026-09-02
 - Predecessor: Execution 0030 closeout `e242b16097b2fb1f0f6ee1dc8e863ace1c68ab32`
 - Scope: One ordinary original numeric-ID Weibo post carrying an `mblog.page_info` video, captured at the pinned-store boundary and delivered as one playable Emby MP4 through a signed-URL adapter refresh
-- Plan commit: recorded in the closeout index; never embedded in this file
-- Implementation commit: recorded in the closeout index; never embedded in this file
+- Plan commit: `1c79c6d94fbca2ac4c01ec1f9c2f6e17da7b6e7d`
+- Implementation commit: `666438d793c18f97af5026e7506c8ee9745eba47`
 
 ## Outcome
 
