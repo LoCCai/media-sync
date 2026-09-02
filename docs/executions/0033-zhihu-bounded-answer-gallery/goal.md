@@ -6,8 +6,8 @@
 - Date: 2026-09-03
 - Predecessor: Execution 0032 closeout `41508b1cc57672aa9e18252498d10d98bc371b90`
 - Scope: One ordinary Zhihu answer whose HTML carries 2–64 ordered static images, captured at the pinned extractor boundary and delivered as a bounded sibling-bound IMAGE gallery
-- Plan commit: recorded in the closeout index; never embedded in this file
-- Implementation commit: recorded in the closeout index; never embedded in this file
+- Plan commit: `92651bca24b026e6d2c920d48eddac9fb111e7ae`
+- Implementation commit: `966ccef562c207e4c77abb3d6828fdf12714988e`
 
 ## Outcome
 
