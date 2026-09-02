@@ -22,6 +22,7 @@ from urllib.parse import urlsplit
 
 WEIBO_IMAGES_FIELD = "__media_sync_weibo_images_v1"
 WEIBO_VIDEO_FIELD = "__media_sync_weibo_video_v1"
+WEIBO_VIDEO_POSTER_FIELD = "__media_sync_weibo_video_poster_v1"
 
 _INSTALL_MARKER = "__media_sync_weibo_media_capture_v1__"
 _MAX_NOTE_ID = 2**63 - 1
@@ -46,6 +47,7 @@ class _CapturedImages:
 class _CapturedVideo:
     note_id: str
     url: str
+    poster_url: str | None = None
 
 
 _ACTIVE_IMAGES: ContextVar[_CapturedImages | None] = ContextVar(
@@ -150,6 +152,49 @@ def _is_weibo_video_host(value: str) -> bool:
     return value == "sinaimg.cn" or value.endswith(".sinaimg.cn")
 
 
+def validate_weibo_poster_url(value: object) -> str:
+    """Validate one canonical Weibo video poster URL unchanged or raise."""
+
+    if not isinstance(value, str) or len(value) > 2_048 or value != value.strip():
+        raise ValueError("invalid Weibo poster URL")
+    if "\\" in value or any(ord(character) < 0x20 or ord(character) == 0x7F for character in value):
+        raise ValueError("invalid Weibo poster URL")
+    if any(character.isspace() for character in value):
+        raise ValueError("invalid Weibo poster URL")
+    try:
+        parsed = urlsplit(value)
+        port = parsed.port
+        host = parsed.hostname
+    except ValueError as exc:
+        raise ValueError("invalid Weibo poster URL") from exc
+    if (
+        parsed.scheme != "https"
+        or host is None
+        or not _is_weibo_image_host(host)
+        or parsed.username is not None
+        or parsed.password is not None
+        or port is not None
+        or parsed.fragment
+    ):
+        raise ValueError("invalid Weibo poster URL")
+    if not _is_static_image_filename(parsed.path.rsplit("/", 1)[-1]):
+        raise ValueError("invalid Weibo poster URL")
+    return value
+
+
+def _capture_poster(page_info: Mapping[str, object]) -> str | None:
+    pic_info = page_info.get("pic_info")
+    if not isinstance(pic_info, Mapping):
+        return None
+    pic_big = pic_info.get("pic_big")
+    if not isinstance(pic_big, Mapping):
+        return None
+    try:
+        return validate_weibo_poster_url(pic_big.get("url"))
+    except ValueError:
+        return None
+
+
 def validate_weibo_video_url(value: object) -> str:
     """Validate one canonical signed Weibo stream URL without rewriting it."""
 
@@ -241,7 +286,7 @@ def _capture_video(note_item: object) -> _CapturedVideo | None:
         selected = _select_playback_list_url(media_info)
     if selected is None:
         return None
-    return _CapturedVideo(note_id=note_id, url=selected)
+    return _CapturedVideo(note_id=note_id, url=selected, poster_url=_capture_poster(page_info))
 
 
 def _capture_images(note_item: object) -> _CapturedImages | None:
@@ -318,7 +363,11 @@ def install_weibo_media_capture(checkout_root: Path) -> None:
     async def store_with_images(instance: object, content_item: object) -> Any:
         if not isinstance(content_item, Mapping):
             return await store_content(instance, content_item)
-        if WEIBO_IMAGES_FIELD in content_item or WEIBO_VIDEO_FIELD in content_item:
+        if (
+            WEIBO_IMAGES_FIELD in content_item
+            or WEIBO_VIDEO_FIELD in content_item
+            or WEIBO_VIDEO_POSTER_FIELD in content_item
+        ):
             raise RuntimeError("private Weibo media field collision")
         enriched = dict(content_item)
         captured_images = _ACTIVE_IMAGES.get()
@@ -327,6 +376,8 @@ def install_weibo_media_capture(checkout_root: Path) -> None:
         captured_video = _ACTIVE_VIDEO.get()
         if captured_video is not None and enriched.get("note_id") == captured_video.note_id:
             enriched[WEIBO_VIDEO_FIELD] = {"url": captured_video.url}
+            if captured_video.poster_url is not None:
+                enriched[WEIBO_VIDEO_POSTER_FIELD] = {"url": captured_video.poster_url}
         return await store_content(instance, enriched)
 
     setattr(update_with_images, _INSTALL_MARKER, True)
@@ -338,8 +389,10 @@ def install_weibo_media_capture(checkout_root: Path) -> None:
 __all__ = [
     "WEIBO_IMAGES_FIELD",
     "WEIBO_VIDEO_FIELD",
+    "WEIBO_VIDEO_POSTER_FIELD",
     "install_weibo_media_capture",
     "is_weibo_numeric_note_id",
     "is_weibo_proxy_image_url",
+    "validate_weibo_poster_url",
     "validate_weibo_video_url",
 ]

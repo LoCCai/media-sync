@@ -67,8 +67,10 @@ from .tieba_media import (
 from .weibo_media import (
     WEIBO_IMAGES_FIELD,
     WEIBO_VIDEO_FIELD,
+    WEIBO_VIDEO_POSTER_FIELD,
     is_weibo_numeric_note_id,
     is_weibo_proxy_image_url,
+    validate_weibo_poster_url,
     validate_weibo_video_url,
 )
 from .zhihu_media import (
@@ -98,6 +100,7 @@ _PRIVATE_MEDIA_FIELDS = frozenset(
         KS_GALLERY_FIELD,
         WEIBO_IMAGES_FIELD,
         WEIBO_VIDEO_FIELD,
+        WEIBO_VIDEO_POSTER_FIELD,
         ZHIHU_IMAGE_FIELD,
         ZHIHU_IMAGES_FIELD,
     }
@@ -974,6 +977,9 @@ def _normalize_wb(record: Mapping[str, object]) -> _ContentParts:
     )
     video_payload = record.get(WEIBO_VIDEO_FIELD)
     if video_payload is not None:
+        poster_payload = record.get(WEIBO_VIDEO_POSTER_FIELD)
+        if poster_payload is not None and (not isinstance(poster_payload, Mapping) or set(poster_payload) != {"url"}):
+            raise RecordNormalizationError(QuarantineReason.INVALID_RECORD)
         if (
             WEIBO_IMAGES_FIELD in record
             or not is_weibo_numeric_note_id(remote_id)
@@ -985,6 +991,9 @@ def _normalize_wb(record: Mapping[str, object]) -> _ContentParts:
             raise RecordNormalizationError(QuarantineReason.INVALID_RECORD)
         try:
             video_urls: tuple[str, ...] = (validate_weibo_video_url(video_payload.get("url")),)
+            poster_urls: tuple[str, ...] = (
+                (validate_weibo_poster_url(poster_payload.get("url")),) if poster_payload is not None else ()
+            )
         except ValueError as exc:
             raise RecordNormalizationError(QuarantineReason.INVALID_RECORD) from exc
         return _ContentParts(
@@ -998,7 +1007,7 @@ def _normalize_wb(record: Mapping[str, object]) -> _ContentParts:
                 record,
                 {"liked_count": "likes", "comments_count": "comments", "shared_count": "shares"},
             ),
-            asset_groups=((AssetKind.VIDEO, video_urls),),
+            asset_groups=((AssetKind.VIDEO, video_urls), (AssetKind.COVER, poster_urls)),
         )
     images = _weibo_image_urls(record.get(WEIBO_IMAGES_FIELD)) if eligible_image_post else ()
     if len(images) > 1:

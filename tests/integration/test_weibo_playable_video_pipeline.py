@@ -42,7 +42,7 @@ from media_sync.infrastructure.db.models import (
 )
 from media_sync.integrations.mediacrawler import MediaCrawlerDetailRequest, MediaCrawlerDetailResult
 from media_sync.integrations.mediacrawler.normalizers import NormalizationContext, normalize_jsonl_bytes
-from media_sync.integrations.mediacrawler.weibo_media import WEIBO_VIDEO_FIELD
+from media_sync.integrations.mediacrawler.weibo_media import WEIBO_VIDEO_FIELD, WEIBO_VIDEO_POSTER_FIELD
 from media_sync.media import (
     AdapterRefreshLocator,
     MediaRequestProfile,
@@ -570,6 +570,178 @@ def test_weibo_playback_list_sourced_video_reaches_emby_with_zero_work_replay(
         assert replayed.disposition == "already_verified"
         assert replayed_export.already_exported is True
         assert len(requests) == 1
+        assert _tree(archive_root) == archive_tree
+        assert _tree(author_directory) == library_tree
+
+        _assert_private_values_absent(runtime_root, download_work_root, archive_root, export_work_root, library_root)
+    finally:
+        database.dispose()
+
+    sqlite_artifacts = tuple(path for path in tmp_path.glob(f"{database_path.name}*") if path.is_file())
+    assert sqlite_artifacts
+    _assert_private_values_absent(*sqlite_artifacts)
+
+
+WB_POSTER_HINT = "https://wx3.sinaimg.cn/large/wb-poster.png"
+WB_POSTER_SENTINEL = "EXECUTION0036-" + "POSTER-SIGNATURE-MUST-STAY-PRIVATE"
+WB_POSTER_SIGNED_URL = f"{WB_POSTER_HINT}?signature={WB_POSTER_SENTINEL}"
+POSTER_PNG = b"\x89PNG\r\n\x1a\n" + b"execution-0036-offline-weibo-poster"
+
+
+def _wb_video_poster_record() -> dict[str, object]:
+    record = _weibo_video_record(SIGNED_URL)
+    record[WEIBO_VIDEO_POSTER_FIELD] = {"url": WB_POSTER_SIGNED_URL}
+    record["title"] = "Execution 0036 Weibo video with poster"
+    return record
+
+
+def test_weibo_video_with_poster_materializes_cover_asset() -> None:
+    normalized = normalize_jsonl_bytes(_jsonl(_wb_video_poster_record()), _normalization_context())
+
+    assert not normalized.quarantined and not normalized.truncated_tail
+    record = normalized.records[0]
+    assert record.content.kind is ContentKind.VIDEO
+    assert [(asset.kind, asset.position, asset.remote_id) for asset in record.assets] == [
+        (AssetKind.VIDEO, 0, f"{CONTENT_ID}:video:0"),
+        (AssetKind.COVER, 0, f"{CONTENT_ID}:cover:0"),
+    ]
+    assert [asset_source_hint(asset.source_url) for asset in record.assets] == [
+        "https://f.us.sinaimg.cn/o0/weibo-playable.mp4",
+        WB_POSTER_HINT,
+    ]
+    durable_record = record.content.raw["record"]
+    assert isinstance(durable_record, Mapping)
+    assert WEIBO_VIDEO_POSTER_FIELD not in durable_record
+
+
+def test_weibo_video_with_poster_reaches_emby_with_zero_work_replay(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database_path = tmp_path / "weibo-video-poster.sqlite3"
+    database_url = f"sqlite+pysqlite:///{database_path.as_posix()}"
+    archive_root = tmp_path / "archive"
+    library_root = tmp_path / "library"
+    runtime_root = tmp_path / "mediacrawler-runtime"
+    download_work_root = tmp_path / "download-work"
+    export_work_root = tmp_path / "export-work"
+    runtime_root.mkdir()
+    upgrade_database(database_url)
+    database = Database(database_url)
+    poster_jsonl = _jsonl(_wb_video_poster_record())
+
+    class _PosterDetailRunner(_FakeDetailRunner):
+        def run(self, request: MediaCrawlerDetailRequest) -> MediaCrawlerDetailResult:
+            self.calls.append(request)
+            return MediaCrawlerDetailResult(poster_jsonl, UPSTREAM_SHA)
+
+    _PosterDetailRunner.instances = []
+    monkeypatch.setattr(mediacrawler_runtime, "MediaCrawlerDetailProcessRunner", _PosterDetailRunner)
+    try:
+        seed = _seed_subscription(database)
+        normalized = normalize_jsonl_bytes(poster_jsonl, _normalization_context())
+        run_id = _start_ingesting_run(database, seed.subscription_id)
+        ingestion = MediaCrawlerIngestionService(database).ingest(
+            normalized.records,
+            subscription_id=seed.subscription_id,
+            run_id=run_id,
+            expected_revision=0,
+            mode=IngestionMode.FORWARD,
+        )
+        assert (ingestion.accepted_count, ingestion.discovered_count, ingestion.asset_count) == (1, 1, 2)
+
+        with database.session() as session:
+            assets = tuple(session.scalars(select(Asset).order_by(Asset.kind, Asset.id)).all())
+            assert tuple(asset.source_url for asset in assets) == (
+                WB_POSTER_HINT,
+                "https://f.us.sinaimg.cn/o0/weibo-playable.mp4",
+            )
+            asset_ids = [UUID(asset.id) for asset in assets]
+
+        resolver = _RecordingPublicResolver()
+        requests: list[httpx.Request] = []
+        payloads = {SIGNED_URL: MP4, WB_POSTER_SIGNED_URL: POSTER_PNG}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            url = str(request.url)
+            assert url in payloads
+            payload = payloads[url]
+            return httpx.Response(
+                200,
+                headers={
+                    "Content-Length": str(len(payload)),
+                    "Content-Type": "video/mp4" if payload is MP4 else "image/png",
+                    "ETag": '"execution-0036-poster"',
+                },
+                content=payload,
+            )
+
+        harnesses = []
+        for index, asset_id in enumerate(asset_ids):
+            lazy = LazyMediaCrawlerLocatorRefresher(
+                database,
+                asset_id=asset_id,
+                subscription_id=UUID(seed.subscription_id),
+                lock_path=tmp_path / "upstreams.lock.json",
+                integration_root=runtime_root,
+                python_executable=tmp_path / "python",
+                secret_resolver=SecretResolver({}),
+                license_acknowledged=True,
+            )
+            harnesses.append(
+                (
+                    AssetDownloadService(
+                        database,
+                        SecureMediaDownloader(
+                            SafeHttpClient(
+                                resolver,
+                                transport_factory=lambda _target: httpx.MockTransport(handler),
+                            ),
+                            refresher=_RecordingRefresher(lazy),
+                            probe=_ControlledMp4Probe(),
+                        ),
+                        clock=lambda: FIXED_AT,
+                    ),
+                    AssetDownloadRequest(
+                        asset_id=asset_id,
+                        worker_id=f"execution-0036-poster-download-{index}",
+                        work_root=download_work_root,
+                        archive_root=archive_root,
+                        lease_seconds=60,
+                    ),
+                )
+            )
+
+        downloaded = [service.run(request) for service, request in harnesses]
+
+        assert [result.disposition for result in downloaded] == ["downloaded", "downloaded"]
+        assert [result.mime_type for result in downloaded] == ["image/png", "video/mp4"]
+        assert [result.archive_path.read_bytes() for result in downloaded] == [POSTER_PNG, MP4]
+        assert sorted(str(request.url) for request in requests) == [SIGNED_URL, WB_POSTER_SIGNED_URL]
+
+        export_service = EmbyExportService(
+            database,
+            EmbyExporter(library_root, staging_root=export_work_root),
+            clock=lambda: FIXED_AT,
+        )
+        exported = export_service.export_author(
+            EmbyExportRequest(seed.author_id, "execution-0036-export", lease_seconds=60)
+        )
+        assert exported.already_exported is False
+        author_directory = library_root / exported.output_path
+        assert next(author_directory.glob("Season 2026/*.mp4")).read_bytes() == MP4
+        assert next(author_directory.glob("Season 2026/*-poster.png")).read_bytes() == POSTER_PNG
+
+        archive_tree = _tree(archive_root)
+        library_tree = _tree(author_directory)
+        replayed = [service.run(request) for service, request in harnesses]
+        replayed_export = export_service.export_author(
+            EmbyExportRequest(seed.author_id, "execution-0036-export-replay", lease_seconds=60)
+        )
+        assert [result.disposition for result in replayed] == ["already_verified", "already_verified"]
+        assert replayed_export.already_exported is True
+        assert len(requests) == 2
         assert _tree(archive_root) == archive_tree
         assert _tree(author_directory) == library_tree
 

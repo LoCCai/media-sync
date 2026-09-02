@@ -29,7 +29,11 @@ from media_sync.integrations.mediacrawler.refresh import (
     MediaCrawlerRefreshContext,
 )
 from media_sync.integrations.mediacrawler.tieba_media import TIEBA_GALLERY_FIELD, TIEBA_IMAGE_FIELD, TIEBA_IMAGES_FIELD
-from media_sync.integrations.mediacrawler.weibo_media import WEIBO_IMAGES_FIELD, WEIBO_VIDEO_FIELD
+from media_sync.integrations.mediacrawler.weibo_media import (
+    WEIBO_IMAGES_FIELD,
+    WEIBO_VIDEO_FIELD,
+    WEIBO_VIDEO_POSTER_FIELD,
+)
 from media_sync.integrations.mediacrawler.zhihu_media import ZHIHU_IMAGE_FIELD, ZHIHU_IMAGES_FIELD
 from media_sync.media import (
     AdapterRefreshLocator,
@@ -571,10 +575,13 @@ class FakeCrawler:
             media_info = {"stream_url": __WB_VIDEO_URL__}
             if __WB_PLAYBACK_LIST__ is not None:
                 media_info = {"playback_list": __WB_PLAYBACK_LIST__}
-            mblog["page_info"] = {
+            page_info = {
                 "page_type": __WB_PAGE_TYPE__,
                 "media_info": media_info,
             }
+            if __WB_POSTER_URL__ is not None:
+                page_info["pic_info"] = {"pic_big": {"url": __WB_POSTER_URL__}}
+            mblog["page_info"] = page_info
             if __WB_RETWEETED__:
                 mblog["retweeted_status"] = {"id": "7525082444551310599"}
         else:
@@ -1050,6 +1057,7 @@ def _fake_wb_checkout(
     page_type: object = "video",
     retweeted: bool = False,
     playback_list: list[dict[str, object]] | None = None,
+    poster_url: str | None = None,
 ) -> Path:
     checkout = root / "fake-mediacrawler-wb"
     (checkout / "config").mkdir(parents=True)
@@ -1070,6 +1078,7 @@ def _fake_wb_checkout(
         .replace("__WB_PAGE_TYPE__", repr(page_type))
         .replace("__WB_RETWEETED__", repr(retweeted))
         .replace("__WB_PLAYBACK_LIST__", repr(playback_list))
+        .replace("__WB_POSTER_URL__", repr(poster_url))
     )
     (checkout / "main.py").write_text(main_source, encoding="utf-8")
     return checkout.resolve()
@@ -2026,6 +2035,66 @@ def test_weibo_playback_list_closes_on_unusable_shapes(
         MediaCrawlerLocatorRefresher(context, _wb_process_runner(tmp_path, checkout)).resolve(context.locator)
 
     assert caught.value.code == "locator_refresh_asset_mismatch"
+
+
+WB_POSTER_URL = "https://wx3.sinaimg.cn/large/wb-poster.jpg"
+
+
+def test_weibo_video_poster_captures_alongside_the_stream(tmp_path: Path) -> None:
+    checkout = _fake_wb_checkout(tmp_path, video_url=WB_VIDEO_URL, poster_url=WB_POSTER_URL)
+    result = _wb_process_runner(tmp_path, checkout).run(
+        MediaCrawlerDetailRequest(
+            account_id=ACCOUNT_ID,
+            subscription_id=SUBSCRIPTION_ID,
+            platform=Platform.WB,
+            login_method=LoginMethod.QR,
+            content_remote_id=CONTENT_ID,
+            author_remote_id="creator-42",
+            watchdogs=WatchdogLimits(max_seconds=10, poll_seconds=0.01),
+        )
+    )
+    records = [json.loads(line) for line in result.jsonl.splitlines()]
+    assert records == [
+        {
+            "note_id": CONTENT_ID,
+            "content": "fixture image note",
+            "note_url": f"https://m.weibo.cn/detail/{CONTENT_ID}",
+            WEIBO_VIDEO_FIELD: {"url": WB_VIDEO_URL},
+            WEIBO_VIDEO_POSTER_FIELD: {"url": WB_POSTER_URL},
+        }
+    ]
+    retained = b"".join(path.read_bytes() for path in (tmp_path / "runtime").rglob("*") if path.is_file())
+    assert WB_POSTER_URL.encode("utf-8") not in retained
+    assert WEIBO_VIDEO_POSTER_FIELD.encode("utf-8") not in retained
+
+
+@pytest.mark.parametrize(
+    "poster_url",
+    [
+        "https://evil.example.test/large/foreign.jpg",
+        "https://wx3.sinaimg.cn/large/animated.gif",
+        "https://wx3.sinaimg.cn/large/poster.mp4",
+    ],
+)
+def test_weibo_video_poster_drift_captures_video_only(
+    tmp_path: Path,
+    poster_url: str,
+) -> None:
+    checkout = _fake_wb_checkout(tmp_path, video_url=WB_VIDEO_URL, poster_url=poster_url)
+    result = _wb_process_runner(tmp_path, checkout).run(
+        MediaCrawlerDetailRequest(
+            account_id=ACCOUNT_ID,
+            subscription_id=SUBSCRIPTION_ID,
+            platform=Platform.WB,
+            login_method=LoginMethod.QR,
+            content_remote_id=CONTENT_ID,
+            author_remote_id="creator-42",
+            watchdogs=WatchdogLimits(max_seconds=10, poll_seconds=0.01),
+        )
+    )
+    records = [json.loads(line) for line in result.jsonl.splitlines()]
+    assert records[0][WEIBO_VIDEO_FIELD] == {"url": WB_VIDEO_URL}
+    assert WEIBO_VIDEO_POSTER_FIELD not in records[0]
 
 
 @pytest.mark.parametrize(
