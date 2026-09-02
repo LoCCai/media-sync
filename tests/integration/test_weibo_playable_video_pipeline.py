@@ -439,3 +439,144 @@ def test_weibo_playable_video_reaches_emby_without_persisting_signed_queries(
     sqlite_artifacts = tuple(path for path in tmp_path.glob(f"{database_path.name}*") if path.is_file())
     assert sqlite_artifacts
     _assert_private_values_absent(*sqlite_artifacts)
+
+
+PLAYBACK_HINT = "https://f.us.sinaimg.cn/o0/weibo-playback.mp4"
+PLAYBACK_SENTINEL = "EXECUTION0035-" + "PLAYBACK-SIGNATURE-MUST-STAY-PRIVATE"
+PLAYBACK_SIGNED_URL = f"{PLAYBACK_HINT}?KID=unistore,video&Expires=4102444800&ssig={PLAYBACK_SENTINEL}"
+
+
+def test_weibo_playback_list_video_normalizes_and_downloads_like_the_scalar_shape() -> None:
+    record = _weibo_video_record(PLAYBACK_SIGNED_URL)
+    normalized = normalize_jsonl_bytes(_jsonl(record), _normalization_context())
+
+    assert not normalized.quarantined and not normalized.truncated_tail
+    assert normalized.records[0].content.kind is ContentKind.VIDEO
+    assert [asset.source_url for asset in normalized.records[0].assets] == [PLAYBACK_SIGNED_URL]
+    assert [asset_source_hint(asset.source_url) for asset in normalized.records[0].assets] == [PLAYBACK_HINT]
+    assert PLAYBACK_SENTINEL not in repr(normalized)
+
+
+def test_weibo_playback_list_sourced_video_reaches_emby_with_zero_work_replay(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database_path = tmp_path / "weibo-playback.sqlite3"
+    database_url = f"sqlite+pysqlite:///{database_path.as_posix()}"
+    archive_root = tmp_path / "archive"
+    library_root = tmp_path / "library"
+    runtime_root = tmp_path / "mediacrawler-runtime"
+    download_work_root = tmp_path / "download-work"
+    export_work_root = tmp_path / "export-work"
+    runtime_root.mkdir()
+    upgrade_database(database_url)
+    database = Database(database_url)
+    playback_jsonl = _jsonl(_weibo_video_record(PLAYBACK_SIGNED_URL))
+
+    class _PlaybackDetailRunner(_FakeDetailRunner):
+        def run(self, request: MediaCrawlerDetailRequest) -> MediaCrawlerDetailResult:
+            self.calls.append(request)
+            return MediaCrawlerDetailResult(playback_jsonl, UPSTREAM_SHA)
+
+    _PlaybackDetailRunner.instances = []
+    monkeypatch.setattr(mediacrawler_runtime, "MediaCrawlerDetailProcessRunner", _PlaybackDetailRunner)
+    try:
+        seed = _seed_subscription(database)
+        normalized = normalize_jsonl_bytes(_jsonl(_weibo_video_record(PLAYBACK_SIGNED_URL)), _normalization_context())
+        run_id = _start_ingesting_run(database, seed.subscription_id)
+        ingestion = MediaCrawlerIngestionService(database).ingest(
+            normalized.records,
+            subscription_id=seed.subscription_id,
+            run_id=run_id,
+            expected_revision=0,
+            mode=IngestionMode.FORWARD,
+        )
+        assert (ingestion.accepted_count, ingestion.discovered_count, ingestion.asset_count) == (1, 1, 1)
+
+        with database.session() as session:
+            asset = session.scalar(select(Asset))
+            assert asset is not None
+            asset_id = UUID(asset.id)
+            assert asset.source_url == PLAYBACK_HINT
+
+        resolver = _RecordingPublicResolver()
+        requests: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            assert str(request.url) == PLAYBACK_SIGNED_URL
+            return httpx.Response(
+                200,
+                headers={
+                    "Content-Length": str(len(MP4)),
+                    "Content-Type": "video/mp4",
+                    "ETag": '"execution-0035-playback-v1"',
+                },
+                content=MP4,
+            )
+
+        lazy_refresher = LazyMediaCrawlerLocatorRefresher(
+            database,
+            asset_id=asset_id,
+            subscription_id=UUID(seed.subscription_id),
+            lock_path=tmp_path / "upstreams.lock.json",
+            integration_root=runtime_root,
+            python_executable=tmp_path / "python",
+            secret_resolver=SecretResolver({}),
+            license_acknowledged=True,
+        )
+        refresher = _RecordingRefresher(lazy_refresher)
+        downloader = SecureMediaDownloader(
+            SafeHttpClient(resolver, transport_factory=lambda _target: httpx.MockTransport(handler)),
+            refresher=refresher,
+            probe=_ControlledMp4Probe(),
+        )
+        service = AssetDownloadService(database, downloader, clock=lambda: FIXED_AT)
+        download_request = AssetDownloadRequest(
+            asset_id=asset_id,
+            worker_id="execution-0035-playback-download",
+            work_root=download_work_root,
+            archive_root=archive_root,
+            lease_seconds=60,
+        )
+
+        downloaded = service.run(download_request)
+
+        assert downloaded.disposition == "downloaded"
+        assert downloaded.archive_path is not None and downloaded.archive_path.read_bytes() == MP4
+        assert downloaded.mime_type == "video/mp4"
+        assert [str(request.url) for request in requests] == [PLAYBACK_SIGNED_URL]
+        assert resolver.calls == [("f.us.sinaimg.cn", 443)]
+        assert [result.url for result in refresher.results] == [PLAYBACK_SIGNED_URL]
+
+        export_service = EmbyExportService(
+            database,
+            EmbyExporter(library_root, staging_root=export_work_root),
+            clock=lambda: FIXED_AT,
+        )
+        exported = export_service.export_author(
+            EmbyExportRequest(seed.author_id, "execution-0035-export", lease_seconds=60)
+        )
+        assert exported.already_exported is False
+        author_directory = library_root / exported.output_path
+        assert next(author_directory.glob("Season 2026/*.mp4")).read_bytes() == MP4
+
+        archive_tree = _tree(archive_root)
+        library_tree = _tree(author_directory)
+        replayed = service.run(download_request)
+        replayed_export = export_service.export_author(
+            EmbyExportRequest(seed.author_id, "execution-0035-export-replay", lease_seconds=60)
+        )
+        assert replayed.disposition == "already_verified"
+        assert replayed_export.already_exported is True
+        assert len(requests) == 1
+        assert _tree(archive_root) == archive_tree
+        assert _tree(author_directory) == library_tree
+
+        _assert_private_values_absent(runtime_root, download_work_root, archive_root, export_work_root, library_root)
+    finally:
+        database.dispose()
+
+    sqlite_artifacts = tuple(path for path in tmp_path.glob(f"{database_path.name}*") if path.is_file())
+    assert sqlite_artifacts
+    _assert_private_values_absent(*sqlite_artifacts)

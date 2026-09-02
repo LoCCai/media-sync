@@ -184,6 +184,38 @@ def validate_weibo_video_url(value: object) -> str:
     return value
 
 
+_WEIBO_PLAYBACK_QUALITY_ORDER = ("1080p", "720p", "540p", "480p", "360p")
+_WEIBO_MAX_PLAYBACK_ENTRIES = 8
+
+
+def _select_playback_list_url(media_info: Mapping[str, object]) -> str | None:
+    playback_list = media_info.get("playback_list")
+    if (
+        not isinstance(playback_list, list)
+        or not 1 <= len(playback_list) <= _WEIBO_MAX_PLAYBACK_ENTRIES
+        or any(not isinstance(entry, Mapping) for entry in playback_list)
+    ):
+        return None
+    best_rank: int | None = None
+    best_url: str | None = None
+    for entry in playback_list:
+        play_info = entry.get("play_info")
+        if not isinstance(play_info, Mapping):
+            continue
+        quality = play_info.get("quality")
+        if type(quality) is not str or quality not in _WEIBO_PLAYBACK_QUALITY_ORDER:
+            continue
+        rank = _WEIBO_PLAYBACK_QUALITY_ORDER.index(quality)
+        try:
+            url = validate_weibo_video_url(play_info.get("url"))
+        except ValueError:
+            continue
+        if best_rank is None or rank < best_rank:
+            best_rank = rank
+            best_url = url
+    return best_url
+
+
 def _capture_video(note_item: object) -> _CapturedVideo | None:
     if not isinstance(note_item, Mapping):
         return None
@@ -202,11 +234,14 @@ def _capture_video(note_item: object) -> _CapturedVideo | None:
     media_info = page_info.get("media_info")
     if not isinstance(media_info, Mapping):
         return None
+    selected: str | None
     try:
-        url = validate_weibo_video_url(media_info.get("stream_url"))
+        selected = validate_weibo_video_url(media_info.get("stream_url"))
     except ValueError:
+        selected = _select_playback_list_url(media_info)
+    if selected is None:
         return None
-    return _CapturedVideo(note_id=note_id, url=url)
+    return _CapturedVideo(note_id=note_id, url=selected)
 
 
 def _capture_images(note_item: object) -> _CapturedImages | None:

@@ -568,9 +568,12 @@ class FakeCrawler:
             "text": "fixture image note",
         }
         if __WB_VIDEO_URL__ is not None:
+            media_info = {"stream_url": __WB_VIDEO_URL__}
+            if __WB_PLAYBACK_LIST__ is not None:
+                media_info = {"playback_list": __WB_PLAYBACK_LIST__}
             mblog["page_info"] = {
                 "page_type": __WB_PAGE_TYPE__,
-                "media_info": {"stream_url": __WB_VIDEO_URL__},
+                "media_info": media_info,
             }
             if __WB_RETWEETED__:
                 mblog["retweeted_status"] = {"id": "7525082444551310599"}
@@ -1046,6 +1049,7 @@ def _fake_wb_checkout(
     video_url: str | None = None,
     page_type: object = "video",
     retweeted: bool = False,
+    playback_list: list[dict[str, object]] | None = None,
 ) -> Path:
     checkout = root / "fake-mediacrawler-wb"
     (checkout / "config").mkdir(parents=True)
@@ -1065,6 +1069,7 @@ def _fake_wb_checkout(
         .replace("__WB_VIDEO_URL__", repr(video_url))
         .replace("__WB_PAGE_TYPE__", repr(page_type))
         .replace("__WB_RETWEETED__", repr(retweeted))
+        .replace("__WB_PLAYBACK_LIST__", repr(playback_list))
     )
     (checkout / "main.py").write_text(main_source, encoding="utf-8")
     return checkout.resolve()
@@ -1934,6 +1939,93 @@ def test_weibo_video_refresher_resolves_one_fresh_ephemeral_locator(tmp_path: Pa
     retained = b"".join(path.read_bytes() for path in (tmp_path / "runtime").rglob("*") if path.is_file())
     assert WB_VIDEO_URL.encode("utf-8") not in retained
     assert WEIBO_VIDEO_FIELD.encode("utf-8") not in retained
+
+
+def _wb_video_context_for(hint_url: str) -> MediaCrawlerRefreshContext:
+    locator = AdapterRefreshLocator(
+        adapter="mediacrawler",
+        asset_key=stable_asset_key(
+            platform="wb",
+            content_remote_type="content",
+            content_remote_id=CONTENT_ID,
+            kind="video",
+            position=0,
+            remote_id=f"{CONTENT_ID}:video:0",
+        ),
+    )
+    return MediaCrawlerRefreshContext(
+        asset_id=ASSET_ID,
+        account_id=ACCOUNT_ID,
+        subscription_id=SUBSCRIPTION_ID,
+        platform=Platform.WB,
+        login_method=LoginMethod.QR,
+        content_remote_type="content",
+        content_remote_id=CONTENT_ID,
+        author_remote_id="creator-42",
+        author_display_name="Fixture creator",
+        asset_remote_id=f"{CONTENT_ID}:video:0",
+        asset_kind=AssetKind.VIDEO,
+        asset_position=0,
+        source_hint=hint_url,
+        locator=locator,
+        watchdogs=WatchdogLimits(max_seconds=10, poll_seconds=0.01),
+    )
+
+
+def test_weibo_playback_list_selects_the_highest_closed_quality(tmp_path: Path) -> None:
+    low_url = "https://f.us.sinaimg.cn/o0/wb-playback-low.mp4?KID=unistore,video"
+    high_url = "https://f.us.sinaimg.cn/o0/wb-playback-high.mp4?KID=unistore,video"
+    checkout = _fake_wb_checkout(
+        tmp_path,
+        video_url=high_url,
+        playback_list=[
+            {"play_info": {"url": low_url, "quality": "480p"}},
+            {"play_info": {"url": high_url, "quality": "720p"}},
+        ],
+    )
+    context = _wb_video_context_for("https://f.us.sinaimg.cn/o0/wb-playback-high.mp4")
+
+    resolved = MediaCrawlerLocatorRefresher(context, _wb_process_runner(tmp_path, checkout)).resolve(context.locator)
+
+    assert isinstance(resolved, ResolvedLocator)
+    assert resolved.url == high_url
+    retained = b"".join(path.read_bytes() for path in (tmp_path / "runtime").rglob("*") if path.is_file())
+    assert high_url.encode("utf-8") not in retained
+    assert low_url.encode("utf-8") not in retained
+
+
+@pytest.mark.parametrize(
+    "playback_list",
+    [
+        pytest.param(
+            [{"play_info": {"url": "https://f.us.sinaimg.cn/o0/wb-x.mp4?KID=u", "quality": "4k"}}], id="unknown-quality"
+        ),
+        pytest.param([{"play_info": {"url": "https://f.us.sinaimg.cn/o0/wb-x.mp4?KID=u"}}], id="missing-quality"),
+        pytest.param(
+            [{"play_info": {"url": "https://evil.example.test/o0/x.mp4", "quality": "720p"}}], id="invalid-url"
+        ),
+        pytest.param(
+            [{"play_info": {"url": "https://f.us.sinaimg.cn/o0/wb-x.mp4?KID=u", "quality": "720p"}}] * 9,
+            id="above-bound",
+        ),
+        pytest.param("not-a-list", id="wrong-type"),
+    ],
+)
+def test_weibo_playback_list_closes_on_unusable_shapes(
+    tmp_path: Path,
+    playback_list: object,
+) -> None:
+    checkout = _fake_wb_checkout(
+        tmp_path,
+        video_url="https://f.us.sinaimg.cn/o0/wb-x.mp4?KID=u",
+        playback_list=playback_list,  # type: ignore[arg-type]
+    )
+    context = _wb_video_context_for("https://f.us.sinaimg.cn/o0/wb-x.mp4")
+
+    with pytest.raises(MediaDownloadError) as caught:
+        MediaCrawlerLocatorRefresher(context, _wb_process_runner(tmp_path, checkout)).resolve(context.locator)
+
+    assert caught.value.code == "locator_refresh_asset_mismatch"
 
 
 @pytest.mark.parametrize(
