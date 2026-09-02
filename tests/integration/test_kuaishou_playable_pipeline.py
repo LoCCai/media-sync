@@ -19,7 +19,7 @@ from media_sync.application import mediacrawler_download as mediacrawler_runtime
 from media_sync.application.downloads import AssetDownloadRequest, AssetDownloadService
 from media_sync.application.emby import EmbyExportRequest, EmbyExportService
 from media_sync.application.mediacrawler_download import LazyMediaCrawlerLocatorRefresher
-from media_sync.domain import AssetKind, AuthStatus, LoginMethod, Platform, RunStatus
+from media_sync.domain import AssetKind, AuthStatus, ContentKind, LoginMethod, Platform, RunStatus
 from media_sync.exporters.emby import EmbyExporter
 from media_sync.infrastructure.db import (
     AccountRepository,
@@ -43,6 +43,7 @@ from media_sync.infrastructure.db.models import (
     SyncRun,
 )
 from media_sync.integrations.mediacrawler import MediaCrawlerDetailRequest, MediaCrawlerDetailResult
+from media_sync.integrations.mediacrawler.kuaishou_media import KS_GALLERY_FIELD
 from media_sync.integrations.mediacrawler.normalizers import NormalizationContext, normalize_jsonl_bytes
 from media_sync.media import (
     AdapterRefreshLocator,
@@ -624,6 +625,196 @@ def test_kuaishou_single_video_and_cover_reach_emby_without_persisting_signed_qu
         )
     finally:
         database.dispose()
+
+
+KS_ATLAS_FIRST_HINT = "https://img.example.test/ks/atlas-first.jpg"
+KS_ATLAS_SECOND_HINT = "https://img.example.test/ks/atlas-second.jpg"
+KS_ATLAS_SIGNATURE = "EXECUTION-0034-" + "ATLAS-SIGNATURE-MUST-STAY-EPHEMERAL"
+KS_ATLAS_FIRST_DETAIL = f"{KS_ATLAS_FIRST_HINT}?sign={KS_ATLAS_SIGNATURE}"
+KS_ATLAS_SECOND_DETAIL = f"{KS_ATLAS_SECOND_HINT}?sign={KS_ATLAS_SIGNATURE}"
+SECOND_JPEG = b"\xff\xd8\xff\xe0" + b"execution-0034-offline-kuaishou-atlas-second" + b"\xff\xd9"
+
+
+def _ks_atlas_record(*, first: str, second: str) -> dict[str, object]:
+    return {
+        "video_id": CONTENT_ID,
+        "video_type": "atlas",
+        "title": "Execution 0034 ordinary Kuaishou atlas gallery.",
+        "desc": "Execution 0034 ordinary Kuaishou atlas gallery.",
+        "create_time": "1767225600",
+        "creator_hash": "untrusted-kuaishou-creator",
+        "nickname": "Untrusted nickname",
+        "liked_count": "34",
+        "viewd_count": "340",
+        "last_modify_ts": 1767230000,
+        "video_url": f"https://www.kuaishou.com/short-video/{CONTENT_ID}",
+        "video_cover_url": "",
+        "video_play_url": "",
+        KS_GALLERY_FIELD: [first, second],
+    }
+
+
+KS_ATLAS_FORWARD_JSONL = _jsonl(
+    _ks_atlas_record(
+        first=f"{KS_ATLAS_FIRST_HINT}?sign=execution-0034-forward",
+        second=f"{KS_ATLAS_SECOND_HINT}?sign=execution-0034-forward",
+    )
+)
+KS_ATLAS_DETAIL_JSONL = _jsonl(_ks_atlas_record(first=KS_ATLAS_FIRST_DETAIL, second=KS_ATLAS_SECOND_DETAIL))
+
+
+class _AtlasDetailRunner:
+    instances: ClassVar[list[_AtlasDetailRunner]] = []
+
+    def __init__(self, **kwargs: object) -> None:
+        self.constructor_kwargs = kwargs
+        self.calls: list[MediaCrawlerDetailRequest] = []
+        type(self).instances.append(self)
+
+    def run(self, request: MediaCrawlerDetailRequest) -> MediaCrawlerDetailResult:
+        self.calls.append(request)
+        return MediaCrawlerDetailResult(KS_ATLAS_DETAIL_JSONL, UPSTREAM_SHA)
+
+
+def test_kuaishou_atlas_gallery_reaches_emby_without_persisting_signed_queries(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database_path = tmp_path / "kuaishou-atlas.sqlite3"
+    database_url = f"sqlite+pysqlite:///{database_path.as_posix()}"
+    archive_root = tmp_path / "archive"
+    library_root = tmp_path / "library"
+    runtime_root = tmp_path / "mediacrawler-runtime"
+    download_work_root = tmp_path / "download-work"
+    export_work_root = tmp_path / "export-work"
+    runtime_root.mkdir()
+    upgrade_database(database_url)
+    database = Database(database_url)
+    _AtlasDetailRunner.instances = []
+    monkeypatch.setattr(mediacrawler_runtime, "MediaCrawlerDetailProcessRunner", _AtlasDetailRunner)
+
+    try:
+        seed = _seed_subscription(database)
+        normalized = normalize_jsonl_bytes(KS_ATLAS_FORWARD_JSONL, _normalization_context())
+        assert not normalized.quarantined and not normalized.truncated_tail
+        record = normalized.records[0]
+        assert record.content.kind is ContentKind.GALLERY
+        assert [(asset.kind, asset.position, asset.remote_id) for asset in record.assets] == [
+            (AssetKind.IMAGE, 0, f"{CONTENT_ID}:image:0"),
+            (AssetKind.IMAGE, 1, f"{CONTENT_ID}:image:1"),
+        ]
+
+        run_id = _start_ingesting_run(database, seed.subscription_id)
+        ingestion = MediaCrawlerIngestionService(database).ingest(
+            normalized.records,
+            subscription_id=seed.subscription_id,
+            run_id=run_id,
+            expected_revision=0,
+            mode=IngestionMode.FORWARD,
+        )
+        assert (ingestion.accepted_count, ingestion.discovered_count, ingestion.asset_count) == (1, 1, 2)
+
+        with database.session() as session:
+            assets = tuple(session.scalars(select(Asset).order_by(Asset.position, Asset.id)).all())
+            assert tuple(asset.source_url for asset in assets) == (KS_ATLAS_FIRST_HINT, KS_ATLAS_SECOND_HINT)
+            asset_ids = [UUID(asset.id) for asset in assets]
+
+        resolver = _RecordingPublicResolver()
+        requests: list[httpx.Request] = []
+        payloads = {KS_ATLAS_FIRST_DETAIL: PNG, KS_ATLAS_SECOND_DETAIL: SECOND_JPEG}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            url = str(request.url)
+            assert url in payloads
+            assert set(request.headers) == {"accept", "accept-encoding", "connection", "host", "user-agent"}
+            assert "cookie" not in request.headers
+            assert "authorization" not in request.headers
+            assert "referer" not in request.headers
+            assert "origin" not in request.headers
+            payload = payloads[url]
+            return httpx.Response(
+                200,
+                headers={
+                    "Content-Length": str(len(payload)),
+                    "Content-Type": "image/png" if payload is PNG else "image/jpeg",
+                    "ETag": f'"execution-0034-{url.rsplit("/", 1)[-1].split(".")[0]}"',
+                },
+                content=payload,
+            )
+
+        def transport_factory(target: ValidatedTarget) -> httpx.BaseTransport:
+            del target
+            return httpx.MockTransport(handler)
+
+        http = SafeHttpClient(resolver, transport_factory=transport_factory)
+        harnesses = []
+        for index, asset_id in enumerate(asset_ids):
+            harnesses.append(
+                _download_harness(
+                    database,
+                    asset_id=asset_id,
+                    subscription_id=UUID(seed.subscription_id),
+                    worker_id=f"execution-0034-atlas-download-{index}",
+                    tmp_path=tmp_path,
+                    runtime_root=runtime_root,
+                    download_work_root=download_work_root,
+                    archive_root=archive_root,
+                    http=http,
+                    probe=_ControlledMp4Probe(),
+                )
+            )
+
+        downloaded = [harness.service.run(harness.request) for harness in harnesses]
+
+        assert [result.disposition for result in downloaded] == ["downloaded", "downloaded"]
+        assert [result.mime_type for result in downloaded] == ["image/png", "image/jpeg"]
+        assert [result.archive_path.read_bytes() for result in downloaded] == [PNG, SECOND_JPEG]
+        assert [str(request.url) for request in requests] == [KS_ATLAS_FIRST_DETAIL, KS_ATLAS_SECOND_DETAIL]
+        assert resolver.calls == [("img.example.test", 443)] * 2
+        assert len(_AtlasDetailRunner.instances) == 2
+        assert all(len(runner.calls) == 1 for runner in _AtlasDetailRunner.instances)
+
+        export_service = EmbyExportService(
+            database,
+            EmbyExporter(library_root, staging_root=export_work_root),
+            clock=lambda: FIXED_AT,
+        )
+        exported = export_service.export_author(
+            EmbyExportRequest(seed.author_id, "execution-0034-export", lease_seconds=60)
+        )
+        assert exported.already_exported is False
+        author_directory = library_root / exported.output_path
+        gallery = tuple(sorted(author_directory.glob("Season */*.assets/gallery-*")))
+        assert len(gallery) == 2
+        assert tuple(path.read_bytes() for path in gallery) == (PNG, SECOND_JPEG)
+
+        archive_tree = _tree(archive_root)
+        library_tree = _tree(author_directory)
+        replayed = [harness.service.run(harness.request) for harness in harnesses]
+        replayed_export = export_service.export_author(
+            EmbyExportRequest(seed.author_id, "execution-0034-export-replay", lease_seconds=60)
+        )
+        assert [result.disposition for result in replayed] == ["already_verified", "already_verified"]
+        assert replayed_export.already_exported is True
+        assert len(requests) == 2
+        assert all(len(runner.calls) == 1 for runner in _AtlasDetailRunner.instances)
+        assert _tree(archive_root) == archive_tree
+        assert _tree(author_directory) == library_tree
+
+        for value in (KS_ATLAS_SIGNATURE, KS_ATLAS_FIRST_DETAIL, KS_ATLAS_SECOND_DETAIL, KS_GALLERY_FIELD):
+            assert all(
+                value.encode() not in payload
+                for root in (runtime_root, download_work_root, archive_root, export_work_root, library_root)
+                for payload in ({root.name: root.read_bytes()} if root.is_file() else _tree(root)).values()
+            )
+    finally:
+        database.dispose()
+
+    sqlite_artifacts = [path for path in tmp_path.glob(f"{database_path.name}*") if path.is_file()]
+    assert sqlite_artifacts
+    for value in (KS_ATLAS_SIGNATURE, KS_ATLAS_FIRST_DETAIL, KS_ATLAS_SECOND_DETAIL):
+        assert all(value.encode() not in path.read_bytes() for path in sqlite_artifacts)
 
     sqlite_artifacts = [path for path in tmp_path.glob(f"{database_path.name}*") if path.is_file()]
     assert sqlite_artifacts

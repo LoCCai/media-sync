@@ -26,6 +26,7 @@ from media_sync.integrations.mediacrawler.jsonl import (
     QuarantineReason,
     read_jsonl,
 )
+from media_sync.integrations.mediacrawler.kuaishou_media import KS_GALLERY_FIELD
 from media_sync.integrations.mediacrawler.normalizers import (
     NormalizationContext,
     NormalizedMediaRecord,
@@ -1389,3 +1390,57 @@ def test_douyin_note_gallery_empty_field_keeps_the_frozen_video_fallback() -> No
     assert item.content.kind is ContentKind.VIDEO
     assert [asset.kind for asset in item.assets] == [AssetKind.VIDEO, AssetKind.AUDIO, AssetKind.COVER]
     assert item.assets[0].source_url == "https://cdn.example.invalid/dy/not-playable.mp4"
+
+
+@pytest.mark.parametrize("gallery_size", [1, 2, 64])
+def test_kuaishou_atlas_gallery_materializes_bounded_ordered_assets(gallery_size: int) -> None:
+    urls = [f"https://img.example.test/ks/atlas-{index}.jpg" for index in range(gallery_size)]
+    payload = source_record("ks/contents.v1.jsonl")
+    payload[KS_GALLERY_FIELD] = urls
+
+    item = normalize_record(payload, context(Platform.KS))
+
+    expected_kind = ContentKind.IMAGE if gallery_size == 1 else ContentKind.GALLERY
+    assert item.content.kind is expected_kind
+    images = tuple(asset for asset in item.assets if asset.kind is AssetKind.IMAGE)
+    assert tuple(asset.position for asset in images) == tuple(range(gallery_size))
+    assert tuple(asset.remote_id for asset in images) == tuple(
+        f"ks-video-001:image:{position}" for position in range(gallery_size)
+    )
+    assert tuple(asset.source_url for asset in images) == tuple(urls)
+    assert [asset.kind for asset in item.assets if asset.kind is not AssetKind.IMAGE] == [AssetKind.COVER]
+    durable_record = item.content.raw["record"]
+    assert isinstance(durable_record, Mapping)
+    assert KS_GALLERY_FIELD not in durable_record
+
+
+@pytest.mark.parametrize(
+    "gallery_value",
+    [
+        pytest.param([], id="empty"),
+        pytest.param([f"https://img.example.test/ks/over-{index}.jpg" for index in range(65)], id="above-bound"),
+        pytest.param(
+            ["https://img.example.test/ks/duplicate.jpg", "https://img.example.test/ks/duplicate.jpg"],
+            id="duplicate",
+        ),
+        pytest.param(["https://img.example.test/ks/first.jpg", 42], id="non-string-item"),
+        pytest.param(["https://img.example.test/ks/first.jpg", "not-a-url"], id="invalid-item"),
+        pytest.param(["http://img.example.test/ks/insecure.jpg"], id="insecure"),
+        pytest.param(["https://img.example.test/ks/animated.gif"], id="non-static-extension"),
+        pytest.param("https://img.example.test/ks/scalar.jpg", id="scalar"),
+        pytest.param(42, id="wrong-type"),
+    ],
+)
+def test_kuaishou_atlas_gallery_fails_closed_on_payload_drift(gallery_value: object) -> None:
+    payload = source_record("ks/contents.v1.jsonl")
+    payload[KS_GALLERY_FIELD] = gallery_value
+
+    with pytest.raises(RecordNormalizationError):
+        normalize_record(payload, context(Platform.KS))
+
+
+def test_kuaishou_record_without_gallery_field_keeps_the_video_shape() -> None:
+    item = normalize_record(source_record("ks/contents.v1.jsonl"), context(Platform.KS))
+
+    assert item.content.kind is ContentKind.VIDEO
+    assert [asset.kind for asset in item.assets] == [AssetKind.VIDEO, AssetKind.COVER]

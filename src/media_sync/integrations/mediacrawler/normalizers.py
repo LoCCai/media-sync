@@ -53,6 +53,7 @@ from .jsonl import (
     read_jsonl,
     read_jsonl_bytes,
 )
+from .kuaishou_media import KS_GALLERY_FIELD, KS_MAX_GALLERY_IMAGES, validate_ks_image_url
 from .tieba_media import (
     TIEBA_GALLERY_FIELD,
     TIEBA_IMAGE_FIELD,
@@ -94,6 +95,7 @@ _PRIVATE_MEDIA_FIELDS = frozenset(
         TIEBA_GALLERY_FIELD,
         TIEBA_IMAGE_FIELD,
         TIEBA_IMAGES_FIELD,
+        KS_GALLERY_FIELD,
         WEIBO_IMAGES_FIELD,
         WEIBO_VIDEO_FIELD,
         ZHIHU_IMAGE_FIELD,
@@ -562,6 +564,30 @@ def _normalize_dy(record: Mapping[str, object]) -> _ContentParts:
 def _normalize_ks(record: Mapping[str, object]) -> _ContentParts:
     remote_id = _required_id(record, "video_id")
     body = _text(record.get("desc"))
+    covers = _url_list(record.get("video_cover_url"))
+    gallery_urls = record.get(KS_GALLERY_FIELD)
+    if gallery_urls is not None:
+        if (
+            not isinstance(gallery_urls, Sequence)
+            or isinstance(gallery_urls, bytes | bytearray | str)
+            or not 1 <= len(gallery_urls) <= KS_MAX_GALLERY_IMAGES
+            or any(type(url) is not str for url in gallery_urls)
+        ):
+            raise RecordNormalizationError(QuarantineReason.INVALID_RECORD)
+        images = tuple(validate_ks_image_url(url) for url in gallery_urls)
+        if len(set(images)) != len(images):
+            raise RecordNormalizationError(QuarantineReason.INVALID_RECORD)
+        kind = ContentKind.IMAGE if len(images) == 1 else ContentKind.GALLERY
+        return _ContentParts(
+            remote_id=remote_id,
+            kind=kind,
+            title=_text(record.get("title")) or _summary(body),
+            body=body,
+            canonical_url=_safe_url(record.get("video_url")) or f"https://www.kuaishou.com/short-video/{remote_id}",
+            published_at=_published_at(record.get("create_time")),
+            metrics=_metrics(record, {"liked_count": "likes", "viewd_count": "views"}),
+            asset_groups=((AssetKind.IMAGE, images), (AssetKind.COVER, covers)),
+        )
     return _ContentParts(
         remote_id=remote_id,
         kind=ContentKind.VIDEO,
@@ -572,7 +598,7 @@ def _normalize_ks(record: Mapping[str, object]) -> _ContentParts:
         metrics=_metrics(record, {"liked_count": "likes", "viewd_count": "views"}),
         asset_groups=(
             (AssetKind.VIDEO, _url_list(record.get("video_play_url"))),
-            (AssetKind.COVER, _url_list(record.get("video_cover_url"))),
+            (AssetKind.COVER, covers),
         ),
     )
 

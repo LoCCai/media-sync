@@ -1447,6 +1447,12 @@ async def _execute_child(
                 verified.root,
                 creator_max_items=manifest.max_items,
             )
+        elif manifest.platform.value == "ks":
+            from media_sync.integrations.mediacrawler.kuaishou_media import (
+                install_kuaishou_media_capture,
+            )
+
+            install_kuaishou_media_capture(verified.root)
         config.__dict__["COOKIES"] = cookie or ""
         cookie = None
         if cancellation is not None and cancellation.is_set():

@@ -22,6 +22,7 @@ from media_sync.integrations.mediacrawler.detail_runner import (
     MediaCrawlerDetailRequest,
     MediaCrawlerDetailResult,
 )
+from media_sync.integrations.mediacrawler.kuaishou_media import KS_GALLERY_FIELD
 from media_sync.integrations.mediacrawler.policies import WatchdogLimits
 from media_sync.integrations.mediacrawler.refresh import (
     MediaCrawlerLocatorRefresher,
@@ -246,6 +247,110 @@ async def main():
 
 async def async_cleanup():
     return None
+"""
+
+_KS_STORE_IMPL = r"""
+import json
+from pathlib import Path
+
+import config
+
+
+class KuaishouJsonlStoreImplement:
+    async def store_content(self, content_item):
+        target = Path(config.SAVE_DATA_PATH) / "kuaishou" / "jsonl" / "detail_contents_fixture.jsonl"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with target.open("a", encoding="utf-8", newline="\n") as stream:
+            stream.write(json.dumps(content_item, separators=(",", ":")) + "\n")
+"""
+
+_KS_STORE = r"""
+import asyncio
+
+import config
+from ._store_impl import KuaishouJsonlStoreImplement
+
+
+async def update_kuaishou_video(video_item):
+    photo = video_item["photo"]
+    await asyncio.sleep(0)
+    await KuaishouJsonlStoreImplement().store_content(
+        {
+            "video_id": photo["id"],
+            "video_type": str(video_item.get("type", "video")),
+            "title": photo.get("caption", "")[:500],
+            "desc": photo.get("caption", "")[:500],
+            "create_time": photo.get("timestamp"),
+            "liked_count": str(photo.get("realLikeCount", "0")),
+            "viewd_count": str(photo.get("viewCount", "0")),
+            "last_modify_ts": 1767230000,
+            "video_url": "https://www.kuaishou.com/short-video/" + photo["id"],
+            "video_cover_url": photo.get("coverUrl", ""),
+            "video_play_url": photo.get("photoUrl", ""),
+        }
+    )
+"""
+
+_KS_ATLAS_MAIN = r"""
+import os
+from pathlib import Path
+
+import config
+from store import kuaishou as ks_store
+
+crawler = None
+
+
+def _profile():
+    return Path(
+        os.path.join(os.getcwd(), "browser_data", config.USER_DATA_DIR % config.PLATFORM)
+    ).resolve()
+
+
+class FakeCrawler:
+    async def start(self):
+        assert config.PLATFORM == "ks"
+        assert config.LOGIN_TYPE == "qrcode"
+        assert config.CRAWLER_TYPE == "detail"
+        assert config.KS_SPECIFIED_ID_LIST == ["3x3zxz4mjrsc8ke"]
+        assert config.SAVE_DATA_OPTION == "jsonl"
+        assert config.CREATOR_MODE is False
+        assert config.ENABLE_GET_COMMENTS is False
+        assert config.ENABLE_GET_MEIDAS is False
+        assert config.ENABLE_GET_MEDIAS is False
+        assert config.MAX_CONCURRENCY_NUM == 1
+        assert config.SAVE_LOGIN_STATE is True
+        profile = _profile()
+        assert profile.name == "ks_user_data_dir"
+        profile.mkdir(parents=True, exist_ok=True)
+        (profile / "session.marker").write_text("stable fixture profile", encoding="utf-8")
+        photo = {
+            "id": "3x3zxz4mjrsc8ke",
+            "caption": "atlas fixture",
+            "timestamp": 1767225600,
+            "coverUrl": "",
+            "photoUrl": "",
+        }
+        if __KS_ATLAS_PICS__ is not None:
+            photo["ext_params"] = {"atlas": {"pics": [{"cdn": url} for url in __KS_ATLAS_PICS__]}}
+        await ks_store.update_kuaishou_video({"photo": photo, "type": "video"})
+
+
+class CrawlerFactory:
+    @staticmethod
+    def create_crawler(platform):
+        assert platform == "ks"
+        return FakeCrawler()
+
+
+async def main():
+    global crawler
+    crawler = CrawlerFactory.create_crawler(config.PLATFORM)
+    await crawler.start()
+
+
+async def async_cleanup():
+    assert config.COOKIES == ""
 """
 
 _KS_MAIN = r"""
@@ -847,12 +952,31 @@ def _ks_record(*, video_id: str = KS_VIDEO_ID) -> dict[str, str]:
     }
 
 
-def _fake_ks_checkout(root: Path, *, records: list[dict[str, str]] | None = None) -> Path:
+def _fake_ks_checkout(
+    root: Path,
+    *,
+    records: list[dict[str, str]] | None = None,
+    atlas_pics: tuple[str, ...] | None = None,
+) -> Path:
     checkout = root / "fake-mediacrawler-ks"
     (checkout / "config").mkdir(parents=True)
     (checkout / "config" / "__init__.py").write_text(textwrap.dedent(_CONFIG).lstrip(), encoding="utf-8")
-    active_records = [_ks_record()] if records is None else records
-    main_source = textwrap.dedent(_KS_MAIN).lstrip().replace("__KS_RECORDS__", repr(active_records))
+    (checkout / "store").mkdir(parents=True)
+    (checkout / "store" / "__init__.py").write_text("", encoding="utf-8")
+    (checkout / "store" / "kuaishou").mkdir(parents=True)
+    (checkout / "store" / "kuaishou" / "__init__.py").write_text(
+        textwrap.dedent(_KS_STORE).lstrip(),
+        encoding="utf-8",
+    )
+    (checkout / "store" / "kuaishou" / "_store_impl.py").write_text(
+        textwrap.dedent(_KS_STORE_IMPL).lstrip(),
+        encoding="utf-8",
+    )
+    if atlas_pics is not None:
+        main_source = textwrap.dedent(_KS_ATLAS_MAIN).lstrip().replace("__KS_ATLAS_PICS__", repr(atlas_pics))
+    else:
+        active_records = [_ks_record()] if records is None else records
+        main_source = textwrap.dedent(_KS_MAIN).lstrip().replace("__KS_RECORDS__", repr(active_records))
     (checkout / "main.py").write_text(main_source, encoding="utf-8")
     return checkout.resolve()
 
@@ -1334,8 +1458,8 @@ def _ks_process_runner(tmp_path: Path, checkout: Path) -> MediaCrawlerDetailProc
     )
 
 
-def _ks_context(kind: AssetKind, signed_url: str) -> MediaCrawlerRefreshContext:
-    remote_id = f"{KS_VIDEO_ID}:{kind.value}:0"
+def _ks_context(kind: AssetKind, signed_url: str, *, position: int = 0) -> MediaCrawlerRefreshContext:
+    remote_id = f"{KS_VIDEO_ID}:{kind.value}:{position}"
     locator = AdapterRefreshLocator(
         adapter="mediacrawler",
         asset_key=stable_asset_key(
@@ -1343,7 +1467,7 @@ def _ks_context(kind: AssetKind, signed_url: str) -> MediaCrawlerRefreshContext:
             content_remote_type="content",
             content_remote_id=KS_VIDEO_ID,
             kind=kind.value,
-            position=0,
+            position=position,
             remote_id=remote_id,
         ),
     )
@@ -1361,7 +1485,7 @@ def _ks_context(kind: AssetKind, signed_url: str) -> MediaCrawlerRefreshContext:
         author_display_name="Fixture creator",
         asset_remote_id=remote_id,
         asset_kind=kind,
-        asset_position=0,
+        asset_position=position,
         source_hint=source_hint,
         locator=locator,
         watchdogs=WatchdogLimits(
@@ -2204,6 +2328,48 @@ def test_kuaishou_detail_refresh_rejects_missing_drifted_and_duplicate_records(
     retained = b"".join(path.read_bytes() for path in (tmp_path / "runtime").rglob("*") if path.is_file())
     assert KS_VIDEO_URL.encode("utf-8") not in retained
     assert KS_COVER_URL.encode("utf-8") not in retained
+
+
+KS_ATLAS_URLS = (
+    "https://img.example.test/ks/atlas-first.jpg?sign=ks-atlas-sentinel",
+    "https://img.example.test/ks/atlas-second.jpg?sign=ks-atlas-sentinel",
+)
+
+
+def test_kuaishou_atlas_detail_captures_bounded_gallery_before_the_store_flattens(tmp_path: Path) -> None:
+    checkout = _fake_ks_checkout(tmp_path, atlas_pics=KS_ATLAS_URLS)
+    context = _ks_context(AssetKind.IMAGE, KS_ATLAS_URLS[1], position=1)
+
+    resolved = MediaCrawlerLocatorRefresher(context, _ks_process_runner(tmp_path, checkout)).resolve(context.locator)
+
+    assert resolved.url == KS_ATLAS_URLS[1]
+    assert resolved.request_profile is MediaRequestProfile.DEFAULT
+    assert "ks-atlas-sentinel" not in repr(resolved)
+    retained = b"".join(path.read_bytes() for path in (tmp_path / "runtime").rglob("*") if path.is_file())
+    assert KS_GALLERY_FIELD.encode("utf-8") not in retained
+    assert KS_ATLAS_URLS[0].encode("utf-8") not in retained
+    assert KS_ATLAS_URLS[1].encode("utf-8") not in retained
+
+
+@pytest.mark.parametrize(
+    "atlas_pics",
+    [
+        pytest.param(("http://img.example.test/ks/insecure.jpg",), id="insecure"),
+        pytest.param(("https://img.example.test/ks/one.jpg", "https://img.example.test/ks/one.jpg"), id="duplicate"),
+        pytest.param(tuple(f"https://img.example.test/ks/over-{index}.jpg" for index in range(65)), id="above-bound"),
+    ],
+)
+def test_kuaishou_atlas_detail_capture_closes_on_drifted_shapes(
+    tmp_path: Path,
+    atlas_pics: tuple[str, ...],
+) -> None:
+    checkout = _fake_ks_checkout(tmp_path, atlas_pics=atlas_pics)
+    context = _ks_context(AssetKind.IMAGE, atlas_pics[0])
+
+    with pytest.raises(MediaDownloadError) as caught:
+        MediaCrawlerLocatorRefresher(context, _ks_process_runner(tmp_path, checkout)).resolve(context.locator)
+
+    assert caught.value.code in {"locator_refresh_asset_mismatch", "locator_refresh_schema_changed"}
 
 
 def test_bilibili_numeric_aid_uses_pinned_client_detail_entry(tmp_path: Path) -> None:
