@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
+import subprocess
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -43,12 +45,18 @@ from media_sync.infrastructure.db.models import (
     SyncRun,
 )
 from media_sync.integrations.mediacrawler import MediaCrawlerDetailRequest, MediaCrawlerDetailResult
-from media_sync.integrations.mediacrawler.bilibili_media import BILIBILI_PROGRESSIVE_BACKUPS_FIELD
+from media_sync.integrations.mediacrawler.bilibili_media import (
+    BILIBILI_PROGRESSIVE_BACKUPS_FIELD,
+    BILIBILI_PROGRESSIVE_FORMAT_FIELD,
+)
 from media_sync.integrations.mediacrawler.normalizers import NormalizationContext, normalize_jsonl_bytes
 from media_sync.media import (
     AdapterRefreshLocator,
+    FFmpegStreamCopyMuxer,
+    FFprobeMediaProbe,
     MediaRequestProfile,
     ProbeResult,
+    ResolvedFlvLocator,
     ResolvedLocator,
     SafeHttpClient,
     SecureMediaDownloader,
@@ -94,6 +102,18 @@ DETAIL_JSONL = _jsonl(
         BILIBILI_PROGRESSIVE_BACKUPS_FIELD: [BACKUP_URL],
         "desc": "Execution 0013 ordinary upload, logical first page.",
         "title": "Offline first-page progressive video",
+        "video_id": CONTENT_ID,
+        "video_type": "video",
+        "video_url": f"https://www.bilibili.com/video/av{CONTENT_ID}",
+    }
+)
+FLV_DETAIL_JSONL = _jsonl(
+    {
+        PRIVATE_PROGRESSIVE_FIELD: SIGNED_URL,
+        BILIBILI_PROGRESSIVE_BACKUPS_FIELD: [BACKUP_URL],
+        BILIBILI_PROGRESSIVE_FORMAT_FIELD: "flv",
+        "desc": "Execution 0027 explicit FLV source, logical first page.",
+        "title": "Offline first-page FLV remux video",
         "video_id": CONTENT_ID,
         "video_type": "video",
         "video_url": f"https://www.bilibili.com/video/av{CONTENT_ID}",
@@ -216,6 +236,7 @@ def _assert_signed_url_absent(*roots: Path) -> None:
         BACKUP_SENTINEL.encode(),
         b"upsig=EXECUTION-0013",
         b"upsig=EXECUTION-0026",
+        BILIBILI_PROGRESSIVE_FORMAT_FIELD.encode(),
     )
     for root in roots:
         retained = {root.name: root.read_bytes()} if root.is_file() else _tree(root)
@@ -490,5 +511,335 @@ def test_bilibili_progressive_video_reaches_emby_without_persisting_signed_url(
         database.dispose()
 
     sqlite_artifacts = [path for path in tmp_path.glob(f"{database_path.name}*") if path.is_file()]
+    assert sqlite_artifacts
+    _assert_signed_url_absent(*sqlite_artifacts)
+
+
+class _FlvDetailRunner:
+    instances: ClassVar[list[_FlvDetailRunner]] = []
+
+    def __init__(self, **kwargs: object) -> None:
+        self.constructor_kwargs = kwargs
+        self.calls: list[MediaCrawlerDetailRequest] = []
+        type(self).instances.append(self)
+
+    def run(self, request: MediaCrawlerDetailRequest) -> MediaCrawlerDetailResult:
+        self.calls.append(request)
+        return MediaCrawlerDetailResult(FLV_DETAIL_JSONL, UPSTREAM_SHA)
+
+
+@dataclass(slots=True)
+class _RecordingFlvRefresher:
+    delegate: LazyMediaCrawlerLocatorRefresher
+    results: list[ResolvedFlvLocator] = field(default_factory=list)
+
+    def resolve(self, locator: AdapterRefreshLocator) -> ResolvedFlvLocator:
+        resolved = self.delegate.resolve(locator)
+        assert isinstance(resolved, ResolvedFlvLocator)
+        self.results.append(resolved)
+        return resolved
+
+
+@dataclass(slots=True)
+class _RecordingProductionProbe:
+    delegate: FFprobeMediaProbe
+    calls: list[Path] = field(default_factory=list)
+
+    def probe(self, path: Path, *, timeout_seconds: float, max_output_bytes: int) -> ProbeResult | None:
+        self.calls.append(path)
+        return self.delegate.probe(
+            path,
+            timeout_seconds=timeout_seconds,
+            max_output_bytes=max_output_bytes,
+        )
+
+
+@dataclass(slots=True)
+class _RecordingProductionMuxer:
+    delegate: FFmpegStreamCopyMuxer
+    remux_calls: list[tuple[Path, Path]] = field(default_factory=list)
+
+    def remux(
+        self,
+        source_path: Path,
+        output_path: Path,
+        *,
+        root: Path,
+        timeout_seconds: float,
+        max_output_bytes: int,
+        max_media_bytes: int,
+    ) -> None:
+        self.remux_calls.append((source_path, output_path))
+        self.delegate.remux(
+            source_path,
+            output_path,
+            root=root,
+            timeout_seconds=timeout_seconds,
+            max_output_bytes=max_output_bytes,
+            max_media_bytes=max_media_bytes,
+        )
+
+
+def _generate_mixed_flv(root: Path, ffmpeg: str) -> bytes:
+    root.mkdir()
+    source = root / "source.flv"
+    command = (
+        ffmpeg,
+        "-nostdin",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-f",
+        "lavfi",
+        "-i",
+        "color=c=blue:s=64x64:r=5:d=0.6",
+        "-f",
+        "lavfi",
+        "-i",
+        "sine=frequency=440:sample_rate=44100:duration=0.6",
+        "-shortest",
+        "-c:v",
+        "libx264",
+        "-pix_fmt",
+        "yuv420p",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "64k",
+        "-f",
+        "flv",
+        "-y",
+        str(source),
+    )
+    try:
+        subprocess.run(command, check=True, capture_output=True, timeout=30)
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        pytest.skip(f"local FLV fixture generation is unavailable: {type(exc).__name__}")
+    payload = source.read_bytes()
+    assert payload.startswith(b"FLV")
+    return payload
+
+
+def _stream_types(path: Path, ffprobe: str) -> set[str]:
+    completed = subprocess.run(
+        (
+            ffprobe,
+            "-v",
+            "error",
+            "-show_entries",
+            "stream=codec_type",
+            "-of",
+            "json",
+            str(path),
+        ),
+        check=True,
+        capture_output=True,
+        timeout=30,
+    )
+    payload = json.loads(completed.stdout)
+    return {stream["codec_type"] for stream in payload["streams"]}
+
+
+def test_bilibili_flv_backup_reaches_emby_through_production_remux_with_zero_work_replay(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ffmpeg = shutil.which("ffmpeg")
+    ffprobe = shutil.which("ffprobe")
+    if ffmpeg is None or ffprobe is None:
+        pytest.skip("ffmpeg and ffprobe are required for production-process qualification")
+    flv_bytes = _generate_mixed_flv(tmp_path / "fixtures", ffmpeg)
+    database_path = tmp_path / "bilibili-flv.sqlite3"
+    database_url = f"sqlite+pysqlite:///{database_path.as_posix()}"
+    archive_root = tmp_path / "archive"
+    library_root = tmp_path / "library"
+    runtime_root = tmp_path / "mediacrawler-runtime"
+    download_work_root = tmp_path / "download-work"
+    export_work_root = tmp_path / "export-work"
+    runtime_root.mkdir()
+    upgrade_database(database_url)
+    database = Database(database_url)
+    _FlvDetailRunner.instances = []
+    monkeypatch.setattr(mediacrawler_runtime, "MediaCrawlerDetailProcessRunner", _FlvDetailRunner)
+
+    try:
+        seed = _seed_subscription(database)
+        normalized = normalize_jsonl_bytes(
+            FORWARD_JSONL,
+            NormalizationContext(
+                platform=Platform.BILI,
+                creator_remote_id=AUTHOR_REMOTE_ID,
+                creator_display_name="Bilibili Offline Creator",
+                upstream_sha=UPSTREAM_SHA,
+                ingested_at=FIXED_AT,
+            ),
+        )
+        assert not normalized.quarantined and not normalized.truncated_tail
+        assert [(asset.remote_id, asset.kind, asset.source_url) for asset in normalized.records[0].assets] == [
+            (VIDEO_REMOTE_ID, AssetKind.VIDEO, None)
+        ]
+        run_id = _start_ingesting_run(database, seed.subscription_id)
+        ingestion = MediaCrawlerIngestionService(database).ingest(
+            normalized.records,
+            subscription_id=seed.subscription_id,
+            run_id=run_id,
+            expected_revision=0,
+            mode=IngestionMode.FORWARD,
+        )
+        assert (ingestion.accepted_count, ingestion.discovered_count, ingestion.asset_count) == (1, 1, 1)
+
+        with database.session() as session:
+            asset = session.scalar(select(Asset))
+            assert asset is not None
+            asset_id = UUID(asset.id)
+            assert isinstance(parse_locator(asset.locator), AdapterRefreshLocator)
+            assert asset.source_url is None
+
+        delegate = LazyMediaCrawlerLocatorRefresher(
+            database,
+            asset_id=asset_id,
+            subscription_id=UUID(seed.subscription_id),
+            lock_path=tmp_path / "upstreams.lock.json",
+            integration_root=runtime_root,
+            python_executable=tmp_path / "python",
+            secret_resolver=SecretResolver({}),
+            license_acknowledged=True,
+        )
+        refresher = _RecordingFlvRefresher(delegate)
+        resolver = _RecordingPublicResolver()
+        requests: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            assert str(request.url) in {SIGNED_URL, BACKUP_URL}
+            assert request.headers["referer"] == "https://www.bilibili.com/"
+            assert request.headers["origin"] == "https://www.bilibili.com"
+            assert request.headers["accept-encoding"] == "identity"
+            assert "cookie" not in request.headers and "authorization" not in request.headers
+            if str(request.url) == SIGNED_URL:
+                return httpx.Response(503)
+            return httpx.Response(
+                200,
+                headers={
+                    "Content-Length": str(len(flv_bytes)),
+                    "Content-Type": "video/x-flv",
+                    "ETag": '"execution-0027-flv-v1"',
+                },
+                content=flv_bytes,
+            )
+
+        production_probe = _RecordingProductionProbe(FFprobeMediaProbe(ffprobe))
+        production_muxer = _RecordingProductionMuxer(FFmpegStreamCopyMuxer(ffmpeg))
+        downloader = SecureMediaDownloader(
+            SafeHttpClient(
+                resolver,
+                transport_factory=lambda _target: httpx.MockTransport(handler),
+            ),
+            refresher=refresher,
+            probe=production_probe,
+            muxer=production_muxer,
+        )
+        service = AssetDownloadService(database, downloader, clock=lambda: FIXED_AT)
+        download_request = AssetDownloadRequest(
+            asset_id=asset_id,
+            worker_id="execution-0027-download",
+            work_root=download_work_root,
+            archive_root=archive_root,
+            lease_seconds=60,
+        )
+
+        downloaded = service.run(download_request)
+
+        assert downloaded.disposition == "downloaded"
+        assert downloaded.archive_path is not None and downloaded.archive_path.suffix == ".mp4"
+        assert downloaded.archive_path.read_bytes() != flv_bytes
+        assert b"ftyp" in downloaded.archive_path.read_bytes()[:32]
+        assert downloaded.mime_type == "video/mp4"
+        assert downloaded.checksum_sha256 == hashlib.sha256(downloaded.archive_path.read_bytes()).hexdigest()
+        assert _stream_types(downloaded.archive_path, ffprobe) == {"video", "audio"}
+        assert [str(request.url) for request in requests] == [SIGNED_URL, BACKUP_URL]
+        assert resolver.calls == [
+            ("cn-bj-cm-01.bilivideo.com", 443),
+            ("backup-cn-bj-cm-01.bilivideo.com", 443),
+        ]
+        assert len(refresher.results) == 1
+        target = refresher.results[0]
+        assert target.source.urls == (SIGNED_URL, BACKUP_URL)
+        assert target.source.request_profile is MediaRequestProfile.BILIBILI_MEDIA
+        assert SIGNED_SENTINEL not in repr(target)
+        assert len(_FlvDetailRunner.instances) == 1
+        assert len(_FlvDetailRunner.instances[0].calls) == 1
+        assert len(production_probe.calls) == 2
+        assert len(production_muxer.remux_calls) == 1
+        assert not tuple((download_work_root / "parts").glob(f"{asset_id}.1*"))
+        assert not tuple(archive_root.rglob("*.flv"))
+
+        export_service = EmbyExportService(
+            database,
+            EmbyExporter(library_root, staging_root=export_work_root),
+            clock=lambda: FIXED_AT,
+        )
+        exported = export_service.export_author(
+            EmbyExportRequest(seed.author_id, "execution-0027-export", lease_seconds=60)
+        )
+        assert exported.already_exported is False
+        author_directory = library_root / exported.output_path
+        emby_video = next(author_directory.glob("Season 2026/*.mp4"))
+        assert emby_video.read_bytes() == downloaded.archive_path.read_bytes()
+        assert _stream_types(emby_video, ffprobe) == {"video", "audio"}
+        assert not tuple(author_directory.rglob("*.flv"))
+        assert (author_directory / "tvshow.nfo").is_file()
+        assert next(author_directory.glob("Season 2026/*.nfo")).is_file()
+        source_document = json.loads(next(author_directory.glob("Season 2026/*.assets/source.json")).read_text("utf-8"))
+        assert not {"canonical_url", "locator", "raw", "source_url"} & source_document.keys()
+
+        archive_tree = _tree(archive_root)
+        library_tree = _tree(author_directory)
+        replayed_download = service.run(download_request)
+        replayed_export = export_service.export_author(
+            EmbyExportRequest(seed.author_id, "execution-0027-export-replay", lease_seconds=60)
+        )
+        assert replayed_download.disposition == "already_verified"
+        assert replayed_export.already_exported is True
+        assert len(_FlvDetailRunner.instances[0].calls) == 1
+        assert len(requests) == 2
+        assert len(production_probe.calls) == 2
+        assert len(production_muxer.remux_calls) == 1
+        assert _tree(archive_root) == archive_tree
+        assert _tree(author_directory) == library_tree
+
+        with database.session() as session:
+            persisted_asset = session.get(Asset, str(asset_id))
+            content = session.scalar(select(Content))
+            jobs = tuple(session.scalars(select(Job).order_by(Job.job_type, Job.id)).all())
+            exports = tuple(session.scalars(select(ExportRecord)).all())
+            assert persisted_asset is not None and content is not None
+            assert persisted_asset.status == "verified" and persisted_asset.generation == 1
+            assert persisted_asset.mime_type == "video/mp4"
+            assert {job.job_type for job in jobs} == {"asset_download", "export.emby"}
+            assert all(job.status == "succeeded" and job.attempts == 1 for job in jobs)
+            assert len(exports) == 1 and exports[0].status == "succeeded"
+            durable = json.dumps(
+                {
+                    "asset": {
+                        "locator": persisted_asset.locator,
+                        "raw": persisted_asset.raw,
+                        "source_url": persisted_asset.source_url,
+                    },
+                    "content": {"canonical_url": content.canonical_url, "raw": content.raw},
+                    "jobs": [job.payload for job in jobs],
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+            assert PRIVATE_PROGRESSIVE_FIELD not in durable
+            assert BILIBILI_PROGRESSIVE_FORMAT_FIELD not in durable
+            assert SIGNED_URL not in durable and BACKUP_URL not in durable
+
+        _assert_signed_url_absent(runtime_root, download_work_root, archive_root, export_work_root, library_root)
+    finally:
+        database.dispose()
+
+    sqlite_artifacts = tuple(path for path in tmp_path.glob(f"{database_path.name}*") if path.is_file())
     assert sqlite_artifacts
     _assert_signed_url_absent(*sqlite_artifacts)

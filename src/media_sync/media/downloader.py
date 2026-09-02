@@ -25,6 +25,7 @@ from media_sync.media.locator import (
     AssetLocator,
     LocatorRefreshPort,
     ResolvedDashLocator,
+    ResolvedFlvLocator,
     ResolvedLocator,
     locator_fingerprint,
     resolve_locator,
@@ -275,7 +276,11 @@ def _response_validator(headers: httpx.Headers) -> tuple[ValidatorKind | None, s
     return None, None
 
 
-def _component_fingerprint(stable_fingerprint: str, selection: str, role: Literal["video", "audio"]) -> str:
+def _component_fingerprint(
+    stable_fingerprint: str,
+    selection: str,
+    role: Literal["video", "audio", "flv"],
+) -> str:
     """Fence component resume state to one non-secret DASH selection shape."""
 
     payload = f"media-sync-dash-v1:{stable_fingerprint}:{selection}:{role}".encode("ascii")
@@ -307,11 +312,11 @@ class _PartStore:
         root: Path,
         asset_id: UUID,
         generation: int,
-        role: Literal["asset", "dash-video", "dash-audio"] = "asset",
+        role: Literal["asset", "dash-video", "dash-audio", "bili-flv-source"] = "asset",
     ) -> None:
         self.root = ensure_secure_root(root)
         ensure_secure_directory(self.root, "parts")
-        if role not in {"asset", "dash-video", "dash-audio"}:
+        if role not in {"asset", "dash-video", "dash-audio", "bili-flv-source"}:
             raise ValueError("invalid partial role")
         suffix = "" if role == "asset" else f".{role}"
         stem = f"{asset_id}.{generation}{suffix}"
@@ -427,6 +432,7 @@ class SecureMediaDownloader:
                 _PartStore(root, asset_id, generation).discard()
                 _PartStore(root, asset_id, generation, "dash-video").discard()
                 _PartStore(root, asset_id, generation, "dash-audio").discard()
+                _PartStore(root, asset_id, generation, "bili-flv-source").discard()
         except PathLockBusyError as exc:
             raise MediaDownloadError("download_part_busy") from exc
         except PathSecurityError as exc:
@@ -500,6 +506,8 @@ class SecureMediaDownloader:
         archive = ArchivePublisher(request.archive_root)
         store = _PartStore(work_root, request.asset_id, request.generation)
         locator = resolve_locator(request.locator, self._refresher)
+        if isinstance(locator, ResolvedFlvLocator):
+            return self._download_flv_locked(request, work_root, locator)
         if isinstance(locator, ResolvedDashLocator):
             return self._download_dash_locked(request, work_root, locator)
         if not isinstance(locator, ResolvedLocator):  # pragma: no cover - closed resolver contract
@@ -546,6 +554,95 @@ class SecureMediaDownloader:
             extension=verified.extension,
             etag=completed_state.validator if completed_state.validator_kind == "etag" else None,
             last_modified=completed_state.validator if completed_state.validator_kind == "last_modified" else None,
+        )
+
+    def _download_flv_locked(
+        self,
+        request: DownloadRequest,
+        work_root: Path,
+        target: ResolvedFlvLocator,
+    ) -> DownloadResult:
+        """Download, verify and stream-copy one mixed FLV generation to MP4."""
+
+        if request.expected_kind is not AssetKind.VIDEO:
+            raise MediaDownloadError("media_type_mismatch")
+        if self._muxer is None:
+            raise MediaDownloadError("media_mux_unavailable")
+        started = self._monotonic()
+        stable_fingerprint = locator_fingerprint(request.locator)
+        source_store = _PartStore(work_root, request.asset_id, request.generation, "bili-flv-source")
+        final_store = _PartStore(work_root, request.asset_id, request.generation)
+        source_fingerprint = _component_fingerprint(stable_fingerprint, "single-segment-flv-v1", "flv")
+        can_refresh_auth = isinstance(request.locator, AdapterRefreshLocator) and self._refresher is not None
+        _source_state, source_size = self._download_component(
+            request,
+            locator=target.source,
+            store=source_store,
+            fingerprint=source_fingerprint,
+            expected_kind=AssetKind.VIDEO,
+            started=started,
+            max_bytes=self._limits.max_bytes,
+            auth_mode="refresh_flv" if can_refresh_auth else "expire",
+            required_extension="flv",
+        )
+        if source_size <= 0 or source_size > self._limits.max_bytes:
+            raise MediaDownloadError("download_size_limit")
+
+        final_store.discard()
+        final_store.create()
+        try:
+            self._muxer.remux(
+                source_store.part,
+                final_store.part,
+                root=final_store.root,
+                timeout_seconds=self._remaining(started),
+                max_output_bytes=self._limits.mux_output_bytes,
+                max_media_bytes=self._limits.max_bytes,
+            )
+            digest, size = hash_file(final_store.part, root=final_store.root)
+            if size <= 0 or size > self._limits.max_bytes:
+                raise MediaDownloadError("download_size_limit")
+            verified = verify_media(
+                final_store.part,
+                root=final_store.root,
+                expected_kind=AssetKind.VIDEO,
+                advertised_mime=None,
+                probe=self._probe,
+                require_static_image=False,
+                sniff_bytes=self._limits.sniff_bytes,
+                probe_timeout_seconds=min(self._limits.probe_timeout_seconds, self._remaining(started)),
+                probe_output_bytes=self._limits.probe_output_bytes,
+            )
+            if verified.extension != "mp4" or verified.mime_type != "video/mp4":
+                raise MediaDownloadError("media_type_mismatch")
+            final_state = PartMetadata(
+                asset_id=request.asset_id,
+                generation=request.generation,
+                locator_fingerprint=stable_fingerprint,
+                validator_kind=None,
+                validator=None,
+                expected_length=size,
+                current_length=size,
+            )
+            final_store.save(final_state)
+            blob = ArchivePublisher(request.archive_root).publish(
+                final_store.part,
+                source_root=final_store.root,
+                sha256=digest,
+                size_bytes=size,
+                extension=verified.extension,
+                before_commit=request.before_archive_commit,
+            )
+        except Exception:
+            if not final_store.metadata.exists():
+                final_store.discard()
+            raise
+        return DownloadResult(
+            archive_path=blob.path,
+            sha256=digest,
+            size_bytes=size,
+            mime_type=verified.mime_type,
+            extension=verified.extension,
         )
 
     def _download_dash_locked(
@@ -669,8 +766,10 @@ class SecureMediaDownloader:
         expected_kind: AssetKind,
         started: float,
         max_bytes: int,
+        auth_mode: Literal["expire", "refresh_flv"] = "expire",
+        required_extension: str | None = None,
     ) -> tuple[PartMetadata, int]:
-        """Resume and structurally verify one ephemeral DASH component."""
+        """Resume and structurally verify one ephemeral derived-media source."""
 
         completed, advertised_mime = self._download_candidates(
             request,
@@ -679,12 +778,12 @@ class SecureMediaDownloader:
             fingerprint=fingerprint,
             started=started,
             max_bytes=max_bytes,
-            auth_mode="expire",
+            auth_mode=auth_mode,
         )
         _digest, size = hash_file(store.part, root=store.root)
         if size != completed.current_length:
             raise MediaDownloadError("download_state_invalid")
-        verify_media(
+        verified = verify_media(
             store.part,
             root=store.root,
             expected_kind=expected_kind,
@@ -695,6 +794,8 @@ class SecureMediaDownloader:
             probe_timeout_seconds=min(self._limits.probe_timeout_seconds, self._remaining(started)),
             probe_output_bytes=self._limits.probe_output_bytes,
         )
+        if required_extension is not None and verified.extension != required_extension:
+            raise MediaDownloadError("media_type_mismatch")
         return completed, size
 
     def _download_candidates(
@@ -706,7 +807,7 @@ class SecureMediaDownloader:
         fingerprint: str,
         started: float,
         max_bytes: int,
-        auth_mode: Literal["http", "expire", "refresh"],
+        auth_mode: Literal["http", "expire", "refresh", "refresh_flv"],
     ) -> tuple[PartMetadata, str | None]:
         """Download one resolved target through an ordered bounded candidate pass."""
 
@@ -776,11 +877,16 @@ class SecureMediaDownloader:
                 restarts += 1
                 continue
             if auth_mode != "http" and auth_failures == len(candidates):
-                if auth_mode == "refresh" and auth_refreshes < 1:
+                if auth_mode in {"refresh", "refresh_flv"} and auth_refreshes < 1:
                     refreshed = resolve_locator(request.locator, self._refresher)
-                    if not isinstance(refreshed, ResolvedLocator):
-                        raise MediaDownloadError("locator_refresh_schema_changed")
-                    locator = refreshed
+                    if auth_mode == "refresh":
+                        if not isinstance(refreshed, ResolvedLocator):
+                            raise MediaDownloadError("locator_refresh_schema_changed")
+                        locator = refreshed
+                    else:
+                        if not isinstance(refreshed, ResolvedFlvLocator):
+                            raise MediaDownloadError("locator_refresh_schema_changed")
+                        locator = refreshed.source
                     auth_refreshes += 1
                     continue
                 raise MediaDownloadError("locator_refresh_auth_expired")

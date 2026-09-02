@@ -50,6 +50,22 @@ def test_ffprobe_rejects_runner_output_beyond_declared_cap(tmp_path: Path) -> No
         probe.probe(tmp_path / "media", timeout_seconds=1.0, max_output_bytes=100)
 
 
+def test_ffprobe_accepts_only_video_bearing_flv(tmp_path: Path) -> None:
+    video = FFprobeMediaProbe(
+        "fake-ffprobe",
+        runner=_Runner(b'{"format":{"format_name":"flv"},"streams":[{"codec_type":"video"},{"codec_type":"audio"}]}'),
+    )
+    audio_only = FFprobeMediaProbe(
+        "fake-ffprobe",
+        runner=_Runner(b'{"format":{"format_name":"flv"},"streams":[{"codec_type":"audio"}]}'),
+    )
+
+    assert video.probe(tmp_path / "mixed.flv", timeout_seconds=1.0, max_output_bytes=4096) == ProbeResult(
+        "video/x-flv", "flv"
+    )
+    assert audio_only.probe(tmp_path / "audio.flv", timeout_seconds=1.0, max_output_bytes=4096) is None
+
+
 def test_subprocess_probe_runner_enforces_timeout_and_combined_output_cap() -> None:
     runner = SubprocessProbeRunner()
     with pytest.raises(TimeoutError):

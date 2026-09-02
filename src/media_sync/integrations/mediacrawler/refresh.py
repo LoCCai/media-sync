@@ -20,6 +20,7 @@ from media_sync.media import (
     MediaDownloadError,
     MediaRequestProfile,
     ResolvedDashLocator,
+    ResolvedFlvLocator,
     ResolvedLocator,
     ResolvedMediaTarget,
 )
@@ -437,11 +438,14 @@ class MediaCrawlerLocatorRefresher:
                 raise MediaDownloadError("locator_refresh_schema_changed") from exc
         if context.platform is Platform.BILI and context._bili_progressive_detail():
             runtime_target = matching_content[0].runtime_asset_targets.get(context.asset_remote_id or "")
-            if not isinstance(runtime_target, ResolvedLocator | ResolvedDashLocator):
+            if not isinstance(runtime_target, ResolvedLocator | ResolvedFlvLocator | ResolvedDashLocator):
                 raise MediaDownloadError("locator_refresh_result_invalid")
-            expected_url = (
-                runtime_target.url if isinstance(runtime_target, ResolvedLocator) else runtime_target.video.url
-            )
+            if isinstance(runtime_target, ResolvedLocator):
+                expected_url = runtime_target.url
+            elif isinstance(runtime_target, ResolvedFlvLocator):
+                expected_url = runtime_target.source.url
+            else:
+                expected_url = runtime_target.video.url
             if source_url != expected_url:
                 raise MediaDownloadError("locator_refresh_result_invalid")
             return runtime_target

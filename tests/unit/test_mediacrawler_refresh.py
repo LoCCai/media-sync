@@ -13,6 +13,7 @@ from media_sync.integrations.mediacrawler.bilibili_media import (
     BILIBILI_DASH_PAGE_FIELD,
     BILIBILI_PAGES_FIELD,
     BILIBILI_PROGRESSIVE_BACKUPS_FIELD,
+    BILIBILI_PROGRESSIVE_FORMAT_FIELD,
     BILIBILI_PROGRESSIVE_PAGE_FIELD,
 )
 from media_sync.integrations.mediacrawler.detail_runner import (
@@ -38,6 +39,7 @@ from media_sync.media import (
     MediaDownloadError,
     MediaRequestProfile,
     ResolvedDashLocator,
+    ResolvedFlvLocator,
     ResolvedLocator,
 )
 from media_sync.security import SecretValue
@@ -422,6 +424,120 @@ def test_bilibili_primary_only_progressive_bridge_remains_compatible() -> None:
     resolved = MediaCrawlerLocatorRefresher(context, runner, clock=lambda: NOW).resolve(context.locator)
 
     assert resolved.urls == (signed_url,)
+
+
+def test_bilibili_single_page_flv_marker_reconstructs_typed_ephemeral_target() -> None:
+    signed_url = "https://v.example.test/bili/source.flv?signature=flv-private"
+    backup_url = "https://backup.example.test/bili/source.flv?signature=backup-private"
+    context = _context(
+        platform=Platform.BILI,
+        content_id="987654321",
+        kind=AssetKind.VIDEO,
+        position=0,
+        signed_url=None,
+    )
+    runner = _FakeDetailRunner(
+        _jsonl(
+            {
+                "video_id": "987654321",
+                "video_type": "video",
+                "title": "single-page FLV",
+                "__media_sync_bili_progressive_url": signed_url,
+                BILIBILI_PROGRESSIVE_BACKUPS_FIELD: [backup_url],
+                BILIBILI_PROGRESSIVE_FORMAT_FIELD: "flv",
+            }
+        )
+    )
+
+    resolved = MediaCrawlerLocatorRefresher(context, runner, clock=lambda: NOW).resolve(context.locator)
+
+    assert isinstance(resolved, ResolvedFlvLocator)
+    assert resolved.source.urls == (signed_url, backup_url)
+    assert resolved.source.request_profile is MediaRequestProfile.BILIBILI_MEDIA
+    assert "private" not in repr(resolved)
+
+
+def test_bilibili_multipart_flv_marker_reconstructs_only_requested_page() -> None:
+    content_id = "987654321"
+    remote_ids = (
+        f"{content_id}:video:cid:24680",
+        f"{content_id}:video:cid:97531",
+    )
+    signed_url = "https://v.example.test/bili/p2.flv?signature=flv-private"
+    context = _context(
+        platform=Platform.BILI,
+        content_id=content_id,
+        kind=AssetKind.VIDEO,
+        position=1,
+        signed_url=None,
+        remote_id=remote_ids[1],
+        bili_video_remote_ids=remote_ids,
+    )
+    runner = _FakeDetailRunner(
+        _jsonl(
+            {
+                "video_id": content_id,
+                "video_type": "video",
+                "title": "multipart FLV",
+                BILIBILI_PAGES_FIELD: [
+                    {"page": 1, "cid": 24680},
+                    {"page": 2, "cid": 97531},
+                ],
+                BILIBILI_PROGRESSIVE_PAGE_FIELD: {
+                    "cid": 97531,
+                    "url": signed_url,
+                    "format": "flv",
+                },
+            }
+        )
+    )
+
+    resolved = MediaCrawlerLocatorRefresher(context, runner, clock=lambda: NOW).resolve(context.locator)
+
+    assert isinstance(resolved, ResolvedFlvLocator)
+    assert resolved.source.urls == (signed_url,)
+    assert runner.calls[0].bili_video_cid == 97531
+
+
+@pytest.mark.parametrize(
+    "private_fields",
+    [
+        {BILIBILI_PROGRESSIVE_FORMAT_FIELD: "flv"},
+        {
+            "__media_sync_bili_progressive_url": "https://v.example.test/bili/source.mp4",
+            BILIBILI_PROGRESSIVE_FORMAT_FIELD: "mp4",
+        },
+        {
+            "__media_sync_bili_progressive_url": "https://v.example.test/bili/source.flv",
+            BILIBILI_PROGRESSIVE_FORMAT_FIELD: True,
+        },
+    ],
+)
+def test_bilibili_single_page_flv_marker_fails_closed_when_orphaned_or_malformed(
+    private_fields: dict[str, object],
+) -> None:
+    context = _context(
+        platform=Platform.BILI,
+        content_id="987654321",
+        kind=AssetKind.VIDEO,
+        position=0,
+        signed_url=None,
+    )
+    runner = _FakeDetailRunner(
+        _jsonl(
+            {
+                "video_id": "987654321",
+                "video_type": "video",
+                "title": "invalid FLV marker",
+                **private_fields,
+            }
+        )
+    )
+
+    with pytest.raises(MediaDownloadError) as caught:
+        MediaCrawlerLocatorRefresher(context, runner, clock=lambda: NOW).resolve(context.locator)
+
+    assert caught.value.code == "locator_refresh_schema_changed"
 
 
 @pytest.mark.parametrize(

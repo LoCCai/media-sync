@@ -204,6 +204,8 @@ class FFprobeMediaProbe:
                 return ProbeResult("video/x-matroska", "mkv")
             if "audio" in stream_types:
                 return ProbeResult("audio/webm", "webm")
+        if "flv" in formats and "video" in stream_types:
+            return ProbeResult("video/x-flv", "flv")
         simple_audio = {
             "flac": ProbeResult("audio/flac", "flac"),
             "mp3": ProbeResult("audio/mpeg", "mp3"),

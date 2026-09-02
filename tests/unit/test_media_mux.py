@@ -112,6 +112,141 @@ def test_ffmpeg_mux_accepts_silent_video_without_audio_mapping(tmp_path: Path) -
     assert "1:a:0" not in argv
 
 
+def test_ffmpeg_remux_uses_fixed_single_input_optional_audio_argv_and_bounds(tmp_path: Path) -> None:
+    source, _audio, output = _paths(tmp_path)
+    runner = _Runner()
+
+    FFmpegStreamCopyMuxer("fixture-ffmpeg", runner=runner).remux(
+        source,
+        output,
+        root=tmp_path / "work",
+        timeout_seconds=12.5,
+        max_output_bytes=4096,
+        max_media_bytes=8192,
+    )
+
+    assert output.read_bytes() == b"muxed-mp4"
+    assert runner.calls == [
+        (
+            (
+                "fixture-ffmpeg",
+                "-nostdin",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-i",
+                str(source.absolute()),
+                "-map",
+                "0:v:0",
+                "-map",
+                "0:a:0?",
+                "-c",
+                "copy",
+                "-strict",
+                "unofficial",
+                "-fs",
+                "8192",
+                "-f",
+                "mp4",
+                str(output.absolute()),
+            ),
+            12.5,
+            4096,
+        )
+    ]
+
+
+@pytest.mark.parametrize(
+    ("error", "expected"),
+    [
+        (FileNotFoundError(), "media_mux_unavailable"),
+        (TimeoutError(), "media_mux_failed"),
+        (RuntimeError(), "media_mux_failed"),
+        (OverflowError(), "media_mux_failed"),
+    ],
+)
+def test_ffmpeg_remux_translates_process_failures(
+    tmp_path: Path,
+    error: BaseException,
+    expected: str,
+) -> None:
+    source, _audio, output = _paths(tmp_path)
+
+    with pytest.raises(MediaDownloadError) as caught:
+        FFmpegStreamCopyMuxer(runner=_Runner(error=error)).remux(
+            source,
+            output,
+            root=tmp_path / "work",
+            timeout_seconds=5,
+            max_output_bytes=1024,
+            max_media_bytes=2048,
+        )
+
+    assert caught.value.code == expected
+
+
+@pytest.mark.parametrize("payload", [b"", b"x" * 17])
+def test_ffmpeg_remux_rejects_empty_or_oversized_output(tmp_path: Path, payload: bytes) -> None:
+    source, _audio, output = _paths(tmp_path)
+
+    with pytest.raises(MediaDownloadError, match="media_mux_failed"):
+        FFmpegStreamCopyMuxer(runner=_Runner(payload)).remux(
+            source,
+            output,
+            root=tmp_path / "work",
+            timeout_seconds=5,
+            max_output_bytes=1024,
+            max_media_bytes=16,
+        )
+
+
+def test_ffmpeg_remux_rejects_output_aliasing_source_and_runner_output_overflow(tmp_path: Path) -> None:
+    source, _audio, output = _paths(tmp_path)
+
+    alias_runner = _Runner()
+    with pytest.raises(MediaDownloadError, match="filesystem_unsafe"):
+        FFmpegStreamCopyMuxer(runner=alias_runner).remux(
+            source,
+            source,
+            root=tmp_path / "work",
+            timeout_seconds=5,
+            max_output_bytes=1024,
+            max_media_bytes=2048,
+        )
+    assert alias_runner.calls == []
+
+    with pytest.raises(MediaDownloadError, match="media_mux_failed"):
+        FFmpegStreamCopyMuxer(runner=_Runner(process_output=b"x" * 17)).remux(
+            source,
+            output,
+            root=tmp_path / "work",
+            timeout_seconds=5,
+            max_output_bytes=16,
+            max_media_bytes=2048,
+        )
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"timeout_seconds": 0, "max_output_bytes": 1, "max_media_bytes": 1},
+        {"timeout_seconds": 1, "max_output_bytes": 0, "max_media_bytes": 1},
+        {"timeout_seconds": 1, "max_output_bytes": 1, "max_media_bytes": 0},
+    ],
+)
+def test_ffmpeg_remux_rejects_nonpositive_limits(tmp_path: Path, kwargs: dict[str, float | int]) -> None:
+    source, _audio, output = _paths(tmp_path)
+
+    with pytest.raises(ValueError, match="positive"):
+        FFmpegStreamCopyMuxer(runner=_Runner()).remux(
+            source,
+            output,
+            root=tmp_path / "work",
+            **kwargs,
+        )
+
+
 @pytest.mark.parametrize(
     ("error", "expected"),
     [

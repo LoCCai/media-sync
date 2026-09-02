@@ -11,6 +11,7 @@ from media_sync.media import (
     MediaDownloadError,
     MediaRequestProfile,
     ResolvedDashLocator,
+    ResolvedFlvLocator,
     ResolvedLocator,
     canonical_locator_json,
     locator_fingerprint,
@@ -186,6 +187,33 @@ def test_resolved_dash_locator_is_closed_repr_safe_and_selection_bound() -> None
     assert video.urls == (video.url, video.backup_urls[0])
     assert "private" not in repr(resolved)
     assert "private" not in repr(video)
+
+
+def test_resolved_flv_locator_is_bilibili_only_repr_safe_and_resolver_accepted() -> None:
+    source = ResolvedLocator(
+        "https://video.test/source.flv?signature=flv-private",
+        MediaRequestProfile.BILIBILI_MEDIA,
+        ("https://backup.test/source.flv?signature=backup-private",),
+    )
+    target = ResolvedFlvLocator(source)
+
+    assert target.source.urls == (source.url, source.backup_urls[0])
+    assert "flv-private" not in repr(target)
+    assert "backup-private" not in repr(target)
+
+    @dataclass
+    class _FlvRefresh:
+        def resolve(self, _locator: AdapterRefreshLocator) -> ResolvedFlvLocator:
+            return target
+
+    assert resolve_locator(AdapterRefreshLocator("mediacrawler", "bili/video/flv"), _FlvRefresh()) is target
+
+
+def test_resolved_flv_locator_rejects_non_bilibili_or_non_resolved_sources() -> None:
+    with pytest.raises(MediaDownloadError, match="locator_invalid"):
+        ResolvedFlvLocator(ResolvedLocator("https://video.test/source.flv"))
+    with pytest.raises(MediaDownloadError, match="locator_invalid"):
+        ResolvedFlvLocator("https://video.test/source.flv")  # type: ignore[arg-type]
 
 
 @pytest.mark.parametrize(

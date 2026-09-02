@@ -11,7 +11,10 @@ import pytest
 from media_sync.domain import AssetKind, LoginMethod, Platform
 from media_sync.infrastructure.db.asset_identity import asset_source_hint, stable_asset_key
 from media_sync.integrations.mediacrawler import detail_runner as detail_runner_module
-from media_sync.integrations.mediacrawler.bilibili_media import BILIBILI_PROGRESSIVE_BACKUPS_FIELD
+from media_sync.integrations.mediacrawler.bilibili_media import (
+    BILIBILI_PROGRESSIVE_BACKUPS_FIELD,
+    BILIBILI_PROGRESSIVE_FORMAT_FIELD,
+)
 from media_sync.integrations.mediacrawler.checkout import VerifiedCheckout, VerifiedPython
 from media_sync.integrations.mediacrawler.detail_runner import (
     MediaCrawlerDetailProcessRunner,
@@ -31,6 +34,7 @@ from media_sync.media import (
     MediaDownloadError,
     MediaRequestProfile,
     ResolvedDashLocator,
+    ResolvedFlvLocator,
     ResolvedLocator,
 )
 from media_sync.security import SecretValue
@@ -2105,6 +2109,37 @@ def test_bilibili_first_page_single_durl_is_injected_only_in_memory(tmp_path: Pa
     assert BILIBILI_PROGRESSIVE_BACKUPS_FIELD.encode("utf-8") not in retained
 
 
+@pytest.mark.parametrize(
+    ("format_value", "flv_expected"),
+    [("hdflv2", True), ("mp4", False), (None, False)],
+)
+def test_bilibili_top_level_progressive_format_selects_only_explicit_flv_target(
+    tmp_path: Path,
+    format_value: str | None,
+    flv_expected: bool,
+) -> None:
+    play_response: dict[str, object] = {"durl": [{"url": BILI_VIDEO_URL, "backup_url": [BILI_VIDEO_BACKUP]}]}
+    if format_value is not None:
+        play_response["format"] = format_value
+    checkout = _fake_bili_checkout(tmp_path, play_response=play_response)
+    context = _bili_video_context()
+
+    resolved = MediaCrawlerLocatorRefresher(context, _bili_process_runner(tmp_path, checkout)).resolve(context.locator)
+
+    if flv_expected:
+        assert isinstance(resolved, ResolvedFlvLocator)
+        source = resolved.source
+    else:
+        assert isinstance(resolved, ResolvedLocator)
+        source = resolved
+    assert source.urls == (BILI_VIDEO_URL, BILI_VIDEO_BACKUP)
+    assert source.request_profile is MediaRequestProfile.BILIBILI_MEDIA
+    retained = b"".join(path.read_bytes() for path in (tmp_path / "runtime").rglob("*") if path.is_file())
+    assert BILI_VIDEO_URL.encode() not in retained
+    assert BILI_VIDEO_BACKUP.encode() not in retained
+    assert BILIBILI_PROGRESSIVE_FORMAT_FIELD.encode() not in retained
+
+
 def test_bilibili_empty_pages_falls_back_to_validated_view_cid(tmp_path: Path) -> None:
     view = {
         "aid": 987654321,
@@ -2298,6 +2333,29 @@ def test_bilibili_private_jsonl_bridge_is_bounded_collision_safe_and_repr_safe()
             WatchdogLimits(max_output_bytes=8 * 1024, max_line_bytes=len(ordinary)),
         )
 
+    flv = detail_runner_module._BiliPlaybackResult(
+        aid=987654321,
+        pages=(detail_runner_module.BilibiliPageIdentity(page=1, cid=24680),),
+        cid=24680,
+        target=ResolvedFlvLocator(
+            ResolvedLocator(BILI_VIDEO_URL, MediaRequestProfile.BILIBILI_MEDIA, (BILI_VIDEO_BACKUP,))
+        ),
+    )
+    enriched_flv = detail_runner_module._augment_bili_progressive_jsonl(ordinary, flv, limits)
+    assert f'"{BILIBILI_PROGRESSIVE_FORMAT_FIELD}":"flv"'.encode() in enriched_flv
+    format_collision = (
+        json.dumps(
+            {
+                "video_id": "987654321",
+                "nested": {BILIBILI_PROGRESSIVE_FORMAT_FIELD: "flv"},
+            },
+            separators=(",", ":"),
+        ).encode()
+        + b"\n"
+    )
+    with pytest.raises(ValueError, match="collision"):
+        detail_runner_module._augment_bili_progressive_jsonl(format_collision, flv, limits)
+
 
 def test_bilibili_progressive_equivalent_backup_aliases_produce_one_runtime_candidate_list() -> None:
     pages = (detail_runner_module.BilibiliPageIdentity(page=1, cid=24680),)
@@ -2445,6 +2503,30 @@ def test_bilibili_progressive_equivalent_backup_aliases_produce_one_runtime_cand
                     }
                 ]
             },
+            False,
+            "locator_refresh_result_invalid",
+        ),
+        (
+            "format-unknown",
+            {"format": "webm", "durl": [{"url": BILI_VIDEO_URL}]},
+            False,
+            "locator_refresh_unsupported",
+        ),
+        (
+            "format-mixed",
+            {"format": "flv,mp4", "durl": [{"url": BILI_VIDEO_URL}]},
+            False,
+            "locator_refresh_result_invalid",
+        ),
+        (
+            "format-leading-space",
+            {"format": " flv", "durl": [{"url": BILI_VIDEO_URL}]},
+            False,
+            "locator_refresh_result_invalid",
+        ),
+        (
+            "format-type",
+            {"format": True, "durl": [{"url": BILI_VIDEO_URL}]},
             False,
             "locator_refresh_result_invalid",
         ),

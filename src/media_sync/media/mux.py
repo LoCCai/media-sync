@@ -33,6 +33,17 @@ class MediaMuxer(Protocol):
         max_media_bytes: int,
     ) -> None: ...
 
+    def remux(
+        self,
+        source_path: Path,
+        output_path: Path,
+        *,
+        root: Path,
+        timeout_seconds: float,
+        max_output_bytes: int,
+        max_media_bytes: int,
+    ) -> None: ...
+
 
 class FFmpegStreamCopyMuxer:
     """Run ffmpeg with a closed MP4 stream-copy command and bounded output."""
@@ -105,6 +116,73 @@ class FFmpegStreamCopyMuxer:
         )
         try:
             output = self._runner.run(tuple(argv), timeout_seconds=timeout_seconds, max_output_bytes=max_output_bytes)
+            if len(output) > max_output_bytes:
+                raise MediaDownloadError("media_mux_failed")
+        except FileNotFoundError as exc:
+            raise MediaDownloadError("media_mux_unavailable") from exc
+        except (OSError, RuntimeError, TimeoutError, OverflowError, ValueError) as exc:
+            raise MediaDownloadError("media_mux_failed") from exc
+
+        try:
+            after = assert_regular_file(output_path, root=root)
+        except PathSecurityError as exc:
+            raise MediaDownloadError("filesystem_unsafe") from exc
+        if (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino):
+            raise MediaDownloadError("filesystem_unsafe")
+        if after.st_size <= 0 or after.st_size > max_media_bytes:
+            raise MediaDownloadError("media_mux_failed")
+        if os.name != "nt" and after.st_nlink != 1:
+            raise MediaDownloadError("filesystem_unsafe")
+
+    def remux(
+        self,
+        source_path: Path,
+        output_path: Path,
+        *,
+        root: Path,
+        timeout_seconds: float,
+        max_output_bytes: int,
+        max_media_bytes: int,
+    ) -> None:
+        """Stream-copy one mixed input into MP4, preserving optional audio."""
+
+        if timeout_seconds <= 0 or max_output_bytes <= 0 or max_media_bytes <= 0:
+            raise ValueError("mux limits must be positive")
+        try:
+            source = assert_regular_file(source_path, root=root)
+            before = assert_regular_file(output_path, root=root)
+        except PathSecurityError as exc:
+            raise MediaDownloadError("filesystem_unsafe") from exc
+        if source.st_size <= 0:
+            raise MediaDownloadError("media_mux_failed")
+        if (source.st_dev, source.st_ino) == (before.st_dev, before.st_ino):
+            raise MediaDownloadError("filesystem_unsafe")
+
+        argv = (
+            self._executable,
+            "-nostdin",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-i",
+            str(source_path.absolute()),
+            "-map",
+            "0:v:0",
+            "-map",
+            "0:a:0?",
+            "-c",
+            "copy",
+            "-strict",
+            "unofficial",
+            "-fs",
+            str(max_media_bytes),
+            "-f",
+            "mp4",
+            str(output_path.absolute()),
+        )
+        try:
+            output = self._runner.run(argv, timeout_seconds=timeout_seconds, max_output_bytes=max_output_bytes)
             if len(output) > max_output_bytes:
                 raise MediaDownloadError("media_mux_failed")
         except FileNotFoundError as exc:

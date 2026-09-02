@@ -19,6 +19,7 @@ from typing import Any
 BILIBILI_PAGES_FIELD = "__media_sync_bili_pages_v1"
 BILIBILI_PROGRESSIVE_PAGE_FIELD = "__media_sync_bili_progressive_page_v2"
 BILIBILI_PROGRESSIVE_BACKUPS_FIELD = "__media_sync_bili_progressive_backups_v1"
+BILIBILI_PROGRESSIVE_FORMAT_FIELD = "__media_sync_bili_progressive_format_v1"
 BILIBILI_DASH_PAGE_FIELD = "__media_sync_bili_dash_page_v1"
 BILIBILI_MAX_PAGES = 64
 
@@ -249,6 +250,7 @@ __all__ = [
     "BILIBILI_MAX_PAGES",
     "BILIBILI_PAGES_FIELD",
     "BILIBILI_PROGRESSIVE_BACKUPS_FIELD",
+    "BILIBILI_PROGRESSIVE_FORMAT_FIELD",
     "BILIBILI_PROGRESSIVE_PAGE_FIELD",
     "BilibiliPageIdentity",
     "bilibili_video_cid",

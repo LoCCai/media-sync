@@ -23,6 +23,7 @@ from media_sync.domain import (
 from media_sync.media.locator import (
     MediaRequestProfile,
     ResolvedDashLocator,
+    ResolvedFlvLocator,
     ResolvedLocator,
     ResolvedMediaTarget,
 )
@@ -31,6 +32,7 @@ from .bilibili_media import (
     BILIBILI_DASH_PAGE_FIELD,
     BILIBILI_PAGES_FIELD,
     BILIBILI_PROGRESSIVE_BACKUPS_FIELD,
+    BILIBILI_PROGRESSIVE_FORMAT_FIELD,
     BILIBILI_PROGRESSIVE_PAGE_FIELD,
     bilibili_video_remote_ids,
     parse_bilibili_page_payload,
@@ -77,6 +79,7 @@ _PRIVATE_MEDIA_FIELDS = frozenset(
         BILIBILI_PAGES_FIELD,
         BILIBILI_DASH_PAGE_FIELD,
         BILIBILI_PROGRESSIVE_BACKUPS_FIELD,
+        BILIBILI_PROGRESSIVE_FORMAT_FIELD,
         BILIBILI_PROGRESSIVE_PAGE_FIELD,
         _BILI_PROGRESSIVE_FIELD,
         TIEBA_GALLERY_FIELD,
@@ -140,7 +143,7 @@ class NormalizedMediaRecord:
 
     def __post_init__(self) -> None:
         if any(
-            type(key) is not str or not isinstance(value, ResolvedLocator | ResolvedDashLocator)
+            type(key) is not str or not isinstance(value, ResolvedLocator | ResolvedFlvLocator | ResolvedDashLocator)
             for key, value in self.runtime_asset_targets.items()
         ):
             raise ValueError("runtime asset targets are invalid")
@@ -540,19 +543,22 @@ def _bili_video_assets(
             return (), (), {}
         progressive = None
         if allow_progressive_detail and (
-            _BILI_PROGRESSIVE_FIELD in record or BILIBILI_PROGRESSIVE_BACKUPS_FIELD in record
+            _BILI_PROGRESSIVE_FIELD in record
+            or BILIBILI_PROGRESSIVE_BACKUPS_FIELD in record
+            or BILIBILI_PROGRESSIVE_FORMAT_FIELD in record
         ):
             try:
                 progressive = _bili_progressive_locator(
                     record.get(_BILI_PROGRESSIVE_FIELD),
                     record.get(BILIBILI_PROGRESSIVE_BACKUPS_FIELD, ()),
+                    record.get(BILIBILI_PROGRESSIVE_FORMAT_FIELD),
                 )
             except ValueError:
                 return (), (), {}
         targets: dict[str, ResolvedMediaTarget] = {}
         if progressive is not None:
             targets[remote_ids[0]] = progressive
-        return (None if progressive is None else progressive.url,), remote_ids, targets
+        return (None if progressive is None else _bili_progressive_source(progressive).url,), remote_ids, targets
 
     try:
         pages = parse_bilibili_page_payload(record.get(BILIBILI_PAGES_FIELD))
@@ -564,6 +570,7 @@ def _bili_video_assets(
         if (
             _BILI_PROGRESSIVE_FIELD in record
             or BILIBILI_PROGRESSIVE_BACKUPS_FIELD in record
+            or BILIBILI_PROGRESSIVE_FORMAT_FIELD in record
             or BILIBILI_PROGRESSIVE_PAGE_FIELD in record
         ):
             return (), (), {}
@@ -583,29 +590,38 @@ def _bili_video_assets(
             return (), (), {}
         progressive = None
         if allow_progressive_detail and (
-            _BILI_PROGRESSIVE_FIELD in record or BILIBILI_PROGRESSIVE_BACKUPS_FIELD in record
+            _BILI_PROGRESSIVE_FIELD in record
+            or BILIBILI_PROGRESSIVE_BACKUPS_FIELD in record
+            or BILIBILI_PROGRESSIVE_FORMAT_FIELD in record
         ):
             try:
                 progressive = _bili_progressive_locator(
                     record.get(_BILI_PROGRESSIVE_FIELD),
                     record.get(BILIBILI_PROGRESSIVE_BACKUPS_FIELD, ()),
+                    record.get(BILIBILI_PROGRESSIVE_FORMAT_FIELD),
                 )
             except ValueError:
                 return (), (), {}
         targets = {}
         if progressive is not None:
             targets[remote_ids[0]] = progressive
-        return (None if progressive is None else progressive.url,), remote_ids, targets
+        return (None if progressive is None else _bili_progressive_source(progressive).url,), remote_ids, targets
 
     urls: list[str | None] = [None] * len(pages)
     targets = {}
     if allow_progressive_detail:
-        if _BILI_PROGRESSIVE_FIELD in record or BILIBILI_PROGRESSIVE_BACKUPS_FIELD in record:
+        if (
+            _BILI_PROGRESSIVE_FIELD in record
+            or BILIBILI_PROGRESSIVE_BACKUPS_FIELD in record
+            or BILIBILI_PROGRESSIVE_FORMAT_FIELD in record
+        ):
             return (), (), {}
         progressive_payload = record.get(BILIBILI_PROGRESSIVE_PAGE_FIELD)
         if not isinstance(progressive_payload, Mapping) or set(progressive_payload) not in (
             {"cid", "url"},
             {"cid", "url", "backup_urls"},
+            {"cid", "url", "format"},
+            {"cid", "url", "backup_urls", "format"},
         ):
             return (), (), {}
         progressive_cid = progressive_payload.get("cid")
@@ -613,6 +629,7 @@ def _bili_video_assets(
             progressive = _bili_progressive_locator(
                 progressive_payload.get("url"),
                 progressive_payload.get("backup_urls", ()),
+                progressive_payload.get("format"),
             )
         except ValueError:
             return (), (), {}
@@ -622,12 +639,16 @@ def _bili_video_assets(
         )
         if page_index is None:
             return (), (), {}
-        urls[page_index] = progressive.url
+        urls[page_index] = _bili_progressive_source(progressive).url
         targets[remote_ids[page_index]] = progressive
     return tuple(urls), remote_ids, targets
 
 
-def _bili_progressive_locator(url_value: object, backup_value: object) -> ResolvedLocator:
+def _bili_progressive_locator(
+    url_value: object,
+    backup_value: object,
+    format_value: object = None,
+) -> ResolvedLocator | ResolvedFlvLocator:
     """Parse the private primary-only or primary-plus-backups progressive bridge."""
 
     url = _safe_url(url_value)
@@ -637,12 +658,20 @@ def _bili_progressive_locator(url_value: object, backup_value: object) -> Resolv
         or isinstance(backup_value, bytes | bytearray | str)
         or len(backup_value) > 8
         or any(type(item) is not str for item in backup_value)
+        or (format_value is not None and (type(format_value) is not str or format_value != "flv"))
     ):
         raise ValueError("invalid Bilibili progressive target")
     try:
-        return ResolvedLocator(url, MediaRequestProfile.BILIBILI_MEDIA, tuple(backup_value))
+        source = ResolvedLocator(url, MediaRequestProfile.BILIBILI_MEDIA, tuple(backup_value))
+        return source if format_value is None else ResolvedFlvLocator(source)
     except Exception as exc:
         raise ValueError("invalid Bilibili progressive target") from exc
+
+
+def _bili_progressive_source(target: ResolvedLocator | ResolvedFlvLocator) -> ResolvedLocator:
+    """Return the signed source without widening the accepted runtime union."""
+
+    return target.source if isinstance(target, ResolvedFlvLocator) else target
 
 
 def _bili_dash_target(value: object) -> tuple[int, ResolvedDashLocator]:

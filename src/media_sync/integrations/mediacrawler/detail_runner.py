@@ -36,6 +36,7 @@ from media_sync.integrations.mediacrawler.bilibili_media import (
     BILIBILI_DASH_PAGE_FIELD,
     BILIBILI_PAGES_FIELD,
     BILIBILI_PROGRESSIVE_BACKUPS_FIELD,
+    BILIBILI_PROGRESSIVE_FORMAT_FIELD,
     BILIBILI_PROGRESSIVE_PAGE_FIELD,
     BilibiliPageIdentity,
     parse_bilibili_view_pages,
@@ -76,12 +77,18 @@ from media_sync.integrations.mediacrawler.zhihu_media import (
     install_zhihu_media_capture,
     validate_zhihu_answer_url,
 )
-from media_sync.media import MediaRequestProfile, ResolvedDashLocator, ResolvedLocator, ResolvedMediaTarget
+from media_sync.media import (
+    MediaRequestProfile,
+    ResolvedDashLocator,
+    ResolvedFlvLocator,
+    ResolvedLocator,
+    ResolvedMediaTarget,
+)
 from media_sync.media.errors import MediaDownloadError
 from media_sync.security import SecretValue
 from media_sync.security.secrets import MAX_SECRET_BYTES
 
-DETAIL_RUNNER_SCHEMA_VERSION = 6
+DETAIL_RUNNER_SCHEMA_VERSION = 7
 MAX_DETAIL_REQUEST_BYTES = 128 * 1024
 MAX_DETAIL_FRAME_OVERHEAD = 8 * 1024
 
@@ -627,10 +634,14 @@ class _BiliPlaybackResult:
         if (
             type(self.cid) is not int
             or self.cid not in {page.cid for page in self.pages}
-            or not isinstance(self.target, ResolvedLocator | ResolvedDashLocator)
+            or not isinstance(self.target, ResolvedLocator | ResolvedFlvLocator | ResolvedDashLocator)
             or (
                 isinstance(self.target, ResolvedLocator)
                 and self.target.request_profile is not MediaRequestProfile.BILIBILI_MEDIA
+            )
+            or (
+                isinstance(self.target, ResolvedFlvLocator)
+                and self.target.source.request_profile is not MediaRequestProfile.BILIBILI_MEDIA
             )
         ):
             raise ValueError("invalid Bilibili identity")
@@ -954,6 +965,32 @@ def _bili_progressive_locator(segment: Mapping[str, object]) -> ResolvedLocator:
         raise ValueError("invalid Bilibili progressive URL") from exc
 
 
+def _bili_progressive_format(play: Mapping[str, object]) -> str | None:
+    """Classify one closed top-level progressive format without URL inference."""
+
+    raw = play.get("format")
+    if raw is None:
+        return None
+    if (
+        type(raw) is not str
+        or raw != raw.strip()
+        or not 1 <= len(raw) <= 128
+        or not raw.isascii()
+        or any(not (character.isalnum() or character in {",", ".", "_", "-"}) for character in raw)
+    ):
+        raise ValueError("invalid Bilibili progressive format")
+    lowered = raw.lower()
+    is_flv = "flv" in lowered
+    is_mp4 = "mp4" in lowered
+    if is_flv and is_mp4:
+        raise ValueError("invalid Bilibili progressive format")
+    if is_flv:
+        return "flv"
+    if is_mp4:
+        return None
+    raise _ChildUnsupportedError
+
+
 def _bili_audio_sort_key(quality: int) -> int:
     return quality + 40 if quality in {30250, 30251, 30255} else quality
 
@@ -1069,7 +1106,8 @@ def _bili_playback_result(
     segment = durl[0]
     if not isinstance(segment, Mapping):
         raise ValueError("invalid Bilibili durl segment")
-    target = _bili_progressive_locator(segment)
+    source = _bili_progressive_locator(segment)
+    target: ResolvedMediaTarget = ResolvedFlvLocator(source) if _bili_progressive_format(play) == "flv" else source
     return _BiliPlaybackResult(aid=aid, pages=pages, cid=cid, target=target)
 
 
@@ -1281,19 +1319,29 @@ def _augment_bili_progressive_jsonl(
                 matches += 1
                 enriched = dict(decoded)
                 enriched[BILIBILI_PAGES_FIELD] = [page.as_mapping() for page in progressive.pages]
-                if isinstance(progressive.target, ResolvedLocator):
+                if isinstance(progressive.target, ResolvedLocator | ResolvedFlvLocator):
+                    source = (
+                        progressive.target.source
+                        if isinstance(progressive.target, ResolvedFlvLocator)
+                        else progressive.target
+                    )
+                    format_marker = "flv" if isinstance(progressive.target, ResolvedFlvLocator) else None
                     if len(progressive.pages) == 1:
-                        enriched[_BILI_PROGRESSIVE_FIELD] = progressive.target.url
-                        if progressive.target.backup_urls:
-                            enriched[BILIBILI_PROGRESSIVE_BACKUPS_FIELD] = list(progressive.target.backup_urls)
+                        enriched[_BILI_PROGRESSIVE_FIELD] = source.url
+                        if source.backup_urls:
+                            enriched[BILIBILI_PROGRESSIVE_BACKUPS_FIELD] = list(source.backup_urls)
+                        if format_marker is not None:
+                            enriched[BILIBILI_PROGRESSIVE_FORMAT_FIELD] = format_marker
                     else:
                         assert progressive.cid is not None
                         page_target: dict[str, object] = {
                             "cid": progressive.cid,
-                            "url": progressive.target.url,
+                            "url": source.url,
                         }
-                        if progressive.target.backup_urls:
-                            page_target["backup_urls"] = list(progressive.target.backup_urls)
+                        if source.backup_urls:
+                            page_target["backup_urls"] = list(source.backup_urls)
+                        if format_marker is not None:
+                            page_target["format"] = format_marker
                         enriched[BILIBILI_PROGRESSIVE_PAGE_FIELD] = page_target
                 elif isinstance(progressive.target, ResolvedDashLocator):
                     assert progressive.cid is not None
@@ -1339,6 +1387,7 @@ def _contains_private_detail_field(value: object) -> bool:
                 BILIBILI_DASH_PAGE_FIELD,
                 BILIBILI_PAGES_FIELD,
                 BILIBILI_PROGRESSIVE_BACKUPS_FIELD,
+                BILIBILI_PROGRESSIVE_FORMAT_FIELD,
                 BILIBILI_PROGRESSIVE_PAGE_FIELD,
                 _BILI_PROGRESSIVE_FIELD,
             }
