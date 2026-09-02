@@ -6,8 +6,8 @@
 - Date: 2026-09-03
 - Predecessor: Execution 0036 closeout `145176f8624f5c1518b6cd28cea3f9aa3d938454`
 - Scope: One ordinary XHS `type="video"` note whose pinned store joins an ordered multi-video list into the scalar `video_url`, delivered as a bounded 1–16 VIDEO asset tuple with per-position adapter refresh
-- Plan commit: recorded in the closeout index; never embedded in this file
-- Implementation commit: recorded in the closeout index; never embedded in this file
+- Plan commit: `d858147`
+- Implementation commit: `c5682e5`
 
 ## Outcome
 
