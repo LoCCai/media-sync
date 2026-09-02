@@ -40,7 +40,7 @@ from media_sync.integrations.mediacrawler.tieba_media import (
     TIEBA_MAX_GALLERY_IMAGES,
 )
 from media_sync.integrations.mediacrawler.weibo_media import WEIBO_IMAGES_FIELD, WEIBO_VIDEO_FIELD
-from media_sync.integrations.mediacrawler.zhihu_media import ZHIHU_IMAGE_FIELD
+from media_sync.integrations.mediacrawler.zhihu_media import ZHIHU_IMAGE_FIELD, ZHIHU_IMAGES_FIELD
 
 PINNED_SHA = "d6f7c5bb906b6dac40ddf343ef9e26438a3de092"
 FIXTURE_ROOT = Path(__file__).resolve().parents[1] / "fixtures" / "mediacrawler"
@@ -1033,6 +1033,66 @@ def test_zhihu_image_query_changes_do_not_change_content_or_asset_identity() -> 
     assert first.assets[0].remote_id == second.assets[0].remote_id == "456:image:0"
     assert first.assets[0].position == second.assets[0].position == 0
     assert first.assets[0].source_url != second.assets[0].source_url
+
+
+@pytest.mark.parametrize("gallery_size", [2, 64])
+def test_zhihu_private_answer_gallery_materializes_bounded_ordered_assets(gallery_size: int) -> None:
+    urls = [f"https://picx.zhimg.com/v2-gallery-{index}.jpg?token=transient-{index}" for index in range(gallery_size)]
+    payload = zhihu_answer_record()
+    payload[ZHIHU_IMAGES_FIELD] = urls
+    payload["future_nested_shape"] = {ZHIHU_IMAGES_FIELD: urls}
+
+    item = normalize_record(payload, context(Platform.ZHIHU))
+
+    assert item.content.kind is ContentKind.ARTICLE
+    assert tuple(asset.kind for asset in item.assets) == (AssetKind.IMAGE,) * gallery_size
+    assert tuple(asset.position for asset in item.assets) == tuple(range(gallery_size))
+    assert tuple(asset.remote_id for asset in item.assets) == tuple(
+        f"456:image:{position}" for position in range(gallery_size)
+    )
+    assert tuple(asset.source_url for asset in item.assets) == tuple(urls)
+    durable_record = item.content.raw["record"]
+    assert isinstance(durable_record, Mapping)
+    assert ZHIHU_IMAGES_FIELD not in durable_record
+    assert ZHIHU_IMAGES_FIELD not in durable_record["future_nested_shape"]
+
+
+@pytest.mark.parametrize(
+    "gallery_value",
+    [
+        pytest.param(["https://picx.zhimg.com/v2-only.jpg"], id="single-item"),
+        pytest.param([f"https://picx.zhimg.com/v2-over-{index}.jpg" for index in range(65)], id="above-bound"),
+        pytest.param(
+            [
+                "https://picx.zhimg.com/v2-duplicate.jpg",
+                "https://picx.zhimg.com/v2-duplicate.jpg",
+            ],
+            id="duplicate",
+        ),
+        pytest.param(["https://picx.zhimg.com/v2-first.jpg", 42], id="non-string-item"),
+        pytest.param(["https://picx.zhimg.com/v2-first.jpg", "not-a-url"], id="invalid-item"),
+        pytest.param("https://picx.zhimg.com/v2-scalar.jpg", id="scalar"),
+        pytest.param(42, id="wrong-type"),
+    ],
+)
+def test_zhihu_private_answer_gallery_fails_closed_on_payload_drift(gallery_value: object) -> None:
+    payload = zhihu_answer_record()
+    payload[ZHIHU_IMAGES_FIELD] = gallery_value
+
+    with pytest.raises(RecordNormalizationError):
+        normalize_record(payload, context(Platform.ZHIHU))
+
+
+def test_zhihu_gallery_and_single_image_private_fields_cannot_coexist() -> None:
+    payload = zhihu_answer_record()
+    payload[ZHIHU_IMAGE_FIELD] = "https://picx.zhimg.com/v2-single.jpg"
+    payload[ZHIHU_IMAGES_FIELD] = [
+        "https://picx.zhimg.com/v2-first.jpg",
+        "https://picx.zhimg.com/v2-second.jpg",
+    ]
+
+    with pytest.raises(RecordNormalizationError):
+        normalize_record(payload, context(Platform.ZHIHU))
 
 
 def test_zhihu_answer_without_private_image_field_preserves_assetless_compatibility() -> None:

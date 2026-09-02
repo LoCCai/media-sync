@@ -72,6 +72,8 @@ from .weibo_media import (
 )
 from .zhihu_media import (
     ZHIHU_IMAGE_FIELD,
+    ZHIHU_IMAGES_FIELD,
+    ZHIHU_MAX_GALLERY_IMAGES,
     is_zhihu_positive_id,
     validate_zhihu_answer_url,
     validate_zhihu_image_url,
@@ -95,6 +97,7 @@ _PRIVATE_MEDIA_FIELDS = frozenset(
         WEIBO_IMAGES_FIELD,
         WEIBO_VIDEO_FIELD,
         ZHIHU_IMAGE_FIELD,
+        ZHIHU_IMAGES_FIELD,
     }
 )
 _DY_EPHEMERAL_MEDIA_URL_FIELDS = frozenset({"video_download_url", "cover_url", "music_download_url"})
@@ -1048,17 +1051,15 @@ def _normalize_zhihu(record: Mapping[str, object]) -> _ContentParts:
     content_type = (_text(record.get("content_type")) or "").lower()
     canonical_url = _safe_url(record.get("content_url"))
     images: tuple[str, ...] = ()
-    if ZHIHU_IMAGE_FIELD in record:
+    if ZHIHU_IMAGE_FIELD in record or ZHIHU_IMAGES_FIELD in record:
         answer_id = record.get("content_id")
         question_id = record.get("question_id")
         answer_url = record.get("content_url")
-        image_url = record.get(ZHIHU_IMAGE_FIELD)
         if (
             record.get("content_type") != "answer"
             or not is_zhihu_positive_id(answer_id)
             or not is_zhihu_positive_id(question_id)
             or type(answer_url) is not str
-            or type(image_url) is not str
         ):
             raise RecordNormalizationError(QuarantineReason.INVALID_RECORD)
         assert isinstance(answer_id, str)
@@ -1068,7 +1069,25 @@ def _normalize_zhihu(record: Mapping[str, object]) -> _ContentParts:
             answer_id=answer_id,
             question_id=question_id,
         )
-        images = (validate_zhihu_image_url(image_url),)
+        if ZHIHU_IMAGE_FIELD in record:
+            if ZHIHU_IMAGES_FIELD in record:
+                raise RecordNormalizationError(QuarantineReason.INVALID_RECORD)
+            image_url = record.get(ZHIHU_IMAGE_FIELD)
+            if type(image_url) is not str:
+                raise RecordNormalizationError(QuarantineReason.INVALID_RECORD)
+            images = (validate_zhihu_image_url(image_url),)
+        else:
+            gallery_urls = record.get(ZHIHU_IMAGES_FIELD)
+            if (
+                not isinstance(gallery_urls, Sequence)
+                or isinstance(gallery_urls, bytes | bytearray | str)
+                or not 2 <= len(gallery_urls) <= ZHIHU_MAX_GALLERY_IMAGES
+                or any(type(url) is not str for url in gallery_urls)
+            ):
+                raise RecordNormalizationError(QuarantineReason.INVALID_RECORD)
+            images = tuple(validate_zhihu_image_url(url) for url in gallery_urls)
+            if len(set(images)) != len(images):
+                raise RecordNormalizationError(QuarantineReason.INVALID_RECORD)
     if content_type in {"answer", "article"}:
         kind = ContentKind.ARTICLE
     elif content_type in {"video", "zvideo"}:

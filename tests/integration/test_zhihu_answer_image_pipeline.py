@@ -37,7 +37,7 @@ from media_sync.infrastructure.db.asset_identity import asset_source_hint, stabl
 from media_sync.infrastructure.db.models import Asset, AssetRefreshSource, Content, ExportRecord, Job, SyncRun
 from media_sync.integrations.mediacrawler import MediaCrawlerDetailRequest, MediaCrawlerDetailResult
 from media_sync.integrations.mediacrawler.normalizers import NormalizationContext, normalize_jsonl_bytes
-from media_sync.integrations.mediacrawler.zhihu_media import ZHIHU_IMAGE_FIELD
+from media_sync.integrations.mediacrawler.zhihu_media import ZHIHU_IMAGE_FIELD, ZHIHU_IMAGES_FIELD
 from media_sync.media import (
     AdapterRefreshLocator,
     MediaRequestProfile,
@@ -503,3 +503,211 @@ def test_zhihu_answer_image_reaches_emby_and_query_only_replay_does_no_work(
         )
     finally:
         database.dispose()
+
+
+GALLERY_FIRST_HINT = "https://pic2.zhimg.com/v2-execution-0033-first.png"
+GALLERY_SECOND_HINT = "https://pic3.zhimg.com/v2-execution-0033-second.png"
+GALLERY_SIGNATURE = "EXECUTION0033GALLERYPRIVATE"
+GALLERY_FIRST_REFRESH = f"{GALLERY_FIRST_HINT}?source={GALLERY_SIGNATURE}"
+GALLERY_SECOND_REFRESH = f"{GALLERY_SECOND_HINT}?source={GALLERY_SIGNATURE}"
+SECOND_PNG = b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg=="
+)
+
+
+def _gallery_answer_record(first: str, second: str) -> dict[str, object]:
+    return {
+        "content_id": CONTENT_ID,
+        "content_type": "answer",
+        "content_text": "Execution 0033 ordinary Zhihu answer with a bounded gallery.",
+        "content_url": CANONICAL_URL,
+        "question_id": QUESTION_ID,
+        "title": "Execution 0033 Zhihu answer gallery",
+        "desc": "Source-bound offline fixture",
+        "created_time": 1788235200,
+        "updated_time": 1788235260,
+        "voteup_count": 33,
+        "comment_count": 1,
+        "creator_hash": "untrusted-creator-hash",
+        "user_nickname": "Untrusted nickname",
+        "last_modify_ts": 1788235320,
+        ZHIHU_IMAGES_FIELD: [first, second],
+    }
+
+
+GALLERY_DISCOVERY_JSONL = _jsonl(
+    _gallery_answer_record(
+        f"{GALLERY_FIRST_HINT}?source=execution-0033-forward",
+        f"{GALLERY_SECOND_HINT}?source=execution-0033-forward",
+    )
+)
+GALLERY_DETAIL_JSONL = _jsonl(_gallery_answer_record(GALLERY_FIRST_REFRESH, GALLERY_SECOND_REFRESH))
+
+
+class _GalleryDetailRunner:
+    instances: ClassVar[list[_GalleryDetailRunner]] = []
+
+    def __init__(self, **kwargs: object) -> None:
+        self.constructor_kwargs = kwargs
+        self.calls: list[MediaCrawlerDetailRequest] = []
+        type(self).instances.append(self)
+
+    def run(self, request: MediaCrawlerDetailRequest) -> MediaCrawlerDetailResult:
+        self.calls.append(request)
+        return MediaCrawlerDetailResult(GALLERY_DETAIL_JSONL, UPSTREAM_SHA)
+
+
+def test_zhihu_answer_gallery_reaches_emby_with_sibling_bound_refresh(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database_path = tmp_path / "zhihu-answer-gallery.sqlite3"
+    database_url = f"sqlite+pysqlite:///{database_path.as_posix()}"
+    archive_root = tmp_path / "archive"
+    library_root = tmp_path / "library"
+    runtime_root = tmp_path / "mediacrawler-runtime"
+    download_work_root = tmp_path / "download-work"
+    export_work_root = tmp_path / "export-work"
+    runtime_root.mkdir()
+    upgrade_database(database_url)
+    database = Database(database_url)
+    _GalleryDetailRunner.instances = []
+    monkeypatch.setattr(mediacrawler_runtime, "MediaCrawlerDetailProcessRunner", _GalleryDetailRunner)
+
+    try:
+        seed = _seed_subscription(database)
+        normalized = normalize_jsonl_bytes(GALLERY_DISCOVERY_JSONL, _normalization_context())
+        assert not normalized.quarantined and not normalized.truncated_tail
+        record = normalized.records[0]
+        assert record.content.kind is ContentKind.ARTICLE
+        assert [(asset.kind, asset.position, asset.remote_id) for asset in record.assets] == [
+            (AssetKind.IMAGE, 0, f"{CONTENT_ID}:image:0"),
+            (AssetKind.IMAGE, 1, f"{CONTENT_ID}:image:1"),
+        ]
+
+        run_id = _start_ingesting_run(database, seed.subscription_id)
+        ingestion = MediaCrawlerIngestionService(database).ingest(
+            normalized.records,
+            subscription_id=seed.subscription_id,
+            run_id=run_id,
+            expected_revision=0,
+            mode=IngestionMode.FORWARD,
+        )
+        assert (ingestion.accepted_count, ingestion.discovered_count, ingestion.asset_count) == (1, 1, 2)
+
+        with database.session() as session:
+            assets = tuple(session.scalars(select(Asset).order_by(Asset.position, Asset.id)).all())
+            assert tuple(asset.source_url for asset in assets) == (GALLERY_FIRST_HINT, GALLERY_SECOND_HINT)
+            asset_ids = [UUID(asset.id) for asset in assets]
+
+        resolver = _RecordingPublicResolver()
+        requests: list[httpx.Request] = []
+        payloads = {GALLERY_FIRST_REFRESH: PNG, GALLERY_SECOND_REFRESH: SECOND_PNG}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            url = str(request.url)
+            assert url in payloads
+            payload = payloads[url]
+            return httpx.Response(
+                200,
+                headers={
+                    "Content-Length": str(len(payload)),
+                    "Content-Type": "image/png",
+                    "ETag": f'"execution-0033-{url.rsplit("/", 1)[-1].split(".")[0]}"',
+                },
+                content=payload,
+            )
+
+        def transport_factory(target: ValidatedTarget) -> httpx.BaseTransport:
+            del target
+            return httpx.MockTransport(handler)
+
+        http = SafeHttpClient(resolver, transport_factory=transport_factory)
+        services = []
+        for index, asset_id in enumerate(asset_ids):
+            lazy = LazyMediaCrawlerLocatorRefresher(
+                database,
+                asset_id=asset_id,
+                subscription_id=UUID(seed.subscription_id),
+                lock_path=tmp_path / "upstreams.lock.json",
+                integration_root=runtime_root,
+                python_executable=tmp_path / "python",
+                secret_resolver=SecretResolver({}),
+                license_acknowledged=True,
+            )
+            services.append(
+                (
+                    AssetDownloadService(
+                        database,
+                        SecureMediaDownloader(
+                            http,
+                            refresher=_RecordingRefresher(lazy),
+                            probe=_UnexpectedStructuralProbe(),
+                        ),
+                        clock=lambda: FIXED_AT,
+                    ),
+                    AssetDownloadRequest(
+                        asset_id=asset_id,
+                        worker_id=f"execution-0033-gallery-download-{index}",
+                        work_root=download_work_root,
+                        archive_root=archive_root,
+                        lease_seconds=60,
+                    ),
+                )
+            )
+
+        downloaded = [service.run(request) for service, request in services]
+
+        assert [result.disposition for result in downloaded] == ["downloaded", "downloaded"]
+        assert [result.mime_type for result in downloaded] == ["image/png", "image/png"]
+        assert [result.archive_path.read_bytes() for result in downloaded] == [PNG, SECOND_PNG]
+        assert [str(request.url) for request in requests] == [GALLERY_FIRST_REFRESH, GALLERY_SECOND_REFRESH]
+        assert resolver.calls == [("pic2.zhimg.com", 443), ("pic3.zhimg.com", 443)]
+        assert len(_GalleryDetailRunner.instances) == 2
+        assert all(len(runner.calls) == 1 for runner in _GalleryDetailRunner.instances)
+
+        export_service = EmbyExportService(
+            database,
+            EmbyExporter(library_root, staging_root=export_work_root),
+            clock=lambda: FIXED_AT,
+        )
+        exported = export_service.export_author(
+            EmbyExportRequest(seed.author_id, "execution-0033-export", lease_seconds=60)
+        )
+        assert exported.already_exported is False
+        author_directory = library_root / exported.output_path
+        poster = next(author_directory.glob("Season */*-poster.png"))
+        backdrop = next(author_directory.glob("Season */*-backdrop.png"))
+        gallery = tuple(sorted(author_directory.glob("Season */*.assets/gallery-*.png")))
+        assert len(gallery) == 2
+        assert poster.read_bytes() == PNG
+        assert backdrop.read_bytes() == SECOND_PNG
+        assert tuple(path.read_bytes() for path in gallery) == (PNG, SECOND_PNG)
+
+        archive_tree = _tree(archive_root)
+        library_tree = _tree(author_directory)
+        replayed = [service.run(request) for service, request in services]
+        replayed_export = export_service.export_author(
+            EmbyExportRequest(seed.author_id, "execution-0033-export-replay", lease_seconds=60)
+        )
+        assert [result.disposition for result in replayed] == ["already_verified", "already_verified"]
+        assert replayed_export.already_exported is True
+        assert len(requests) == 2
+        assert all(len(runner.calls) == 1 for runner in _GalleryDetailRunner.instances)
+        assert _tree(archive_root) == archive_tree
+        assert _tree(author_directory) == library_tree
+
+        for value in (GALLERY_SIGNATURE, GALLERY_FIRST_REFRESH, GALLERY_SECOND_REFRESH, ZHIHU_IMAGES_FIELD):
+            assert all(
+                value.encode() not in payload
+                for root in (runtime_root, download_work_root, archive_root, export_work_root, library_root)
+                for payload in ({root.name: root.read_bytes()} if root.is_file() else _tree(root)).values()
+            )
+    finally:
+        database.dispose()
+
+    sqlite_artifacts = tuple(path for path in tmp_path.glob(f"{database_path.name}*") if path.is_file())
+    assert sqlite_artifacts
+    for value in (GALLERY_SIGNATURE, GALLERY_FIRST_REFRESH, GALLERY_SECOND_REFRESH):
+        assert all(value.encode() not in path.read_bytes() for path in sqlite_artifacts)

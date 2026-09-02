@@ -29,7 +29,7 @@ from media_sync.integrations.mediacrawler.refresh import (
 )
 from media_sync.integrations.mediacrawler.tieba_media import TIEBA_GALLERY_FIELD, TIEBA_IMAGE_FIELD, TIEBA_IMAGES_FIELD
 from media_sync.integrations.mediacrawler.weibo_media import WEIBO_IMAGES_FIELD, WEIBO_VIDEO_FIELD
-from media_sync.integrations.mediacrawler.zhihu_media import ZHIHU_IMAGE_FIELD
+from media_sync.integrations.mediacrawler.zhihu_media import ZHIHU_IMAGE_FIELD, ZHIHU_IMAGES_FIELD
 from media_sync.media import (
     AdapterRefreshLocator,
     MediaDownloadError,
@@ -585,7 +585,7 @@ class FakeCrawler:
             "id": int(__ZHIHU_ANSWER_ID__),
             "type": "answer",
             "question": {"id": int(__ZHIHU_QUESTION_ID__)},
-            "content": '<p>body</p><img src="' + __ZHIHU_IMAGE_URL__ + '">',
+            "content": __ZHIHU_ANSWER_HTML__,
         }
         async def extract_in_detail_task():
             await asyncio.sleep(0)
@@ -946,7 +946,13 @@ def _fake_wb_checkout(
     return checkout.resolve()
 
 
-def _fake_zhihu_checkout(root: Path) -> Path:
+def _zhihu_answer_html(image_urls: tuple[str, ...]) -> str:
+    if not image_urls:
+        return '<p>body</p><img src="' + ZHIHU_IMAGE_URL + '">'
+    return "<p>body</p>" + "".join(f'<img src="{url}">' for url in image_urls)
+
+
+def _fake_zhihu_checkout(root: Path, *, image_urls: tuple[str, ...] = ()) -> Path:
     checkout = root / "fake-mediacrawler-zhihu"
     for package in (
         checkout / "config",
@@ -975,6 +981,7 @@ def _fake_zhihu_checkout(root: Path) -> Path:
         .replace("__ZHIHU_ANSWER_ID__", repr(ZHIHU_ANSWER_ID))
         .replace("__ZHIHU_QUESTION_ID__", repr(ZHIHU_QUESTION_ID))
         .replace("__ZHIHU_IMAGE_URL__", repr(ZHIHU_IMAGE_URL))
+        .replace("__ZHIHU_ANSWER_HTML__", repr(_zhihu_answer_html(image_urls)))
     )
     (checkout / "main.py").write_text(main_source, encoding="utf-8")
     return checkout.resolve()
@@ -1198,9 +1205,10 @@ def _tieba_process_runner(tmp_path: Path, checkout: Path) -> MediaCrawlerDetailP
     )
 
 
-def _zhihu_context() -> MediaCrawlerRefreshContext:
-    remote_id = f"{ZHIHU_ANSWER_ID}:image:0"
-    source_hint = asset_source_hint(ZHIHU_IMAGE_URL)
+def _zhihu_context(*, position: int = 0, hints: tuple[str, ...] = ()) -> MediaCrawlerRefreshContext:
+    active_hints = hints or (ZHIHU_IMAGE_URL,)
+    remote_id = f"{ZHIHU_ANSWER_ID}:image:{position}"
+    source_hint = asset_source_hint(active_hints[position])
     assert source_hint is not None
     return MediaCrawlerRefreshContext(
         asset_id=ASSET_ID,
@@ -1214,7 +1222,7 @@ def _zhihu_context() -> MediaCrawlerRefreshContext:
         author_display_name="Zhihu fixture creator",
         asset_remote_id=remote_id,
         asset_kind=AssetKind.IMAGE,
-        asset_position=0,
+        asset_position=position,
         source_hint=source_hint,
         locator=AdapterRefreshLocator(
             adapter="mediacrawler",
@@ -1223,11 +1231,12 @@ def _zhihu_context() -> MediaCrawlerRefreshContext:
                 content_remote_type="content",
                 content_remote_id=ZHIHU_ANSWER_ID,
                 kind="image",
-                position=0,
+                position=position,
                 remote_id=remote_id,
             ),
         ),
         detail_reference=ZHIHU_ANSWER_URL,
+        zhihu_image_source_hints=tuple(asset_source_hint(hint) for hint in active_hints),
         request_delay_seconds=0.25,
         watchdogs=WatchdogLimits(max_seconds=10, poll_seconds=0.01),
     )
@@ -1539,6 +1548,49 @@ def test_zhihu_answer_detail_installs_image_shim_binds_config_and_cleans_ephemer
     retained = b"".join(path.read_bytes() for path in (tmp_path / "runtime").rglob("*") if path.is_file())
     assert ZHIHU_IMAGE_FIELD.encode("utf-8") not in retained
     assert b"zhihu-detail-sentinel" not in retained
+
+
+ZHIHU_GALLERY_URLS = (
+    "https://picx.zhimg.com/v2-gallery-first.jpg?source=zhihu-gallery-sentinel",
+    "https://picx.zhimg.com/v2-gallery-second.jpg?source=zhihu-gallery-sentinel",
+)
+
+
+def test_zhihu_answer_gallery_detail_captures_bounded_ordered_images(tmp_path: Path) -> None:
+    checkout = _fake_zhihu_checkout(tmp_path, image_urls=ZHIHU_GALLERY_URLS)
+    context = _zhihu_context(position=1, hints=ZHIHU_GALLERY_URLS)
+
+    resolved = MediaCrawlerLocatorRefresher(
+        context,
+        _zhihu_process_runner(tmp_path, checkout),
+    ).resolve(context.locator)
+
+    assert resolved.url == ZHIHU_GALLERY_URLS[1]
+    assert resolved.request_profile is MediaRequestProfile.DEFAULT
+    retained = b"".join(path.read_bytes() for path in (tmp_path / "runtime").rglob("*") if path.is_file())
+    assert ZHIHU_IMAGES_FIELD.encode("utf-8") not in retained
+    assert b"zhihu-gallery-sentinel" not in retained
+
+
+def test_zhihu_answer_gallery_detail_rejects_replacement_or_above_bound_drift(tmp_path: Path) -> None:
+    replaced = (ZHIHU_GALLERY_URLS[0], "https://picx.zhimg.com/v2-replaced.jpg?source=zhihu-gallery-sentinel")
+    checkout = _fake_zhihu_checkout(tmp_path, image_urls=replaced)
+    context = _zhihu_context(position=1, hints=ZHIHU_GALLERY_URLS)
+
+    with pytest.raises(MediaDownloadError) as caught:
+        MediaCrawlerLocatorRefresher(context, _zhihu_process_runner(tmp_path, checkout)).resolve(context.locator)
+    assert caught.value.code == "locator_refresh_schema_changed"
+
+    over_bound = tuple(
+        f"https://picx.zhimg.com/v2-over-{index}.jpg?source=zhihu-gallery-sentinel" for index in range(65)
+    )
+    over_checkout = _fake_zhihu_checkout(tmp_path / "over", image_urls=over_bound)
+    over_context = _zhihu_context(hints=over_bound[:1])
+    with pytest.raises(MediaDownloadError) as caught:
+        MediaCrawlerLocatorRefresher(over_context, _zhihu_process_runner(tmp_path / "over", over_checkout)).resolve(
+            over_context.locator
+        )
+    assert caught.value.code == "locator_refresh_schema_changed"
 
 
 def test_tieba_detail_installs_first_floor_shim_binds_numeric_config_and_cleans_ephemera(

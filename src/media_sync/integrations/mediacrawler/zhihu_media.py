@@ -23,6 +23,7 @@ from typing import Any, cast
 from urllib.parse import urlsplit
 
 ZHIHU_IMAGE_FIELD = "__media_sync_zhihu_answer_image_v1"
+ZHIHU_IMAGES_FIELD = "__media_sync_zhihu_answer_images_v2"
 
 _INSTALL_MARKER = "__media_sync_zhihu_media_capture_v1__"
 _CREATOR_CAP_MARKER = "__media_sync_zhihu_creator_cap_v1__"
@@ -31,6 +32,7 @@ _INSTALL_VERSION = "media-sync-zhihu-media-v1"
 _MAX_ID = 2**63 - 1
 _MAX_ANSWER_HTML_CHARS = 1_048_576
 _MAX_URL_CHARS = 4_096
+ZHIHU_MAX_GALLERY_IMAGES = 64
 _DNS_LABEL = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\Z", re.ASCII)
 _STATIC_IMAGE_EXTENSIONS = frozenset({".jpeg", ".jpg", ".png", ".webp"})
 _IMAGE_ATTRIBUTE_PRIORITY = ("data-original", "data-actualsrc", "src")
@@ -52,7 +54,7 @@ _FORBIDDEN_MEDIA_TAGS = frozenset(
 class _RawCapture:
     answer_id: str
     question_id: str
-    image_url: str
+    image_urls: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,7 +63,7 @@ class _BoundCapture:
     answer_id: str
     question_id: str
     canonical_url: str
-    image_url: str
+    image_urls: tuple[str, ...]
 
 
 _ACTIVE_CAPTURE: ContextVar[_BoundCapture | None] = ContextVar(
@@ -280,7 +282,7 @@ def install_zhihu_media_capture(
             answer_id=raw_capture.answer_id,
             question_id=raw_capture.question_id,
             canonical_url=canonical_url,
-            image_url=raw_capture.image_url,
+            image_urls=raw_capture.image_urls,
         )
         sentinel = object()
         if getattr(result, _OBJECT_CAPTURE_FIELD, sentinel) is not sentinel:
@@ -314,13 +316,16 @@ def install_zhihu_media_capture(
     async def store_with_image(instance: object, content_item: object) -> Any:
         if not isinstance(content_item, Mapping):
             return await store_content(instance, content_item)
-        if ZHIHU_IMAGE_FIELD in content_item:
+        if ZHIHU_IMAGE_FIELD in content_item or ZHIHU_IMAGES_FIELD in content_item:
             raise RuntimeError("private Zhihu media field collision")
         capture = _ACTIVE_CAPTURE.get()
         if capture is None or not _matches_stored_row(capture, content_item):
             return await store_content(instance, content_item)
         enriched = dict(content_item)
-        enriched[ZHIHU_IMAGE_FIELD] = capture.image_url
+        if len(capture.image_urls) == 1:
+            enriched[ZHIHU_IMAGE_FIELD] = capture.image_urls[0]
+        else:
+            enriched[ZHIHU_IMAGES_FIELD] = list(capture.image_urls)
         return await store_content(instance, enriched)
 
     setattr(extract_with_image, _INSTALL_MARKER, _INSTALL_VERSION)
@@ -408,28 +413,31 @@ def _capture_answer(answer: object) -> _RawCapture | None:
         parser.close()
     except Exception:
         return None
-    if parser.has_forbidden_media or len(parser.image_candidates) != 1:
+    if parser.has_forbidden_media or not 1 <= len(parser.image_candidates) <= ZHIHU_MAX_GALLERY_IMAGES:
         return None
-    candidates = parser.image_candidates[0]
-    candidate_names = [name for name, _value in candidates]
-    if not candidates or len(candidate_names) != len(set(candidate_names)):
+    selected_urls: list[str] = []
+    for candidates in parser.image_candidates:
+        candidate_names = [name for name, _value in candidates]
+        if not candidates or len(candidate_names) != len(set(candidate_names)):
+            return None
+        selected: str | None = None
+        for attribute in _IMAGE_ATTRIBUTE_PRIORITY:
+            values = [value for name, value in candidates if name == attribute]
+            if values:
+                value = values[0]
+                if type(value) is not str or not value:
+                    return None
+                selected = value
+                break
+        if selected is None:  # pragma: no cover - candidates contain only managed names
+            return None
+        try:
+            selected_urls.append(validate_zhihu_image_url(selected))
+        except ValueError:
+            return None
+    if len(set(selected_urls)) != len(selected_urls):
         return None
-    selected: str | None = None
-    for attribute in _IMAGE_ATTRIBUTE_PRIORITY:
-        values = [value for name, value in candidates if name == attribute]
-        if values:
-            value = values[0]
-            if type(value) is not str or not value:
-                return None
-            selected = value
-            break
-    if selected is None:  # pragma: no cover - candidates contain only managed names
-        return None
-    try:
-        image_url = validate_zhihu_image_url(selected)
-    except ValueError:
-        return None
-    return _RawCapture(answer_id=answer_id, question_id=question_id, image_url=image_url)
+    return _RawCapture(answer_id=answer_id, question_id=question_id, image_urls=tuple(selected_urls))
 
 
 def _coerce_upstream_id(value: object) -> str | None:
@@ -545,7 +553,9 @@ def _has_static_image_extension(path: str) -> bool:
 
 
 __all__ = [
+    "ZHIHU_IMAGES_FIELD",
     "ZHIHU_IMAGE_FIELD",
+    "ZHIHU_MAX_GALLERY_IMAGES",
     "install_zhihu_media_capture",
     "is_zhihu_positive_id",
     "validate_zhihu_answer_url",

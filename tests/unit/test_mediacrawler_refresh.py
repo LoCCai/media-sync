@@ -1684,9 +1684,7 @@ def test_zhihu_refresh_rejects_missing_drifted_or_duplicate_target(drift: str) -
         MediaCrawlerLocatorRefresher(context, _FakeDetailRunner(payload), clock=lambda: NOW).resolve(context.locator)
 
     assert caught.value.code == (
-        "locator_refresh_asset_mismatch"
-        if drift in {"source-hint", "duplicate-content"}
-        else "locator_refresh_schema_changed"
+        "locator_refresh_asset_mismatch" if drift == "duplicate-content" else "locator_refresh_schema_changed"
     )
 
 

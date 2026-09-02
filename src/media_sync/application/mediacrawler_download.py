@@ -44,7 +44,11 @@ from media_sync.integrations.mediacrawler.tieba_media import (
     validate_tieba_image_source_hint,
     validate_tieba_thread_url,
 )
-from media_sync.integrations.mediacrawler.zhihu_media import validate_zhihu_answer_url, validate_zhihu_image_url
+from media_sync.integrations.mediacrawler.zhihu_media import (
+    ZHIHU_MAX_GALLERY_IMAGES,
+    validate_zhihu_answer_url,
+    validate_zhihu_image_url,
+)
 from media_sync.media import (
     AdapterRefreshLocator,
     MediaDownloadError,
@@ -192,6 +196,7 @@ class LazyMediaCrawlerLocatorRefresher:
             asset_kind = AssetKind(asset.kind)
             bili_video_remote_ids: tuple[str, ...] = ()
             tieba_image_source_hints: tuple[str, ...] = ()
+            zhihu_image_source_hints: tuple[str, ...] = ()
             locator = parse_locator(asset.locator)
             if not isinstance(locator, AdapterRefreshLocator) or locator.adapter != "mediacrawler":
                 raise MediaDownloadError("locator_refresh_source_mismatch")
@@ -202,6 +207,35 @@ class LazyMediaCrawlerLocatorRefresher:
                     validate_zhihu_image_url(asset.source_url)
                 except ValueError as exc:
                     raise MediaDownloadError("locator_refresh_configuration_invalid") from exc
+                zhihu_assets = tuple(
+                    session.scalars(
+                        select(Asset).where(Asset.content_id == content.id).order_by(Asset.position, Asset.id)
+                    ).all()
+                )
+                if (
+                    not 1 <= len(zhihu_assets) <= ZHIHU_MAX_GALLERY_IMAGES
+                    or asset.position >= len(zhihu_assets)
+                    or zhihu_assets[asset.position].id != asset.id
+                ):
+                    raise MediaDownloadError("locator_refresh_configuration_invalid")
+                zhihu_hints: list[str] = []
+                for position, sibling in enumerate(zhihu_assets):
+                    if (
+                        sibling.platform != Platform.ZHIHU.value
+                        or sibling.kind != AssetKind.IMAGE.value
+                        or sibling.position != position
+                        or sibling.remote_id != f"{content.remote_id}:image:{position}"
+                        or type(sibling.source_url) is not str
+                    ):
+                        raise MediaDownloadError("locator_refresh_configuration_invalid")
+                    try:
+                        hint = validate_zhihu_image_url(sibling.source_url)
+                    except ValueError as exc:
+                        raise MediaDownloadError("locator_refresh_configuration_invalid") from exc
+                    zhihu_hints.append(hint)
+                if len(set(zhihu_hints)) != len(zhihu_hints):
+                    raise MediaDownloadError("locator_refresh_configuration_invalid")
+                zhihu_image_source_hints = tuple(zhihu_hints)
             if platform is Platform.TIEBA:
                 if type(asset.source_url) is not str:
                     raise MediaDownloadError("locator_refresh_configuration_invalid")
@@ -351,6 +385,7 @@ class LazyMediaCrawlerLocatorRefresher:
                     locator=locator,
                     bili_video_remote_ids=bili_video_remote_ids,
                     tieba_image_source_hints=tieba_image_source_hints,
+                    zhihu_image_source_hints=zhihu_image_source_hints,
                     detail_reference=detail_reference,
                     creator_reference=creator_reference,
                     creator_max_items=creator_max_items,
