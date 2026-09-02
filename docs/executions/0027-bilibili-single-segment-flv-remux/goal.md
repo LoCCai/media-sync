@@ -1,9 +1,11 @@
 # Execution 0027 goal / 执行 0027 目标
 
-- Status / 状态：Frozen plan; implementation not started / 计划已冻结；实现尚未开始
+- Status / 状态：Complete for the frozen offline single-segment FLV-remux scope; live rows remain `NOT_RUN` / 冻结的离线单段 FLV 转封装范围已完成；真人行保持 `NOT_RUN`
 - Date / 日期：2026-09-02
 - Predecessor / 前置：Execution 0026 closeout `245e8e377761ee8343b33f581dfcd27295eac532`
 - Scope / 范围：Format-aware, bounded stream-copy remux of the already-supported exactly-one-segment Bilibili progressive `durl` FLV shape into an Emby-compatible MP4 / 对既有“精确一个分段”的 Bilibili progressive `durl` FLV 形状执行格式感知、有界 stream-copy 转封装，产出 Emby 兼容 MP4
+- Plan commit / 计划提交：`ec7095a9cc5e85fda1aee66f256eb16345c1294a`
+- Implementation commit / 实现提交：`7f99aa480328a25b7e9c2acc8a9c2234128e7b74`
 
 ## Outcome / 目标结果
 

@@ -1,9 +1,11 @@
 # Execution 0027 plan / 执行 0027 计划
 
-- Status / 状态：Frozen and ready to execute / 已冻结并可执行
+- Status / 状态：Executed and verified / 已执行并通过验证
 - Plan date / 计划日期：2026-09-02
 - Predecessor / 前置：`245e8e377761ee8343b33f581dfcd27295eac532`
 - Database migration / 数据库迁移：None planned / 计划无
+- Plan commit / 计划提交：`ec7095a9cc5e85fda1aee66f256eb16345c1294a`
+- Implementation commit / 实现提交：`7f99aa480328a25b7e9c2acc8a9c2234128e7b74`
 
 ## Baseline and audit / 基线与审计
 
