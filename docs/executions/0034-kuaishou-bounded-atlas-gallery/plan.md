@@ -6,8 +6,8 @@
 - Plan date: 2026-09-03
 - Predecessor: `e9d1fcdb8970b5a10f84e3947e1570159c9f9011`
 - Database migration: None planned
-- Plan commit: recorded in the closeout index; never embedded in this file
-- Implementation commit: recorded in the closeout index; never embedded in this file
+- Plan commit: `eeff45e2d862a7615d9a74c06914310dcd9f4272`
+- Implementation commit: `26c2b3ea974fbba8ea41a9eb496f25738b1718be`
 
 ## Baseline and audit
 

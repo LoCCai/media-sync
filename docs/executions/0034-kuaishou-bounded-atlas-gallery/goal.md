@@ -6,8 +6,8 @@
 - Date: 2026-09-03
 - Predecessor: Execution 0033 closeout `e9d1fcdb8970b5a10f84e3947e1570159c9f9011`
 - Scope: One ordinary Kuaishou atlas photo whose `photo.ext_params.atlas.pics` carries 1–64 ordered CDN images, captured at the pinned store boundary and delivered as a bounded IMAGE/GALLERY content with per-image adapter refresh and Emby publication
-- Plan commit: recorded in the closeout index; never embedded in this file
-- Implementation commit: recorded in the closeout index; never embedded in this file
+- Plan commit: `eeff45e2d862a7615d9a74c06914310dcd9f4272`
+- Implementation commit: `26c2b3ea974fbba8ea41a9eb496f25738b1718be`
 
 ## Outcome
 
