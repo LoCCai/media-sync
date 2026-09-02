@@ -12,6 +12,7 @@ from media_sync.media import (
     MediaRequestProfile,
     ResolvedDashLocator,
     ResolvedFlvLocator,
+    ResolvedFlvSegmentsLocator,
     ResolvedLocator,
     ResolvedSegmentsLocator,
     canonical_locator_json,
@@ -240,6 +241,36 @@ def test_resolved_segments_locator_is_bounded_ordered_distinct_and_repr_safe() -
             return target
 
     assert resolve_locator(AdapterRefreshLocator("mediacrawler", "bili/video/segments"), _SegmentsRefresh()) is target
+
+
+def test_resolved_flv_segments_locator_wraps_only_a_segments_target_and_stays_repr_safe() -> None:
+    first = ResolvedLocator(
+        "https://video.test/segment-0.flv?signature=flv-first-private",
+        MediaRequestProfile.BILIBILI_MEDIA,
+    )
+    second = ResolvedLocator(
+        "https://video.test/segment-1.flv?signature=flv-second-private",
+        MediaRequestProfile.BILIBILI_MEDIA,
+    )
+    target = ResolvedFlvSegmentsLocator(ResolvedSegmentsLocator((first, second)))
+
+    assert target.source.segments == (first, second)
+    assert "flv-first-private" not in repr(target)
+    assert "flv-second-private" not in repr(target)
+
+    @dataclass
+    class _FlvSegmentsRefresh:
+        def resolve(self, _locator: AdapterRefreshLocator) -> ResolvedFlvSegmentsLocator:
+            return target
+
+    assert resolve_locator(AdapterRefreshLocator("mediacrawler", "bili/video/flv-segments"), _FlvSegmentsRefresh()) is (
+        target
+    )
+
+    with pytest.raises(MediaDownloadError, match="locator_invalid"):
+        ResolvedFlvSegmentsLocator(first)  # type: ignore[arg-type]
+    with pytest.raises(MediaDownloadError, match="locator_invalid"):
+        ResolvedFlvSegmentsLocator("https://video.test/segment.flv")  # type: ignore[arg-type]
 
 
 def _segment_locator(url: str) -> ResolvedLocator:

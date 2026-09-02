@@ -59,6 +59,7 @@ from media_sync.media import (
     MediaRequestProfile,
     ProbeResult,
     ResolvedFlvLocator,
+    ResolvedFlvSegmentsLocator,
     ResolvedLocator,
     ResolvedSegmentsLocator,
     SafeHttpClient,
@@ -139,6 +140,24 @@ SEGMENTS_DETAIL_JSONL = _jsonl(
         },
         "desc": "Execution 0029 ordinary multi-segment source, logical first page.",
         "title": "Offline first-page multi-segment concat video",
+        "video_id": CONTENT_ID,
+        "video_type": "video",
+        "video_url": f"https://www.bilibili.com/video/av{CONTENT_ID}",
+    }
+)
+SEGMENTS_FLV_DETAIL_JSONL = _jsonl(
+    {
+        BILIBILI_PAGES_FIELD: [{"page": 1, "cid": 24680}],
+        BILIBILI_PROGRESSIVE_SEGMENTS_FIELD: {
+            "cid": 24680,
+            "format": "flv",
+            "segments": [
+                {"url": SIGNED_URL, "backup_urls": [BACKUP_URL]},
+                {"url": SECOND_SIGNED_URL},
+            ],
+        },
+        "desc": "Execution 0030 explicit multi-segment FLV source, logical first page.",
+        "title": "Offline first-page multi-segment FLV concat video",
         "video_id": CONTENT_ID,
         "video_type": "video",
         "video_url": f"https://www.bilibili.com/video/av{CONTENT_ID}",
@@ -1208,6 +1227,315 @@ def test_bilibili_multi_segment_backup_reaches_emby_through_production_concat_wi
                     },
                     "content": {"canonical_url": content.canonical_url, "raw": content.raw},
                     "jobs": [job.payload for job in jobs],
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+            assert BILIBILI_PROGRESSIVE_SEGMENTS_FIELD not in durable
+            assert SIGNED_URL not in durable and BACKUP_URL not in durable and SECOND_SIGNED_URL not in durable
+
+        _assert_signed_url_absent(runtime_root, download_work_root, archive_root, export_work_root, library_root)
+    finally:
+        database.dispose()
+
+    sqlite_artifacts = tuple(path for path in tmp_path.glob(f"{database_path.name}*") if path.is_file())
+    assert sqlite_artifacts
+    _assert_signed_url_absent(*sqlite_artifacts)
+
+
+class _FlvSegmentsDetailRunner:
+    instances: ClassVar[list[_FlvSegmentsDetailRunner]] = []
+
+    def __init__(self, **kwargs: object) -> None:
+        self.constructor_kwargs = kwargs
+        self.calls: list[MediaCrawlerDetailRequest] = []
+        type(self).instances.append(self)
+
+    def run(self, request: MediaCrawlerDetailRequest) -> MediaCrawlerDetailResult:
+        self.calls.append(request)
+        return MediaCrawlerDetailResult(SEGMENTS_FLV_DETAIL_JSONL, UPSTREAM_SHA)
+
+
+@dataclass(slots=True)
+class _RecordingFlvSegmentsRefresher:
+    delegate: LazyMediaCrawlerLocatorRefresher
+    results: list[ResolvedFlvSegmentsLocator] = field(default_factory=list)
+
+    def resolve(self, locator: AdapterRefreshLocator) -> ResolvedFlvSegmentsLocator:
+        resolved = self.delegate.resolve(locator)
+        assert isinstance(resolved, ResolvedFlvSegmentsLocator)
+        self.results.append(resolved)
+        return resolved
+
+
+def _generate_two_flv_segments(root: Path, ffmpeg: str) -> tuple[bytes, bytes]:
+    root.mkdir()
+    first = root / "first.flv"
+    second = root / "second.flv"
+    try:
+        subprocess.run(
+            (
+                ffmpeg,
+                "-nostdin",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=c=blue:s=64x64:r=5:d=0.6",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=440:sample_rate=44100:duration=0.6",
+                "-shortest",
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p",
+                "-c:a",
+                "aac",
+                "-b:a",
+                "64k",
+                "-f",
+                "flv",
+                "-y",
+                str(first),
+            ),
+            check=True,
+            capture_output=True,
+            timeout=30,
+        )
+        subprocess.run(
+            (
+                ffmpeg,
+                "-nostdin",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=c=red:s=64x64:r=5:d=0.6",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=440:sample_rate=44100:duration=0.6",
+                "-shortest",
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p",
+                "-c:a",
+                "aac",
+                "-b:a",
+                "64k",
+                "-f",
+                "flv",
+                "-y",
+                str(second),
+            ),
+            check=True,
+            capture_output=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        pytest.skip(f"local FLV segment fixture generation is unavailable: {type(exc).__name__}")
+    first_payload = first.read_bytes()
+    second_payload = second.read_bytes()
+    assert first_payload.startswith(b"FLV") and second_payload.startswith(b"FLV")
+    assert first_payload != second_payload
+    return first_payload, second_payload
+
+
+def test_bilibili_multi_segment_flv_backup_reaches_emby_through_production_concat_with_zero_work_replay(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ffmpeg = shutil.which("ffmpeg")
+    ffprobe = shutil.which("ffprobe")
+    if ffmpeg is None or ffprobe is None:
+        pytest.skip("ffmpeg and ffprobe are required for production-process qualification")
+    first_segment, second_segment = _generate_two_flv_segments(tmp_path / "fixtures", ffmpeg)
+    database_path = tmp_path / "bilibili-flv-segments.sqlite3"
+    database_url = f"sqlite+pysqlite:///{database_path.as_posix()}"
+    archive_root = tmp_path / "archive"
+    library_root = tmp_path / "library"
+    runtime_root = tmp_path / "mediacrawler-runtime"
+    download_work_root = tmp_path / "download-work"
+    export_work_root = tmp_path / "export-work"
+    runtime_root.mkdir()
+    upgrade_database(database_url)
+    database = Database(database_url)
+    _FlvSegmentsDetailRunner.instances = []
+    monkeypatch.setattr(mediacrawler_runtime, "MediaCrawlerDetailProcessRunner", _FlvSegmentsDetailRunner)
+
+    try:
+        seed = _seed_subscription(database)
+        normalized = normalize_jsonl_bytes(
+            FORWARD_JSONL,
+            NormalizationContext(
+                platform=Platform.BILI,
+                creator_remote_id=AUTHOR_REMOTE_ID,
+                creator_display_name="Bilibili Offline Creator",
+                upstream_sha=UPSTREAM_SHA,
+                ingested_at=FIXED_AT,
+            ),
+        )
+        assert not normalized.quarantined and not normalized.truncated_tail
+        run_id = _start_ingesting_run(database, seed.subscription_id)
+        ingestion = MediaCrawlerIngestionService(database).ingest(
+            normalized.records,
+            subscription_id=seed.subscription_id,
+            run_id=run_id,
+            expected_revision=0,
+            mode=IngestionMode.FORWARD,
+        )
+        assert (ingestion.accepted_count, ingestion.discovered_count, ingestion.asset_count) == (1, 1, 1)
+
+        with database.session() as session:
+            asset = session.scalar(select(Asset))
+            assert asset is not None
+            asset_id = UUID(asset.id)
+
+        delegate = LazyMediaCrawlerLocatorRefresher(
+            database,
+            asset_id=asset_id,
+            subscription_id=UUID(seed.subscription_id),
+            lock_path=tmp_path / "upstreams.lock.json",
+            integration_root=runtime_root,
+            python_executable=tmp_path / "python",
+            secret_resolver=SecretResolver({}),
+            license_acknowledged=True,
+        )
+        refresher = _RecordingFlvSegmentsRefresher(delegate)
+        resolver = _RecordingPublicResolver()
+        requests: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            assert str(request.url) in {SIGNED_URL, BACKUP_URL, SECOND_SIGNED_URL}
+            assert request.headers["referer"] == "https://www.bilibili.com/"
+            assert request.headers["origin"] == "https://www.bilibili.com"
+            assert request.headers["accept-encoding"] == "identity"
+            assert "cookie" not in request.headers and "authorization" not in request.headers
+            if str(request.url) == SIGNED_URL:
+                return httpx.Response(503)
+            if str(request.url) == BACKUP_URL:
+                return httpx.Response(
+                    200,
+                    headers={
+                        "Content-Length": str(len(first_segment)),
+                        "Content-Type": "video/x-flv",
+                        "ETag": '"execution-0030-segment-0"',
+                    },
+                    content=first_segment,
+                )
+            return httpx.Response(
+                200,
+                headers={
+                    "Content-Length": str(len(second_segment)),
+                    "Content-Type": "video/x-flv",
+                    "ETag": '"execution-0030-segment-1"',
+                },
+                content=second_segment,
+            )
+
+        production_probe = _RecordingProductionProbe(FFprobeMediaProbe(ffprobe))
+        production_muxer = _RecordingProductionMuxer(FFmpegStreamCopyMuxer(ffmpeg))
+        downloader = SecureMediaDownloader(
+            SafeHttpClient(
+                resolver,
+                transport_factory=lambda _target: httpx.MockTransport(handler),
+            ),
+            refresher=refresher,
+            probe=production_probe,
+            muxer=production_muxer,
+        )
+        service = AssetDownloadService(database, downloader, clock=lambda: FIXED_AT)
+        download_request = AssetDownloadRequest(
+            asset_id=asset_id,
+            worker_id="execution-0030-download",
+            work_root=download_work_root,
+            archive_root=archive_root,
+            lease_seconds=60,
+        )
+
+        downloaded = service.run(download_request)
+
+        assert downloaded.disposition == "downloaded"
+        assert downloaded.archive_path is not None and downloaded.archive_path.suffix == ".mp4"
+        final_bytes = downloaded.archive_path.read_bytes()
+        assert b"ftyp" in final_bytes[:32]
+        assert final_bytes != first_segment and final_bytes != second_segment
+        assert downloaded.mime_type == "video/mp4"
+        assert downloaded.checksum_sha256 == hashlib.sha256(final_bytes).hexdigest()
+        assert _stream_types(downloaded.archive_path, ffprobe) == {"video", "audio"}
+        assert [str(request.url) for request in requests] == [SIGNED_URL, BACKUP_URL, SECOND_SIGNED_URL]
+        assert len(refresher.results) == 1
+        target = refresher.results[0]
+        assert isinstance(target.source, ResolvedSegmentsLocator)
+        assert [segment.urls for segment in target.source.segments] == [
+            (SIGNED_URL, BACKUP_URL),
+            (SECOND_SIGNED_URL,),
+        ]
+        assert SIGNED_SENTINEL not in repr(target)
+        assert len(_FlvSegmentsDetailRunner.instances) == 1
+        assert len(_FlvSegmentsDetailRunner.instances[0].calls) == 1
+        assert len(production_probe.calls) == 3
+        assert len(production_muxer.concat_calls) == 1
+        assert len(production_muxer.remux_calls) == 0
+        list_path, _output_path, script = production_muxer.concat_calls[0]
+        assert list_path.parent == download_work_root / "parts"
+        assert script == (f"file '{asset_id}.1.bili-segment-000.part'\nfile '{asset_id}.1.bili-segment-001.part'\n")
+        assert not list_path.exists()
+        assert not tuple(archive_root.rglob("*.flv"))
+
+        export_service = EmbyExportService(
+            database,
+            EmbyExporter(library_root, staging_root=export_work_root),
+            clock=lambda: FIXED_AT,
+        )
+        exported = export_service.export_author(
+            EmbyExportRequest(seed.author_id, "execution-0030-export", lease_seconds=60)
+        )
+        assert exported.already_exported is False
+        author_directory = library_root / exported.output_path
+        emby_video = next(author_directory.glob("Season 2026/*.mp4"))
+        assert emby_video.read_bytes() == final_bytes
+        assert _stream_types(emby_video, ffprobe) == {"video", "audio"}
+        assert not tuple(author_directory.rglob("*.flv"))
+        assert (author_directory / "tvshow.nfo").is_file()
+        assert next(author_directory.glob("Season 2026/*.nfo")).is_file()
+
+        archive_tree = _tree(archive_root)
+        library_tree = _tree(author_directory)
+        replayed_download = service.run(download_request)
+        replayed_export = export_service.export_author(
+            EmbyExportRequest(seed.author_id, "execution-0030-export-replay", lease_seconds=60)
+        )
+        assert replayed_download.disposition == "already_verified"
+        assert replayed_export.already_exported is True
+        assert len(_FlvSegmentsDetailRunner.instances[0].calls) == 1
+        assert len(requests) == 3
+        assert len(production_probe.calls) == 3
+        assert len(production_muxer.concat_calls) == 1
+        assert _tree(archive_root) == archive_tree
+        assert _tree(author_directory) == library_tree
+
+        with database.session() as session:
+            persisted_asset = session.get(Asset, str(asset_id))
+            assert persisted_asset is not None
+            assert persisted_asset.status == "verified" and persisted_asset.generation == 1
+            assert persisted_asset.mime_type == "video/mp4"
+            durable = json.dumps(
+                {
+                    "asset": {
+                        "locator": persisted_asset.locator,
+                        "raw": persisted_asset.raw,
+                        "source_url": persisted_asset.source_url,
+                    },
+                    "jobs": [job.payload for job in session.scalars(select(Job).order_by(Job.job_type, Job.id)).all()],
                 },
                 ensure_ascii=False,
                 sort_keys=True,

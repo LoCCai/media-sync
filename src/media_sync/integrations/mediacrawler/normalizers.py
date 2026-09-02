@@ -24,6 +24,7 @@ from media_sync.media.locator import (
     MediaRequestProfile,
     ResolvedDashLocator,
     ResolvedFlvLocator,
+    ResolvedFlvSegmentsLocator,
     ResolvedLocator,
     ResolvedMediaTarget,
     ResolvedSegmentsLocator,
@@ -149,7 +150,12 @@ class NormalizedMediaRecord:
         if any(
             type(key) is not str
             or not isinstance(
-                value, ResolvedLocator | ResolvedFlvLocator | ResolvedDashLocator | ResolvedSegmentsLocator
+                value,
+                ResolvedLocator
+                | ResolvedFlvLocator
+                | ResolvedDashLocator
+                | ResolvedSegmentsLocator
+                | ResolvedFlvSegmentsLocator,
             )
             for key, value in self.runtime_asset_targets.items()
         ):
@@ -611,7 +617,11 @@ def _bili_video_assets(
                 return (), (), {}
             if pages[0].cid != segment_cid:
                 return (), (), {}
-            return (segments_target.segments[0].url,), remote_ids, {remote_ids[0]: segments_target}
+            return (
+                (_bili_segments_source(segments_target).segments[0].url,),
+                remote_ids,
+                {remote_ids[0]: segments_target},
+            )
         progressive = None
         if allow_progressive_detail and (
             _BILI_PROGRESSIVE_FIELD in record
@@ -653,7 +663,7 @@ def _bili_video_assets(
             )
             if page_index is None:
                 return (), (), {}
-            urls[page_index] = segments_target.segments[0].url
+            urls[page_index] = _bili_segments_source(segments_target).segments[0].url
             targets[remote_ids[page_index]] = segments_target
             return tuple(urls), remote_ids, targets
         progressive_payload = record.get(BILIBILI_PROGRESSIVE_PAGE_FIELD)
@@ -714,10 +724,21 @@ def _bili_progressive_source(target: ResolvedLocator | ResolvedFlvLocator) -> Re
     return target.source if isinstance(target, ResolvedFlvLocator) else target
 
 
-def _bili_segments_target(value: object) -> tuple[int, ResolvedSegmentsLocator]:
+def _bili_segments_source(
+    target: ResolvedSegmentsLocator | ResolvedFlvSegmentsLocator,
+) -> ResolvedSegmentsLocator:
+    """Return the segment tuple without widening the accepted runtime union."""
+
+    return target.source if isinstance(target, ResolvedFlvSegmentsLocator) else target
+
+
+def _bili_segments_target(value: object) -> tuple[int, ResolvedSegmentsLocator | ResolvedFlvSegmentsLocator]:
     """Parse the exact private multi-segment bridge emitted by the detail child."""
 
-    if not isinstance(value, Mapping) or set(value) != {"cid", "segments"}:
+    if not isinstance(value, Mapping) or set(value) not in ({"cid", "segments"}, {"cid", "segments", "format"}):
+        raise ValueError("invalid Bilibili segments target")
+    format_value = value.get("format")
+    if format_value is not None and (type(format_value) is not str or format_value != "flv"):
         raise ValueError("invalid Bilibili segments target")
     cid = value.get("cid")
     if type(cid) is not int or not 1 <= cid <= 2**63 - 1:
@@ -749,7 +770,10 @@ def _bili_segments_target(value: object) -> tuple[int, ResolvedSegmentsLocator]:
         except Exception as exc:
             raise ValueError("invalid Bilibili segments target") from exc
     try:
-        return cid, ResolvedSegmentsLocator(tuple(segments))
+        resolved: ResolvedSegmentsLocator | ResolvedFlvSegmentsLocator = ResolvedSegmentsLocator(tuple(segments))
+        if format_value == "flv":
+            resolved = ResolvedFlvSegmentsLocator(ResolvedSegmentsLocator(tuple(segments)))
+        return cid, resolved
     except Exception as exc:
         raise ValueError("invalid Bilibili segments target") from exc
 

@@ -83,6 +83,7 @@ from media_sync.media import (
     MediaRequestProfile,
     ResolvedDashLocator,
     ResolvedFlvLocator,
+    ResolvedFlvSegmentsLocator,
     ResolvedLocator,
     ResolvedMediaTarget,
     ResolvedSegmentsLocator,
@@ -91,7 +92,7 @@ from media_sync.media.errors import MediaDownloadError
 from media_sync.security import SecretValue
 from media_sync.security.secrets import MAX_SECRET_BYTES
 
-DETAIL_RUNNER_SCHEMA_VERSION = 8
+DETAIL_RUNNER_SCHEMA_VERSION = 9
 MAX_DETAIL_REQUEST_BYTES = 128 * 1024
 MAX_DETAIL_FRAME_OVERHEAD = 8 * 1024
 
@@ -638,7 +639,12 @@ class _BiliPlaybackResult:
             type(self.cid) is not int
             or self.cid not in {page.cid for page in self.pages}
             or not isinstance(
-                self.target, ResolvedLocator | ResolvedFlvLocator | ResolvedDashLocator | ResolvedSegmentsLocator
+                self.target,
+                ResolvedLocator
+                | ResolvedFlvLocator
+                | ResolvedDashLocator
+                | ResolvedSegmentsLocator
+                | ResolvedFlvSegmentsLocator,
             )
             or (
                 isinstance(self.target, ResolvedLocator)
@@ -1114,14 +1120,15 @@ def _bili_playback_result(
         target: ResolvedMediaTarget = ResolvedFlvLocator(source) if _bili_progressive_format(play) == "flv" else source
         return _BiliPlaybackResult(aid=aid, pages=pages, cid=cid, target=target)
     format_marker = _bili_progressive_format(play)
-    if format_marker == "flv" or not 2 <= len(durl) <= BILIBILI_MAX_DURL_SEGMENTS:
+    if not 2 <= len(durl) <= BILIBILI_MAX_DURL_SEGMENTS:
         raise _ChildUnsupportedError
     try:
         segments = tuple(_bili_progressive_locator(segment) for segment in durl)
-        target = ResolvedSegmentsLocator(segments)
+        base = ResolvedSegmentsLocator(segments)
+        multi_target: ResolvedMediaTarget = ResolvedFlvSegmentsLocator(base) if format_marker == "flv" else base
     except (TypeError, ValueError, MediaDownloadError) as exc:
         raise ValueError("invalid Bilibili durl response") from exc
-    return _BiliPlaybackResult(aid=aid, pages=pages, cid=cid, target=target)
+    return _BiliPlaybackResult(aid=aid, pages=pages, cid=cid, target=multi_target)
 
 
 async def _run_bilibili_aid(upstream_main: Any, request: _ChildRequest) -> _BiliPlaybackResult | None:
@@ -1356,9 +1363,14 @@ def _augment_bili_progressive_jsonl(
                         if format_marker is not None:
                             page_target["format"] = format_marker
                         enriched[BILIBILI_PROGRESSIVE_PAGE_FIELD] = page_target
-                elif isinstance(progressive.target, ResolvedSegmentsLocator):
+                elif isinstance(progressive.target, ResolvedSegmentsLocator | ResolvedFlvSegmentsLocator):
                     assert progressive.cid is not None
-                    enriched[BILIBILI_PROGRESSIVE_SEGMENTS_FIELD] = {
+                    active_segments = (
+                        progressive.target.source.segments
+                        if isinstance(progressive.target, ResolvedFlvSegmentsLocator)
+                        else progressive.target.segments
+                    )
+                    segments_payload: dict[str, object] = {
                         "cid": progressive.cid,
                         "segments": [
                             (
@@ -1366,9 +1378,12 @@ def _augment_bili_progressive_jsonl(
                                 if segment.backup_urls
                                 else {"url": segment.url}
                             )
-                            for segment in progressive.target.segments
+                            for segment in active_segments
                         ],
                     }
+                    if isinstance(progressive.target, ResolvedFlvSegmentsLocator):
+                        segments_payload["format"] = "flv"
+                    enriched[BILIBILI_PROGRESSIVE_SEGMENTS_FIELD] = segments_payload
                 elif isinstance(progressive.target, ResolvedDashLocator):
                     assert progressive.cid is not None
                     target = progressive.target

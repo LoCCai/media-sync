@@ -234,6 +234,17 @@ class ResolvedSegmentsLocator:
             raise _fail()
 
 
+@dataclass(frozen=True, slots=True)
+class ResolvedFlvSegmentsLocator:
+    """Ephemeral ordered Bilibili multi-segment FLV target needing MP4 concat."""
+
+    source: ResolvedSegmentsLocator = field(repr=False)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.source, ResolvedSegmentsLocator):
+            raise _fail()
+
+
 _BILIBILI_VIDEO_QUALITIES = frozenset({16, 32, 64, 80, 112, 116, 120, 125, 126, 127})
 _BILIBILI_AUDIO_QUALITIES = frozenset({30216, 30232, 30250, 30251, 30255, 30280})
 _BILIBILI_VIDEO_CODECS = frozenset({"avc", "hev", "av1"})
@@ -274,7 +285,9 @@ class ResolvedDashLocator:
         return self.video_quality, self.video_codec, self.audio_quality
 
 
-ResolvedMediaTarget: TypeAlias = ResolvedLocator | ResolvedFlvLocator | ResolvedDashLocator | ResolvedSegmentsLocator
+ResolvedMediaTarget: TypeAlias = (
+    ResolvedLocator | ResolvedFlvLocator | ResolvedDashLocator | ResolvedSegmentsLocator | ResolvedFlvSegmentsLocator
+)
 
 
 def parse_locator(value: Mapping[str, object] | str) -> AssetLocator:
@@ -345,7 +358,14 @@ def resolve_locator(locator: AssetLocator, refresher: LocatorRefreshPort | None 
     if refresher is None:
         raise MediaDownloadError("locator_refresh_unsupported")
     resolved = refresher.resolve(locator)
-    if not isinstance(resolved, ResolvedLocator | ResolvedFlvLocator | ResolvedDashLocator | ResolvedSegmentsLocator):
+    if not isinstance(
+        resolved,
+        ResolvedLocator
+        | ResolvedFlvLocator
+        | ResolvedDashLocator
+        | ResolvedSegmentsLocator
+        | ResolvedFlvSegmentsLocator,
+    ):
         raise MediaDownloadError("locator_invalid")
     return resolved
 
@@ -359,6 +379,7 @@ __all__ = [
     "MediaRequestProfile",
     "ResolvedDashLocator",
     "ResolvedFlvLocator",
+    "ResolvedFlvSegmentsLocator",
     "ResolvedLocator",
     "ResolvedMediaTarget",
     "ResolvedSegmentsLocator",

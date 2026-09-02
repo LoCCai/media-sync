@@ -41,6 +41,7 @@ from media_sync.media import (
     MediaRequestProfile,
     ResolvedDashLocator,
     ResolvedFlvLocator,
+    ResolvedFlvSegmentsLocator,
     ResolvedLocator,
     ResolvedSegmentsLocator,
 )
@@ -2010,3 +2011,105 @@ def test_bilibili_segments_bridge_requires_a_page_tuple_to_bind_the_cid() -> Non
         MediaCrawlerLocatorRefresher(context, runner, clock=lambda: NOW).resolve(context.locator)
 
     assert caught.value.code == "locator_refresh_schema_changed"
+
+
+def test_bilibili_single_page_flv_segments_bridge_reconstructs_typed_target() -> None:
+    context = _context(
+        platform=Platform.BILI,
+        content_id="987654321",
+        kind=AssetKind.VIDEO,
+        position=0,
+        signed_url=None,
+    )
+    payload = _segments_payload()
+    payload["format"] = "flv"
+    runner = _FakeDetailRunner(
+        _jsonl(
+            {
+                "video_id": "987654321",
+                "video_type": "video",
+                "title": "single-page FLV multi-segment",
+                BILIBILI_PAGES_FIELD: [{"page": 1, "cid": 24680}],
+                BILIBILI_PROGRESSIVE_SEGMENTS_FIELD: payload,
+            }
+        )
+    )
+
+    resolved = MediaCrawlerLocatorRefresher(context, runner, clock=lambda: NOW).resolve(context.locator)
+
+    assert isinstance(resolved, ResolvedFlvSegmentsLocator)
+    assert isinstance(resolved.source, ResolvedSegmentsLocator)
+    assert resolved.source.segments[0].urls == (
+        "https://v.example.test/bili/segment-0.mp4?signature=first-private",
+        "https://backup.example.test/bili/segment-0.mp4?signature=first-backup-private",
+    )
+    assert "private" not in repr(resolved)
+    assert runner.calls[0].bili_video_cid is None
+
+
+@pytest.mark.parametrize("format_value", ["mp4", "flv2", True, 1])
+def test_bilibili_flv_segments_bridge_rejects_non_exact_format_markers(format_value: object) -> None:
+    context = _context(
+        platform=Platform.BILI,
+        content_id="987654321",
+        kind=AssetKind.VIDEO,
+        position=0,
+        signed_url=None,
+    )
+    payload: dict[str, object] = _segments_payload()
+    payload["format"] = format_value
+    runner = _FakeDetailRunner(
+        _jsonl(
+            {
+                "video_id": "987654321",
+                "video_type": "video",
+                "title": "invalid FLV segments marker",
+                BILIBILI_PAGES_FIELD: [{"page": 1, "cid": 24680}],
+                BILIBILI_PROGRESSIVE_SEGMENTS_FIELD: payload,
+            }
+        )
+    )
+
+    with pytest.raises(MediaDownloadError) as caught:
+        MediaCrawlerLocatorRefresher(context, runner, clock=lambda: NOW).resolve(context.locator)
+
+    assert caught.value.code == "locator_refresh_schema_changed"
+
+
+def test_bilibili_multipart_flv_segments_bridge_binds_only_the_requested_cid() -> None:
+    content_id = "987654321"
+    remote_ids = (
+        f"{content_id}:video:cid:24680",
+        f"{content_id}:video:cid:97531",
+    )
+    context = _context(
+        platform=Platform.BILI,
+        content_id=content_id,
+        kind=AssetKind.VIDEO,
+        position=1,
+        signed_url=None,
+        remote_id=remote_ids[1],
+        bili_video_remote_ids=remote_ids,
+    )
+    payload = _segments_payload(cid=97531)
+    payload["format"] = "flv"
+    runner = _FakeDetailRunner(
+        _jsonl(
+            {
+                "video_id": content_id,
+                "video_type": "video",
+                "title": "multipart FLV multi-segment",
+                BILIBILI_PAGES_FIELD: [
+                    {"page": 1, "cid": 24680},
+                    {"page": 2, "cid": 97531},
+                ],
+                BILIBILI_PROGRESSIVE_SEGMENTS_FIELD: payload,
+            }
+        )
+    )
+
+    resolved = MediaCrawlerLocatorRefresher(context, runner, clock=lambda: NOW).resolve(context.locator)
+
+    assert isinstance(resolved, ResolvedFlvSegmentsLocator)
+    assert resolved.source.segments[1].url == "https://v.example.test/bili/segment-1.mp4?signature=second-private"
+    assert runner.calls[0].bili_video_cid == 97531

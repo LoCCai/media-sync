@@ -28,6 +28,7 @@ from media_sync.media.locator import (
     LocatorRefreshPort,
     ResolvedDashLocator,
     ResolvedFlvLocator,
+    ResolvedFlvSegmentsLocator,
     ResolvedLocator,
     ResolvedSegmentsLocator,
     locator_fingerprint,
@@ -528,7 +529,7 @@ class SecureMediaDownloader:
         locator = resolve_locator(request.locator, self._refresher)
         if isinstance(locator, ResolvedFlvLocator):
             return self._download_flv_locked(request, work_root, locator)
-        if isinstance(locator, ResolvedSegmentsLocator):
+        if isinstance(locator, ResolvedSegmentsLocator | ResolvedFlvSegmentsLocator):
             return self._download_segments_locked(request, work_root, locator)
         if isinstance(locator, ResolvedDashLocator):
             return self._download_dash_locked(request, work_root, locator)
@@ -671,7 +672,7 @@ class SecureMediaDownloader:
         self,
         request: DownloadRequest,
         work_root: Path,
-        target: ResolvedSegmentsLocator,
+        target: ResolvedSegmentsLocator | ResolvedFlvSegmentsLocator,
     ) -> DownloadResult:
         """Download, verify and stream-copy one ordered multi-segment generation."""
 
@@ -682,7 +683,10 @@ class SecureMediaDownloader:
         started = self._monotonic()
         stable_fingerprint = locator_fingerprint(request.locator)
         can_refresh_auth = isinstance(request.locator, AdapterRefreshLocator) and self._refresher is not None
-        segments = target.segments
+        flv_mode = isinstance(target, ResolvedFlvSegmentsLocator)
+        segments = target.source.segments if isinstance(target, ResolvedFlvSegmentsLocator) else target.segments
+        required_extension = "flv" if flv_mode else "mp4"
+        selection_flavor = f"multi-segment-{'flv' if flv_mode else 'mp4'}-v1"
         stores: list[_PartStore] = []
         remaining_bytes = self._limits.max_bytes
         auth_refreshes = 0
@@ -691,7 +695,7 @@ class SecureMediaDownloader:
             stores.append(store)
             fingerprint = _component_fingerprint(
                 stable_fingerprint,
-                f"multi-segment-v1:{len(segments)}:{index}",
+                f"{selection_flavor}:{len(segments)}:{index}",
                 "segment",
             )
             while True:
@@ -705,15 +709,24 @@ class SecureMediaDownloader:
                         started=started,
                         max_bytes=remaining_bytes,
                         auth_mode="expire",
-                        required_extension="mp4",
+                        required_extension=required_extension,
                     )
                 except MediaDownloadError as error:
                     if error.code != "locator_refresh_auth_expired" or not can_refresh_auth or auth_refreshes >= 1:
                         raise
                     refreshed = resolve_locator(request.locator, self._refresher)
-                    if not isinstance(refreshed, ResolvedSegmentsLocator) or len(refreshed.segments) != len(segments):
+                    if not isinstance(refreshed, ResolvedSegmentsLocator | ResolvedFlvSegmentsLocator):
                         raise MediaDownloadError("locator_refresh_schema_changed") from error
-                    segments = refreshed.segments
+                    refreshed_segments = (
+                        refreshed.source.segments
+                        if isinstance(refreshed, ResolvedFlvSegmentsLocator)
+                        else refreshed.segments
+                    )
+                    if isinstance(refreshed, ResolvedFlvSegmentsLocator) != flv_mode or len(refreshed_segments) != len(
+                        segments
+                    ):
+                        raise MediaDownloadError("locator_refresh_schema_changed") from error
+                    segments = refreshed_segments
                     auth_refreshes += 1
                     continue
                 remaining_bytes -= size

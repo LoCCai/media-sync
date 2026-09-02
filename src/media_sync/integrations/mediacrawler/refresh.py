@@ -21,6 +21,7 @@ from media_sync.media import (
     MediaRequestProfile,
     ResolvedDashLocator,
     ResolvedFlvLocator,
+    ResolvedFlvSegmentsLocator,
     ResolvedLocator,
     ResolvedMediaTarget,
     ResolvedSegmentsLocator,
@@ -440,7 +441,12 @@ class MediaCrawlerLocatorRefresher:
         if context.platform is Platform.BILI and context._bili_progressive_detail():
             runtime_target = matching_content[0].runtime_asset_targets.get(context.asset_remote_id or "")
             if not isinstance(
-                runtime_target, ResolvedLocator | ResolvedFlvLocator | ResolvedDashLocator | ResolvedSegmentsLocator
+                runtime_target,
+                ResolvedLocator
+                | ResolvedFlvLocator
+                | ResolvedDashLocator
+                | ResolvedSegmentsLocator
+                | ResolvedFlvSegmentsLocator,
             ):
                 raise MediaDownloadError("locator_refresh_result_invalid")
             if isinstance(runtime_target, ResolvedLocator):
@@ -449,6 +455,8 @@ class MediaCrawlerLocatorRefresher:
                 expected_url = runtime_target.source.url
             elif isinstance(runtime_target, ResolvedSegmentsLocator):
                 expected_url = runtime_target.segments[0].url
+            elif isinstance(runtime_target, ResolvedFlvSegmentsLocator):
+                expected_url = runtime_target.source.segments[0].url
             else:
                 expected_url = runtime_target.video.url
             if source_url != expected_url:
