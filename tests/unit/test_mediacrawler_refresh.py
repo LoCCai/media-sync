@@ -984,11 +984,6 @@ def test_xhs_creator_authority_accepts_one_cdn_video_with_optional_cover(image_l
     ("video_url", "image_list"),
     [
         pytest.param(
-            "http://sns-video-bd.xhscdn.com/target.mp4,http://sns-video-bd.xhscdn.com/second.mp4",
-            "",
-            id="multiple-video-variants",
-        ),
-        pytest.param(
             "file:///invalid,http://sns-video-bd.xhscdn.com/target.mp4",
             "",
             id="malformed-plus-valid-video",
@@ -2284,3 +2279,69 @@ def test_douyin_note_gallery_refresh_rejects_position_path_drift() -> None:
         MediaCrawlerLocatorRefresher(context, runner, clock=lambda: NOW).resolve(context.locator)
 
     assert caught.value.code == "locator_refresh_asset_mismatch"
+
+
+XHS_MULTI_FIRST = "http://sns-video-bd.xhscdn.com/multi-first.mp4"
+XHS_MULTI_SECOND = "http://sns-video-bd.xhscdn.com/multi-second.mp4"
+
+
+def _xhs_multi_video_record() -> dict[str, object]:
+    return {
+        "note_id": "66fad51c000000001b0224b8",
+        "type": "video",
+        "title": "multi video",
+        "desc": "multi video",
+        "video_url": f"{XHS_MULTI_FIRST},{XHS_MULTI_SECOND}",
+        "image_list": "",
+    }
+
+
+@pytest.mark.parametrize("position", [0, 1])
+def test_xhs_multi_video_refresh_resolves_each_position(position: int) -> None:
+    selected = XHS_MULTI_FIRST if position == 0 else XHS_MULTI_SECOND
+    context = _context(
+        platform=Platform.XHS,
+        content_id="66fad51c000000001b0224b8",
+        kind=AssetKind.VIDEO,
+        position=position,
+        signed_url=selected,
+        creator_reference=SecretValue(
+            "https://www.xiaohongshu.com/user/profile/creator-42?xsec_token=xhs-creator-secret&xsec_source=pc_user"
+        ),
+        creator_max_items=2,
+    )
+    runner = _FakeDetailRunner(_jsonl(_xhs_multi_video_record()))
+
+    resolved = MediaCrawlerLocatorRefresher(context, runner, clock=lambda: NOW).resolve(context.locator)
+
+    assert resolved.url == selected
+    assert resolved.request_profile is MediaRequestProfile.DEFAULT
+
+
+def test_xhs_multi_video_refresh_rejects_replaced_or_above_bound_drift() -> None:
+    context = _context(
+        platform=Platform.XHS,
+        content_id="66fad51c000000001b0224b8",
+        kind=AssetKind.VIDEO,
+        position=1,
+        signed_url=XHS_MULTI_SECOND,
+        creator_reference=SecretValue(
+            "https://www.xiaohongshu.com/user/profile/creator-42?xsec_token=xhs-creator-secret&xsec_source=pc_user"
+        ),
+        creator_max_items=2,
+    )
+    replaced = _xhs_multi_video_record()
+    replaced["video_url"] = f"{XHS_MULTI_FIRST},http://sns-video-bd.xhscdn.com/replaced.mp4"
+    with pytest.raises(MediaDownloadError) as caught:
+        MediaCrawlerLocatorRefresher(context, _FakeDetailRunner(_jsonl(replaced)), clock=lambda: NOW).resolve(
+            context.locator
+        )
+    assert caught.value.code == "locator_refresh_asset_mismatch"
+
+    above_bound = _xhs_multi_video_record()
+    above_bound["video_url"] = ",".join(f"http://sns-video-bd.xhscdn.com/over-{index}.mp4" for index in range(17))
+    with pytest.raises(MediaDownloadError) as caught:
+        MediaCrawlerLocatorRefresher(context, _FakeDetailRunner(_jsonl(above_bound)), clock=lambda: NOW).resolve(
+            context.locator
+        )
+    assert caught.value.code == "locator_refresh_schema_changed"

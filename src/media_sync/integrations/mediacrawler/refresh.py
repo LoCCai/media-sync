@@ -599,8 +599,8 @@ def _validate_xhs_creator_video_target(
         content_kind not in {ContentKind.VIDEO, ContentKind.MIXED}
         or (not raw_images and content_kind is not ContentKind.VIDEO)
         or (len(raw_images) == 1 and content_kind is not ContentKind.MIXED)
-        or len(video_assets) != 1
-        or video_assets[0].position != 0
+        or len(video_assets) != len(raw_videos)
+        or tuple(asset.position for asset in video_assets) != tuple(range(len(raw_videos)))
         or len(image_assets) > 1
         or (image_assets and image_assets[0].position != 0)
         or len(video_assets) + len(image_assets) != len(assets)
@@ -608,6 +608,9 @@ def _validate_xhs_creator_video_target(
         or tuple(asset.source_url for asset in image_assets) != raw_images
     ):
         raise MediaDownloadError("locator_refresh_schema_changed")
+
+
+XHS_MAX_VIDEOS = 16
 
 
 def _validated_xhs_media_scalar(value: object, *, allow_empty: bool) -> tuple[str, ...]:
@@ -622,7 +625,7 @@ def _validated_xhs_media_scalar(value: object, *, allow_empty: bool) -> tuple[st
         raise ValueError("invalid XHS media scalar")
     if len(set(candidates)) != len(candidates):
         raise ValueError("invalid XHS media scalar")
-    if len(candidates) != 1:
+    if not 1 <= len(candidates) <= XHS_MAX_VIDEOS:
         raise ValueError("invalid XHS media scalar")
     return tuple(validate_xhs_video_url(candidate) for candidate in candidates)
 

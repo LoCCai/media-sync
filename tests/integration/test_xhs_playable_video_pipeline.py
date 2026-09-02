@@ -327,14 +327,19 @@ class _RecordingPublicResolver:
 
 
 class _ControlledMp4Probe:
-    def __init__(self) -> None:
+    def __init__(self, *, expected_payloads: Mapping[str, bytes] | None = None) -> None:
+        self.expected_payloads = expected_payloads
         self.calls: list[Path] = []
 
     def probe(self, path: Path, *, timeout_seconds: float, max_output_bytes: int) -> ProbeResult:
         assert timeout_seconds > 0
         assert max_output_bytes > 0
         self.calls.append(path)
-        assert path.read_bytes() == MP4
+        payload = path.read_bytes()
+        if self.expected_payloads is None:
+            assert payload == MP4
+        else:
+            assert payload in self.expected_payloads.values()
         return ProbeResult("video/mp4", "mp4")
 
 
@@ -939,6 +944,214 @@ def test_xhs_creator_video_reaches_emby_and_replays_without_live_work(
                 sort_keys=True,
             )
             assert all(value not in durable_json for value in FORBIDDEN_VALUES)
+
+        _assert_ephemeral_values_absent(
+            runtime_root,
+            download_work_root,
+            archive_root,
+            export_work_root,
+            library_root,
+        )
+    finally:
+        database.dispose()
+
+    sqlite_artifacts = [path for path in tmp_path.glob(f"{database_path.name}*") if path.is_file()]
+    assert sqlite_artifacts
+    _assert_ephemeral_values_absent(*sqlite_artifacts)
+
+
+MULTI_VIDEO_FIRST_HINT = "http://sns-video-bd.xhscdn.com/multi-first.mp4"
+MULTI_VIDEO_SECOND_HINT = "http://sns-video-bd.xhscdn.com/multi-second.mp4"
+MULTI_VIDEO_SENTINEL = "EXECUTION0037-" + "MULTI-VIDEO-SIGNATURE-MUST-STAY-EPHEMERAL"
+MULTI_VIDEO_FIRST_DETAIL = f"{MULTI_VIDEO_FIRST_HINT}?sign={MULTI_VIDEO_SENTINEL}"
+MULTI_VIDEO_SECOND_DETAIL = f"{MULTI_VIDEO_SECOND_HINT}?sign={MULTI_VIDEO_SENTINEL}"
+SECOND_MP4 = b"\x00\x00\x00\x18ftypisom" + b"execution-0037-offline-xhs-multi-second"
+
+
+def _xhs_multi_video_detail_jsonl() -> bytes:
+    return _jsonl(
+        _xhs_video_record(
+            CONTENT_ID,
+            video_url=f"{MULTI_VIDEO_FIRST_DETAIL},{MULTI_VIDEO_SECOND_DETAIL}",
+            image_url="",
+            note_token=REFRESH_NOTE_TOKEN,
+            title="Execution 0037 XHS multi video",
+        )
+    )
+
+
+def test_xhs_multi_video_note_materializes_bounded_ordered_assets() -> None:
+    normalized = normalize_jsonl_bytes(
+        _jsonl(
+            _xhs_video_record(
+                CONTENT_ID,
+                video_url=f"{MULTI_VIDEO_FIRST_HINT},{MULTI_VIDEO_SECOND_HINT}",
+                image_url="",
+                note_token=REFRESH_NOTE_TOKEN,
+                title="Execution 0037 XHS multi video",
+            )
+        ),
+        _normalization_context(),
+    )
+
+    assert not normalized.quarantined and not normalized.truncated_tail
+    record = normalized.records[0]
+    assert record.content.kind is ContentKind.VIDEO
+    assert [(asset.kind, asset.position, asset.remote_id) for asset in record.assets] == [
+        (AssetKind.VIDEO, 0, f"{CONTENT_ID}:video:0"),
+        (AssetKind.VIDEO, 1, f"{CONTENT_ID}:video:1"),
+    ]
+
+    above = _xhs_video_record(
+        CONTENT_ID,
+        video_url=",".join(f"http://sns-video-bd.xhscdn.com/over-{i}.mp4" for i in range(17)),
+        image_url="",
+        note_token=REFRESH_NOTE_TOKEN,
+        title="Execution 0037 XHS over-bound video",
+    )
+    quarantined = normalize_jsonl_bytes(_jsonl(above), _normalization_context())
+    assert len(quarantined.quarantined) == 1
+
+
+def test_xhs_multi_video_reaches_emby_with_zero_work_replay(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database_path = tmp_path / "xhs-multi-video.sqlite3"
+    database_url = f"sqlite+pysqlite:///{database_path.as_posix()}"
+    archive_root = tmp_path / "archive"
+    library_root = tmp_path / "library"
+    runtime_root = tmp_path / "mediacrawler-runtime"
+    download_work_root = tmp_path / "download-work"
+    export_work_root = tmp_path / "export-work"
+    runtime_root.mkdir()
+    upgrade_database(database_url)
+    database = Database(database_url)
+    detail_jsonl = _xhs_multi_video_detail_jsonl()
+
+    class _MultiVideoDetailRunner(_FakeDetailRunner):
+        def run(self, request: MediaCrawlerDetailRequest) -> MediaCrawlerDetailResult:
+            self.calls.append(request)
+            return MediaCrawlerDetailResult(detail_jsonl, UPSTREAM_SHA)
+
+    _MultiVideoDetailRunner.instances = []
+    monkeypatch.setattr(mediacrawler_runtime, "MediaCrawlerDetailProcessRunner", _MultiVideoDetailRunner)
+    try:
+        seed = _seed_subscription(database)
+        normalized = normalize_jsonl_bytes(
+            _jsonl(
+                _xhs_video_record(
+                    CONTENT_ID,
+                    video_url=f"{MULTI_VIDEO_FIRST_HINT},{MULTI_VIDEO_SECOND_HINT}",
+                    image_url="",
+                    note_token=REFRESH_NOTE_TOKEN,
+                    title="Execution 0037 XHS multi video",
+                )
+            ),
+            _normalization_context(),
+        )
+        run_id = _start_ingesting_run(database, seed.subscription_id)
+        ingestion = MediaCrawlerIngestionService(database).ingest(
+            normalized.records,
+            subscription_id=seed.subscription_id,
+            run_id=run_id,
+            expected_revision=0,
+            mode=IngestionMode.FORWARD,
+        )
+        assert (ingestion.accepted_count, ingestion.discovered_count, ingestion.asset_count) == (1, 1, 2)
+
+        with database.session() as session:
+            assets = tuple(session.scalars(select(Asset).order_by(Asset.position, Asset.id)).all())
+            assert tuple(asset.source_url for asset in assets) == (
+                MULTI_VIDEO_FIRST_HINT,
+                MULTI_VIDEO_SECOND_HINT,
+            )
+            asset_ids = [UUID(asset.id) for asset in assets]
+
+        resolver = _RecordingPublicResolver()
+        requests: list[httpx.Request] = []
+        payloads = {MULTI_VIDEO_FIRST_DETAIL: MP4, MULTI_VIDEO_SECOND_DETAIL: SECOND_MP4}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            url = str(request.url)
+            assert url in payloads
+            payload = payloads[url]
+            return httpx.Response(
+                200,
+                headers={
+                    "Content-Length": str(len(payload)),
+                    "Content-Type": "video/mp4",
+                    "ETag": f'"execution-0037-{url.rsplit("/", 1)[-1].split(".")[0]}"',
+                },
+                content=payload,
+            )
+
+        def transport_factory(target: ValidatedTarget) -> httpx.BaseTransport:
+            del target
+            return httpx.MockTransport(handler)
+
+        http = SafeHttpClient(resolver, transport_factory=transport_factory)
+        secret_resolver = SecretResolver(
+            {
+                SecretScheme.ENV: EnvironmentSecretProvider(
+                    {"MEDIA_SYNC_EXECUTION0018_XHS_CREATOR_URL": CREATOR_REFERENCE}
+                )
+            }
+        )
+        harnesses = []
+
+        for index, asset_id in enumerate(asset_ids):
+            harnesses.append(
+                _download_harness(
+                    database,
+                    asset_id=asset_id,
+                    subscription_id=UUID(seed.subscription_id),
+                    worker_id=f"execution-0037-multi-download-{index}",
+                    tmp_path=tmp_path,
+                    runtime_root=runtime_root,
+                    download_work_root=download_work_root,
+                    archive_root=archive_root,
+                    http=http,
+                    probe=_ControlledMp4Probe(expected_payloads=payloads),
+                    secret_resolver=secret_resolver,
+                )
+            )
+
+        downloaded = [harness.service.run(harness.request) for harness in harnesses]
+
+        assert [result.disposition for result in downloaded] == ["downloaded", "downloaded"]
+        assert [result.mime_type for result in downloaded] == ["video/mp4", "video/mp4"]
+        assert [result.archive_path.read_bytes() for result in downloaded] == [MP4, SECOND_MP4]
+        assert [str(request.url) for request in requests] == [MULTI_VIDEO_FIRST_DETAIL, MULTI_VIDEO_SECOND_DETAIL]
+        assert len(_MultiVideoDetailRunner.instances) == 2
+        assert all(len(runner.calls) == 1 for runner in _MultiVideoDetailRunner.instances)
+
+        export_service = EmbyExportService(
+            database,
+            EmbyExporter(library_root, staging_root=export_work_root),
+            clock=lambda: FIXED_AT,
+        )
+        exported = export_service.export_author(
+            EmbyExportRequest(seed.author_id, "execution-0037-export", lease_seconds=60)
+        )
+        assert exported.already_exported is False
+        author_directory = library_root / exported.output_path
+        episodes = tuple(sorted(author_directory.glob("Season */*.mp4")))
+        assert len(episodes) == 2
+        assert sorted(path.read_bytes() for path in episodes) == sorted((MP4, SECOND_MP4))
+
+        archive_tree = _tree(archive_root)
+        library_tree = _tree(author_directory)
+        replayed = [harness.service.run(harness.request) for harness in harnesses]
+        replayed_export = export_service.export_author(
+            EmbyExportRequest(seed.author_id, "execution-0037-export-replay", lease_seconds=60)
+        )
+        assert [result.disposition for result in replayed] == ["already_verified", "already_verified"]
+        assert replayed_export.already_exported is True
+        assert len(requests) == 2
+        assert _tree(archive_root) == archive_tree
+        assert _tree(author_directory) == library_tree
 
         _assert_ephemeral_values_absent(
             runtime_root,

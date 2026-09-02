@@ -477,10 +477,15 @@ def _summary(value: str | None, *, limit: int = 120) -> str | None:
     return value if len(value) <= limit else value[:limit]
 
 
+XHS_MAX_VIDEOS = 16
+
+
 def _normalize_xhs(record: Mapping[str, object]) -> _ContentParts:
     remote_id = _required_id(record, "note_id")
     images = _url_list(record.get("image_list"))
     videos = _url_list(record.get("video_url"))
+    if len(videos) > XHS_MAX_VIDEOS:
+        raise RecordNormalizationError(QuarantineReason.INVALID_RECORD)
     if images and videos:
         kind = ContentKind.MIXED
     elif videos:
