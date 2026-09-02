@@ -1,10 +1,12 @@
-# Execution NNNN progress / 执行 NNNN 推进结果
+**English** | [中文](progress.zh.md)
 
-- Status / 状态：Planned / 计划中
-- Started / 开始时间：YYYY-MM-DD HH:mm TZ
+# Execution NNNN progress
 
-## Completed / 已完成
+- Status: Planned
+- Started: YYYY-MM-DD HH:mm TZ
 
-## Deviations and decisions / 偏差与决策
+## Completed
 
-## Remaining / 待完成
+## Deviations and decisions
+
+## Remaining

@@ -1,7 +1,9 @@
-# Execution NNNN verification / 执行 NNNN 验证
+**English** | [中文](verification.zh.md)
 
-Record environment, exact commands, exit codes and meaningful output. Never include secrets. / 记录环境、准确命令、退出码和关键输出，严禁包含密钥。
+# Execution NNNN verification
 
-| Check / 检查 | Command / 命令 | Exit / 退出码 | Result / 结果 |
+Record environment, exact commands, exit codes and meaningful output. Never include secrets.
+
+| Check | Command | Exit | Result |
 | --- | --- | ---: | --- |
-| Example / 示例 | `command` | 0 | Pass / 通过 |
+| Example | `command` | 0 | Pass |

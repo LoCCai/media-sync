@@ -1,29 +1,31 @@
-# Execution 0014 progress / 执行 0014 推进结果
+**English** | [中文](progress.zh.md)
 
-- Status / 状态：Offline implementation and closeout gates complete; live qualification remains `NOT_RUN` / 离线实现与收尾门禁完成；真人验收仍为 `NOT_RUN`
-- Started / 开始时间：2026-08-31 06:25 +08:00
-- Completed / 完成时间：2026-08-31 06:59 +08:00
-- Plan commit / 计划提交：`95c7082`
-- Implementation commit / 实现提交：`c4ab537`
+# Execution 0014 progress
 
-## Implemented / 已实现
+- Status: Offline implementation and closeout gates complete; live qualification remains `NOT_RUN`
+- Started: 2026-08-31 06:25 +08:00
+- Completed: 2026-08-31 06:59 +08:00
+- Plan commit: `95c7082`
+- Implementation commit: `c4ab537`
 
-- One ordinary Kuaishou record with exactly one valid `video_play_url` emits `<video_id>:video:0`; an optional valid `video_cover_url` emits `<video_id>:cover:0`. Tests bind content type, remote IDs, positions, MIME hints, query-free source hints and stable `mediacrawler` refresh locators. / 一条包含精确一个合法 `video_play_url` 的快手普通记录会产生 `<video_id>:video:0`；可选的合法 `video_cover_url` 会产生 `<video_id>:cover:0`。测试精确绑定内容类型、remote ID、position、MIME hint、无 query source hint 与稳定 `mediacrawler` 刷新 locator。
-- Durable Kuaishou play/cover raw metadata now retains only canonical HTTP(S) origin/path. Userinfo, known and unknown query values and fragments are removed structurally; non-string or nested schema drift fails closed instead of retaining opaque signed data. The in-memory `AssetSnapshot.source_url` still carries the complete transient URL needed by discovery and refresh. / 持久快手播放/封面 raw 元数据现在只保留规范 HTTP(S) origin/path。userinfo、已知与未知 query 值及 fragment 均被结构化移除；非字符串或嵌套 schema 漂移会关闭失败，不再保留不透明签名数据。内存中的 `AssetSnapshot.source_url` 仍携带发现与刷新所需的完整瞬态 URL。
-- A real isolated fake checkout runs through `MediaCrawlerDetailProcessRunner` and proves `platform=ks`, pure-ID `KS_SPECIFIED_ID_LIST`, detail/JSONL/media-off/concurrency configuration, saved-profile derivation, bounded result framing, repr safety and successful UUID-attempt cleanup. Missing, drifted and duplicate candidates return fixed failures. / 真实隔离 fake checkout 已经过 `MediaCrawlerDetailProcessRunner`，证明 `platform=ks`、纯 ID `KS_SPECIFIED_ID_LIST`、detail/JSONL/媒体关闭/并发配置、保存 profile 派生、有界结果 framing、repr 安全及成功时 UUID attempt 清理。缺失、漂移及重复候选返回固定失败。
-- The platform integration seeds an exact SQLite Account/Author/Subscription and `AssetRefreshSource`, constructs the lazy refresher only on demand, and binds both video and cover detail requests to the exact Account, Subscription, content, Asset identity and runner configuration. Kuaishou stays on `MediaRequestProfile.DEFAULT`; mock HTTP requests contain no Cookie, Authorization, Referer, Origin or caller-controlled headers. / 平台集成写入精确 SQLite Account/Author/Subscription 与 `AssetRefreshSource`，仅在需要时构造惰性 refresher，并把视频与封面 detail 请求绑定到精确 Account、Subscription、内容、Asset 身份及 runner 配置。快手继续使用 `MediaRequestProfile.DEFAULT`；mock HTTP 请求不含 Cookie、Authorization、Referer、Origin 或调用方自定义 header。
-- Deterministic MP4 and PNG bytes pass public-DNS pinning and the bounded downloader. Video receives mandatory controlled structural probing; both assets finalize under immutable SHA-256 archive paths and durable succeeded Asset/Job state. / 确定性 MP4 与 PNG 字节经过公网 DNS 固定及有界下载器；视频执行强制受控结构探测；两项资产均以不可变 SHA-256 归档路径及持久 succeeded Asset/Job 状态收尾。
-- Emby/Jellyfin layout publishes the verified `.mp4` as primary episode media, the cover as poster, and emits NFO plus allowlisted `source.json`. Query-only forward URL rotation preserves Asset generation and verified bytes; replay is `already_verified`/`already_exported` with no new detail runner, HTTP, DNS, probe, archive or library mutation. / Emby/Jellyfin layout 把已验证 `.mp4` 发布为 episode 主媒体、把封面发布为 poster，并生成 NFO 与白名单 `source.json`。仅 query 变化的 forward URL 轮换会保留 Asset generation 与已验证字节；重放返回 `already_verified`/`already_exported`，不会新增 detail runner、HTTP、DNS、probe、归档或媒体库变更。
-- Independent review found and closed three evidence defects: nested Kuaishou media-field shapes could retain signed raw data, the replay detail-call assertion used a stale list snapshot, and the platform E2E omitted exact Account/runner-construction assertions. Final review reported no remaining actionable finding. / 独立审查发现并关闭三项证据缺陷：嵌套快手媒体字段可能保留签名 raw、重放 detail 调用断言使用了过期 list 快照、平台 E2E 缺少精确 Account/runner 构造断言。最终复核没有剩余可执行问题。
-- The focused gate passes `228` tests; the complete suite passes `1206` tests with one Windows-inapplicable skip. Ruff, formatting, strict typing, documentation, pinned-upstream, build, patch and retained-marker gates pass. Exact commands and results are in `verification.md`. / 专项门禁通过 `228` 项；完整套件通过 `1206` 项，另有一项在 Windows 不适用而跳过。Ruff、格式、严格类型、文档、锁定上游、构建、补丁及保留标记门禁全部通过；准确命令与结果见 `verification.md`。
+## Implemented
 
-## Known limitations / 已知限制
+- One ordinary Kuaishou record with exactly one valid `video_play_url` emits `<video_id>:video:0`; an optional valid `video_cover_url` emits `<video_id>:cover:0`. Tests bind content type, remote IDs, positions, MIME hints, query-free source hints and stable `mediacrawler` refresh locators.
+- Durable Kuaishou play/cover raw metadata now retains only canonical HTTP(S) origin/path. Userinfo, known and unknown query values and fragments are removed structurally; non-string or nested schema drift fails closed instead of retaining opaque signed data. The in-memory `AssetSnapshot.source_url` still carries the complete transient URL needed by discovery and refresh.
+- A real isolated fake checkout runs through `MediaCrawlerDetailProcessRunner` and proves `platform=ks`, pure-ID `KS_SPECIFIED_ID_LIST`, detail/JSONL/media-off/concurrency configuration, saved-profile derivation, bounded result framing, repr safety and successful UUID-attempt cleanup. Missing, drifted and duplicate candidates return fixed failures.
+- The platform integration seeds an exact SQLite Account/Author/Subscription and `AssetRefreshSource`, constructs the lazy refresher only on demand, and binds both video and cover detail requests to the exact Account, Subscription, content, Asset identity and runner configuration. Kuaishou stays on `MediaRequestProfile.DEFAULT`; mock HTTP requests contain no Cookie, Authorization, Referer, Origin or caller-controlled headers.
+- Deterministic MP4 and PNG bytes pass public-DNS pinning and the bounded downloader. Video receives mandatory controlled structural probing; both assets finalize under immutable SHA-256 archive paths and durable succeeded Asset/Job state.
+- Emby/Jellyfin layout publishes the verified `.mp4` as primary episode media, the cover as poster, and emits NFO plus allowlisted `source.json`. Query-only forward URL rotation preserves Asset generation and verified bytes; replay is `already_verified`/`already_exported` with no new detail runner, HTTP, DNS, probe, archive or library mutation.
+- Independent review found and closed three evidence defects: nested Kuaishou media-field shapes could retain signed raw data, the replay detail-call assertion used a stale list snapshot, and the platform E2E omitted exact Account/runner-construction assertions. Final review reported no remaining actionable finding.
+- The focused gate passes `228` tests; the complete suite passes `1206` tests with one Windows-inapplicable skip. Ruff, formatting, strict typing, documentation, pinned-upstream, build, patch and retained-marker gates pass. Exact commands and results are in `verification.md`.
 
-- Durable identity is `<video_id>:<kind>:0` plus a query-free source hint. If Kuaishou replaces bytes under the same video ID and origin/path while only query data changes, already-verified bytes do not become stale automatically. Conversely, a harmless CDN host/path move can trigger generation reset or exact-refresh mismatch. / 持久身份由 `<video_id>:<kind>:0` 与无 query source hint 组成。如果快手在同一 video ID 与 origin/path 下替换字节且只变化 query，已验证字节不会自动失效；反之，无害 CDN host/path 迁移可能触发 generation reset 或精确刷新不匹配。
-- Normal-success detail cleanup is proven. Injected filesystem cleanup failure still lacks the scheduled runner's full quarantine, incident and account-block protocol, so this execution does not claim zero retained material in that failure case. / 已证明 detail 正常成功清理；注入文件系统清理失败时仍缺少 scheduled runner 的完整 quarantine、incident 与账户阻断协议，因此本执行不宣称该失败场景零留存。
+## Known limitations
 
-## Remaining outside execution 0014 / 执行 0014 之外待实现
+- Durable identity is `<video_id>:<kind>:0` plus a query-free source hint. If Kuaishou replaces bytes under the same video ID and origin/path while only query data changes, already-verified bytes do not become stale automatically. Conversely, a harmless CDN host/path move can trigger generation reset or exact-refresh mismatch.
+- Normal-success detail cleanup is proven. Injected filesystem cleanup failure still lacks the scheduled runner's full quarantine, incident and account-block protocol, so this execution does not claim zero retained material in that failure case.
 
-- Real Kuaishou QR/Cookie/saved-session login, creator synchronization, detail/CDN transfer, real platform-byte probing and Emby/Jellyfin server scan/playback; all remain `NOT_RUN`. / 真人快手 QR/Cookie/saved-session 登录、作者同步、detail/CDN 传输、真实平台字节探测及 Emby/Jellyfin 服务器重扫/播放；全部保持 `NOT_RUN`。
-- Bounded Kuaishou creator pagination, galleries, multiple play URLs, audio, subtitles, comments, live/paid/restricted/deleted media, trustworthy creator profiles and any proven platform-specific CDN headers. / 有界快手作者分页、图集、多播放 URL、音频、字幕、评论、直播/付费/受限/已删除媒体、可信作者 profile 及任何经过证明的平台专用 CDN header。
-- Cleanup-failure quarantine/incident/account blocking, media-version-aware replacement, additional primary-media shapes for other platforms, REST/API operations, deployment/service integration and cross-host HA. / 清理失败 quarantine/incident/账户阻断、媒体版本感知替换、其他平台的更多主媒体形状、REST/API 运维、部署/服务集成及跨主机 HA。
+## Remaining outside execution 0014
+
+- Real Kuaishou QR/Cookie/saved-session login, creator synchronization, detail/CDN transfer, real platform-byte probing and Emby/Jellyfin server scan/playback; all remain `NOT_RUN`.
+- Bounded Kuaishou creator pagination, galleries, multiple play URLs, audio, subtitles, comments, live/paid/restricted/deleted media, trustworthy creator profiles and any proven platform-specific CDN headers.
+- Cleanup-failure quarantine/incident/account blocking, media-version-aware replacement, additional primary-media shapes for other platforms, REST/API operations, deployment/service integration and cross-host HA.

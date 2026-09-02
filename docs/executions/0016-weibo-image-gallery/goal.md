@@ -1,35 +1,37 @@
-# Execution 0016 goal / 执行 0016 目标
+**English** | [中文](goal.zh.md)
 
-- Status / 状态：Complete for the frozen offline scope; every live qualification row remains `NOT_RUN` / 冻结离线范围已完成；全部真人验收行保持 `NOT_RUN`
-- Started / 开始时间：2026-08-31
-- Predecessor / 前置：Execution 0015 closeout commit `b105d00`
-- Plan commit / 计划提交：`b7bb818`
-- Implementation commit / 实现提交：`a77ca74`
+# Execution 0016 goal
 
-## Delivered outcome / 已交付结果
+- Status: Complete for the frozen offline scope; every live qualification row remains `NOT_RUN`
+- Started: 2026-08-31
+- Predecessor: Execution 0015 closeout commit `b105d00`
+- Plan commit: `b7bb818`
+- Implementation commit: `a77ca74`
 
-Execution 0016 closes one offline-qualified ordinary original Weibo image-post path from creator discovery through exact detail refresh, two independent image downloads, immutable SHA-256 archive publication and Emby/Jellyfin filesystem layout output. The accepted boundary is a canonical positive numeric creator/note identity, no `retweeted_status`, no media `page_info`, and a flat ordered `mblog.pics` list. Each picture must carry a unique valid `pid`, originate from `sinaimg.cn` or one of its subdomains, and use one static extension from `jpg`, `jpeg`, `png` or `webp`. One picture becomes `ContentKind.IMAGE`; multiple pictures become `ContentKind.GALLERY`; image Assets retain positions `0..N-1`. / 执行 0016 已收口一条经过离线验收的普通原创微博图片帖路径：从作者发现、精确 detail 刷新、两项独立图片下载，到不可变 SHA-256 归档发布与 Emby/Jellyfin 文件系统布局输出。接受边界为规范正整数 creator/note identity，不含 `retweeted_status`，不含媒体 `page_info`，并具有扁平有序的 `mblog.pics` 列表。每张图片必须具有唯一合法 `pid`，来源仅限 `sinaimg.cn` 或其子域，且静态扩展名仅限 `jpg`、`jpeg`、`png`、`webp`。单图归一化为 `ContentKind.IMAGE`；多图归一化为 `ContentKind.GALLERY`；图片 Asset 保持 `0..N-1` position。
+## Delivered outcome
 
-Creator discovery and detail refresh both install the same task-local integration shim after importing the verified pinned checkout. The shim captures raw `mblog.pics` at the upstream store boundary, enriches only the transient contents JSONL record and does not modify `.upstream`. This creator-side discovery is required to create the initial Assets and exact `AssetRefreshSource` rows; detail-only support would not make the automatic subscription pipeline reachable. / 作者发现与 detail 刷新都会在导入已验证的锁定 checkout 后安装同一个 task-local 集成 shim。该 shim 在上游 store 边界捕获原始 `mblog.pics`，只增强瞬态 contents JSONL 记录，不修改 `.upstream`。creator 侧发现是创建初始 Asset 与精确 `AssetRefreshSource` 的必要条件；只支持 detail 仍无法让自动订阅流水线可达。
+Execution 0016 closes one offline-qualified ordinary original Weibo image-post path from creator discovery through exact detail refresh, two independent image downloads, immutable SHA-256 archive publication and Emby/Jellyfin filesystem layout output. The accepted boundary is a canonical positive numeric creator/note identity, no `retweeted_status`, no media `page_info`, and a flat ordered `mblog.pics` list. Each picture must carry a unique valid `pid`, originate from `sinaimg.cn` or one of its subdomains, and use one static extension from `jpg`, `jpeg`, `png` or `webp`. One picture becomes `ContentKind.IMAGE`; multiple pictures become `ContentKind.GALLERY`; image Assets retain positions `0..N-1`.
 
-## Acceptance result / 验收结果
+Creator discovery and detail refresh both install the same task-local integration shim after importing the verified pinned checkout. The shim captures raw `mblog.pics` at the upstream store boundary, enriches only the transient contents JSONL record and does not modify `.upstream`. This creator-side discovery is required to create the initial Assets and exact `AssetRefreshSource` rows; detail-only support would not make the automatic subscription pipeline reachable.
 
-1. **Creator and detail shim / Creator 与 detail shim — PASS.** The isolated creator child proves task-local capture under concurrent note work; the isolated detail child proves `platform=wb`, exact plain numeric `WEIBO_SPECIFIED_ID_LIST`, JSONL/media-off/concurrency controls, account/profile scope, bounded framing and successful attempt cleanup. / 隔离 creator child 证明并发 note 工作下的 task-local 捕获；隔离 detail child 证明 `platform=wb`、精确纯 numeric `WEIBO_SPECIFIED_ID_LIST`、JSONL/媒体关闭/并发控制、账户/profile 范围、有界 framing 及成功 attempt 清理。
-2. **Closed shape and durable boundary / 封闭形状与持久边界 — PASS.** Only ordinary original numeric posts with ordered, unique Sina static-image entries emit Assets. String/nested/missing/duplicate/drifted entries, foreign source hosts, non-static extensions, retweets and `page_info` fail closed. The integration-private field, captured PID values and a nested signed-URL sentinel are recursively absent from normalized raw, SQLite and retained runtime/archive/export sinks. / 只有具有有序、唯一新浪静态图片项的普通原创 numeric 帖子会产生 Asset。字符串/嵌套/缺字段/重复/漂移项、外部源站、非静态扩展名、转发及 `page_info` 均关闭失败。集成私有字段、捕获 PID 值与嵌套签名 URL sentinel 会从 normalized raw、SQLite 及保留的 runtime/archive/export 落点中递归消失。
-3. **Exact identity and refresh / 精确身份与刷新 — PASS.** WB accepts image Assets only. Parent request construction, resolved detail reference and child frame each require the exact same canonical plain numeric note ID; refresh also matches the exact Account, Subscription, content, remote ID, kind, position and query-free source hint. Reordered or duplicate image identity fails closed. / WB 只接受 image Asset。父请求构造、resolved detail reference 与 child frame 三层都要求完全相同的规范纯 numeric note ID；刷新还会精确匹配 Account、Subscription、content、remote ID、kind、position 与无 query source hint。图片重排或重复身份会关闭失败。
-4. **Two-image composition / 双图组合 — PASS.** The Gallery E2E creates two ordered IMAGE Assets and exact SQLite provenance, performs two detail refreshes, two default-profile HTTP/DNS transfers, two independent SHA-256 archive publications, then emits first-image poster, second-image backdrop, two ordered gallery files, NFO and allowlisted source metadata. Requests contain no Cookie, Authorization, Referer or Origin. / Gallery E2E 创建两个有序 IMAGE Asset 与精确 SQLite 来源，执行两次 detail 刷新、两次默认 profile HTTP/DNS 传输与两个独立 SHA-256 归档发布，然后输出首图 poster、次图 backdrop、两个有序 gallery 文件、NFO 与白名单 source 元数据。请求不含 Cookie、Authorization、Referer 或 Origin。
-5. **Replay and gates / 重放与门禁 — PASS.** Already verified/exported Assets add no detail, HTTP, DNS, probe, archive or export work. The focused gate passes 388 tests; the complete suite passes 1251 with one Windows-inapplicable POSIX mode-bit test skipped. Ruff, format, mypy, documentation, upstream lock verification, build, diff and retained-artifact gates pass. / 已验证/已导出的 Asset 不会新增 detail、HTTP、DNS、probe、archive 或 export 工作。专项门禁通过 388 项；完整套件通过 1251 项，另有一项 Windows 不适用的 POSIX mode-bit 测试跳过。Ruff、格式、mypy、文档、上游锁定校验、构建、diff 及保留产物门禁均通过。
+## Acceptance result
 
-## Review corrections / 审查修复
+1. **Creator and detail shim — PASS.** The isolated creator child proves task-local capture under concurrent note work; the isolated detail child proves `platform=wb`, exact plain numeric `WEIBO_SPECIFIED_ID_LIST`, JSONL/media-off/concurrency controls, account/profile scope, bounded framing and successful attempt cleanup.
+2. **Closed shape and durable boundary — PASS.** Only ordinary original numeric posts with ordered, unique Sina static-image entries emit Assets. String/nested/missing/duplicate/drifted entries, foreign source hosts, non-static extensions, retweets and `page_info` fail closed. The integration-private field, captured PID values and a nested signed-URL sentinel are recursively absent from normalized raw, SQLite and retained runtime/archive/export sinks.
+3. **Exact identity and refresh — PASS.** WB accepts image Assets only. Parent request construction, resolved detail reference and child frame each require the exact same canonical plain numeric note ID; refresh also matches the exact Account, Subscription, content, remote ID, kind, position and query-free source hint. Reordered or duplicate image identity fails closed.
+4. **Two-image composition — PASS.** The Gallery E2E creates two ordered IMAGE Assets and exact SQLite provenance, performs two detail refreshes, two default-profile HTTP/DNS transfers, two independent SHA-256 archive publications, then emits first-image poster, second-image backdrop, two ordered gallery files, NFO and allowlisted source metadata. Requests contain no Cookie, Authorization, Referer or Origin.
+5. **Replay and gates — PASS.** Already verified/exported Assets add no detail, HTTP, DNS, probe, archive or export work. The focused gate passes 388 tests; the complete suite passes 1251 with one Windows-inapplicable POSIX mode-bit test skipped. Ruff, format, mypy, documentation, upstream lock verification, build, diff and retained-artifact gates pass.
 
-- Restricted the embedded proxy source authority to `sinaimg.cn` and its subdomains instead of accepting an arbitrary host. / 把代理 URL 内嵌源站从任意 host 收紧为仅 `sinaimg.cn` 及其子域。
-- Restricted the accepted frozen media extensions to `jpg`, `jpeg`, `png` and `webp`; video, GIF animation and unknown suffixes cannot materialize IMAGE Assets. / 把冻结媒体扩展名收紧为 `jpg`、`jpeg`、`png` 与 `webp`；视频、GIF 动图及未知后缀不能产生 IMAGE Asset。
-- Required exact equality between WB `detail_reference` and `content_remote_id` at request construction, resolution and child-load boundaries. / 在 WB 请求构造、引用解析与 child-load 三层边界要求 `detail_reference` 与 `content_remote_id` 完全相等。
-- Expanded the composition test from one picture to a genuine two-picture Gallery with separate refresh, transfer and archive evidence. / 把组合测试从单图扩展为真正双图 Gallery，分别证明刷新、传输与归档。
+## Review corrections
 
-## Explicit exclusions and remaining goal / 明确排除与总目标待办
+- Restricted the embedded proxy source authority to `sinaimg.cn` and its subdomains instead of accepting an arbitrary host.
+- Restricted the accepted frozen media extensions to `jpg`, `jpeg`, `png` and `webp`; video, GIF animation and unknown suffixes cannot materialize IMAGE Assets.
+- Required exact equality between WB `detail_reference` and `content_remote_id` at request construction, resolution and child-load boundaries.
+- Expanded the composition test from one picture to a genuine two-picture Gallery with separate refresh, transfer and archive evidence.
 
-- Weibo video, animated-image semantics, long-image special handling, media `page_info`, retweets, live/paid/restricted media, comments and creator-avatar media remain unimplemented or unqualified. / 微博视频、动图语义、长图特殊处理、媒体 `page_info`、转发、直播/付费/受限媒体、评论及作者头像媒体仍未实现或未验收。
-- Bounded creator pagination remains unavailable. The pinned Weibo creator path walks full history, so explicit `allow_full_history` and outer watchdogs remain mandatory. / 有界 creator 分页仍不可用；锁定微博 creator 路径会遍历完整历史，因此显式 `allow_full_history` 与外层 watchdog 仍为强制要求。
-- Sina-direct request profiles, third-party proxy availability, same-ID media replacement detection and injected cleanup-failure quarantine remain deferred. / 新浪直连请求 profile、第三方代理可用性、同 ID 媒体替换检测及注入清理失败 quarantine 继续延期。
-- Every real login, creator scan, detail/proxy/CDN transfer, real platform-byte probe and Emby/Jellyfin server scan/viewing row remains `NOT_RUN`. Other platform work required by the full project objective remains active. / 全部真人登录、creator 扫描、detail/代理/CDN 传输、真实平台字节探测及 Emby/Jellyfin 服务器扫描/查看行均保持 `NOT_RUN`；完整项目目标要求的其他平台工作继续进行。
+## Explicit exclusions and remaining goal
+
+- Weibo video, animated-image semantics, long-image special handling, media `page_info`, retweets, live/paid/restricted media, comments and creator-avatar media remain unimplemented or unqualified.
+- Bounded creator pagination remains unavailable. The pinned Weibo creator path walks full history, so explicit `allow_full_history` and outer watchdogs remain mandatory.
+- Sina-direct request profiles, third-party proxy availability, same-ID media replacement detection and injected cleanup-failure quarantine remain deferred.
+- Every real login, creator scan, detail/proxy/CDN transfer, real platform-byte probe and Emby/Jellyfin server scan/viewing row remains `NOT_RUN`. Other platform work required by the full project objective remains active.

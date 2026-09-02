@@ -1,9 +1,11 @@
-# Execution NNNN goal / 执行 NNNN 目标
+**English** | [中文](goal.zh.md)
 
-## Outcome / 结果
+# Execution NNNN goal
 
-Describe one bounded, verifiable milestone. / 描述一个边界清晰、可验证的里程碑。
+## Outcome
 
-## Acceptance / 验收
+Describe one bounded, verifiable milestone.
 
-- Add objective pass/fail criteria. / 添加客观的通过/失败标准。
+## Acceptance
+
+- Add objective pass/fail criteria.

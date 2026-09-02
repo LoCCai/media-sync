@@ -1,0 +1,108 @@
+[English](README.md) | **中文**
+
+# 项目工作日志
+
+本目录是项目的长期审计记录。每个执行里程碑固定保存四类文件：目标、计划、推进结果和验证过程。自执行 0028 起，每份文档维护两种语言版本：英文 `<name>.md` 与中文 `<name>.zh.md`，两个版本顶部互相链接。
+
+## 导航
+
+- [`roadmap.zh.md`](roadmap.zh.md)：总体阶段与验收标准。
+- [`requirements.zh.md`](requirements.zh.md)：功能、安全与质量契约。
+- [`architecture.zh.md`](architecture.zh.md)：组件边界、数据模型与工作流。
+- [`platform-capabilities.zh.md`](platform-capabilities.zh.md)：基于源码证据的平台真实能力矩阵。
+- [`upstreams.zh.md`](upstreams.zh.md)：上游锁定与能力基线。
+- [`research/`](research/)：详细源码调研。
+- [`decisions/`](decisions/)：架构决策记录。
+- [`executions/`](executions/)：每个里程碑的四件套记录。
+- [`templates/`](templates/)：后续执行模板。
+
+## 执行索引
+
+| ID | 里程碑 | 状态 | 提交 |
+| --- | --- | --- | --- |
+| 0001 | 初始化并锁定上游 | 已完成 | `59da120` |
+| 0002 | 上游分析与架构 | 已完成 | `af813bd`, `201fbbf` |
+| 0003 | 核心领域、持久化与离线 CLI | 已完成 | `564cdb8` |
+| 0004 | 安全凭据与 MediaCrawler 桥接 | 已完成 | `0c27ad6`, `13664b5` |
+| 0005 | 媒体下载与 Emby/Jellyfin 导出 | 离线范围完成；真人行保持 `NOT_RUN` | 计划 `096b815`；实现 `8d5b48a` |
+| 0006 | 持久调度与限流工作器 | 离线/Fake 范围完成；真人行保持 `NOT_RUN` | 计划 `c8c4e54`；实现 `674e510` |
+| 0007 | MediaCrawler 定时 handler | 离线范围已实现；AC6/AC13 为 `PARTIAL`；全部真人行保持 `NOT_RUN` | `d071618` |
+| 0008 | MediaCrawler 验收收口 | 离线继任范围已完成；全部真人行保持 `NOT_RUN` | 计划 `f0c6015`；实现 `3889539` |
+| 0009 | 按来源绑定的签名 locator 刷新 | 功能优先 MVP 已实现且刷新/CLI 离线专项通过；强化与全部真人行仍待完成 | 功能实现 `98cf387` |
+| 0010 | 自动订阅媒体流水线 | 离线功能优先 MVP 已完成；全部真人行保持 `NOT_RUN` | 实现与收尾 `f2e5899` |
+| 0011 | MediaCrawler 交互式二维码登录 | 离线范围已完成；专项 274 项通过；完整套件 1080 项通过、1 项跳过；全部真人行保持 `NOT_RUN` | 计划 `8daa13d`；实现 `8bb16f6` |
+| 0012 | 登录回收与常驻调度监督器 | 离线单机前台范围已完成；专项 283 项通过、1 项跳过；完整套件 1156 项通过、1 项跳过；全部真人行保持 `NOT_RUN` | 计划 `4494226`；实现 `28655f8` |
+| 0013 | Bilibili 首 P 可播放视频 | 冻结的离线单 `durl` 范围已完成；专项 223 项通过；完整套件 1199 项通过、1 项跳过；全部真人行保持 `NOT_RUN` | 计划 `46323bd`；实现 `dd6cfec` |
+| 0014 | 快手普通单个可播放视频 | 冻结的离线单视频+封面范围已完成；专项 228 项通过；完整套件 1206 项通过、1 项跳过；全部真人行保持 `NOT_RUN` | 计划 `95c7082`；实现 `c4ab537` |
+| 0015 | 抖音普通单个可播放视频 | 冻结的离线单视频+可选封面范围已完成；专项 231 项通过；完整套件 1209 项通过、1 项跳过；全部真人行保持 `NOT_RUN` | 计划 `76b1973`；实现 `95d314d` |
+| 0016 | 微博普通原创静态图片图集 | 冻结的离线 IMAGE/GALLERY 范围已完成；专项 388 项通过，耗时 125.73 秒；完整套件 1251 项通过、1 项跳过，耗时 359.38 秒；真人登录/作者/detail/CDN/真实字节/媒体服务器行全部保持 `NOT_RUN` | 计划 `b7bb818`；实现 `a77ca74` |
+| 0017 | 小红书静态 IMAGE/GALLERY 作者权限 | 冻结的离线普通静态范围已完成；专项 266 项通过；完整套件 1298 项通过、1 项跳过；全部真人行保持 `NOT_RUN` | 计划 `9d19e7e`；实现 `2f8dbaa`；收尾 `00add11` |
+| 0018 | 小红书普通单个可播放视频 | 一条冻结的离线 `type="video"` 行已完成，精确一个 VIDEO 与零或一个静态 IMAGE；专项 222 项通过；完整套件 1353 项通过、1 项跳过；全部真人行保持 `NOT_RUN` | 计划 `c9d3586`；实现 `356e254` |
+| 0019 | 知乎普通回答单张静态图片 | 冻结的离线单回答/单静态 IMAGE 范围已完成；专项 505 项通过；完整套件 1543 项通过、1 项跳过；全部真人行保持 `NOT_RUN` | 计划 `dc1714c`；实现 `2edb9d7`；收尾为包含本记录的提交（不嵌入自身 SHA） |
+| 0020 | 贴吧普通主题首楼单张静态图片 | 冻结的离线单主题/单静态 IMAGE 范围已完成；专项回归 368 项通过；完整套件 1650 项通过、1 项跳过；全部真人行保持 `NOT_RUN` | 计划 `df7a38a`；实现 `8a0e935`；收尾为包含本记录的提交（不嵌入自身 SHA） |
+| 0021 | 贴吧普通主题首楼精确两张有序静态图片 | 冻结的离线精确双图范围已完成且保持 0020 单图兼容；专项回归 413 项通过；完整套件 1668 项通过、1 项跳过；全部真人行保持 `NOT_RUN` | 计划 `5095ed6`；实现 `e0fb8d5`；收尾为包含本记录的提交（不嵌入自身 SHA） |
+| 0022 | 贴吧普通主题首楼有界静态 gallery | 冻结的离线 v3 3–64 图范围已完成且保留精确 v1/v2 语义；专项回归 433 项通过；完整套件 1688 项通过、1 项跳过；全部真人行保持 `NOT_RUN` | 计划 `fbcb7cf`；实现 `b6d03aa`；收尾为包含本记录的提交（不嵌入自身 SHA） |
+| 0023 | Bilibili 有界多分 P progressive 投稿 | 冻结的离线兼容单 P/2–64 分 P 且每 P 精确一个 progressive `durl` 范围已完成；专项回归 436 项通过；完整套件 1739 项通过、1 项跳过；全部真人行保持 `NOT_RUN` | 计划 `bd45478`；实现 `24fd41c`；收尾为包含本记录的提交（不嵌入自身 SHA） |
+| 0024 | Bilibili DASH 音视频合并 | 冻结的离线兼容单 P/2–64 分 P DASH 范围已完成；专项回归 456 项通过；完整套件 1780 项通过、1 项跳过；生产 ffmpeg/ffprobe 组合通过；全部真人行保持 `NOT_RUN` | 计划 `a7d038e`；实现 `12314b9`；收尾为包含本记录的提交（不嵌入自身 SHA） |
+| 0025 | Bilibili DASH CDN 故障切换 | 冻结的离线 DASH 组件可靠性范围已完成；主地址加最多八个备用地址有序尝试、严格跨候选续传、专项回归 466 项通过、完整套件 1790 项通过且 1 项跳过、真实 ffmpeg/ffprobe 备用路径组合通过；progressive 备用与全部真人行继续待实现或保持 `NOT_RUN` | 计划 `8e9467d`；实现 `fe45abc`；收尾为包含本记录的提交（不嵌入自身 SHA） |
+| 0026 | Bilibili progressive CDN 故障切换 | 冻结的离线单段 progressive 可靠性范围已完成；协议 v6 携带主地址与最多八个备用地址，progressive 与 DASH 共用严格有序故障切换，专项回归 490 项通过、完整套件 1814 项通过且 1 项跳过，单 P/多分 P 备用到 Emby 组合通过；全部真人行保持 `NOT_RUN` | 计划 `0694934`；实现 `190488f`；收尾为包含本记录的提交（不嵌入自身 SHA） |
+| 0027 | Bilibili 单段 FLV 转封装 | 冻结的离线显式格式、精确单段 FLV→MP4 范围已完成；协议 v7、类型化私有桥接、严格源/成品探测、有界 ffmpeg stream-copy、专项回归 394、完整套件 1848 项通过且 1 项跳过，以及生产 FLV→Emby 组合均通过；全部真人行保持 `NOT_RUN` | 计划 `ec7095a`；实现 `7f99aa4`；收尾为包含本记录的提交（不嵌入自身 SHA） |
+| 0028 | 中英双语文档拆分 | 文档语言范围已完成；124 份混排文档拆为 248 份成对的中英版本，并通过链接、成对、纯度与内容保全检查；运行时行为零变化；推送前仍需在常规 Python 环境复跑 `uv run python scripts/check_docs.py` | 计划、实现与收尾均为包含本记录的提交（不嵌入自身 SHA） |
+
+执行 0005 只验收 mock、夹具与本地文件系统契约。下载器以 I/O scope 哈希、本地 OS 锁及租约/generation CAS 协调单个资产 generation，并能恢复先于数据库收尾完成的归档提交。组合 API/access key 变体及带凭据的 URL 路径会在落点被移除，但普通 `key` 字段不会被误判；direct/source hint 持久化与 `0003` legacy 回填同样拒绝这类路径。Emby 发布器通过持久数据库 Job predecessor chain 及精确 source/tree/manifest 身份确定受管所有权；磁盘 manifest 不能自行建立所有权。`0003 → 0002 → 0003` 往返会移除 generation-bound 下载身份及不可恢复的未成功 Emby 身份，同时保留已成功发布链与结构有效的发布 intent 恢复状态。最终根任务通过 540 项测试，分支感知覆盖率为 79%，全部专项、构建/打包检查及保留 SQLite/归档/导出/运维产物的零匹配扫描均通过。在 0005 边界，调度/API 与生产打包均处于延期状态；执行 0006 现在只补齐调度器的离线/Fake 切片。七平台真人登录/同步/CDN 下载及真实 Emby/Jellyfin 扫描/播放继续为 `NOT_RUN`；不可用的 refresh、平台衍生物、API 与生产打包属于未实现或延期范围，而不是 `NOT_RUN`。
+
+执行 0006 会有界物化到期周期，执行 fixed-delay 收尾、有界重试/退避及持久平台/账户启动 lane，并以精确租约、heartbeat 与取消 fencing 运行 `sync.subscription` Job。其封闭 registry 有意只随附确定性 Fake handler。重启验收会在 scheduled Fake sync 后显式调用既有安全下载器与 Emby 导出器；不宣称已有自动下游 DAG。最终根任务门禁通过 686 项测试，耗时 152.40 秒，分支感知总覆盖率 80%。MediaCrawler 定时执行、逐请求上游节流、签名 locator 刷新、REST、常驻守护及生产打包仍属于后续工作。准确离线验证记录在 [`executions/0006-durable-scheduler/verification.zh.md`](executions/0006-durable-scheduler/verification.zh.md)。
+
+执行 0007 现已随附显式启用、受许可证约束的 MediaCrawler 定时 handler。封闭 policy v1、新写 manifest v3/receipt v2、attempt-scoped 执行身份、父进程拥有的 heartbeat/进程监督、精确同事务导入 fencing、保守 waiting/失败映射，以及四状态失败产物清理均已实现。已密封 manifest v2/receipt v1 证据继续通过共享归一化/手工导入实现严格、逐字节精确的只读兼容；定时重启恢复只信任 v3。真实离线 fake-child 协议已为七个平台标识证明“订阅 → tick → v3 写入/读取 → 版本化 JSONL → v2 回执 → 受保护导入 → 重试/重启 → 幂等重放”。重复取消现在会先 join runner 与批次间导入，再向外 unwind；AC6 仍为 `PARTIAL`，仅因为 child 退出后/seal 前及 seal 后/导入前的确定性 barrier 尚不完整。AC13 仍为 `PARTIAL`，因为完整失败/密钥落点交叉矩阵尚不完整。真人登录、作者流量、CDN 获取及 Emby/Jellyfin 扫描/播放继续为 `NOT_RUN`。准确证据位于 [`executions/0007-mediacrawler-scheduled-handler/`](executions/0007-mediacrawler-scheduled-handler/)。
+
+执行 0008 现以继任离线证据关闭执行 0007 的 AC6/AC13，同时不改写四份历史 `PARTIAL` 记录。真实 child-exit/pre-seal 红测推动 runner 增加最终取消检查；handler 层 seal 前与单次/重复 seal 后 barrier 证明取消后归一化/导入均为零。封闭“11 种失败 × 3 类落点”矩阵证明 33 个 cell，包括 fail-closed 文件系统/SQLite 扫描器及固定调度/CLI 权限。最终完整套件通过 837 项测试，1 项 Windows 不适用的 skip，分支感知覆盖率 79%；权威留存门禁通过 45 个 case 与 12 项精确整树密钥扫描。全部真人行保持 `NOT_RUN`。签名 locator refresh 截至 0008 仍未实现，属于执行 0009；持久自动 `sync → download → Emby` DAG 仍属于执行 0010。详见 [`executions/0008-mediacrawler-acceptance-closeout/`](executions/0008-mediacrawler-acceptance-closeout/)。
+
+执行 0009 的功能优先刷新 MVP 已在本地提交 `98cf387` 中实现。它新增精确 Asset/Subscription 来源、有界 MediaCrawler detail 刷新、惰性来源绑定 runtime、显式资产下载启用/许可证控制，以及仅 adapter 使用的一次 401/403 重解析。在该历史边界，离线支持形状为小红书 image/video、抖音 image/video/audio/cover、快手 video/cover 与 Bilibili cover；小红书要求一次性精确 note 详情引用，微博/贴吧/知乎尚无可下载 Asset。执行 0016 现仅为冻结的微博普通原创静态 IMAGE/GALLERY 形状扩展该能力。完整强化与全部真人平台/CDN/Emby 行仍待完成。详见 [`executions/0009-signed-locator-refresh/`](executions/0009-signed-locator-refresh/)。
+
+执行 0010 现已把本地自动衔接实现为“持久入队边界 + 显式有界 worker”。成功的 `sync.subscription` 事务只 enqueue 一个 `pipeline.subscription` 协调器，不会内联下载或导出；`media-sync pipeline run` 另行 claim 有界批次，检查精确 Subscription/Account/平台范围，续租协调器，串行下载合格资产，并只在权威复核后导出。Pipeline/scheduler/CLI 合并门禁通过 154 项测试，最终完整套件通过 930 项，另有 1 项 Windows 不适用的 skip。它不是常驻 daemon 或 HA supervisor：取消同步 `asyncio.to_thread` handler 不能强制停止底层线程，真人平台/CDN/真实 Emby 验收继续为 `NOT_RUN`。详见 [`executions/0010-automatic-media-pipeline/`](executions/0010-automatic-media-pipeline/)。
+
+执行 0011 的历史离线实现与自动验证范围已在本地提交 `8bb16f6` 完成。它新增受双 gate 约束的显式 `media-sync account login`、脱敏的 `account login-status`、受 fencing 保护的 Account/LoginSession 状态机，以及结果独立于进程退出码的有头仅登录 child。初始 QR 账户和已过期 saved-session 账户均可进入显式流程；重认证启动会把 `saved_session/expired` 原子切为 `qr/authenticating`，成功恢复 `saved_session/authenticated`，非成功则留在可重试 QR 状态。后台 forward/detail 路径会强制 saved session 无头并拒绝 QR 回退。派生 profile 缺失映射固定 `auth_expired`，普通 bridge 配置错误保持 `configuration_invalid`；上游探测为 false 可能包含网络异常歧义，因此不宣称远端原因精确。合并专项门禁通过 274 项测试；完整套件通过 1080 项，另有 1 项 Windows 不适用的 POSIX mode-bit 测试跳过。不宣称运行过覆盖率。这些证据没有使用真人浏览器/账户/平台/CDN/媒体服务器，因此七个平台的真人 QR 与 saved-session 行全部保持 `NOT_RUN`。在 0011 当时的边界，父进程硬终止后的登录回收仍属于未来工作；执行 0012 已关闭该继任范围，同时不改写历史记录。详见 [`executions/0011-mediacrawler-interactive-login/`](executions/0011-mediacrawler-interactive-login/)。
+
+执行 0012 的离线单机前台范围已在本地实现提交 `28655f8` 完成。登录请求与结果通道使用有界长度 framing，并持续保留 START/CANCEL/EOF 控制；结果 guardian 会一直持有后代收容与继承账户锁，直到完整树关停，其中包括 Windows 上“结果 frame 已返回、父进程随后被硬杀”的确定性窗口。遗留 `pending|waiting_user` 状态只会在持久截止时间后、持有精确账户锁且通过仓储 CAS 时回收；有界轮转游标避免早期 busy 候选饿死后续账户。`scheduler supervise` 公平循环协调、tick、订阅与 pipeline 四阶段。订阅工作会取消并 join；已 active 的线程型 pipeline 尝试即使遭遇重复 task cancellation，也会继续受 heartbeat 保护并精确等待完成。根任务专项门禁通过 283 项、跳过 1 项；完整套件通过 1156 项，跳过的仍是同一 Windows 不适用项。不宣称运行过覆盖率。它不是 daemon 化、自动重启、系统服务、线程强停或跨主机 HA，全部真人行保持 `NOT_RUN`。详见 [`executions/0012-login-recovery-resident-supervisor/`](executions/0012-login-recovery-resident-supervisor/)。
+
+执行 0013 已在实现提交 `dd6cfec` 中完成一个冻结的离线 Bilibili 形状：普通 numeric-aid 投稿产生一个逻辑首 P `<aid>:video:0` Asset，且 `source_url=NULL`；绑定精确 Subscription 的 detail 查询会校验当前首 CID，并只接受一个 progressive `durl` URL。签名 URL 只留在有界 child frame、进程内存与 HTTP 请求中；封闭 request profile 提供固定 UA/Referer/Origin，且不发送 Cookie 或 Authorization。合成字节经过受控探测、SHA-256 归档收尾及 Emby 主 `.mp4` 发布，并支持幂等重放。专项门禁通过 223 项，完整套件通过 1199 项，另有一项在 Windows 不适用而跳过。
+
+在执行 0013 的历史边界，forward 元数据不包含 CID，因此后续同 aid 首 CID 替换无法自动使已验证字节失效。执行 0023 为兼容 2–64 分 P 投稿增加有界 page/CID 捕获与 CID 绑定身份并保留单 P 槽位；执行 0024 增加 DASH 选择/合并，执行 0025–0026 增加有序备用故障切换，执行 0027 则在相同稳定身份上增加显式精确单段 FLV→MP4 转封装。多 `durl` 分段与 FLV 拼接/转码、字幕、弹幕、CDN 排序/竞速/跨运行缓存、超过 64 个分 P、番剧/付费/直播媒体，以及全部真人账户/作者/CDN/Emby 验收行，分别继续延期或保持 `NOT_RUN`。
+
+执行 0014 已在实现提交 `c4ab537` 中完成一个冻结的离线快手形状：精确一个播放 URL 与可选封面产生稳定的 position 0 Asset 及无 query 刷新 hint。持久 raw 会结构化移除 URL userinfo、query、fragment 及漂移的嵌套值，而精确签名 URL 只在 detail 与 HTTP 中保持瞬态。真实 fake checkout 证明纯 ID detail 契约及成功 attempt 清理；绑定精确 Account/Subscription 的惰性刷新使用默认 HTTP profile，把确定性 MP4/PNG 字节接入受控视频探测、SHA-256 归档及 Emby `.mp4`/海报发布。仅 query 变化的重放会保留 generation，且不会再次调用 detail、HTTP、DNS 或 probe。专项门禁通过 228 项；完整套件通过 1206 项，另有一项在 Windows 不适用而跳过。
+
+快手图集、多播放 URL、有界作者分页、音频/字幕/评论、直播/付费/受限媒体、平台专用 CDN header、媒体版本感知替换、清理失败 quarantine 及全部真人登录/作者/CDN/Emby 行，分别继续延期或保持 `NOT_RUN`。详见 [`executions/0014-kuaishou-playable-video/`](executions/0014-kuaishou-playable-video/)。
+
+执行 0015 已在实现提交 `95d314d` 中完成一个冻结的离线抖音形状：一个 numeric `aweme_id`，其 `note_download_url` 与 `music_download_url` 为空、精确包含一个视频 URL 与可选封面，可完成精确 Account/Subscription 刷新、默认 profile mock HTTP、受控视频探测、SHA-256 归档及 Emby `.mp4`/海报/NFO/source 发布。真实隔离 fake checkout 证明纯 ID detail 进程契约；组合测试有意使用 fake detail runner、mock DNS/HTTP、合成 MP4/PNG 与受控 probe。持久 raw 会从四个抖音媒体字段移除 userinfo/query/fragment，把 note 逗号字符串规范化为有序项，并按漂移子项关闭失败。仅 query 变化的重放不会新增 detail、网络或 probe 调用。专项门禁通过 231 项；完整套件通过 1209 项，另有一项在 Windows 不适用而跳过。
+
+抖音图集、关联音乐 Asset 语义、多视频/封面 URL、有界作者分页、专用 CDN header、同 ID/同 origin/path 字节替换、清理失败 quarantine 及全部真人登录/作者/detail/CDN/Emby 行，分别继续延期或保持 `NOT_RUN`。详见 [`executions/0015-douyin-playable-video/`](executions/0015-douyin-playable-video/)。
+
+执行 0016 已在实现提交 `a77ca74` 中完成一个冻结的离线微博普通原创静态图片形状。共享 creator/detail child 捕获仅为无转发、无媒体 `page_info` 的 numeric note 保留有序且唯一的 `mblog.pics`；严格归一化把单图物化为 IMAGE、多图物化为 GALLERY，并从持久领域状态移除私有 shim 字段。只接受内嵌 `sinaimg.cn` 源 host、无 query 的 `.jpg/.jpeg/.png/.webp` `i1.wp.com` locator。精确 Account/Subscription 来源、mock 传输、SHA-256 归档及幂等 Emby poster/backdrop/gallery/NFO/source 发布通过。专项门禁通过 388 项，耗时 125.73 秒；完整套件通过 1251 项、跳过一项 Windows 不适用测试，耗时 359.38 秒。
+
+微博视频、转发、媒体 `page_info`、GIF/动图语义、有界作者分页、直连新浪 CDN 行为，以及全部真人登录/作者/detail/CDN/平台字节/Emby-Jellyfin 服务器验证，分别继续排除、延期或保持 `NOT_RUN`。七平台目标中的其他未验收平台/媒体形状也仍待推进。详见 [`executions/0016-weibo-image-gallery/`](executions/0016-weibo-image-gallery/)。
+
+执行 0017 以实现提交 `2f8dbaa` 补齐普通 `type="normal"` 小红书静态 IMAGE/GALLERY 的精确作者 Subscription 权限回退。显式精确 note 引用继续作为更高优先级兼容覆盖；运行时只私下解析所选 Subscription 的作者 secret，以 `max_items` 约束查找，并把无 query 持久状态接入 DEFAULT-profile mock HTTP、SHA-256 归档及 Emby poster/backdrop/gallery/NFO/source 发布。专项门禁通过 266 项；完整套件通过 1298 项，另有一项 Windows 不适用而跳过。详见 [`executions/0017-xhs-creator-authority/`](executions/0017-xhs-creator-authority/)。
+
+执行 0018 把该自动路径扩展到精确一条普通 `type="video"` 行：position 0 的唯一 VIDEO 与零或一个静态 IMAGE，形成 VIDEO 或本次窄范围验收的 MIXED。原始标量候选会在归一化前检查；初始 URL 必须使用合法 `xhscdn.com` host/path 与默认端口。绑定锁定上游源码的合约、真实 fake checkout、针对内嵌 H.264 MP4 的生产 `FFprobeMediaProbe`、确定性 SQLite→归档→Emby 组合及零工作 query 重放全部通过，且未修改 `.upstream`。专项门禁通过 222 项；完整套件通过 1353 项，另有一项 Windows 不适用而跳过。多视频、多图片、更广混合/实况/动图及全部真人登录/作者/detail/CDN/平台字节/Emby-Jellyfin 行继续延期或保持 `NOT_RUN`。详见 [`executions/0018-xhs-playable-video/`](executions/0018-xhs-playable-video/)。
+
+执行 0019 为知乎增加首个可下载媒体切片，使媒体平台数达到六个。校验 checkout shim 在锁定 extractor/store 丢失边界捕获普通回答中的精确一张图片，把它绑定到跨 gather-child/父 store 的精确对象，并且只把 creator 回答循环替换为成功受 Subscription `max_items` 约束的实现。Scheduled 证据把 23 转换为页面大小 `20 + 3` 的两次 API 请求与两次 callback 调用，callback 精确处理 23 行，页间执行一次节奏 sleep；达到上限后没有第三次请求或额外 sleep，因此知乎不再需要全历史确认。归一化保持 ARTICLE 加唯一 `<content_id>:image:0` IMAGE；精确持久权限驱动无凭据 DEFAULT-profile 刷新。生产字节门接受合格 JPEG/PNG/WebP 并拒绝 GIF/APNG/animated WebP/AVIF，但仍是有界结构资格门而非完整解码器。最终专项门通过 505 项，完整套件通过 1543 项且仅跳过一项 Windows 不适用用例，全部质量/审计门通过，独立复核未发现 P0/P1/P2。实现 `2edb9d7` 已推送；包含本记录的提交即文档收尾，且有意不嵌入自身 SHA。当前没有真实脱敏夹具，全部真人行保持 `NOT_RUN`；多图/文章/zvideo 继续延期。详见 [`executions/0019-zhihu-answer-images/`](executions/0019-zhihu-answer-images/)。
+
+执行 0020 为贴吧增加首个可下载媒体切片，使第七个平台也拥有一个专项离线形状。校验 checkout shim 在锁定 extractor 丢弃 locator 前，从普通主题首楼捕获精确一个当前整数 type-3 图片，把它绑定到跨 gather-child/父 store 的精确返回对象，并把 scheduled creator 工作加固为精确成功的 Subscription `max_items`。归一化保持 ARTICLE 加唯一 `<note_id>:image:0` IMAGE，且只持久化无 query 身份；SQLite canonical 主题权限驱动 numeric-ID 详情查询与无凭据 DEFAULT-profile 签名刷新。合格 JPEG/PNG/WebP 通过生产结构门，GIF/APNG/animated WebP/AVIF 失败。SQLite → fake detail → mock DNS/HTTP → SHA-256 归档 → Emby poster/backdrop/gallery/body/NFO/source 组合及 query 零工作重放通过。专项回归通过 368 项；完整套件通过 1650 项且仅跳过一项 Windows 不适用用例；全部质量/构建/上游/审计门通过。实现 `8a0e935` 已推送；全部真人行保持 `NOT_RUN`，贴吧 gallery/其他首楼媒体类型继续延期。详见 [`executions/0020-tieba-first-floor-image/`](executions/0020-tieba-first-floor-image/)。
+
+执行 0021 在不改变 v1 单图字段的前提下，把该切片扩展到精确两张有序静态图片。独立 v2 捕获跨越同一锁定 gather-child/父 store 丢失边界，并拒绝双重声明、重复持久身份、三张及以上图片及其他内容类型。归一化保持 ARTICLE 与 `<note_id>:image:0/1`；惰性刷新绑定完整有序持久 gallery，并拒绝当前结果缺图、重排或替换。两次无凭据 DEFAULT-profile 下载贯穿生产 JPEG/PNG 静态门、两个 SHA-256 归档及确定性 Emby poster/backdrop/双 gallery/body/NFO/source 发布；仅 query 变化的重放不新增 detail、DNS、HTTP、archive 或 export 工作。专项回归 `413 passed in 44.50s`；完整套件 `1668 passed, 1 skipped in 314.72s`；全部质量/构建/文档/上游/审计门通过。实现 `e0fb8d5` 已推送并核对。在该历史边界，三张及以上图片仍延期；混合/富内容/回复媒体及全部真人平台/CDN/Emby/Jellyfin 行继续延期或保持 `NOT_RUN`。详见 [`executions/0021-tieba-first-floor-two-image-gallery/`](executions/0021-tieba-first-floor-two-image-gallery/)。
+
+执行 0022 在保留 v1 单图与 v2 精确双图语义的同时，增加独立 v3 字段承载 3–64 张有序互异静态图片。捕获跨越同一精确对象 gather-child/父 store 边界；归一化产生 `<note_id>:image:0..N-1`，递归移除全部私有版本，并只持久化完整有序无 query 身份元组。每个刷新 position 都要求当前 gallery 的数量/顺序/身份相同；缺失、新增、重排、替换、重复与多版本结果均关闭失败。三次无凭据 DEFAULT-profile JPEG/PNG/WebP 下载进入三个 SHA-256 归档，并确定性输出 Emby poster/backdrop/三项 gallery/body/NFO/source；仅 query 变化的重放不新增 detail、DNS、HTTP、archive 或 export 工作。专项回归 `433 passed in 48.91s`；完整套件 `1688 passed, 1 skipped in 321.22s`；全部质量/构建/文档/上游/审计门通过。实现 `b6d03aa` 已推送并核对。超过 64 张的 gallery、混合/富内容/回复媒体及全部真人平台/CDN/Emby/Jellyfin 行继续延期或保持 `NOT_RUN`。详见 [`executions/0022-tieba-bounded-static-gallery/`](executions/0022-tieba-bounded-static-gallery/)。
+
+执行 0023 在锁定 `View.pages` → JSONL store 丢失边界增加校验 Bilibili 分 P 捕获 shim。规范 1–64 项有序互异 `page`/`cid` 采用任务局部状态；65、畸形、不连续与重复 CID 声明均关闭失败。精确单 P `<aid>:video:0` 保持兼容，合格 2–64 分 P 投稿产生有序 `<aid>:video:cid:<cid>`、仅 locator 的 VIDEO Asset。详情协议 v4 接收 `bili_video_cid`，只调用该 CID 的 play API 并接受精确一个 progressive `durl`；惰性加载把每次请求绑定到完整持久 VIDEO 兄弟元组，拒绝任何缺失/新增/重排/替换/重复漂移。私有捕获/播放字段与签名 URL 在持久化前递归移除。三分 P 组合证明定向调用、Bilibili 请求 profile、不同字节与 SHA-256 归档、Emby 主媒体加两个 part 文件/NFO/source，以及 query-only 零工作重放。专项回归 `436 passed in 53.96s`；完整套件 `1739 passed, 1 skipped in 321.25s`；全部质量/构建/文档/上游/审计门通过。实现 `24fd41c` 已推送并核对。DASH/mux、多 `durl` 分段、FLV、字幕/弹幕、备用地址故障切换、超过 64 个分 P、更广 Bilibili 类型及全部真人平台/CDN/Emby/Jellyfin 行继续延期或保持 `NOT_RUN`。详见 [`executions/0023-bilibili-bounded-multipart-progressive/`](executions/0023-bilibili-bounded-multipart-progressive/)。
+
+执行 0024 把严格 Bilibili 详情协议升级到 v5，以 WBI 签名、`qn=127`、`fourk=1` 与 `fnval=4048` 请求精确 CID。选择器取最高受支持 DASH 视频画质，同画质依次偏好 AVC → HEV → AV1，并按锁定的普通/杜比/Hi-Res 音频顺序选择，同时允许无声视频。签名主/备用/组件 URL 保持瞬态。Generation-scoped 音视频 store 使用严格续传、组件探测、组合字节上限、固定有界 `ffmpeg -c copy` 与最终 `ffprobe`；只有验证后的成品进入不可变归档。合并失败会保留已验证组件，已准备且发布的成品可在不新增 detail/DNS/HTTP/ffmpeg 工作的情况下恢复。本地真实 H.264+AAC 组合产生同时含音视频流的 Emby MP4。专项 `456 passed in 66.47s`；完整 `1780 passed, 1 skipped in 333.43s`；生产 ffmpeg/ffprobe 集成及全部质量/构建/文档/上游/审计通过。实现 `12314b9` 已推送并核对。备用 URL 已建模但不声明 CDN 故障切换；真人登录/API/CDN/Emby/Jellyfin 行保持 `NOT_RUN`。详见 [`executions/0024-bilibili-dash-mux/`](executions/0024-bilibili-dash-mux/)。
+
+执行 0025 计划 `8e9467d`、实现 `fe45abc` 为每个瞬态 DASH 视频及可选音频组件增加有序故障切换：先主地址，再按顺序尝试最多八个已校验互异备用地址。候选局部 DNS、timeout、传输、中断、HTTP 状态及 partial Range 不兼容可推进；网络策略、重定向/header/encoding、chunk/size、文件系统、探测与合并失败仍立即关闭。跨候选追加要求 offset、总长度与 validator 完全连续。混合失败保留 partial，只有完整候选轮次拒绝 partial 后才允许破坏性 restart。全部 `401`/`403` 穷尽继续得到 `locator_refresh_auth_expired`；URL、host 与胜出序号从不保留。生产进程组合让视频主地址返回 `503`、音频主地址返回 `403`，随后证明独立备用下载、ffprobe/ffmpeg 合并、双流归档/Emby 发布与零工作重放。专项 `466 passed in 66.96s`；完整 `1790 passed, 1 skipped in 331.33s`；全部质量/构建/文档/上游/审计门通过。progressive 备用故障切换、CDN 排序/缓存及全部真人行继续待实现或保持 `NOT_RUN`。详见 [`executions/0025-bilibili-dash-cdn-failover/`](executions/0025-bilibili-dash-cdn-failover/)。
+
+执行 0026 计划 `0694934`、实现 `190488f` 把严格详情协议升级到 v6，并通过等价 `backup_url`/`backupUrl` 别名校验一个 progressive `durl` 主地址及最多八个有序互异备用地址。有界单 P/多分 P 私有桥接兼容历史仅主地址 payload，并在持久化前递归移除。普通 progressive 与 DASH locator 共用主地址优先候选轮次，严格保持跨候选 offset/长度/validator 连续、混合失败 partial 保留与整轮 restart。只有一轮完全由 `401`/`403` 构成的 adapter 失败会触发一次新详情解析；第二轮仍全鉴权失败返回 `locator_refresh_auth_expired`，direct 及混合/非鉴权穷尽不刷新。单 P 与三分 P 组合均让每个主地址返回 `503`，到达有序备用地址、发布归档/Emby 输出并证明零工作重放，且不保留签名候选或私有字段。专项 `490 passed in 73.31s`；完整 `1814 passed, 1 skipped in 342.33s`；两个 progressive 组合、DASH 兼容及全部质量/构建/文档/上游/审计门通过。多 `durl` 分段、FLV、CDN 排序/竞速/跨运行缓存、混合/非鉴权穷尽刷新及全部真人行继续待实现或保持 `NOT_RUN`。详见 [`executions/0026-bilibili-progressive-cdn-failover/`](executions/0026-bilibili-progressive-cdn-failover/)。
+
+执行 0027 计划 `ec7095a`、实现 `7f99aa4` 把有界详情协议升级到 v7，并且只允许合法、显式的顶层格式授予 FLV 权限。Repr-safe 类型化 target 通过精确单 P/多分 P 私有桥接，并在保留前递归移除；历史无标记 progressive payload 保持普通类型。Generation-scoped 源下载复用有序候选、严格续传/restart 与一次全鉴权刷新，要求源精确探测为 FLV，再以固定有界的单输入 `ffmpeg -c copy` 保留首个视频流与可选首个音频流。只有精确探测为 MP4 的成品可归档/导出；转封装/成品探测失败会保留源但绝不发布原始 FLV。生成的本地 H.264+AAC FLV 贯穿“主地址 `503` → 备用 → 生产 ffprobe/ffmpeg → 双流 SHA-256 MP4 → Emby MP4/NFO/source”，并零工作重放且不保留签名/私有信息。专项 `394 passed in 59.12s`；完整 `1848 passed, 1 skipped in 347.72s`；全部质量/构建/文档/上游/审计门通过。多 `durl` 分段/FLV 拼接或转码及全部真人行继续待实现或保持 `NOT_RUN`。详见 [`executions/0027-bilibili-single-segment-flv-remux/`](executions/0027-bilibili-single-segment-flv-remux/)。
+执行 0028 把所有混排 Markdown 文档拆为两份：原路径 `<name>.md` 只保留英文，新增同目录 `<name>.zh.md` 承载中文，两份顶部带语言切换链接，正文内的本地链接指向同语言版本。一次性迁移工具 [`scripts/split_bilingual_docs.pl`](../scripts/split_bilingual_docs.pl) 在 124 份源文档上完成 3933 处行内拆分、356 个标签对头部与 531 个竖排配对单元；随后的人工修复补回了只落在单侧的提交信息、折叠了 `Ruff / Ruff` 一类同文对，并补译了此前只有单一语言的剩余内容（requirements 需求条目、research/architecture 段落、决策记录与上游说明），使两份版本内容完整。迁移工作站（Git Bash + Perl 5.42，无 Python 运行时）上的验证确认：248 份文件本地链接完好、中英完全成对、英文版代码块与引用提交信息之外无 CJK、中性行零丢失、无残留未拆分配对；推送前仍需在常规 Python 环境复跑 `uv run python scripts/check_docs.py` 与常规质量门。源代码、schema 与运行时行为零变化。详见 [`executions/0028-bilingual-documentation-split/`](executions/0028-bilingual-documentation-split/)。
+## 文档规则
+
+每个里程碑开始前创建 `goal.md`/`plan.md`（英文）与 `goal.zh.md`/`plan.zh.md`（中文）；实现期间持续更新 `progress.md` 与 `progress.zh.md`；提交前把准确命令、退出码和关键输出写入 `verification.md` 与 `verification.zh.md`。两个语言版本必须结构一致、同步维护：任何一版都不得声明另一版没有的内容，语言切换链接必须指向对应版本。旧混排布局的一次性迁移工具是 [`scripts/split_bilingual_docs.pl`](../scripts/split_bilingual_docs.pl)。任何密钥、Cookie 或个人账户数据都不得进入文档。
