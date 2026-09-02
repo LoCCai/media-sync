@@ -34,10 +34,12 @@ if __name__ == "__main__" and (__package__ is None or __package__ == ""):
 from media_sync.domain import LoginMethod, Platform
 from media_sync.integrations.mediacrawler.bilibili_media import (
     BILIBILI_DASH_PAGE_FIELD,
+    BILIBILI_MAX_DURL_SEGMENTS,
     BILIBILI_PAGES_FIELD,
     BILIBILI_PROGRESSIVE_BACKUPS_FIELD,
     BILIBILI_PROGRESSIVE_FORMAT_FIELD,
     BILIBILI_PROGRESSIVE_PAGE_FIELD,
+    BILIBILI_PROGRESSIVE_SEGMENTS_FIELD,
     BilibiliPageIdentity,
     parse_bilibili_view_pages,
 )
@@ -83,12 +85,13 @@ from media_sync.media import (
     ResolvedFlvLocator,
     ResolvedLocator,
     ResolvedMediaTarget,
+    ResolvedSegmentsLocator,
 )
 from media_sync.media.errors import MediaDownloadError
 from media_sync.security import SecretValue
 from media_sync.security.secrets import MAX_SECRET_BYTES
 
-DETAIL_RUNNER_SCHEMA_VERSION = 7
+DETAIL_RUNNER_SCHEMA_VERSION = 8
 MAX_DETAIL_REQUEST_BYTES = 128 * 1024
 MAX_DETAIL_FRAME_OVERHEAD = 8 * 1024
 
@@ -634,7 +637,9 @@ class _BiliPlaybackResult:
         if (
             type(self.cid) is not int
             or self.cid not in {page.cid for page in self.pages}
-            or not isinstance(self.target, ResolvedLocator | ResolvedFlvLocator | ResolvedDashLocator)
+            or not isinstance(
+                self.target, ResolvedLocator | ResolvedFlvLocator | ResolvedDashLocator | ResolvedSegmentsLocator
+            )
             or (
                 isinstance(self.target, ResolvedLocator)
                 and self.target.request_profile is not MediaRequestProfile.BILIBILI_MEDIA
@@ -1101,13 +1106,21 @@ def _bili_playback_result(
     durl = play["durl"]
     if not isinstance(durl, list):
         raise ValueError("invalid Bilibili durl response")
-    if len(durl) != 1:
+    if len(durl) == 1:
+        segment = durl[0]
+        if not isinstance(segment, Mapping):
+            raise ValueError("invalid Bilibili durl segment")
+        source = _bili_progressive_locator(segment)
+        target: ResolvedMediaTarget = ResolvedFlvLocator(source) if _bili_progressive_format(play) == "flv" else source
+        return _BiliPlaybackResult(aid=aid, pages=pages, cid=cid, target=target)
+    format_marker = _bili_progressive_format(play)
+    if format_marker == "flv" or not 2 <= len(durl) <= BILIBILI_MAX_DURL_SEGMENTS:
         raise _ChildUnsupportedError
-    segment = durl[0]
-    if not isinstance(segment, Mapping):
-        raise ValueError("invalid Bilibili durl segment")
-    source = _bili_progressive_locator(segment)
-    target: ResolvedMediaTarget = ResolvedFlvLocator(source) if _bili_progressive_format(play) == "flv" else source
+    try:
+        segments = tuple(_bili_progressive_locator(segment) for segment in durl)
+        target = ResolvedSegmentsLocator(segments)
+    except (TypeError, ValueError, MediaDownloadError) as exc:
+        raise ValueError("invalid Bilibili durl response") from exc
     return _BiliPlaybackResult(aid=aid, pages=pages, cid=cid, target=target)
 
 
@@ -1343,6 +1356,19 @@ def _augment_bili_progressive_jsonl(
                         if format_marker is not None:
                             page_target["format"] = format_marker
                         enriched[BILIBILI_PROGRESSIVE_PAGE_FIELD] = page_target
+                elif isinstance(progressive.target, ResolvedSegmentsLocator):
+                    assert progressive.cid is not None
+                    enriched[BILIBILI_PROGRESSIVE_SEGMENTS_FIELD] = {
+                        "cid": progressive.cid,
+                        "segments": [
+                            (
+                                {"url": segment.url, "backup_urls": list(segment.backup_urls)}
+                                if segment.backup_urls
+                                else {"url": segment.url}
+                            )
+                            for segment in progressive.target.segments
+                        ],
+                    }
                 elif isinstance(progressive.target, ResolvedDashLocator):
                     assert progressive.cid is not None
                     target = progressive.target
@@ -1389,6 +1415,7 @@ def _contains_private_detail_field(value: object) -> bool:
                 BILIBILI_PROGRESSIVE_BACKUPS_FIELD,
                 BILIBILI_PROGRESSIVE_FORMAT_FIELD,
                 BILIBILI_PROGRESSIVE_PAGE_FIELD,
+                BILIBILI_PROGRESSIVE_SEGMENTS_FIELD,
                 _BILI_PROGRESSIVE_FIELD,
             }
             & set(value)

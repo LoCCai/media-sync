@@ -15,6 +15,7 @@ from media_sync.integrations.mediacrawler.bilibili_media import (
     BILIBILI_PROGRESSIVE_BACKUPS_FIELD,
     BILIBILI_PROGRESSIVE_FORMAT_FIELD,
     BILIBILI_PROGRESSIVE_PAGE_FIELD,
+    BILIBILI_PROGRESSIVE_SEGMENTS_FIELD,
 )
 from media_sync.integrations.mediacrawler.detail_runner import (
     MediaCrawlerDetailRequest,
@@ -41,6 +42,7 @@ from media_sync.media import (
     ResolvedDashLocator,
     ResolvedFlvLocator,
     ResolvedLocator,
+    ResolvedSegmentsLocator,
 )
 from media_sync.security import SecretValue
 
@@ -1773,3 +1775,238 @@ def test_runner_controlled_exception_is_mapped_to_a_fixed_result_code() -> None:
 
     assert caught.value.code == "locator_refresh_result_invalid"
     assert "child-controlled-private-sentinel" not in str(caught.value)
+
+
+def _segments_payload(
+    *,
+    cid: int = 24680,
+    segments: list[dict[str, object]] | None = None,
+) -> dict[str, object]:
+    return {
+        "cid": cid,
+        "segments": segments
+        if segments is not None
+        else [
+            {
+                "url": "https://v.example.test/bili/segment-0.mp4?signature=first-private",
+                "backup_urls": ["https://backup.example.test/bili/segment-0.mp4?signature=first-backup-private"],
+            },
+            {"url": "https://v.example.test/bili/segment-1.mp4?signature=second-private"},
+        ],
+    }
+
+
+def test_bilibili_single_page_segments_bridge_reconstructs_ordered_typed_target() -> None:
+    context = _context(
+        platform=Platform.BILI,
+        content_id="987654321",
+        kind=AssetKind.VIDEO,
+        position=0,
+        signed_url=None,
+    )
+    runner = _FakeDetailRunner(
+        _jsonl(
+            {
+                "video_id": "987654321",
+                "video_type": "video",
+                "title": "single-page multi-segment",
+                BILIBILI_PAGES_FIELD: [{"page": 1, "cid": 24680}],
+                BILIBILI_PROGRESSIVE_SEGMENTS_FIELD: _segments_payload(),
+            }
+        )
+    )
+
+    resolved = MediaCrawlerLocatorRefresher(context, runner, clock=lambda: NOW).resolve(context.locator)
+
+    assert isinstance(resolved, ResolvedSegmentsLocator)
+    assert [segment.urls for segment in resolved.segments] == [
+        (
+            "https://v.example.test/bili/segment-0.mp4?signature=first-private",
+            "https://backup.example.test/bili/segment-0.mp4?signature=first-backup-private",
+        ),
+        ("https://v.example.test/bili/segment-1.mp4?signature=second-private",),
+    ]
+    assert all(segment.request_profile is MediaRequestProfile.BILIBILI_MEDIA for segment in resolved.segments)
+    assert "private" not in repr(resolved)
+    assert runner.calls[0].bili_progressive_detail is True
+    assert runner.calls[0].bili_video_cid is None
+
+
+def test_bilibili_multipart_segments_bridge_binds_only_the_requested_cid() -> None:
+    content_id = "987654321"
+    remote_ids = (
+        f"{content_id}:video:cid:24680",
+        f"{content_id}:video:cid:97531",
+    )
+    context = _context(
+        platform=Platform.BILI,
+        content_id=content_id,
+        kind=AssetKind.VIDEO,
+        position=1,
+        signed_url=None,
+        remote_id=remote_ids[1],
+        bili_video_remote_ids=remote_ids,
+    )
+    runner = _FakeDetailRunner(
+        _jsonl(
+            {
+                "video_id": content_id,
+                "video_type": "video",
+                "title": "multipart multi-segment",
+                BILIBILI_PAGES_FIELD: [
+                    {"page": 1, "cid": 24680},
+                    {"page": 2, "cid": 97531},
+                ],
+                BILIBILI_PROGRESSIVE_SEGMENTS_FIELD: _segments_payload(cid=97531),
+            }
+        )
+    )
+
+    resolved = MediaCrawlerLocatorRefresher(context, runner, clock=lambda: NOW).resolve(context.locator)
+
+    assert isinstance(resolved, ResolvedSegmentsLocator)
+    assert resolved.segments[0].url == "https://v.example.test/bili/segment-0.mp4?signature=first-private"
+    assert runner.calls[0].bili_video_cid == 97531
+
+
+@pytest.mark.parametrize(
+    "extra_fields",
+    [
+        {"__media_sync_bili_progressive_url": "https://v.example.test/bili/segment-0.mp4"},
+        {BILIBILI_PROGRESSIVE_BACKUPS_FIELD: ["https://backup.example.test/bili/segment-0.mp4"]},
+        {BILIBILI_PROGRESSIVE_FORMAT_FIELD: "flv"},
+        {BILIBILI_PROGRESSIVE_PAGE_FIELD: {"cid": 24680, "url": "https://v.example.test/bili/page.mp4"}},
+    ],
+)
+def test_bilibili_segments_bridge_rejects_any_colliding_private_field(extra_fields: dict[str, object]) -> None:
+    context = _context(
+        platform=Platform.BILI,
+        content_id="987654321",
+        kind=AssetKind.VIDEO,
+        position=0,
+        signed_url=None,
+    )
+    runner = _FakeDetailRunner(
+        _jsonl(
+            {
+                "video_id": "987654321",
+                "video_type": "video",
+                "title": "colliding segments bridge",
+                BILIBILI_PAGES_FIELD: [{"page": 1, "cid": 24680}],
+                BILIBILI_PROGRESSIVE_SEGMENTS_FIELD: _segments_payload(),
+                **extra_fields,
+            }
+        )
+    )
+
+    with pytest.raises(MediaDownloadError) as caught:
+        MediaCrawlerLocatorRefresher(context, runner, clock=lambda: NOW).resolve(context.locator)
+
+    assert caught.value.code == "locator_refresh_schema_changed"
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        "not-a-mapping",
+        {"segments": []},
+        {"cid": 24680},
+        {"cid": 24680, "segments": [], "extra": 1},
+        {"cid": "24680", "segments": []},
+        {"cid": 24680, "segments": [{"url": "https://v.example.test/bili/only.mp4"}]},
+        {
+            "cid": 24680,
+            "segments": [{"url": f"https://v.example.test/bili/segment-{index}.mp4"} for index in range(65)],
+        },
+        {"cid": 24680, "segments": [{"url": 42}, {"url": "https://v.example.test/bili/segment-1.mp4"}]},
+        {"cid": 24680, "segments": [{"url": "https://v.example.test/bili/segment-0.mp4"}, {"url": None}]},
+        {
+            "cid": 24680,
+            "segments": [
+                {"url": "https://v.example.test/bili/segment.mp4"},
+                {"url": "https://v.example.test/bili/segment.mp4"},
+            ],
+        },
+        {
+            "cid": 24680,
+            "segments": [
+                {"url": "https://v.example.test/bili/segment-0.mp4", "backup_urls": "not-a-list"},
+                {"url": "https://v.example.test/bili/segment-1.mp4"},
+            ],
+        },
+        {
+            "cid": 24680,
+            "segments": [
+                {"url": "https://v.example.test/bili/segment-0.mp4", "backup_urls": [42]},
+                {"url": "https://v.example.test/bili/segment-1.mp4"},
+            ],
+        },
+        {
+            "cid": 24680,
+            "segments": [
+                {
+                    "url": "https://v.example.test/bili/segment-0.mp4",
+                    "backup_urls": [f"https://backup-{index}.example.test/bili/segment-0.mp4" for index in range(9)],
+                },
+                {"url": "https://v.example.test/bili/segment-1.mp4"},
+            ],
+        },
+        {
+            "cid": 24680,
+            "segments": [
+                {"url": "file:///private/segment-0.mp4"},
+                {"url": "https://v.example.test/bili/segment-1.mp4"},
+            ],
+        },
+        {"cid": 99999, "segments": []},
+    ],
+)
+def test_bilibili_segments_bridge_fails_closed_on_malformed_payloads(payload: object) -> None:
+    context = _context(
+        platform=Platform.BILI,
+        content_id="987654321",
+        kind=AssetKind.VIDEO,
+        position=0,
+        signed_url=None,
+    )
+    runner = _FakeDetailRunner(
+        _jsonl(
+            {
+                "video_id": "987654321",
+                "video_type": "video",
+                "title": "malformed segments bridge",
+                BILIBILI_PAGES_FIELD: [{"page": 1, "cid": 24680}],
+                BILIBILI_PROGRESSIVE_SEGMENTS_FIELD: payload,
+            }
+        )
+    )
+
+    with pytest.raises(MediaDownloadError) as caught:
+        MediaCrawlerLocatorRefresher(context, runner, clock=lambda: NOW).resolve(context.locator)
+
+    assert caught.value.code == "locator_refresh_schema_changed"
+
+
+def test_bilibili_segments_bridge_requires_a_page_tuple_to_bind_the_cid() -> None:
+    context = _context(
+        platform=Platform.BILI,
+        content_id="987654321",
+        kind=AssetKind.VIDEO,
+        position=0,
+        signed_url=None,
+    )
+    runner = _FakeDetailRunner(
+        _jsonl(
+            {
+                "video_id": "987654321",
+                "video_type": "video",
+                "title": "page-less segments bridge",
+                BILIBILI_PROGRESSIVE_SEGMENTS_FIELD: _segments_payload(),
+            }
+        )
+    )
+
+    with pytest.raises(MediaDownloadError) as caught:
+        MediaCrawlerLocatorRefresher(context, runner, clock=lambda: NOW).resolve(context.locator)
+
+    assert caught.value.code == "locator_refresh_schema_changed"

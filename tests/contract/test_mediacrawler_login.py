@@ -260,6 +260,8 @@ def _pid_is_alive(process_id: int) -> bool:
             check=False,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=5,
         )
         return any(

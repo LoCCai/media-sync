@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
@@ -21,12 +22,14 @@ from media_sync.domain import AssetKind
 from media_sync.media.archive import ArchivePublisher, hash_file
 from media_sync.media.errors import MediaDownloadError
 from media_sync.media.locator import (
+    BILIBILI_MAX_DURL_SEGMENTS,
     AdapterRefreshLocator,
     AssetLocator,
     LocatorRefreshPort,
     ResolvedDashLocator,
     ResolvedFlvLocator,
     ResolvedLocator,
+    ResolvedSegmentsLocator,
     locator_fingerprint,
     resolve_locator,
 )
@@ -51,6 +54,7 @@ from media_sync.security.paths import (
 _CONTENT_RANGE = re.compile(r"bytes ([0-9]+)-([0-9]+)/([0-9]+)\Z")
 _UNSATISFIED_RANGE = re.compile(r"bytes \*/([0-9]+)\Z")
 _DIGITS = re.compile(r"[0-9]+\Z")
+_PART_ROLE = re.compile(r"(?:asset|dash-video|dash-audio|bili-flv-source|bili-segment-0(?:[0-5][0-9]|6[0-3]))\Z")
 _RETRYABLE_STATUSES = frozenset({408, 425, 429})
 _CANDIDATE_FAILURES = frozenset(
     {
@@ -279,7 +283,7 @@ def _response_validator(headers: httpx.Headers) -> tuple[ValidatorKind | None, s
 def _component_fingerprint(
     stable_fingerprint: str,
     selection: str,
-    role: Literal["video", "audio", "flv"],
+    role: Literal["video", "audio", "flv", "segment"],
 ) -> str:
     """Fence component resume state to one non-secret DASH selection shape."""
 
@@ -312,11 +316,11 @@ class _PartStore:
         root: Path,
         asset_id: UUID,
         generation: int,
-        role: Literal["asset", "dash-video", "dash-audio", "bili-flv-source"] = "asset",
+        role: str = "asset",
     ) -> None:
         self.root = ensure_secure_root(root)
         ensure_secure_directory(self.root, "parts")
-        if role not in {"asset", "dash-video", "dash-audio", "bili-flv-source"}:
+        if type(role) is not str or _PART_ROLE.fullmatch(role) is None:
             raise ValueError("invalid partial role")
         suffix = "" if role == "asset" else f".{role}"
         stem = f"{asset_id}.{generation}{suffix}"
@@ -382,6 +386,15 @@ class _PartStore:
             raise MediaDownloadError("filesystem_write_failed") from exc
 
 
+def _concat_script_line(path: Path) -> str:
+    """Render one ffmpeg concat-demuxer entry relative to the script directory."""
+
+    name = path.name
+    if not name.isascii() or "'" in name or "/" in name or "\\" in name:
+        raise ValueError("segment path is not concat-script safe")
+    return f"file '{name}'\n"
+
+
 class SecureMediaDownloader:
     """Download, verify and atomically publish one generation-fenced asset."""
 
@@ -433,6 +446,13 @@ class SecureMediaDownloader:
                 _PartStore(root, asset_id, generation, "dash-video").discard()
                 _PartStore(root, asset_id, generation, "dash-audio").discard()
                 _PartStore(root, asset_id, generation, "bili-flv-source").discard()
+                for index in range(BILIBILI_MAX_DURL_SEGMENTS):
+                    _PartStore(root, asset_id, generation, f"bili-segment-{index:03d}").discard()
+                safe_unlink(
+                    confined_file(root, Path("parts") / f"{asset_id}.{generation}.segments.txt"),
+                    root=root,
+                    missing_ok=True,
+                )
         except PathLockBusyError as exc:
             raise MediaDownloadError("download_part_busy") from exc
         except PathSecurityError as exc:
@@ -508,6 +528,8 @@ class SecureMediaDownloader:
         locator = resolve_locator(request.locator, self._refresher)
         if isinstance(locator, ResolvedFlvLocator):
             return self._download_flv_locked(request, work_root, locator)
+        if isinstance(locator, ResolvedSegmentsLocator):
+            return self._download_segments_locked(request, work_root, locator)
         if isinstance(locator, ResolvedDashLocator):
             return self._download_dash_locked(request, work_root, locator)
         if not isinstance(locator, ResolvedLocator):  # pragma: no cover - closed resolver contract
@@ -637,6 +659,131 @@ class SecureMediaDownloader:
             if not final_store.metadata.exists():
                 final_store.discard()
             raise
+        return DownloadResult(
+            archive_path=blob.path,
+            sha256=digest,
+            size_bytes=size,
+            mime_type=verified.mime_type,
+            extension=verified.extension,
+        )
+
+    def _download_segments_locked(
+        self,
+        request: DownloadRequest,
+        work_root: Path,
+        target: ResolvedSegmentsLocator,
+    ) -> DownloadResult:
+        """Download, verify and stream-copy one ordered multi-segment generation."""
+
+        if request.expected_kind is not AssetKind.VIDEO:
+            raise MediaDownloadError("media_type_mismatch")
+        if self._muxer is None:
+            raise MediaDownloadError("media_mux_unavailable")
+        started = self._monotonic()
+        stable_fingerprint = locator_fingerprint(request.locator)
+        can_refresh_auth = isinstance(request.locator, AdapterRefreshLocator) and self._refresher is not None
+        segments = target.segments
+        stores: list[_PartStore] = []
+        remaining_bytes = self._limits.max_bytes
+        auth_refreshes = 0
+        for index in range(len(segments)):
+            store = _PartStore(work_root, request.asset_id, request.generation, f"bili-segment-{index:03d}")
+            stores.append(store)
+            fingerprint = _component_fingerprint(
+                stable_fingerprint,
+                f"multi-segment-v1:{len(segments)}:{index}",
+                "segment",
+            )
+            while True:
+                try:
+                    _state, size = self._download_component(
+                        request,
+                        locator=segments[index],
+                        store=store,
+                        fingerprint=fingerprint,
+                        expected_kind=AssetKind.VIDEO,
+                        started=started,
+                        max_bytes=remaining_bytes,
+                        auth_mode="expire",
+                        required_extension="mp4",
+                    )
+                except MediaDownloadError as error:
+                    if error.code != "locator_refresh_auth_expired" or not can_refresh_auth or auth_refreshes >= 1:
+                        raise
+                    refreshed = resolve_locator(request.locator, self._refresher)
+                    if not isinstance(refreshed, ResolvedSegmentsLocator) or len(refreshed.segments) != len(segments):
+                        raise MediaDownloadError("locator_refresh_schema_changed") from error
+                    segments = refreshed.segments
+                    auth_refreshes += 1
+                    continue
+                remaining_bytes -= size
+                break
+
+        final_store = _PartStore(work_root, request.asset_id, request.generation)
+        list_relative = Path("parts") / f"{request.asset_id}.{request.generation}.segments.txt"
+        list_path = confined_file(work_root, list_relative)
+        try:
+            script = "".join(_concat_script_line(store.part) for store in stores).encode("ascii")
+            atomic_write_bytes(work_root, list_relative, script)
+        except PathSecurityError as exc:
+            raise MediaDownloadError("filesystem_unsafe") from exc
+        except (OSError, ValueError) as exc:
+            raise MediaDownloadError("filesystem_write_failed") from exc
+        try:
+            final_store.discard()
+            final_store.create()
+            try:
+                self._muxer.concat(
+                    list_path,
+                    final_store.part,
+                    root=final_store.root,
+                    timeout_seconds=self._remaining(started),
+                    max_output_bytes=self._limits.mux_output_bytes,
+                    max_media_bytes=self._limits.max_bytes,
+                )
+                digest, size = hash_file(final_store.part, root=final_store.root)
+                if size <= 0 or size > self._limits.max_bytes:
+                    raise MediaDownloadError("download_size_limit")
+                verified = verify_media(
+                    final_store.part,
+                    root=final_store.root,
+                    expected_kind=AssetKind.VIDEO,
+                    advertised_mime=None,
+                    probe=self._probe,
+                    require_static_image=False,
+                    sniff_bytes=self._limits.sniff_bytes,
+                    probe_timeout_seconds=min(self._limits.probe_timeout_seconds, self._remaining(started)),
+                    probe_output_bytes=self._limits.probe_output_bytes,
+                )
+                if verified.extension != "mp4" or verified.mime_type != "video/mp4":
+                    raise MediaDownloadError("media_type_mismatch")
+                final_state = PartMetadata(
+                    asset_id=request.asset_id,
+                    generation=request.generation,
+                    locator_fingerprint=stable_fingerprint,
+                    validator_kind=None,
+                    validator=None,
+                    expected_length=size,
+                    current_length=size,
+                )
+                final_store.save(final_state)
+                blob = ArchivePublisher(request.archive_root).publish(
+                    final_store.part,
+                    source_root=final_store.root,
+                    sha256=digest,
+                    size_bytes=size,
+                    extension=verified.extension,
+                    before_commit=request.before_archive_commit,
+                )
+            except Exception:
+                # Segments remain resumable; an unprepared final can never be
+                # mistaken for a published recovery candidate.
+                if not final_store.metadata.exists():
+                    final_store.discard()
+                raise
+        finally:
+            with contextlib.suppress(MediaDownloadError):
+                safe_unlink(list_path, root=work_root, missing_ok=True)
         return DownloadResult(
             archive_path=blob.path,
             sha256=digest,

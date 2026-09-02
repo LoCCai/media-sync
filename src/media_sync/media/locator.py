@@ -208,6 +208,32 @@ class ResolvedFlvLocator:
             raise _fail()
 
 
+_BILIBILI_MAX_DURL_SEGMENTS = 64
+BILIBILI_MAX_DURL_SEGMENTS = _BILIBILI_MAX_DURL_SEGMENTS
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedSegmentsLocator:
+    """Ephemeral ordered Bilibili multi-segment ordinary progressive target."""
+
+    segments: tuple[ResolvedLocator, ...] = field(repr=False)
+
+    def __post_init__(self) -> None:
+        segments = self.segments
+        if (
+            type(segments) is not tuple
+            or not 2 <= len(segments) <= _BILIBILI_MAX_DURL_SEGMENTS
+            or any(
+                not isinstance(segment, ResolvedLocator)
+                or segment.request_profile is not MediaRequestProfile.BILIBILI_MEDIA
+                for segment in segments
+            )
+        ):
+            raise _fail()
+        if len({segment.url for segment in segments}) != len(segments):
+            raise _fail()
+
+
 _BILIBILI_VIDEO_QUALITIES = frozenset({16, 32, 64, 80, 112, 116, 120, 125, 126, 127})
 _BILIBILI_AUDIO_QUALITIES = frozenset({30216, 30232, 30250, 30251, 30255, 30280})
 _BILIBILI_VIDEO_CODECS = frozenset({"avc", "hev", "av1"})
@@ -248,7 +274,7 @@ class ResolvedDashLocator:
         return self.video_quality, self.video_codec, self.audio_quality
 
 
-ResolvedMediaTarget: TypeAlias = ResolvedLocator | ResolvedFlvLocator | ResolvedDashLocator
+ResolvedMediaTarget: TypeAlias = ResolvedLocator | ResolvedFlvLocator | ResolvedDashLocator | ResolvedSegmentsLocator
 
 
 def parse_locator(value: Mapping[str, object] | str) -> AssetLocator:
@@ -319,12 +345,13 @@ def resolve_locator(locator: AssetLocator, refresher: LocatorRefreshPort | None 
     if refresher is None:
         raise MediaDownloadError("locator_refresh_unsupported")
     resolved = refresher.resolve(locator)
-    if not isinstance(resolved, ResolvedLocator | ResolvedFlvLocator | ResolvedDashLocator):
+    if not isinstance(resolved, ResolvedLocator | ResolvedFlvLocator | ResolvedDashLocator | ResolvedSegmentsLocator):
         raise MediaDownloadError("locator_invalid")
     return resolved
 
 
 __all__ = [
+    "BILIBILI_MAX_DURL_SEGMENTS",
     "AdapterRefreshLocator",
     "AssetLocator",
     "DirectLocator",
@@ -334,6 +361,7 @@ __all__ = [
     "ResolvedFlvLocator",
     "ResolvedLocator",
     "ResolvedMediaTarget",
+    "ResolvedSegmentsLocator",
     "canonical_locator_json",
     "locator_fingerprint",
     "parse_locator",

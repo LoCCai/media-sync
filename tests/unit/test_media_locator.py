@@ -13,6 +13,7 @@ from media_sync.media import (
     ResolvedDashLocator,
     ResolvedFlvLocator,
     ResolvedLocator,
+    ResolvedSegmentsLocator,
     canonical_locator_json,
     locator_fingerprint,
     parse_locator,
@@ -214,6 +215,69 @@ def test_resolved_flv_locator_rejects_non_bilibili_or_non_resolved_sources() -> 
         ResolvedFlvLocator(ResolvedLocator("https://video.test/source.flv"))
     with pytest.raises(MediaDownloadError, match="locator_invalid"):
         ResolvedFlvLocator("https://video.test/source.flv")  # type: ignore[arg-type]
+
+
+def test_resolved_segments_locator_is_bounded_ordered_distinct_and_repr_safe() -> None:
+    first = ResolvedLocator(
+        "https://video.test/segment-0.mp4?signature=first-private",
+        MediaRequestProfile.BILIBILI_MEDIA,
+        ("https://backup.test/segment-0.mp4?signature=backup-private",),
+    )
+    second = ResolvedLocator(
+        "https://video.test/segment-1.mp4?signature=second-private",
+        MediaRequestProfile.BILIBILI_MEDIA,
+    )
+    target = ResolvedSegmentsLocator((first, second))
+
+    assert target.segments == (first, second)
+    assert "first-private" not in repr(target)
+    assert "second-private" not in repr(target)
+    assert "backup-private" not in repr(target)
+
+    @dataclass
+    class _SegmentsRefresh:
+        def resolve(self, _locator: AdapterRefreshLocator) -> ResolvedSegmentsLocator:
+            return target
+
+    assert resolve_locator(AdapterRefreshLocator("mediacrawler", "bili/video/segments"), _SegmentsRefresh()) is target
+
+
+def _segment_locator(url: str) -> ResolvedLocator:
+    return ResolvedLocator(url, MediaRequestProfile.BILIBILI_MEDIA)
+
+
+@pytest.mark.parametrize(
+    ("count", "expected"),
+    [(1, False), (2, True), (64, True), (65, False)],
+)
+def test_resolved_segments_locator_enforces_the_closed_segment_bound(count: int, expected: bool) -> None:
+    segments = tuple(_segment_locator(f"https://video.test/segment-{index}.mp4") for index in range(count))
+
+    if expected:
+        assert len(ResolvedSegmentsLocator(segments).segments) == count
+    else:
+        with pytest.raises(MediaDownloadError, match="locator_invalid"):
+            ResolvedSegmentsLocator(segments)
+
+
+@pytest.mark.parametrize(
+    "segments",
+    [
+        (_segment_locator("https://video.test/segment.mp4"),),
+        ("https://video.test/segment-0.mp4",),  # type: ignore[list-item]
+        (
+            _segment_locator("https://video.test/segment.mp4"),
+            ResolvedLocator("https://video.test/other.mp4"),
+        ),
+        (
+            _segment_locator("https://video.test/segment.mp4"),
+            _segment_locator("https://video.test/segment.mp4"),
+        ),
+    ],
+)
+def test_resolved_segments_locator_rejects_drifted_shapes(segments: tuple[object, ...]) -> None:
+    with pytest.raises(MediaDownloadError, match="locator_invalid"):
+        ResolvedSegmentsLocator(segments)  # type: ignore[arg-type]
 
 
 @pytest.mark.parametrize(

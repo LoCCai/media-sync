@@ -14,6 +14,7 @@ from media_sync.integrations.mediacrawler import detail_runner as detail_runner_
 from media_sync.integrations.mediacrawler.bilibili_media import (
     BILIBILI_PROGRESSIVE_BACKUPS_FIELD,
     BILIBILI_PROGRESSIVE_FORMAT_FIELD,
+    BILIBILI_PROGRESSIVE_SEGMENTS_FIELD,
 )
 from media_sync.integrations.mediacrawler.checkout import VerifiedCheckout, VerifiedPython
 from media_sync.integrations.mediacrawler.detail_runner import (
@@ -36,6 +37,7 @@ from media_sync.media import (
     ResolvedDashLocator,
     ResolvedFlvLocator,
     ResolvedLocator,
+    ResolvedSegmentsLocator,
 )
 from media_sync.security import SecretValue
 
@@ -2380,6 +2382,75 @@ def test_bilibili_progressive_equivalent_backup_aliases_produce_one_runtime_cand
     assert "progressive-backup-sentinel" not in repr(result)
 
 
+def test_bilibili_multi_segment_durl_resolves_one_ordered_runtime_target(tmp_path: Path) -> None:
+    second_url = "https://video.example.test/bili/second.mp4?deadline=4102444800&sig=second-ephemeral-sentinel"
+    checkout = _fake_bili_checkout(
+        tmp_path,
+        play_response={
+            "durl": [
+                {"url": BILI_VIDEO_URL, "backup_url": [BILI_VIDEO_BACKUP]},
+                {"url": second_url},
+            ]
+        },
+    )
+    context = _bili_video_context()
+
+    resolved = MediaCrawlerLocatorRefresher(context, _bili_process_runner(tmp_path, checkout)).resolve(context.locator)
+
+    assert isinstance(resolved, ResolvedSegmentsLocator)
+    assert [segment.urls for segment in resolved.segments] == [
+        (BILI_VIDEO_URL, BILI_VIDEO_BACKUP),
+        (second_url,),
+    ]
+    assert all(segment.request_profile is MediaRequestProfile.BILIBILI_MEDIA for segment in resolved.segments)
+    assert "ephemeral-sentinel" not in repr(resolved)
+    jobs_root = tmp_path / "runtime" / "jobs"
+    assert jobs_root.is_dir()
+    assert list(jobs_root.iterdir()) == []
+    retained = b"".join(path.read_bytes() for path in (tmp_path / "runtime").rglob("*") if path.is_file())
+    assert BILI_VIDEO_URL.encode("utf-8") not in retained
+    assert BILI_VIDEO_BACKUP.encode("utf-8") not in retained
+    assert second_url.encode("utf-8") not in retained
+    assert BILIBILI_PROGRESSIVE_SEGMENTS_FIELD.encode("utf-8") not in retained
+
+
+def test_bilibili_multi_segment_multipart_binds_the_exact_requested_cid(tmp_path: Path) -> None:
+    view = {
+        "aid": 987654321,
+        "cid": 24680,
+        "pages": [
+            {"page": 1, "cid": 24680},
+            {"page": 2, "cid": 97531},
+        ],
+        "title": "fixture",
+        "desc": "fixture",
+        "pic": BILI_COVER,
+        "owner": {"mid": 42, "name": "fixture"},
+        "stat": {},
+    }
+    second_url = "https://video.example.test/bili/p2-second.mp4?deadline=4102444800&sig=second-ephemeral-sentinel"
+    checkout = _fake_bili_checkout(
+        tmp_path,
+        view=view,
+        expected_cid=97531,
+        play_response={
+            "durl": [
+                {"url": BILI_VIDEO_URL, "backup_url": [BILI_VIDEO_BACKUP]},
+                {"url": second_url},
+            ]
+        },
+    )
+    context = _bili_video_context(cids=(24680, 97531), position=1)
+
+    resolved = MediaCrawlerLocatorRefresher(context, _bili_process_runner(tmp_path, checkout)).resolve(context.locator)
+
+    assert isinstance(resolved, ResolvedSegmentsLocator)
+    assert resolved.segments[0].url == BILI_VIDEO_URL
+    assert resolved.segments[1].url == second_url
+    retained = b"".join(path.read_bytes() for path in (tmp_path / "runtime").rglob("*") if path.is_file())
+    assert BILIBILI_PROGRESSIVE_SEGMENTS_FIELD.encode("utf-8") not in retained
+
+
 @pytest.mark.parametrize(
     ("case", "play_response", "play_raises", "expected"),
     [
@@ -2446,8 +2517,23 @@ def test_bilibili_progressive_equivalent_backup_aliases_produce_one_runtime_cand
         ),
         ("empty", {"durl": []}, False, "locator_refresh_unsupported"),
         (
-            "multi-segment",
-            {"durl": [{"url": BILI_VIDEO_URL}, {"url": "https://video.example.test/bili/second.mp4"}]},
+            "multi-segment-duplicate-primary",
+            {"durl": [{"url": BILI_VIDEO_URL}, {"url": BILI_VIDEO_URL}]},
+            False,
+            "locator_refresh_result_invalid",
+        ),
+        (
+            "multi-segment-flv",
+            {
+                "format": "flv",
+                "durl": [{"url": BILI_VIDEO_URL}, {"url": "https://video.example.test/bili/second.flv"}],
+            },
+            False,
+            "locator_refresh_unsupported",
+        ),
+        (
+            "multi-segment-above-limit",
+            {"durl": [{"url": f"https://video.example.test/bili/segment-{index}.mp4"} for index in range(65)]},
             False,
             "locator_refresh_unsupported",
         ),

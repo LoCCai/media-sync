@@ -20,8 +20,10 @@ BILIBILI_PAGES_FIELD = "__media_sync_bili_pages_v1"
 BILIBILI_PROGRESSIVE_PAGE_FIELD = "__media_sync_bili_progressive_page_v2"
 BILIBILI_PROGRESSIVE_BACKUPS_FIELD = "__media_sync_bili_progressive_backups_v1"
 BILIBILI_PROGRESSIVE_FORMAT_FIELD = "__media_sync_bili_progressive_format_v1"
+BILIBILI_PROGRESSIVE_SEGMENTS_FIELD = "__media_sync_bili_progressive_segments_v1"
 BILIBILI_DASH_PAGE_FIELD = "__media_sync_bili_dash_page_v1"
 BILIBILI_MAX_PAGES = 64
+BILIBILI_MAX_DURL_SEGMENTS = 64
 
 _INSTALL_MARKER = "__media_sync_bilibili_media_capture_v1__"
 _INSTALL_VERSION = "media-sync-bilibili-media-v1"
@@ -247,11 +249,13 @@ def _module_belongs_to_checkout(module: object, checkout_root: Path) -> bool:
 
 __all__ = [
     "BILIBILI_DASH_PAGE_FIELD",
+    "BILIBILI_MAX_DURL_SEGMENTS",
     "BILIBILI_MAX_PAGES",
     "BILIBILI_PAGES_FIELD",
     "BILIBILI_PROGRESSIVE_BACKUPS_FIELD",
     "BILIBILI_PROGRESSIVE_FORMAT_FIELD",
     "BILIBILI_PROGRESSIVE_PAGE_FIELD",
+    "BILIBILI_PROGRESSIVE_SEGMENTS_FIELD",
     "BilibiliPageIdentity",
     "bilibili_video_cid",
     "bilibili_video_remote_ids",

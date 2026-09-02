@@ -247,6 +247,135 @@ def test_ffmpeg_remux_rejects_nonpositive_limits(tmp_path: Path, kwargs: dict[st
         )
 
 
+def _concat_paths(tmp_path: Path, *, empty_script: bool = False) -> tuple[Path, Path]:
+    root = tmp_path / "work"
+    root.mkdir(exist_ok=True)
+    script = root / f"segments-{int(empty_script)}.txt"
+    script.write_bytes(b"" if empty_script else b"file 'first.part'\nfile 'second.part'\n")
+    output = root / f"final-{int(empty_script)}.part"
+    output.write_bytes(b"")
+    return script, output
+
+
+def test_ffmpeg_concat_uses_fixed_concat_demuxer_argv_and_bounds(tmp_path: Path) -> None:
+    script, output = _concat_paths(tmp_path)
+    runner = _Runner()
+
+    FFmpegStreamCopyMuxer("fixture-ffmpeg", runner=runner).concat(
+        script,
+        output,
+        root=tmp_path / "work",
+        timeout_seconds=12.5,
+        max_output_bytes=4096,
+        max_media_bytes=8192,
+    )
+
+    assert output.read_bytes() == b"muxed-mp4"
+    assert runner.calls == [
+        (
+            (
+                "fixture-ffmpeg",
+                "-nostdin",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-f",
+                "concat",
+                "-safe",
+                "0",
+                "-i",
+                str(script.absolute()),
+                "-map",
+                "0:v:0",
+                "-map",
+                "0:a:0?",
+                "-c",
+                "copy",
+                "-strict",
+                "unofficial",
+                "-fs",
+                "8192",
+                "-f",
+                "mp4",
+                str(output.absolute()),
+            ),
+            12.5,
+            4096,
+        )
+    ]
+
+
+@pytest.mark.parametrize("error", [FileNotFoundError(), TimeoutError(), RuntimeError(), OverflowError()])
+def test_ffmpeg_concat_translates_process_failures(tmp_path: Path, error: BaseException) -> None:
+    script, output = _concat_paths(tmp_path)
+    expected = "media_mux_unavailable" if isinstance(error, FileNotFoundError) else "media_mux_failed"
+
+    with pytest.raises(MediaDownloadError) as caught:
+        FFmpegStreamCopyMuxer(runner=_Runner(error=error)).concat(
+            script,
+            output,
+            root=tmp_path / "work",
+            timeout_seconds=5,
+            max_output_bytes=1024,
+            max_media_bytes=2048,
+        )
+
+    assert caught.value.code == expected
+
+
+@pytest.mark.parametrize("payload", [b"", b"x" * 17])
+def test_ffmpeg_concat_rejects_empty_or_oversized_output(tmp_path: Path, payload: bytes) -> None:
+    script, output = _concat_paths(tmp_path)
+
+    with pytest.raises(MediaDownloadError, match="media_mux_failed"):
+        FFmpegStreamCopyMuxer(runner=_Runner(payload)).concat(
+            script,
+            output,
+            root=tmp_path / "work",
+            timeout_seconds=5,
+            max_output_bytes=1024,
+            max_media_bytes=16,
+        )
+
+
+def test_ffmpeg_concat_rejects_empty_script_output_aliasing_and_overflow(tmp_path: Path) -> None:
+    script, output = _concat_paths(tmp_path)
+    empty_script, _aliased = _concat_paths(tmp_path, empty_script=True)
+
+    with pytest.raises(MediaDownloadError, match="media_mux_failed"):
+        FFmpegStreamCopyMuxer(runner=_Runner()).concat(
+            empty_script,
+            output,
+            root=tmp_path / "work",
+            timeout_seconds=5,
+            max_output_bytes=1024,
+            max_media_bytes=2048,
+        )
+
+    alias_runner = _Runner()
+    with pytest.raises(MediaDownloadError, match="filesystem_unsafe"):
+        FFmpegStreamCopyMuxer(runner=alias_runner).concat(
+            script,
+            script,
+            root=tmp_path / "work",
+            timeout_seconds=5,
+            max_output_bytes=1024,
+            max_media_bytes=2048,
+        )
+    assert alias_runner.calls == []
+
+    with pytest.raises(MediaDownloadError, match="media_mux_failed"):
+        FFmpegStreamCopyMuxer(runner=_Runner(process_output=b"x" * 17)).concat(
+            script,
+            output,
+            root=tmp_path / "work",
+            timeout_seconds=5,
+            max_output_bytes=16,
+            max_media_bytes=2048,
+        )
+
+
 @pytest.mark.parametrize(
     ("error", "expected"),
     [

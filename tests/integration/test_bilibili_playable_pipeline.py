@@ -46,8 +46,10 @@ from media_sync.infrastructure.db.models import (
 )
 from media_sync.integrations.mediacrawler import MediaCrawlerDetailRequest, MediaCrawlerDetailResult
 from media_sync.integrations.mediacrawler.bilibili_media import (
+    BILIBILI_PAGES_FIELD,
     BILIBILI_PROGRESSIVE_BACKUPS_FIELD,
     BILIBILI_PROGRESSIVE_FORMAT_FIELD,
+    BILIBILI_PROGRESSIVE_SEGMENTS_FIELD,
 )
 from media_sync.integrations.mediacrawler.normalizers import NormalizationContext, normalize_jsonl_bytes
 from media_sync.media import (
@@ -58,6 +60,7 @@ from media_sync.media import (
     ProbeResult,
     ResolvedFlvLocator,
     ResolvedLocator,
+    ResolvedSegmentsLocator,
     SafeHttpClient,
     SecureMediaDownloader,
     ValidatedTarget,
@@ -79,6 +82,11 @@ BACKUP_SENTINEL = "EXECUTION-0026-BACKUP-URL-MUST-STAY-EPHEMERAL"
 BACKUP_URL = (
     "https://backup-cn-bj-cm-01.bilivideo.com/upgcxcode/offline/first-page.mp4"
     f"?deadline=1798765432&upsig={BACKUP_SENTINEL}"
+)
+SECOND_SENTINEL = "EXECUTION-0029-SECOND-SEGMENT-MUST-STAY-EPHEMERAL"
+SECOND_SIGNED_URL = (
+    "https://second-cn-bj-cm-01.bilivideo.com/upgcxcode/offline/first-page-part2.mp4"
+    f"?deadline=1798765432&upsig={SECOND_SENTINEL}"
 )
 MP4 = b"\x00\x00\x00\x18ftypisom" + b"execution-0013-offline-progressive-video"
 
@@ -114,6 +122,23 @@ FLV_DETAIL_JSONL = _jsonl(
         BILIBILI_PROGRESSIVE_FORMAT_FIELD: "flv",
         "desc": "Execution 0027 explicit FLV source, logical first page.",
         "title": "Offline first-page FLV remux video",
+        "video_id": CONTENT_ID,
+        "video_type": "video",
+        "video_url": f"https://www.bilibili.com/video/av{CONTENT_ID}",
+    }
+)
+SEGMENTS_DETAIL_JSONL = _jsonl(
+    {
+        BILIBILI_PAGES_FIELD: [{"page": 1, "cid": 24680}],
+        BILIBILI_PROGRESSIVE_SEGMENTS_FIELD: {
+            "cid": 24680,
+            "segments": [
+                {"url": SIGNED_URL, "backup_urls": [BACKUP_URL]},
+                {"url": SECOND_SIGNED_URL},
+            ],
+        },
+        "desc": "Execution 0029 ordinary multi-segment source, logical first page.",
+        "title": "Offline first-page multi-segment concat video",
         "video_id": CONTENT_ID,
         "video_type": "video",
         "video_url": f"https://www.bilibili.com/video/av{CONTENT_ID}",
@@ -234,9 +259,13 @@ def _assert_signed_url_absent(*roots: Path) -> None:
         SIGNED_SENTINEL.encode(),
         BACKUP_URL.encode(),
         BACKUP_SENTINEL.encode(),
+        SECOND_SIGNED_URL.encode(),
+        SECOND_SENTINEL.encode(),
         b"upsig=EXECUTION-0013",
         b"upsig=EXECUTION-0026",
+        b"upsig=EXECUTION-0029",
         BILIBILI_PROGRESSIVE_FORMAT_FIELD.encode(),
+        BILIBILI_PROGRESSIVE_SEGMENTS_FIELD.encode(),
     )
     for root in roots:
         retained = {root.name: root.read_bytes()} if root.is_file() else _tree(root)
@@ -558,6 +587,7 @@ class _RecordingProductionProbe:
 class _RecordingProductionMuxer:
     delegate: FFmpegStreamCopyMuxer
     remux_calls: list[tuple[Path, Path]] = field(default_factory=list)
+    concat_calls: list[tuple[Path, Path, str]] = field(default_factory=list)
 
     def remux(
         self,
@@ -572,6 +602,27 @@ class _RecordingProductionMuxer:
         self.remux_calls.append((source_path, output_path))
         self.delegate.remux(
             source_path,
+            output_path,
+            root=root,
+            timeout_seconds=timeout_seconds,
+            max_output_bytes=max_output_bytes,
+            max_media_bytes=max_media_bytes,
+        )
+
+    def concat(
+        self,
+        list_path: Path,
+        output_path: Path,
+        *,
+        root: Path,
+        timeout_seconds: float,
+        max_output_bytes: int,
+        max_media_bytes: int,
+    ) -> None:
+        script = list_path.read_text("ascii")
+        self.concat_calls.append((list_path, output_path, script))
+        self.delegate.concat(
+            list_path,
             output_path,
             root=root,
             timeout_seconds=timeout_seconds,
@@ -835,6 +886,334 @@ def test_bilibili_flv_backup_reaches_emby_through_production_remux_with_zero_wor
             assert PRIVATE_PROGRESSIVE_FIELD not in durable
             assert BILIBILI_PROGRESSIVE_FORMAT_FIELD not in durable
             assert SIGNED_URL not in durable and BACKUP_URL not in durable
+
+        _assert_signed_url_absent(runtime_root, download_work_root, archive_root, export_work_root, library_root)
+    finally:
+        database.dispose()
+
+    sqlite_artifacts = tuple(path for path in tmp_path.glob(f"{database_path.name}*") if path.is_file())
+    assert sqlite_artifacts
+    _assert_signed_url_absent(*sqlite_artifacts)
+
+
+class _SegmentsDetailRunner:
+    instances: ClassVar[list[_SegmentsDetailRunner]] = []
+
+    def __init__(self, **kwargs: object) -> None:
+        self.constructor_kwargs = kwargs
+        self.calls: list[MediaCrawlerDetailRequest] = []
+        type(self).instances.append(self)
+
+    def run(self, request: MediaCrawlerDetailRequest) -> MediaCrawlerDetailResult:
+        self.calls.append(request)
+        return MediaCrawlerDetailResult(SEGMENTS_DETAIL_JSONL, UPSTREAM_SHA)
+
+
+@dataclass(slots=True)
+class _RecordingSegmentsRefresher:
+    delegate: LazyMediaCrawlerLocatorRefresher
+    results: list[ResolvedSegmentsLocator] = field(default_factory=list)
+
+    def resolve(self, locator: AdapterRefreshLocator) -> ResolvedSegmentsLocator:
+        resolved = self.delegate.resolve(locator)
+        assert isinstance(resolved, ResolvedSegmentsLocator)
+        self.results.append(resolved)
+        return resolved
+
+
+def _generate_two_mp4_segments(root: Path, ffmpeg: str) -> tuple[bytes, bytes]:
+    root.mkdir()
+    first = root / "first.mp4"
+    second = root / "second.mp4"
+    try:
+        subprocess.run(
+            (
+                ffmpeg,
+                "-nostdin",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=c=blue:s=64x64:r=5:d=0.6",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=440:sample_rate=44100:duration=0.6",
+                "-shortest",
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p",
+                "-c:a",
+                "aac",
+                "-b:a",
+                "64k",
+                "-f",
+                "mp4",
+                "-y",
+                str(first),
+            ),
+            check=True,
+            capture_output=True,
+            timeout=30,
+        )
+        subprocess.run(
+            (
+                ffmpeg,
+                "-nostdin",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=c=red:s=64x64:r=5:d=0.6",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=440:sample_rate=44100:duration=0.6",
+                "-shortest",
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p",
+                "-c:a",
+                "aac",
+                "-b:a",
+                "64k",
+                "-f",
+                "mp4",
+                "-y",
+                str(second),
+            ),
+            check=True,
+            capture_output=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        pytest.skip(f"local MP4 segment fixture generation is unavailable: {type(exc).__name__}")
+    first_payload = first.read_bytes()
+    second_payload = second.read_bytes()
+    assert first_payload[4:8] == b"ftyp"
+    assert second_payload[4:8] == b"ftyp"
+    assert first_payload != second_payload
+    return first_payload, second_payload
+
+
+def test_bilibili_multi_segment_backup_reaches_emby_through_production_concat_with_zero_work_replay(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ffmpeg = shutil.which("ffmpeg")
+    ffprobe = shutil.which("ffprobe")
+    if ffmpeg is None or ffprobe is None:
+        pytest.skip("ffmpeg and ffprobe are required for production-process qualification")
+    first_segment, second_segment = _generate_two_mp4_segments(tmp_path / "fixtures", ffmpeg)
+    database_path = tmp_path / "bilibili-segments.sqlite3"
+    database_url = f"sqlite+pysqlite:///{database_path.as_posix()}"
+    archive_root = tmp_path / "archive"
+    library_root = tmp_path / "library"
+    runtime_root = tmp_path / "mediacrawler-runtime"
+    download_work_root = tmp_path / "download-work"
+    export_work_root = tmp_path / "export-work"
+    runtime_root.mkdir()
+    upgrade_database(database_url)
+    database = Database(database_url)
+    _SegmentsDetailRunner.instances = []
+    monkeypatch.setattr(mediacrawler_runtime, "MediaCrawlerDetailProcessRunner", _SegmentsDetailRunner)
+
+    try:
+        seed = _seed_subscription(database)
+        normalized = normalize_jsonl_bytes(
+            FORWARD_JSONL,
+            NormalizationContext(
+                platform=Platform.BILI,
+                creator_remote_id=AUTHOR_REMOTE_ID,
+                creator_display_name="Bilibili Offline Creator",
+                upstream_sha=UPSTREAM_SHA,
+                ingested_at=FIXED_AT,
+            ),
+        )
+        assert not normalized.quarantined and not normalized.truncated_tail
+        assert [(asset.remote_id, asset.kind, asset.source_url) for asset in normalized.records[0].assets] == [
+            (VIDEO_REMOTE_ID, AssetKind.VIDEO, None)
+        ]
+        run_id = _start_ingesting_run(database, seed.subscription_id)
+        ingestion = MediaCrawlerIngestionService(database).ingest(
+            normalized.records,
+            subscription_id=seed.subscription_id,
+            run_id=run_id,
+            expected_revision=0,
+            mode=IngestionMode.FORWARD,
+        )
+        assert (ingestion.accepted_count, ingestion.discovered_count, ingestion.asset_count) == (1, 1, 1)
+
+        with database.session() as session:
+            asset = session.scalar(select(Asset))
+            assert asset is not None
+            asset_id = UUID(asset.id)
+            assert isinstance(parse_locator(asset.locator), AdapterRefreshLocator)
+            assert asset.source_url is None
+
+        delegate = LazyMediaCrawlerLocatorRefresher(
+            database,
+            asset_id=asset_id,
+            subscription_id=UUID(seed.subscription_id),
+            lock_path=tmp_path / "upstreams.lock.json",
+            integration_root=runtime_root,
+            python_executable=tmp_path / "python",
+            secret_resolver=SecretResolver({}),
+            license_acknowledged=True,
+        )
+        refresher = _RecordingSegmentsRefresher(delegate)
+        resolver = _RecordingPublicResolver()
+        requests: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            assert str(request.url) in {SIGNED_URL, BACKUP_URL, SECOND_SIGNED_URL}
+            assert request.headers["referer"] == "https://www.bilibili.com/"
+            assert request.headers["origin"] == "https://www.bilibili.com"
+            assert request.headers["accept-encoding"] == "identity"
+            assert "cookie" not in request.headers and "authorization" not in request.headers
+            if str(request.url) == SIGNED_URL:
+                return httpx.Response(503)
+            if str(request.url) == BACKUP_URL:
+                return httpx.Response(
+                    200,
+                    headers={
+                        "Content-Length": str(len(first_segment)),
+                        "Content-Type": "video/mp4",
+                        "ETag": '"execution-0029-segment-0"',
+                    },
+                    content=first_segment,
+                )
+            return httpx.Response(
+                200,
+                headers={
+                    "Content-Length": str(len(second_segment)),
+                    "Content-Type": "video/mp4",
+                    "ETag": '"execution-0029-segment-1"',
+                },
+                content=second_segment,
+            )
+
+        production_probe = _RecordingProductionProbe(FFprobeMediaProbe(ffprobe))
+        production_muxer = _RecordingProductionMuxer(FFmpegStreamCopyMuxer(ffmpeg))
+        downloader = SecureMediaDownloader(
+            SafeHttpClient(
+                resolver,
+                transport_factory=lambda _target: httpx.MockTransport(handler),
+            ),
+            refresher=refresher,
+            probe=production_probe,
+            muxer=production_muxer,
+        )
+        service = AssetDownloadService(database, downloader, clock=lambda: FIXED_AT)
+        download_request = AssetDownloadRequest(
+            asset_id=asset_id,
+            worker_id="execution-0029-download",
+            work_root=download_work_root,
+            archive_root=archive_root,
+            lease_seconds=60,
+        )
+
+        downloaded = service.run(download_request)
+
+        assert downloaded.disposition == "downloaded"
+        assert downloaded.archive_path is not None and downloaded.archive_path.suffix == ".mp4"
+        final_bytes = downloaded.archive_path.read_bytes()
+        assert b"ftyp" in final_bytes[:32]
+        assert final_bytes != first_segment and final_bytes != second_segment
+        assert downloaded.mime_type == "video/mp4"
+        assert downloaded.checksum_sha256 == hashlib.sha256(final_bytes).hexdigest()
+        assert _stream_types(downloaded.archive_path, ffprobe) == {"video", "audio"}
+        assert [str(request.url) for request in requests] == [SIGNED_URL, BACKUP_URL, SECOND_SIGNED_URL]
+        assert resolver.calls == [
+            ("cn-bj-cm-01.bilivideo.com", 443),
+            ("backup-cn-bj-cm-01.bilivideo.com", 443),
+            ("second-cn-bj-cm-01.bilivideo.com", 443),
+        ]
+        assert len(refresher.results) == 1
+        target = refresher.results[0]
+        assert [segment.urls for segment in target.segments] == [
+            (SIGNED_URL, BACKUP_URL),
+            (SECOND_SIGNED_URL,),
+        ]
+        assert all(segment.request_profile is MediaRequestProfile.BILIBILI_MEDIA for segment in target.segments)
+        assert SIGNED_SENTINEL not in repr(target)
+        assert len(_SegmentsDetailRunner.instances) == 1
+        assert len(_SegmentsDetailRunner.instances[0].calls) == 1
+        assert len(production_probe.calls) == 3
+        assert len(production_muxer.concat_calls) == 1
+        assert len(production_muxer.remux_calls) == 0
+        list_path, _output_path, script = production_muxer.concat_calls[0]
+        assert list_path.parent == download_work_root / "parts"
+        assert script == (f"file '{asset_id}.1.bili-segment-000.part'\nfile '{asset_id}.1.bili-segment-001.part'\n")
+        assert not list_path.exists()
+        assert not tuple((download_work_root / "parts").glob(f"{asset_id}.1.segments.txt"))
+
+        export_service = EmbyExportService(
+            database,
+            EmbyExporter(library_root, staging_root=export_work_root),
+            clock=lambda: FIXED_AT,
+        )
+        exported = export_service.export_author(
+            EmbyExportRequest(seed.author_id, "execution-0029-export", lease_seconds=60)
+        )
+        assert exported.already_exported is False
+        author_directory = library_root / exported.output_path
+        emby_video = next(author_directory.glob("Season 2026/*.mp4"))
+        assert emby_video.read_bytes() == final_bytes
+        assert _stream_types(emby_video, ffprobe) == {"video", "audio"}
+        assert (author_directory / "tvshow.nfo").is_file()
+        assert next(author_directory.glob("Season 2026/*.nfo")).is_file()
+        source_document = json.loads(next(author_directory.glob("Season 2026/*.assets/source.json")).read_text("utf-8"))
+        assert not {"canonical_url", "locator", "raw", "source_url"} & source_document.keys()
+
+        archive_tree = _tree(archive_root)
+        library_tree = _tree(author_directory)
+        replayed_download = service.run(download_request)
+        replayed_export = export_service.export_author(
+            EmbyExportRequest(seed.author_id, "execution-0029-export-replay", lease_seconds=60)
+        )
+        assert replayed_download.disposition == "already_verified"
+        assert replayed_export.already_exported is True
+        assert len(_SegmentsDetailRunner.instances[0].calls) == 1
+        assert len(requests) == 3
+        assert len(production_probe.calls) == 3
+        assert len(production_muxer.concat_calls) == 1
+        assert _tree(archive_root) == archive_tree
+        assert _tree(author_directory) == library_tree
+
+        with database.session() as session:
+            persisted_asset = session.get(Asset, str(asset_id))
+            content = session.scalar(select(Content))
+            jobs = tuple(session.scalars(select(Job).order_by(Job.job_type, Job.id)).all())
+            exports = tuple(session.scalars(select(ExportRecord)).all())
+            assert persisted_asset is not None and content is not None
+            assert persisted_asset.status == "verified" and persisted_asset.generation == 1
+            assert persisted_asset.mime_type == "video/mp4"
+            assert {job.job_type for job in jobs} == {"asset_download", "export.emby"}
+            assert all(job.status == "succeeded" and job.attempts == 1 for job in jobs)
+            assert len(exports) == 1 and exports[0].status == "succeeded"
+            durable = json.dumps(
+                {
+                    "asset": {
+                        "locator": persisted_asset.locator,
+                        "raw": persisted_asset.raw,
+                        "source_url": persisted_asset.source_url,
+                    },
+                    "content": {"canonical_url": content.canonical_url, "raw": content.raw},
+                    "jobs": [job.payload for job in jobs],
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+            assert BILIBILI_PROGRESSIVE_SEGMENTS_FIELD not in durable
+            assert SIGNED_URL not in durable and BACKUP_URL not in durable and SECOND_SIGNED_URL not in durable
 
         _assert_signed_url_absent(runtime_root, download_work_root, archive_root, export_work_root, library_root)
     finally:

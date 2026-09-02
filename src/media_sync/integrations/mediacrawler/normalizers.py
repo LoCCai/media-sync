@@ -26,14 +26,17 @@ from media_sync.media.locator import (
     ResolvedFlvLocator,
     ResolvedLocator,
     ResolvedMediaTarget,
+    ResolvedSegmentsLocator,
 )
 
 from .bilibili_media import (
     BILIBILI_DASH_PAGE_FIELD,
+    BILIBILI_MAX_DURL_SEGMENTS,
     BILIBILI_PAGES_FIELD,
     BILIBILI_PROGRESSIVE_BACKUPS_FIELD,
     BILIBILI_PROGRESSIVE_FORMAT_FIELD,
     BILIBILI_PROGRESSIVE_PAGE_FIELD,
+    BILIBILI_PROGRESSIVE_SEGMENTS_FIELD,
     bilibili_video_remote_ids,
     parse_bilibili_page_payload,
 )
@@ -81,6 +84,7 @@ _PRIVATE_MEDIA_FIELDS = frozenset(
         BILIBILI_PROGRESSIVE_BACKUPS_FIELD,
         BILIBILI_PROGRESSIVE_FORMAT_FIELD,
         BILIBILI_PROGRESSIVE_PAGE_FIELD,
+        BILIBILI_PROGRESSIVE_SEGMENTS_FIELD,
         _BILI_PROGRESSIVE_FIELD,
         TIEBA_GALLERY_FIELD,
         TIEBA_IMAGE_FIELD,
@@ -143,7 +147,10 @@ class NormalizedMediaRecord:
 
     def __post_init__(self) -> None:
         if any(
-            type(key) is not str or not isinstance(value, ResolvedLocator | ResolvedFlvLocator | ResolvedDashLocator)
+            type(key) is not str
+            or not isinstance(
+                value, ResolvedLocator | ResolvedFlvLocator | ResolvedDashLocator | ResolvedSegmentsLocator
+            )
             for key, value in self.runtime_asset_targets.items()
         ):
             raise ValueError("runtime asset targets are invalid")
@@ -538,7 +545,9 @@ def _bili_video_assets(
     if BILIBILI_PAGES_FIELD not in record:
         remote_ids: tuple[str, ...] = (f"{aid}:video:0",)
         if allow_progressive_detail and (
-            BILIBILI_PROGRESSIVE_PAGE_FIELD in record or BILIBILI_DASH_PAGE_FIELD in record
+            BILIBILI_PROGRESSIVE_PAGE_FIELD in record
+            or BILIBILI_DASH_PAGE_FIELD in record
+            or BILIBILI_PROGRESSIVE_SEGMENTS_FIELD in record
         ):
             return (), (), {}
         progressive = None
@@ -572,6 +581,7 @@ def _bili_video_assets(
             or BILIBILI_PROGRESSIVE_BACKUPS_FIELD in record
             or BILIBILI_PROGRESSIVE_FORMAT_FIELD in record
             or BILIBILI_PROGRESSIVE_PAGE_FIELD in record
+            or BILIBILI_PROGRESSIVE_SEGMENTS_FIELD in record
         ):
             return (), (), {}
         try:
@@ -588,6 +598,20 @@ def _bili_video_assets(
     if len(pages) == 1:
         if allow_progressive_detail and BILIBILI_PROGRESSIVE_PAGE_FIELD in record:
             return (), (), {}
+        if allow_progressive_detail and BILIBILI_PROGRESSIVE_SEGMENTS_FIELD in record:
+            if (
+                _BILI_PROGRESSIVE_FIELD in record
+                or BILIBILI_PROGRESSIVE_BACKUPS_FIELD in record
+                or BILIBILI_PROGRESSIVE_FORMAT_FIELD in record
+            ):
+                return (), (), {}
+            try:
+                segment_cid, segments_target = _bili_segments_target(record[BILIBILI_PROGRESSIVE_SEGMENTS_FIELD])
+            except ValueError:
+                return (), (), {}
+            if pages[0].cid != segment_cid:
+                return (), (), {}
+            return (segments_target.segments[0].url,), remote_ids, {remote_ids[0]: segments_target}
         progressive = None
         if allow_progressive_detail and (
             _BILI_PROGRESSIVE_FIELD in record
@@ -616,6 +640,22 @@ def _bili_video_assets(
             or BILIBILI_PROGRESSIVE_FORMAT_FIELD in record
         ):
             return (), (), {}
+        if BILIBILI_PROGRESSIVE_SEGMENTS_FIELD in record:
+            if BILIBILI_PROGRESSIVE_PAGE_FIELD in record:
+                return (), (), {}
+            try:
+                segment_cid, segments_target = _bili_segments_target(record[BILIBILI_PROGRESSIVE_SEGMENTS_FIELD])
+            except ValueError:
+                return (), (), {}
+            page_index = next(
+                (index for index, page in enumerate(pages) if type(segment_cid) is int and page.cid == segment_cid),
+                None,
+            )
+            if page_index is None:
+                return (), (), {}
+            urls[page_index] = segments_target.segments[0].url
+            targets[remote_ids[page_index]] = segments_target
+            return tuple(urls), remote_ids, targets
         progressive_payload = record.get(BILIBILI_PROGRESSIVE_PAGE_FIELD)
         if not isinstance(progressive_payload, Mapping) or set(progressive_payload) not in (
             {"cid", "url"},
@@ -672,6 +712,46 @@ def _bili_progressive_source(target: ResolvedLocator | ResolvedFlvLocator) -> Re
     """Return the signed source without widening the accepted runtime union."""
 
     return target.source if isinstance(target, ResolvedFlvLocator) else target
+
+
+def _bili_segments_target(value: object) -> tuple[int, ResolvedSegmentsLocator]:
+    """Parse the exact private multi-segment bridge emitted by the detail child."""
+
+    if not isinstance(value, Mapping) or set(value) != {"cid", "segments"}:
+        raise ValueError("invalid Bilibili segments target")
+    cid = value.get("cid")
+    if type(cid) is not int or not 1 <= cid <= 2**63 - 1:
+        raise ValueError("invalid Bilibili segments target")
+    raw_segments = value.get("segments")
+    if (
+        not isinstance(raw_segments, Sequence)
+        or isinstance(raw_segments, bytes | bytearray | str)
+        or not 2 <= len(raw_segments) <= BILIBILI_MAX_DURL_SEGMENTS
+    ):
+        raise ValueError("invalid Bilibili segments target")
+    segments: list[ResolvedLocator] = []
+    for item in raw_segments:
+        if not isinstance(item, Mapping) or set(item) not in ({"url"}, {"url", "backup_urls"}):
+            raise ValueError("invalid Bilibili segments target")
+        backups = item.get("backup_urls", ())
+        if (
+            not isinstance(backups, Sequence)
+            or isinstance(backups, bytes | bytearray | str)
+            or len(backups) > 8
+            or any(type(entry) is not str for entry in backups)
+        ):
+            raise ValueError("invalid Bilibili segments target")
+        url = _safe_url(item.get("url"))
+        if url is None:
+            raise ValueError("invalid Bilibili segments target")
+        try:
+            segments.append(ResolvedLocator(url, MediaRequestProfile.BILIBILI_MEDIA, tuple(backups)))
+        except Exception as exc:
+            raise ValueError("invalid Bilibili segments target") from exc
+    try:
+        return cid, ResolvedSegmentsLocator(tuple(segments))
+    except Exception as exc:
+        raise ValueError("invalid Bilibili segments target") from exc
 
 
 def _bili_dash_target(value: object) -> tuple[int, ResolvedDashLocator]:
