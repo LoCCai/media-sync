@@ -6,8 +6,8 @@
 - Date: 2026-09-02
 - Predecessor: Execution 0028 closeout `2621f6a119aac60eaf89f0195d4fbe23bd5160f0`
 - Scope: Bounded, ordered multi-segment Bilibili progressive `durl` downloads classified as ordinary (non-FLV), concatenated by one fixed stream-copy ffmpeg invocation into one Emby-compatible MP4
-- Plan commit: recorded in the closeout index; never embedded in this file
-- Implementation commit: recorded in the closeout index; never embedded in this file
+- Plan commit: `9a40968dbed98b7e52d6d8f4a80906909b78cd4b`
+- Implementation commit: `7eb188d99b027377781dfbf220fb7586ecdf51a7`
 
 ## Outcome
 
