@@ -13,8 +13,11 @@ services:
   media-sync:
     build:
       context: .
-      # Mainland-China mirror defaults (Aliyun apt/PyPI + npmmirror Playwright
-      # binaries). Building outside mainland China? Delete these three lines.
+      # Mainland-China mirror defaults (Aliyun apt + pip PyPI mirror +
+      # npmmirror Playwright binaries). PYPI_INDEX applies to pip steps only —
+      # uv always validates the committed lock against pypi.org, so keep
+      # BUILD_HTTPS_PROXY handy if that is slow. Building outside mainland
+      # China? Delete these three lines.
       args:
         APT_MIRROR: mirrors.aliyun.com
         PYPI_INDEX: https://mirrors.aliyun.com/pypi/simple/

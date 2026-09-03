@@ -30,18 +30,24 @@ ARG BASE_IMAGE
 # sources so the image remains reproducible anywhere. The example compose file
 # passes Aliyun/npmmirror values by default — comment them out abroad.
 #   APT_MIRROR:      host replacing deb.debian.org in the apt sources
-#   PYPI_INDEX:      PyPI simple index used by pip and uv
+#   PYPI_INDEX:      PyPI simple index used by the PIP steps only (installing
+#                    uv itself and the mediacrawler venv). It must NOT be
+#                    applied to `uv sync`: uv records the registry it resolved
+#                    against inside uv.lock, so validating the committed lock
+#                    against a mirror rewrites every source URL and `--locked`
+#                    fails (phase-B finding d2). uv therefore always resolves
+#                    against pypi.org; set BUILD_HTTPS_PROXY if that is slow.
 #   PLAYWRIGHT_DOWNLOAD_HOST: browser binary mirror host
 ARG APT_MIRROR=deb.debian.org
 ARG PYPI_INDEX=https://pypi.org/simple
 ARG PLAYWRIGHT_DOWNLOAD_HOST=""
+ARG BUILD_HTTPS_PROXY=""
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_INDEX_URL=${PYPI_INDEX} \
     UV_LINK_MODE=copy \
-    UV_DEFAULT_INDEX=${PYPI_INDEX} \
     DEBIAN_FRONTEND=noninteractive
 
 # ffmpeg/ffprobe for media probing and stream-copy, plus Xvfb and fonts so the
@@ -69,10 +75,12 @@ COPY src ./src
 COPY scripts ./scripts
 COPY alembic.ini ./
 # Pin uv to the exact version that authored uv.lock (revision 3). A newer uv
-# rewrites the lock format and refuses `--locked` (phase-B finding: 0.12.9
-# failed with "lockfile needs to be updated"). Bump this ONLY together with
-# regenerating and re-validating uv.lock.
-RUN pip install --no-cache-dir uv==0.9.18 \
+# rewrites the lock format and refuses `--locked` (phase-B finding d1). Bump
+# this ONLY together with regenerating and re-validating uv.lock. uv resolves
+# against pypi.org (never a mirror — see PYPI_INDEX above, finding d2); use
+# BUILD_HTTPS_PROXY here too when that is slow.
+RUN if [ -n "${BUILD_HTTPS_PROXY}" ]; then export HTTPS_PROXY="${BUILD_HTTPS_PROXY}"; fi \
+    && pip install --no-cache-dir uv==0.9.18 \
     && uv sync --locked --no-dev \
     && uv cache clean
 
@@ -88,7 +96,6 @@ RUN pip install --no-cache-dir uv==0.9.18 \
 # override MEDIACRAWLER_REPO with a mirror prefix or set BUILD_HTTPS_PROXY.
 ARG MEDIACRAWLER_REPO=https://github.com/NanmiCoder/MediaCrawler.git
 ARG MEDIACRAWLER_COMMIT=d6f7c5bb906b6dac40ddf343ef9e26438a3de092
-ARG BUILD_HTTPS_PROXY=""
 RUN if [ -n "${BUILD_HTTPS_PROXY}" ]; then export HTTPS_PROXY="${BUILD_HTTPS_PROXY}"; fi \
     && git init --quiet /app/.upstream/MediaCrawler \
     && git -C /app/.upstream/MediaCrawler remote add origin "${MEDIACRAWLER_REPO}" \
