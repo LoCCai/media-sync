@@ -14,7 +14,9 @@
 # Build:   docker build -t media-sync:local .
 # Run:     docker compose up -d
 
-FROM python:3.12-slim-bookworm AS base
+# Python 3.13 matches the environment the uv.lock was resolved and verified
+# with; a 3.12 base makes `uv sync --locked` reject the lockfile.
+FROM python:3.13-slim-bookworm AS base
 
 # Mirror overrides for mainland-China builds; defaults stay on official
 # sources so the image remains reproducible anywhere. The example compose file
