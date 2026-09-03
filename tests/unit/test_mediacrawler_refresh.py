@@ -37,7 +37,7 @@ from media_sync.integrations.mediacrawler.weibo_media import (
     WEIBO_VIDEO_FIELD,
     validate_weibo_video_url,
 )
-from media_sync.integrations.mediacrawler.xhs_live import XHS_LIVE_VIDEO_FIELD
+from media_sync.integrations.mediacrawler.xhs_live import XHS_LIVE_VIDEO_FIELD, XHS_LIVE_VIDEO_LIST_FIELD
 from media_sync.integrations.mediacrawler.xhs_media import validate_xhs_video_url
 from media_sync.integrations.mediacrawler.zhihu_media import ZHIHU_IMAGE_FIELD
 from media_sync.media import (
@@ -2401,6 +2401,80 @@ def test_xhs_live_photo_refresh_rejects_video_path_drift() -> None:
     )
     drifted = _xhs_live_record()
     drifted[XHS_LIVE_VIDEO_FIELD] = {"url": "http://sns-video-bd.xhscdn.com/replaced.mp4"}
+
+    with pytest.raises(MediaDownloadError) as caught:
+        MediaCrawlerLocatorRefresher(context, _FakeDetailRunner(_jsonl(drifted)), clock=lambda: NOW).resolve(
+            context.locator
+        )
+
+    assert caught.value.code == "locator_refresh_asset_mismatch"
+
+
+XHS_MULTI_LIVE_DETAIL_FIRST_IMAGE = "https://sns-webpic-qc.xhscdn.com/multi-live-detail-0.jpg"
+XHS_MULTI_LIVE_DETAIL_SECOND_IMAGE = "https://sns-webpic-qc.xhscdn.com/multi-live-detail-1.jpg"
+XHS_MULTI_LIVE_DETAIL_FIRST_VIDEO = "http://sns-video-bd.xhscdn.com/multi-live-detail-0.mp4"
+XHS_MULTI_LIVE_DETAIL_SECOND_VIDEO = "http://sns-video-bd.xhscdn.com/multi-live-detail-1.mp4"
+
+
+def _xhs_multi_live_record() -> dict[str, object]:
+    record = _xhs_live_record()
+    record.pop(XHS_LIVE_VIDEO_FIELD)
+    record["image_list"] = f"{XHS_MULTI_LIVE_DETAIL_FIRST_IMAGE},{XHS_MULTI_LIVE_DETAIL_SECOND_IMAGE}"
+    record[XHS_LIVE_VIDEO_LIST_FIELD] = {
+        "urls": [XHS_MULTI_LIVE_DETAIL_FIRST_VIDEO, XHS_MULTI_LIVE_DETAIL_SECOND_VIDEO]
+    }
+    return record
+
+
+@pytest.mark.parametrize(
+    "kind,position,expected",
+    [
+        pytest.param(AssetKind.IMAGE, 0, XHS_MULTI_LIVE_DETAIL_FIRST_IMAGE, id="image-0"),
+        pytest.param(AssetKind.IMAGE, 1, XHS_MULTI_LIVE_DETAIL_SECOND_IMAGE, id="image-1"),
+        pytest.param(AssetKind.VIDEO, 0, XHS_MULTI_LIVE_DETAIL_FIRST_VIDEO, id="video-0"),
+        pytest.param(AssetKind.VIDEO, 1, XHS_MULTI_LIVE_DETAIL_SECOND_VIDEO, id="video-1"),
+    ],
+)
+def test_xhs_multi_live_gallery_refresh_resolves_each_position(kind: AssetKind, position: int, expected: str) -> None:
+    context = _context(
+        platform=Platform.XHS,
+        content_id="66fad51c000000001b0224b8",
+        kind=kind,
+        position=position,
+        signed_url=expected,
+        creator_reference=SecretValue(
+            "https://www.xiaohongshu.com/user/profile/creator-42?xsec_token=xhs-creator-secret&xsec_source=pc_user"
+        ),
+        creator_max_items=2,
+    )
+
+    resolved = MediaCrawlerLocatorRefresher(
+        context, _FakeDetailRunner(_jsonl(_xhs_multi_live_record())), clock=lambda: NOW
+    ).resolve(context.locator)
+
+    assert resolved.url == expected
+    assert resolved.request_profile is MediaRequestProfile.DEFAULT
+
+
+def test_xhs_multi_live_gallery_refresh_rejects_url_drift() -> None:
+    context = _context(
+        platform=Platform.XHS,
+        content_id="66fad51c000000001b0224b8",
+        kind=AssetKind.VIDEO,
+        position=1,
+        signed_url=XHS_MULTI_LIVE_DETAIL_SECOND_VIDEO,
+        creator_reference=SecretValue(
+            "https://www.xiaohongshu.com/user/profile/creator-42?xsec_token=xhs-creator-secret&xsec_source=pc_user"
+        ),
+        creator_max_items=2,
+    )
+    drifted = _xhs_multi_live_record()
+    drifted[XHS_LIVE_VIDEO_LIST_FIELD] = {
+        "urls": [
+            XHS_MULTI_LIVE_DETAIL_FIRST_VIDEO,
+            "http://sns-video-bd.xhscdn.com/replaced-second.mp4",
+        ]
+    }
 
     with pytest.raises(MediaDownloadError) as caught:
         MediaCrawlerLocatorRefresher(context, _FakeDetailRunner(_jsonl(drifted)), clock=lambda: NOW).resolve(

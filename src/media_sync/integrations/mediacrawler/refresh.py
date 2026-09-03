@@ -41,6 +41,7 @@ from .normalizers import NormalizationContext, normalize_jsonl_bytes
 from .policies import WatchdogLimits
 from .tieba_media import TIEBA_MAX_GALLERY_IMAGES, validate_tieba_image_source_hint, validate_tieba_image_url
 from .xhs_authority import validate_xhs_creator_reference, validate_xhs_detail_reference
+from .xhs_live import XHS_LIVE_MAX_PAIRS
 from .xhs_media import validate_xhs_video_url
 from .zhihu_media import ZHIHU_MAX_GALLERY_IMAGES, validate_zhihu_image_url
 
@@ -433,19 +434,25 @@ class MediaCrawlerLocatorRefresher:
                 image_assets = tuple(asset for asset in target.assets if asset.kind is AssetKind.IMAGE)
                 if video_assets:
                     # A normal-type note cannot carry a VIDEO asset except through
-                    # the live-photo bridge, so the exact shape is unambiguous.
+                    # the live-photo bridge, so the exact shape is unambiguous:
+                    # one ordered IMAGE+VIDEO pair per live photo, 1-16 pairs.
+                    pair_count = len(video_assets)
                     if (
                         target.content.kind is not ContentKind.MIXED
-                        or len(image_assets) != 1
-                        or image_assets[0].position != 0
-                        or len(video_assets) != 1
-                        or video_assets[0].position != 0
-                        or len(target.assets) != 2
-                        or not isinstance(video_assets[0].source_url, str)
+                        or not 1 <= pair_count <= XHS_LIVE_MAX_PAIRS
+                        or len(image_assets) != pair_count
+                        or len(target.assets) != 2 * pair_count
+                        or any(asset.position != position for position, asset in enumerate(image_assets))
+                        or any(asset.position != position for position, asset in enumerate(video_assets))
+                        or any(not isinstance(asset.source_url, str) for asset in video_assets)
                     ):
                         raise MediaDownloadError("locator_refresh_schema_changed")
                     try:
-                        validate_xhs_video_url(video_assets[0].source_url)
+                        for asset in video_assets:
+                            source_url = asset.source_url
+                            if not isinstance(source_url, str):
+                                raise ValueError("live source URL is not a string")
+                            validate_xhs_video_url(source_url)
                     except ValueError as exc:
                         raise MediaDownloadError("locator_refresh_schema_changed") from exc
                 elif (

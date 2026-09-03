@@ -41,7 +41,7 @@ from media_sync.integrations.mediacrawler.tieba_media import (
     TIEBA_MAX_GALLERY_IMAGES,
 )
 from media_sync.integrations.mediacrawler.weibo_media import WEIBO_IMAGES_FIELD, WEIBO_VIDEO_FIELD
-from media_sync.integrations.mediacrawler.xhs_live import XHS_LIVE_VIDEO_FIELD
+from media_sync.integrations.mediacrawler.xhs_live import XHS_LIVE_VIDEO_FIELD, XHS_LIVE_VIDEO_LIST_FIELD
 from media_sync.integrations.mediacrawler.zhihu_media import ZHIHU_IMAGE_FIELD, ZHIHU_IMAGES_FIELD
 
 PINNED_SHA = "d6f7c5bb906b6dac40ddf343ef9e26438a3de092"
@@ -1524,3 +1524,123 @@ def test_kuaishou_record_without_gallery_field_keeps_the_video_shape() -> None:
 
     assert item.content.kind is ContentKind.VIDEO
     assert [asset.kind for asset in item.assets] == [AssetKind.VIDEO, AssetKind.COVER]
+
+
+XHS_MULTI_LIVE_FIRST_IMAGE = "https://sns-webpic-qc.xhscdn.com/multi-live-0.jpg"
+XHS_MULTI_LIVE_SECOND_IMAGE = "https://sns-webpic-qc.xhscdn.com/multi-live-1.jpg"
+XHS_MULTI_LIVE_IMAGES = f"{XHS_MULTI_LIVE_FIRST_IMAGE},{XHS_MULTI_LIVE_SECOND_IMAGE}"
+XHS_MULTI_LIVE_FIRST_VIDEO = "http://sns-video-bd.xhscdn.com/multi-live-0.mp4"
+XHS_MULTI_LIVE_SECOND_VIDEO = "http://sns-video-bd.xhscdn.com/multi-live-1.mp4"
+
+
+def _multi_live_payload(**overrides: object) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "note_id": "xhs-multi-live-001",
+        "type": "normal",
+        "title": "multi live gallery",
+        "desc": "multi live gallery",
+        "video_url": "",
+        "image_list": XHS_MULTI_LIVE_IMAGES,
+        "time": 1788235200000,
+        XHS_LIVE_VIDEO_LIST_FIELD: {"urls": [XHS_MULTI_LIVE_FIRST_VIDEO, XHS_MULTI_LIVE_SECOND_VIDEO]},
+    }
+    payload.update(overrides)
+    return payload
+
+
+def test_xhs_multi_live_gallery_materializes_paired_ordered_assets() -> None:
+    item = normalize_record(_multi_live_payload(), context(Platform.XHS))
+
+    assert item.content.kind is ContentKind.MIXED
+    assert [(asset.kind, asset.position, asset.remote_id) for asset in item.assets] == [
+        (AssetKind.IMAGE, 0, "xhs-multi-live-001:image:0"),
+        (AssetKind.IMAGE, 1, "xhs-multi-live-001:image:1"),
+        (AssetKind.VIDEO, 0, "xhs-multi-live-001:video:0"),
+        (AssetKind.VIDEO, 1, "xhs-multi-live-001:video:1"),
+    ]
+    assert [asset.source_url for asset in item.assets] == [
+        XHS_MULTI_LIVE_FIRST_IMAGE,
+        XHS_MULTI_LIVE_SECOND_IMAGE,
+        XHS_MULTI_LIVE_FIRST_VIDEO,
+        XHS_MULTI_LIVE_SECOND_VIDEO,
+    ]
+    durable_record = item.content.raw["record"]
+    assert isinstance(durable_record, Mapping)
+    assert XHS_LIVE_VIDEO_LIST_FIELD not in durable_record
+    assert XHS_LIVE_VIDEO_FIELD not in durable_record
+
+
+def test_xhs_multi_live_gallery_at_the_sixteen_bound_materializes() -> None:
+    images = ",".join(f"https://sns-webpic-qc.xhscdn.com/bound-{index:02d}.jpg" for index in range(16))
+    urls = [f"http://sns-video-bd.xhscdn.com/bound-{index:02d}.mp4" for index in range(16)]
+    item = normalize_record(
+        _multi_live_payload(image_list=images, **{XHS_LIVE_VIDEO_LIST_FIELD: {"urls": urls}}),
+        context(Platform.XHS),
+    )
+
+    assert item.content.kind is ContentKind.MIXED
+    assert len(item.assets) == 32
+    assert sum(asset.kind is AssetKind.IMAGE for asset in item.assets) == 16
+    assert sum(asset.kind is AssetKind.VIDEO for asset in item.assets) == 16
+
+
+@pytest.mark.parametrize(
+    "drift",
+    [
+        pytest.param("scalar", id="scalar"),
+        pytest.param({"urls": [XHS_MULTI_LIVE_FIRST_VIDEO]}, id="single-url"),
+        pytest.param(
+            {
+                "urls": [
+                    XHS_MULTI_LIVE_FIRST_VIDEO,
+                    *[f"http://sns-video-bd.xhscdn.com/extra-{index}.mp4" for index in range(16)],
+                ]
+            },
+            id="seventeen-urls",
+        ),
+        pytest.param({"urls": [XHS_MULTI_LIVE_FIRST_VIDEO, "https://evil.example.test/x.mp4"]}, id="foreign-host"),
+        pytest.param({"urls": [XHS_MULTI_LIVE_FIRST_VIDEO, 42]}, id="url-type"),
+        pytest.param({"url": XHS_MULTI_LIVE_FIRST_VIDEO}, id="wrong-key"),
+        pytest.param(
+            {
+                XHS_LIVE_VIDEO_FIELD: {"url": XHS_MULTI_LIVE_FIRST_VIDEO},
+                XHS_LIVE_VIDEO_LIST_FIELD: {"urls": [XHS_MULTI_LIVE_FIRST_VIDEO, XHS_MULTI_LIVE_SECOND_VIDEO]},
+            },
+            id="both-versions",
+        ),
+    ],
+)
+def test_xhs_multi_live_gallery_fails_closed_on_payload_drift(drift: object) -> None:
+    payload = _multi_live_payload()
+    payload.pop(XHS_LIVE_VIDEO_LIST_FIELD)
+    if isinstance(drift, dict):
+        payload.update(drift)
+    else:
+        payload[XHS_LIVE_VIDEO_LIST_FIELD] = drift
+
+    with pytest.raises(RecordNormalizationError):
+        normalize_record(payload, context(Platform.XHS))
+
+
+def test_xhs_multi_live_gallery_count_mismatch_fails_closed() -> None:
+    payload = _multi_live_payload(
+        image_list=f"{XHS_MULTI_LIVE_FIRST_IMAGE},{XHS_MULTI_LIVE_SECOND_IMAGE},https://sns-webpic-qc.xhscdn.com/third.jpg",
+    )
+
+    with pytest.raises(RecordNormalizationError):
+        normalize_record(payload, context(Platform.XHS))
+
+
+@pytest.mark.parametrize(
+    "shape_drift",
+    [
+        pytest.param({"type": "video"}, id="wrong-type"),
+        pytest.param({"video_url": XHS_MULTI_LIVE_FIRST_VIDEO}, id="video-url-present"),
+    ],
+)
+def test_xhs_multi_live_gallery_fails_closed_on_shape_drift(shape_drift: dict[str, object]) -> None:
+    payload = _multi_live_payload()
+    payload.update(shape_drift)
+
+    with pytest.raises(RecordNormalizationError):
+        normalize_record(payload, context(Platform.XHS))

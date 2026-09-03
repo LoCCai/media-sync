@@ -73,7 +73,7 @@ from .weibo_media import (
     validate_weibo_poster_url,
     validate_weibo_video_url,
 )
-from .xhs_live import XHS_LIVE_VIDEO_FIELD
+from .xhs_live import XHS_LIVE_MAX_PAIRS, XHS_LIVE_VIDEO_FIELD, XHS_LIVE_VIDEO_LIST_FIELD
 from .xhs_media import validate_xhs_video_url
 from .zhihu_media import (
     ZHIHU_IMAGE_FIELD,
@@ -104,6 +104,7 @@ _PRIVATE_MEDIA_FIELDS = frozenset(
         WEIBO_VIDEO_FIELD,
         WEIBO_VIDEO_POSTER_FIELD,
         XHS_LIVE_VIDEO_FIELD,
+        XHS_LIVE_VIDEO_LIST_FIELD,
         ZHIHU_IMAGE_FIELD,
         ZHIHU_IMAGES_FIELD,
     }
@@ -490,22 +491,46 @@ def _normalize_xhs(record: Mapping[str, object]) -> _ContentParts:
     if len(videos) > XHS_MAX_VIDEOS:
         raise RecordNormalizationError(QuarantineReason.INVALID_RECORD)
     live_payload = record.get(XHS_LIVE_VIDEO_FIELD)
-    if live_payload is not None:
-        if (
-            not isinstance(live_payload, Mapping)
-            or set(live_payload) != {"url"}
-            or record.get("type") != "normal"
-            or len(images) != 1
-            or videos
-        ):
-            raise RecordNormalizationError(QuarantineReason.INVALID_RECORD)
-        try:
-            live_url_value = live_payload.get("url")
-            if type(live_url_value) is not str:
-                raise ValueError("invalid XHS live URL")
-            live_videos: tuple[str, ...] = (validate_xhs_video_url(live_url_value),)
-        except ValueError as exc:
-            raise RecordNormalizationError(QuarantineReason.INVALID_RECORD) from exc
+    live_list_payload = record.get(XHS_LIVE_VIDEO_LIST_FIELD)
+    if live_payload is not None or live_list_payload is not None:
+        live_videos: tuple[str, ...]
+        if live_payload is not None:
+            if (
+                not isinstance(live_payload, Mapping)
+                or set(live_payload) != {"url"}
+                or live_list_payload is not None
+                or record.get("type") != "normal"
+                or len(images) != 1
+                or videos
+            ):
+                raise RecordNormalizationError(QuarantineReason.INVALID_RECORD)
+            try:
+                live_url_value = live_payload.get("url")
+                if type(live_url_value) is not str:
+                    raise ValueError("invalid XHS live URL")
+                live_videos = (validate_xhs_video_url(live_url_value),)
+            except ValueError as exc:
+                raise RecordNormalizationError(QuarantineReason.INVALID_RECORD) from exc
+        else:
+            if (
+                not isinstance(live_list_payload, Mapping)
+                or set(live_list_payload) != {"urls"}
+                or record.get("type") != "normal"
+                or videos
+            ):
+                raise RecordNormalizationError(QuarantineReason.INVALID_RECORD)
+            urls_value = live_list_payload.get("urls")
+            if (
+                not isinstance(urls_value, list)
+                or not 2 <= len(urls_value) <= XHS_LIVE_MAX_PAIRS
+                or len(images) != len(urls_value)
+                or any(type(url) is not str for url in urls_value)
+            ):
+                raise RecordNormalizationError(QuarantineReason.INVALID_RECORD)
+            try:
+                live_videos = tuple(validate_xhs_video_url(url) for url in urls_value)
+            except ValueError as exc:
+                raise RecordNormalizationError(QuarantineReason.INVALID_RECORD) from exc
         return _ContentParts(
             remote_id=remote_id,
             kind=ContentKind.MIXED,
