@@ -30,6 +30,31 @@ def _strip_code_blocks(text: str) -> str:
     return FENCE_RE.sub(lambda match: "\n" * match.group(0).count("\n"), text)
 
 
+def _fence_errors(text: str) -> list[str]:
+    """Reject fences that are unbalanced or whose open/close shares a line with prose."""
+
+    errors: list[str] = []
+    inside = False
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("```"):
+            continue
+        # A fence marker must sit on its own line: no trailing prose after the
+        # marker (a trailing language tag on the opening marker is fine).
+        marker = stripped[3:]
+        if inside:
+            if marker:
+                errors.append(f"closing fence carries trailing text: {stripped!r}")
+            inside = False
+        else:
+            if marker and not re.fullmatch(r"[\w+#.-]+", marker):
+                errors.append(f"opening fence carries prose: {stripped!r}")
+            inside = True
+    if inside:
+        errors.append("unbalanced fences: a block was never closed")
+    return errors
+
+
 def markdown_files(root: Path) -> list[Path]:
     files = sorted(root.glob("*.md"))
     files.extend(sorted((root / "docs").rglob("*.md")))
@@ -66,6 +91,9 @@ def validate(root: Path) -> list[str]:
         h1_headings = structures[source][0]
         if len(h1_headings) > 1:
             errors.append(f"{relative}: duplicate H1 headings ({len(h1_headings)}): {h1_headings[:3]} ...")
+
+        for fence_error in _fence_errors(text):
+            errors.append(f"{relative}: {fence_error}")
 
         switcher_lines = [
             line_no

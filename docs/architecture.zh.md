@@ -46,7 +46,7 @@ SQLite <---- normalized domain ----> Filesystem
 | `infrastructure.db` | 模型、迁移、仓库、任务领取 | 执行爬虫或下载 |
 | `adapters` | 能力发现、登录会话、归一化发现 | 写 Emby 媒体库 |
 | `integrations.mediacrawler` | 外部进程、安全环境、输出导入、兼容修正 | 内嵌或修改上游源码 |
-| `media` | 安全下载、校验与强制音视频结构探测；FFmpeg 转换为计划/延期能力 | 依赖爬虫实现 |
+| `media` | 安全下载、校验与强制音视频结构探测，以及有界冻结形状下的 FFmpeg stream-copy mux/remux/concat；通用转码与编解码修复仍延期 | 依赖爬虫实现 |
 | `exporters.emby` | 确定性路径、NFO、图片边车 | 请求平台 API |
 | `interfaces` | 已实现 CLI、依赖装配与执行 0040 的 REST API/控制台投影 | 包含业务规则 |
 

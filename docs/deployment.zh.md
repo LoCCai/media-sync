@@ -10,7 +10,9 @@
 git clone <你的仓库> media-sync && cd media-sync
 cp docker-compose.example.yml docker-compose.yml   # 本地副本已被 git 忽略
 docker compose build          # 如需改端口/路径，先编辑你的本地副本
-示例 compose 默认传入中国大陆镜像构建参数：`APT_MIRROR=mirrors.aliyun.com`、`PYPI_INDEX=https://mirrors.aliyun.com/pypi/simple/`、`PLAYWRIGHT_DOWNLOAD_HOST=https://registry.npmmirror.com/-/binary/playwright`。境外构建删除这三行 `args:` 即回退官方 Debian/PyPI/Playwright 源。上游 `git clone`（GitHub）不走镜像，不通时请自备代理。```
+```
+
+示例 compose 默认传入中国大陆镜像构建参数：`APT_MIRROR=mirrors.aliyun.com`、`PYPI_INDEX=https://mirrors.aliyun.com/pypi/simple/`、`PLAYWRIGHT_DOWNLOAD_HOST=https://registry.npmmirror.com/-/binary/playwright`。境外构建删除这三行 `args:` 即回退官方 Debian/PyPI/Playwright 源。上游 `git clone`（GitHub）不走镜像，不通时请自备代理。
 
 RC 构建请用 digest 钉版基底镜像以保证可复现：
 
@@ -60,7 +62,14 @@ with sync_playwright() as p:
     b = p.chromium.launch(headless=True); print(b.version); b.close()'
 ```
 
-两项都必须通过，阶段 B 才进入扫码登录。
+两项都必须通过，阶段 B 才进入扫码登录。另外，构建清单必须记录真实的
+Chromium 启动（构建期启动失败只会打印 `launch-failed` 而**不会**让镜像构建
+失败，因此要显式检查）：
+
+```bash
+docker compose exec media-sync grep '^chromium:' /opt/BUILD-MANIFEST.txt
+# 必须输出真实版本——不得是 "chromium: launch-failed"
+```
 
 ## 3. 控制台扫码登录
 

@@ -2,7 +2,7 @@
 
 # 项目统一状态（单一事实来源）
 
-边界：执行 0048（发布候选校准）。本表是权威状态视图；逐执行细节见 [`executions/`](README.zh.md)，证据见各验证记录。每次收尾时更新本页。
+边界：执行 0049（RC 前置修复）。本表是权威状态视图；逐执行细节见 [`executions/`](README.zh.md)，证据见各验证记录。每次收尾时更新本页。
 
 ## 里程碑状态
 
@@ -19,9 +19,9 @@
 | 维度 | 状态 | 证据 / 阻塞 |
 | --- | --- | --- |
 | 实现（离线形状） | 七平台 15+ 冻结形状 | 执行 0013–0039 记录 |
-| 离线完整套件 | 编写工作站 ``33 failed, 2031 passed, 1 skipped` (authoring workstation, execution 0048)`；Python 3.11/3.12/3.13 矩阵 `: sync green and suites run on 3.11.16/3.12.14/3.13.15; all 33 divergences are child-process tests failing identically on a clean checkout of that workstation` | 执行 0048 验证；按阶段 B，RC 前必须在 Linux 主机复跑；已捕获脱敏 node-ID 工件 `artifacts/pytest-windows-0049.xml`（junit）供逐项 Linux diff；在分歧裁定前 Windows 原生运行为 Experimental |
+| 离线完整套件 | 最新：执行 0049 编写工作站 `2066 passed, 1 skipped`（全绿运行）。历史：执行 0048 在同一工作站记录过非确定的 33/35 项子进程密封失败运行，因此在裁定前 Windows 原生运行保持 Experimental；Linux 阶段 B 复跑仍是权威 | 执行 0048 与 0049 验证；junit 工件为工作站本地文件（`artifacts/` 下原始 XML 被 git 忽略——仓库只保留脱敏摘要与工件约定） |
 | API/控制台测试 | 已并入完整套件；0049 补充真实 Asset 下载操作生命周期覆盖（blocked→failed、verified 不一致→failed、完成型执行器→succeeded） | 执行 0048 与 0049 验证 |
-| 静态门（ruff/format/mypy/compileall/docs） | 0048 全绿 | 执行 0048 验证 |
+| 静态门（ruff/format/mypy/compileall/docs） | 0049 全绿 | 执行 0049 验证 |
 | Docker 镜像构建 | 编写机 `NOT_RUN`（无 Docker）；操作者在 Linux 按 0049 修复后的 Dockerfile 构建，并以容器内 doctor 预检 + `mediasync` Chromium 启动为门 | 阶段 B，第一发布阻塞项 |
 | 容器健康 / 重启持久性 / 备份恢复演练 | `NOT_RUN`——操作者（阶段 B） | docs/operations.md 流程就绪 |
 | 真人登录（任一平台） | `NOT_RUN`——操作者（阶段 C 金丝雀：Bilibili + 小红书） | 执行 0047 |

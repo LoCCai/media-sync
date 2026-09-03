@@ -46,7 +46,7 @@ The authoring station historically used Python 3.11.8 and uv 0.9.18; the current
 | `infrastructure.db` | Models, migrations, repositories and job claiming | Run crawlers or download media |
 | `adapters` | Capability discovery, authentication/session and normalized discovery | Write the Emby library |
 | `integrations.mediacrawler` | External process, safe environment, output ingestion and compatibility shims | Vendor or modify upstream source |
-| `media` | Safe download, checksum and mandatory video/audio structural probe; FFmpeg transformations are planned/deferred | Depend on crawler implementation |
+| `media` | Safe download, checksum and mandatory video/audio structural probe, plus bounded frozen-shape FFmpeg stream-copy mux/remux/concat; general transcoding and codec repair remain deferred | Depend on crawler implementation |
 | `exporters.emby` | Deterministic paths, NFO and artwork sidecars | Fetch platform APIs |
 | `interfaces` | Implemented CLI, dependency wiring and the execution 0040 REST API/console projections | Contain business rules |
 

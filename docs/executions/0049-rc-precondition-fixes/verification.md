@@ -36,7 +36,7 @@
 | Ruff and format | `uv run ruff check .`; `uv run ruff format --check .` | `PASS — all checks; 604 files formatted` |
 | Strict mypy | `uv run mypy --strict src` | `PASS — no issues in 87 source files` |
 | Compileall and build | `uv run python -m compileall -q src/media_sync`; `uv build` | `PASS — compiled; wheel and source distribution built` |
-| Documentation and upstream locks | `uv run python scripts/check_docs.py`; `uv run python scripts/check_upstreams.py` | `PASS — 424 Markdown files; 2 locked clean checkouts` |
+| Documentation and upstream locks | `uv run python scripts/check_docs.py`; `uv run python scripts/check_upstreams.py` | `PASS — 428 Markdown files; 2 locked clean checkouts` |
 | Git/upstream audit | explicit status and tracked-path scans | `PASS — intended changes only; tracked runtime/upstream/dist 0; both upstream dirty counts 0` |
 
 ## Workstation failure-list honesty note

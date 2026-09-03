@@ -9,10 +9,10 @@
 
 **阶段 B —— Linux 基线（任何真人账户之前）**
 
-1. `git pull && uv sync --all-groups --locked && uv run pytest -q`——记录准确数字；与执行 0048 的工作站记录对照，任何平台特异性分歧都要调查。
+1. `git pull && uv sync --all-groups --locked && uv run pytest -q`——记录准确数字；以执行 0049 的 `2066 passed, 1 skipped` 为当前对照基线（0048 的 33/35 项抖动只作为历史异常集合），任何平台特异性分歧都要调查。
 2. `cp docker-compose.example.yml docker-compose.yml && docker compose build && docker compose up -d`；验证 `/api/v1/health` + `/api/v1/ready`、控制台可达、重启后 `db init` 幂等。
 3. 重启持久性：`docker compose restart`，确认账户/订阅/任务仍在；按 [`operations.zh.md`](../../operations.zh.md) 做一次备份 → 恢复到新卷的演练。
-4. 确认运行后无残留 Chromium/Xvfb/ffmpeg 子进程。
+4. 进程口径：每个需要显示环境的运行中容器恰好一个受管 Xvfb（启用 supervisor profile 时两个容器各一个是正常情况）；空闲时零 Chromium、零 ffmpeg/ffprobe；不存在任务结束后遗留的孤儿进程；容器停止后相关进程全部消失。
 
 **阶段 C —— 金丝雀（先 Bilibili，后小红书）**
 
