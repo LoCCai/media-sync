@@ -16,7 +16,10 @@
 - [`executions/`](executions/)：每个里程碑的四件套记录。
 - [`templates/`](templates/)：后续执行模板。
 - [`deployment.zh.md`](deployment.zh.md)：Docker 部署与 Web 后台验证指南。
-
+- [`operations.zh.md`](operations.zh.md)：备份、恢复与升级流程。
+- [`security-review.zh.md`](security-review.zh.md)：已实现的安全/隐私姿态与残余风险。
+- [`release-checklist.zh.md`](release-checklist.zh.md)：发布前检查清单。
+- [`archive/`](archive/)：完成度审查与历史审计。
 ## 执行索引
 
 | ID | 里程碑 | 状态 | 提交 |
@@ -62,7 +65,12 @@
 | 0039 | 小红书多图实况 gallery | 实现完成（v2 列表捕获、MIXED 成对 gallery、逐 position 刷新）；编写工作站静态门通过，完整套件在 Linux 部署主机运行；真人行保持 `NOT_RUN` | 计划为启动提交；实现与收尾为包含记录的提交 |
 | 0040 | 本地 REST API 与 Web 控制台 | 实现完成：`/api/v1` 全面、后台操作、`media-sync serve`、中文控制台与登录二维码中继；本机静态门通过，API 测试与完整套件在 Linux 运行；真人行 `NOT_RUN` | 实现与收尾为包含记录的提交 |
 | 0041 | Docker 部署 | 打包交付：Dockerfile（锁定上游 + Playwright + ffmpeg + Xvfb）、仅回环发布的 compose 与可选 supervisor、双语部署文档；构建与全部真人在操作者 Linux 主机执行 | 实现与收尾为包含记录的提交 |
-
+| 0042 | 完成度归档与路线图收束 | 文档审计范围已完成；交付双语上游复刻审查、阶段 5/6 状态重述，剩余序列 0043-0047 以可评审启动记录提交；源码零变化 | 实现与收尾为包含记录的提交 |
+| 0043 | Bilibili 弹幕/字幕 sidecar | 计划中——goal/plan 已提交供评审，实现前不改代码；离线范围；完整门禁在 Linux 部署主机；真人行 `NOT_RUN` | 仅启动记录 |
+| 0044 | 控制台/REST 运维强化 | 计划中——goal/plan 已提交供评审，实现前不改代码；仅新增只读/恢复端点；完整门禁在 Linux 部署主机 | 仅启动记录 |
+| 0045 | 运维备份恢复升级文档 | 文档范围已完成；命令对照实际镜像审计（自审纠正了初稿虚构的 `db backup`）；演练本机 `NOT_RUN`，首次执行在 Linux | 实现与收尾为包含记录的提交 |
+| 0046 | 安全审查与发布清单 | 文档范围已完成；带残余风险的强制姿态审查、notices 复核、有序发布清单；外部审计 `NOT_RUN` | 实现与收尾为包含记录的提交 |
+| 0047 | 七平台真人验收（最终门） | 等待操作者——逐平台 smoke 记录、能力矩阵更新与归档翻转在 Linux 部署主机执行；此前每条真人行如实保持 `NOT_RUN`/`BLOCKED_EXTERNAL` | goal/plan 已提交；progress/verification 由操作者收尾时撰写 |
 执行 0005 只验收 mock、夹具与本地文件系统契约。下载器以 I/O scope 哈希、本地 OS 锁及租约/generation CAS 协调单个资产 generation，并能恢复先于数据库收尾完成的归档提交。组合 API/access key 变体及带凭据的 URL 路径会在落点被移除，但普通 `key` 字段不会被误判；direct/source hint 持久化与 `0003` legacy 回填同样拒绝这类路径。Emby 发布器通过持久数据库 Job predecessor chain 及精确 source/tree/manifest 身份确定受管所有权；磁盘 manifest 不能自行建立所有权。`0003 → 0002 → 0003` 往返会移除 generation-bound 下载身份及不可恢复的未成功 Emby 身份，同时保留已成功发布链与结构有效的发布 intent 恢复状态。最终根任务通过 540 项测试，分支感知覆盖率为 79%，全部专项、构建/打包检查及保留 SQLite/归档/导出/运维产物的零匹配扫描均通过。在 0005 边界，调度/API 与生产打包均处于延期状态；执行 0006 现在只补齐调度器的离线/Fake 切片。七平台真人登录/同步/CDN 下载及真实 Emby/Jellyfin 扫描/播放继续为 `NOT_RUN`；不可用的 refresh、平台衍生物、API 与生产打包属于未实现或延期范围，而不是 `NOT_RUN`。
 
 执行 0006 会有界物化到期周期，执行 fixed-delay 收尾、有界重试/退避及持久平台/账户启动 lane，并以精确租约、heartbeat 与取消 fencing 运行 `sync.subscription` Job。其封闭 registry 有意只随附确定性 Fake handler。重启验收会在 scheduled Fake sync 后显式调用既有安全下载器与 Emby 导出器；不宣称已有自动下游 DAG。最终根任务门禁通过 686 项测试，耗时 152.40 秒，分支感知总覆盖率 80%。MediaCrawler 定时执行、逐请求上游节流、签名 locator 刷新、REST、常驻守护及生产打包仍属于后续工作。准确离线验证记录在 [`executions/0006-durable-scheduler/verification.zh.md`](executions/0006-durable-scheduler/verification.zh.md)。
@@ -137,6 +145,10 @@
 执行 0037 计划 `d858147`、实现 `c5682e5` 把锁定的小红书逗号拼接 `video_url` 标量冻结为有界 1–16 有序多视频形状：`_normalize_xhs` 隔离超界记录，`_validated_xhs_media_scalar` 接受有界互异元组，`_validate_xhs_creator_video_target` 绑定完整 fresh 视频元组（数量、position 0..N-1、精确 URL 顺序）。一个 0018 时代的拒绝参数被替换为逐 position 接受与漂移覆盖。双视频集成 note 双 position 下载、归档不同摘要并发布两个 Emby 集，零工作重放。专项回归 344 项、完整套件 2020 项通过且 1 项跳过（370.56 秒），全部质量/构建/文档/上游门通过。实况照片及全部真人行继续延期或保持 `NOT_RUN`。详见 [`executions/0037-xhs-multi-video/`](executions/0037-xhs-multi-video/)。
 
 执行 0038 计划 `650c256`、实现 `8c80073` 增加首个小红书实况照片切片：新的锁定 store shim 为恰一张图的 `type="normal"` note 捕获冻结的 `image_list[0].live_photo.stream.h264[0].master_url`，`_normalize_xhs` 物化为一图加一视频的 MIXED，creator 回退绑定精确无歧义形状。共享 fake fixture 补齐 shim 所需最小 store 模块。生产级双资产组合双下载、归档不同摘要并发布带 poster 的 Emby 集，零工作重放。专项回归 355 项、完整套件 2032 项通过且 1 项跳过（371.84 秒），全部质量/构建/文档/上游门通过。多图实况 gallery 及全部真人行继续延期或保持 `NOT_RUN`。详见 [`executions/0038-xhs-live-photo/`](executions/0038-xhs-live-photo/)。
-执行 0039-0041 交付部署切片。0039 为小红书实况照片 shim 增加 v2 有序列表捕获（2-16 张全实况图），物化为成对 IMAGE+VIDEO 的 MIXED gallery 并支持逐 position 刷新；按操作者指示，其完整套件验证移交 Linux 部署主机。0040 新增本地优先 REST API（`/api/v1`：健康、账户（后台 QR 登录与中继的 `login-qr.png`）、订阅、调度/pipeline 运行、任务、资产、Emby 导出、操作记录），以及 `media-sync serve` 与内置中文 Web 控制台；编写工作站通过静态门，API 测试与完整套件在 Linux 运行。0041 交付 Docker 打包：双层镜像（应用 venv + 锁定 MediaCrawler checkout 与 Playwright/Chromium）、ffmpeg/Xvfb 入口、仅回环发布的 compose 与可选常驻 supervisor，以及只记录实际运行项的双语部署文档。所有真人验收行在操作者执行前保持 `NOT_RUN`。详见 [`executions/0039-xhs-multi-live-gallery/`](executions/0039-xhs-multi-live-gallery/)、[`executions/0040-local-rest-api-web-console/`](executions/0040-local-rest-api-web-console/) 与 [`executions/0041-docker-deployment/`](executions/0041-docker-deployment/)。## 文档规则
+执行 0039-0041 交付部署切片。0039 为小红书实况照片 shim 增加 v2 有序列表捕获（2-16 张全实况图），物化为成对 IMAGE+VIDEO 的 MIXED gallery 并支持逐 position 刷新；按操作者指示，其完整套件验证移交 Linux 部署主机。0040 新增本地优先 REST API（`/api/v1`：健康、账户（后台 QR 登录与中继的 `login-qr.png`）、订阅、调度/pipeline 运行、任务、资产、Emby 导出、操作记录），以及 `media-sync serve` 与内置中文 Web 控制台；编写工作站通过静态门，API 测试与完整套件在 Linux 运行。0041 交付 Docker 打包：双层镜像（应用 venv + 锁定 MediaCrawler checkout 与 Playwright/Chromium）、ffmpeg/Xvfb 入口、仅回环发布的 compose 与可选常驻 supervisor，以及只记录实际运行项的双语部署文档。所有真人验收行在操作者执行前保持 `NOT_RUN`。详见 [`executions/0039-xhs-multi-live-gallery/`](executions/0039-xhs-multi-live-gallery/)、[`executions/0040-local-rest-api-web-console/`](executions/0040-local-rest-api-web-console/) 与 [`executions/0041-docker-deployment/`](executions/0041-docker-deployment/)。
+
+执行 0042-0047 收束原始合并计划。0042 归档上游复刻完成度审查（MediaCrawler 爬虫侧；bili-sync-up 归档/Emby/Web 侧），矩阵逐条附证据并重述路线图终局。0045 与 0046 交付阶段 6 的离线项：对照实际镜像审计过的运维备份/恢复/升级文档，以及安全/隐私审查与有序发布清单。0043（弹幕/字幕 sidecar）与 0044（控制台/REST 运维强化）以可评审的计划启动记录提交，代码后续落地时在部署主机跑完整门禁。0047 是最终操作者协助门：在 Linux 主机逐平台记录真人 smoke 结果，翻转最后的 `NOT_RUN` 行；任何行都不会因文档而通过。详见 [`archive/upstream-replication-review.zh.md`](archive/upstream-replication-review.zh.md)、[`operations.zh.md`](operations.zh.md)、[`security-review.zh.md`](security-review.zh.md)、[`release-checklist.zh.md`](release-checklist.zh.md) 与 0042-0047 执行目录。
+
+## 文档规则
 
 每个里程碑开始前创建 `goal.md`/`plan.md`（英文）与 `goal.zh.md`/`plan.zh.md`（中文）；实现期间持续更新 `progress.md` 与 `progress.zh.md`；提交前把准确命令、退出码和关键输出写入 `verification.md` 与 `verification.zh.md`。两个语言版本必须结构一致、同步维护：任何一版都不得声明另一版没有的内容，语言切换链接必须指向对应版本。旧混排布局的一次性迁移工具是 [`scripts/split_bilingual_docs.pl`](../scripts/split_bilingual_docs.pl)。任何密钥、Cookie 或个人账户数据都不得进入文档。
