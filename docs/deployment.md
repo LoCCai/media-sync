@@ -10,7 +10,7 @@ This guide deploys media-sync as a self-hosted container with the pinned MediaCr
 git clone <your-fork> media-sync && cd media-sync
 cp docker-compose.example.yml docker-compose.yml   # your live copy is git-ignored
 docker compose build          # edit your copy first if you need different ports/paths
-```
+The example compose passes mainland-China mirror build args by default: `APT_MIRROR=mirrors.aliyun.com`, `PYPI_INDEX=https://mirrors.aliyun.com/pypi/simple/` and `PLAYWRIGHT_DOWNLOAD_HOST=https://registry.npmmirror.com/-/binary/playwright`. Building outside mainland China? Delete the three `args:` lines to fall back to official Debian/PyPI/Playwright sources. The upstream `git clone` from GitHub is not mirrored; proxy it if unreachable.```
 
 The image contains two layers:
 

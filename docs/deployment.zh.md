@@ -10,7 +10,7 @@
 git clone <你的仓库> media-sync && cd media-sync
 cp docker-compose.example.yml docker-compose.yml   # 本地副本已被 git 忽略
 docker compose build          # 如需改端口/路径，先编辑你的本地副本
-```
+示例 compose 默认传入中国大陆镜像构建参数：`APT_MIRROR=mirrors.aliyun.com`、`PYPI_INDEX=https://mirrors.aliyun.com/pypi/simple/`、`PLAYWRIGHT_DOWNLOAD_HOST=https://registry.npmmirror.com/-/binary/playwright`。境外构建删除这三行 `args:` 即回退官方 Debian/PyPI/Playwright 源。上游 `git clone`（GitHub）不走镜像，不通时请自备代理。```
 
 镜像包含两层：
 

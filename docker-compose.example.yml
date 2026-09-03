@@ -13,6 +13,12 @@ services:
   media-sync:
     build:
       context: .
+      # Mainland-China mirror defaults (Aliyun apt/PyPI + npmmirror Playwright
+      # binaries). Building outside mainland China? Delete these three lines.
+      args:
+        APT_MIRROR: mirrors.aliyun.com
+        PYPI_INDEX: https://mirrors.aliyun.com/pypi/simple/
+        PLAYWRIGHT_DOWNLOAD_HOST: https://registry.npmmirror.com/-/binary/playwright
     image: media-sync:local
     restart: unless-stopped
     ports:
