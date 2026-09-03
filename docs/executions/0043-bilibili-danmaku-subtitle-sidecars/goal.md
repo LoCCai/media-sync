@@ -2,7 +2,7 @@
 
 # Execution 0043 goal
 
-- Status: Planned — start record committed for review before implementation
+- Status: Deferred to 0.2 (execution 0048 calibration: offline feature work is frozen while the release-candidate verification phase runs; this start record stays for the 0.2 cycle)
 - Date: 2026-09-03
 - Predecessor: Execution 0042 (completion archive)
 - Scope: Bilibili danmaku (XML → ASS) and closed-caption subtitle sidecars downloaded beside the episode media and published into the Emby tree, replicating bili-sync-up's sidecar coverage for the already-supported Bilibili shapes

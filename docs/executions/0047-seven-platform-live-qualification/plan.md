@@ -2,21 +2,38 @@
 
 # Execution 0047 plan
 
-- Status: Awaiting operator execution
+- Status: Awaiting operator execution (master phase; restructured by 0048)
 - Date: 2026-09-03
 
-## Operator procedure (per platform, on the deployment host)
+## Operator procedure
 
-1. Precondition gate: `uv sync --all-groups --locked && uv run pytest -q` green; `docker compose up -d` healthy; console reachable.
-2. Login: console 扫码登录 (or Cookie for accounts that prefer it); record method, challenge types and duration.
-3. Subscribe: one known-good creator per platform with a small `max_items`; 立即运行.
-4. Sync: 运行同步 worker; record job outcome, items discovered.
-5. Download/export: 运行下载/导出 pipeline; record asset counts, archived bytes, Emby tree listing.
-6. Re-run the sync once; record incrementality (second run discovers only new items, zero re-download).
-7. Record one row per platform in this directory (bilingual), update the capabilities matrix and the completion archive, then closeout with the offline suite numbers.
+**Phase B — Linux baseline (before any live account)**
 
-Any blocked platform gets `BLOCKED_EXTERNAL` with the reason (no account, unsupported region, changed upstream behavior) — the record is the deliverable, not a pass.
+1. `git pull && uv sync --all-groups --locked && uv run pytest -q` — record exact numbers; compare against the execution 0048 workstation record and investigate any platform-specific divergence.
+2. `cp docker-compose.example.yml docker-compose.yml && docker compose build && docker compose up -d`; verify `/api/v1/health` + `/api/v1/ready`, console reachable, `db init` idempotent on restart.
+3. Restart persistence: `docker compose restart`, confirm accounts/subscriptions/jobs survive; run one backup → restore-into-fresh-volume drill per [`operations.md`](../../operations.md).
+4. Confirm no leftover Chromium/Xvfb/ffmpeg child processes after runs.
+
+**Phase C — canary (Bilibili, then XHS)**
+
+For each canary: login (QR preferred) → subscribe to the sample matrix creators → run-now → scheduler run (both gates) → pipeline run → record per-shape outcomes, archived bytes, Emby tree. Then the two incrementality rows (no-change rerun; true increment via the controlled test account). Then the recovery rows: kill a download worker mid-flight and confirm convergence; restart the container mid-crawl; expire a session and re-authenticate; force one CDN primary failure and observe backup selection. Mount `/data/library` read-only into the real Emby/Jellyfin, rescan, verify metadata/posters and sample playback.
+
+**Phase D — remaining platforms in media-class batches**
+
+Douyin/Kuaishou/Weibo (video/gallery/cover/signed CDN), then Tieba/Zhihu (articles/body/galleries/pagination), each against its sample matrix.
+
+**Phase E — stability**
+
+Supervisor across several scheduling cycles; no growing Chrome/Xvfb processes; no permanently claimed/running Jobs; SQLite + archive backup restore; Emby rescan + sampled playback.
+
+**Phase F — closeout**
+
+Update the platform capability matrix and [`docs/status.md`](../../status.md) with per-platform tiers; flip the completion-archive live rows; if the two canaries are Supported and every platform is classified, tag `v0.1.0-rc1`.
+
+## Defect loop
+
+Any live failure → numbered fix sub-execution (`0047-dN`) → code change → automated regression (full suite on the host) → rerun the affected platform → rerun affected same-class platforms → only then update this record.
 
 ## Rollback
 
-No code is changed by this execution; platform records are append-only documentation.
+This execution changes no product code by itself; fix sub-executions carry their own rollback records.
