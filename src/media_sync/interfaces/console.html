@@ -141,6 +141,12 @@
   <div style="text-align:right"><button id="qr-close" class="secondary">关闭</button></div>
 </dialog>
 
+<dialog id="detail-dialog">
+  <h2 style="margin-top:0">订阅详情</h2>
+  <div id="detail-body" style="max-height:60vh;overflow:auto;font-size:12.5px"></div>
+  <div style="text-align:right"><button id="detail-close" class="secondary">关闭</button></div>
+</dialog>
+
 <div id="toast"></div>
 
 <script>
@@ -291,6 +297,7 @@ async function refreshSubs() {
         <button class="secondary" onclick="subAction('${s.id}','pause')">暂停</button>
         <button class="secondary" onclick="subAction('${s.id}','resume')">恢复</button>
         <button class="secondary" onclick="subAction('${s.id}','run-now')">立即运行</button>
+        <button class="secondary" onclick="subDetail('${s.id}')">详情</button>
       </td>
     </tr>`).join("") : "<tr><td colspan=7>暂无订阅</td></tr>";
 }
@@ -391,7 +398,7 @@ async function refreshAssets() {
   try {
     const assets = await api("/api/v1/assets?limit=100");
     $("assets-body").innerHTML = assets.length ? assets.map(a => `
-      <tr><td><code>${(a.id || "").slice(0, 8)}</code></td><td>${a.kind}</td><td>${a.status}</td>
+      <tr><td><code>${(a.id || "").slice(0, 8)}</code> <button class="secondary" onclick="assetDownload('${a.id}')">重下载</button></td><td>${a.kind}</td><td>${a.status}</td>
       <td><code>${(a.content_id || "").slice(0, 8)}</code></td><td>${cell(a.archive_sha256 ? String(a.archive_sha256).slice(0, 12) : null)}</td></tr>`).join("")
       : "<tr><td colspan=5>暂无资产</td></tr>";
   } catch (error) { toast("资产刷新失败：" + error.message); }
@@ -426,6 +433,37 @@ $("btn-pipe-run").onclick = pipelineRun;
 $("btn-assets").onclick = refreshAssets;
 $("btn-export").onclick = runExport;
 $("qr-close").onclick = () => $("qr-dialog").close();
+$("detail-close").onclick = () => $("detail-dialog").close();
+
+async function subDetail(id) {
+  try {
+    const detail = await api(`/api/v1/subscriptions/${id}`);
+    const runs = (detail.recent_runs || []).map(r =>
+      `<tr><td><code>${(r.run_id || "").slice(0, 8)}</code></td><td>${r.status ?? "—"}</td><td>${r.discovered_count ?? "—"}</td><td>${r.asset_count ?? "—"}</td><td>${cell(r.started_at)}</td></tr>`).join("");
+    const jobs = (detail.recent_jobs || []).map(j =>
+      `<tr><td><code>${(j.id || "").slice(0, 8)}</code></td><td>${j.status ?? "—"}</td><td>${cell(j.updated_at)}</td></tr>`).join("");
+    $("detail-body").innerHTML = `
+      <p><b>调度</b>：${detail.schedule?.status ?? "—"} · 下次运行 ${cell(detail.schedule?.next_run_at)} · 连续失败 ${detail.schedule?.consecutive_failures ?? 0}</p>
+      <h2 style="font-size:13px">近期同步运行</h2>
+      <table><thead><tr><th>Run</th><th>状态</th><th>发现</th><th>资产</th><th>开始</th></tr></thead><tbody>${runs || "<tr><td colspan=5>暂无</td></tr>"}</tbody></table>
+      <h2 style="font-size:13px">近期调度任务</h2>
+      <table><thead><tr><th>Job</th><th>状态</th><th>更新</th></tr></thead><tbody>${jobs || "<tr><td colspan=3>暂无</td></tr>"}</tbody></table>`;
+    $("detail-dialog").showModal();
+  } catch (error) { toast("详情获取失败：" + error.message); }
+}
+async function assetDownload(id) {
+  try {
+    const started = await api(`/api/v1/assets/${id}/download`, {
+      method: "POST",
+      body: JSON.stringify({
+        enable_mediacrawler: $("mc-enable").checked,
+        accept_mediacrawler_license: $("mc-license").checked,
+      }),
+    });
+    toast(`资产下载已启动（操作 ${started.operation_id}）`);
+    pollOps();
+  } catch (error) { toast("下载失败：" + error.message); }
+}
 
 refreshAll();
 </script>

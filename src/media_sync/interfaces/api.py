@@ -47,6 +47,7 @@ from media_sync.infrastructure.db import (
     LoginSessionRepository,
     NotFoundError,
     SubscriptionRepository,
+    SyncRun,
 )
 from media_sync.integrations.mediacrawler.login_runner import (
     LOGIN_QR_IMAGE_NAME,
@@ -65,6 +66,7 @@ from media_sync.interfaces.cli import (
     _build_pipeline_worker,
     _build_subscription_worker,
     _credential_reference,
+    _execute_asset_download,
     _pipeline_worker_payload,
     _scheduler_cycle_payload,
     _scheduler_job_payload,
@@ -73,7 +75,7 @@ from media_sync.interfaces.cli import (
     _subscription_payload,
     _UnavailableMediaCrawlerLoginRunner,
 )
-from media_sync.scheduler import DurableSchedulerService, StaleLaneError
+from media_sync.scheduler import DurableSchedulerService, SchedulerRepository, StaleLaneError
 
 _CONSOLE_PATH = Path(__file__).with_name("console.html")
 
@@ -215,6 +217,15 @@ class EmbyExport(BaseModel):
     max_attempts: int = Field(default=5, ge=1, le=100)
 
 
+class AssetDownload(BaseModel):
+    worker_id: str = Field(default="api-asset-worker", min_length=1, max_length=128)
+    lease_seconds: int = Field(default=3_600, ge=1, le=86_400)
+    max_attempts: int = Field(default=5, ge=1, le=100)
+    enable_mediacrawler: bool = False
+    accept_mediacrawler_license: bool = False
+    xhs_detail_reference_ref: str | None = None
+
+
 # ------------------------------------------------------------------ app factory
 
 
@@ -233,6 +244,14 @@ def create_api_app(settings: Settings | None = None) -> FastAPI:
 
     def _bad_request(code: str) -> HTTPException:
         return HTTPException(status_code=400, detail=code)
+
+    def _safe_credential_reference(value: str | None) -> str | None:
+        import typer
+
+        try:
+            return _credential_reference(value)
+        except typer.BadParameter:
+            raise _bad_request("invalid_credential_reference") from None
 
     @app.get("/api/v1/health")
     def health() -> dict[str, str]:
@@ -288,7 +307,7 @@ def create_api_app(settings: Settings | None = None) -> FastAPI:
 
     @app.post("/api/v1/accounts", status_code=201)
     def create_account(body: AccountCreate) -> dict[str, object]:
-        normalized_credential_ref = _credential_reference(body.credential_ref)
+        normalized_credential_ref = _safe_credential_reference(body.credential_ref)
         if body.login_method not in _MEDIACRAWLER_LOGIN_METHODS:
             raise _bad_request("login_method_not_supported")
         if body.login_method is LoginMethod.COOKIE and normalized_credential_ref is None:
@@ -439,7 +458,7 @@ def create_api_app(settings: Settings | None = None) -> FastAPI:
 
     @app.post("/api/v1/subscriptions", status_code=201)
     def create_subscription(body: SubscriptionCreate) -> dict[str, object]:
-        normalized_creator_reference = _credential_reference(body.creator_reference_ref)
+        normalized_creator_reference = _safe_credential_reference(body.creator_reference_ref)
         database = _database()
         try:
             with database.session() as session:
@@ -504,6 +523,123 @@ def create_api_app(settings: Settings | None = None) -> FastAPI:
             raise _bad_request("scheduler_operation_rejected") from None
         finally:
             database.dispose()
+
+    @app.get("/api/v1/subscriptions/{subscription_id}")
+    def subscription_detail(subscription_id: UUID) -> dict[str, object]:
+        database = _database()
+        try:
+            with database.session() as session:
+                subscription = SubscriptionRepository(session).get(str(subscription_id))
+                if subscription is None:
+                    raise HTTPException(status_code=404, detail="subscription not found")
+                payload = _subscription_payload(subscription)
+                payload["schedule"] = _scheduler_schedule_payload(
+                    SchedulerRepository(session).get_subscription_schedule(str(subscription_id))
+                )
+                runs = (
+                    session.execute(
+                        select(SyncRun)
+                        .where(SyncRun.subscription_id == str(subscription_id))
+                        .order_by(SyncRun.created_at.desc(), SyncRun.id.desc())
+                        .limit(5)
+                    )
+                    .scalars()
+                    .all()
+                )
+                payload["recent_runs"] = [
+                    {
+                        "run_id": run.id,
+                        "status": run.status,
+                        "attempt": run.attempt,
+                        "discovered_count": run.discovered_count,
+                        "asset_count": run.asset_count,
+                        "error_code": run.error_code,
+                        "started_at": run.started_at.isoformat() if run.started_at else None,
+                        "finished_at": run.finished_at.isoformat() if run.finished_at else None,
+                    }
+                    for run in runs
+                ]
+            payload["recent_jobs"] = [
+                _scheduler_job_payload(job)
+                for job in DurableSchedulerService(database).list_jobs(subscription_id=str(subscription_id), limit=5)
+            ]
+            return payload
+        except HTTPException:
+            raise
+        except NotFoundError:
+            raise HTTPException(status_code=404, detail="subscription not found") from None
+        except (SQLAlchemyError, ValueError, TypeError):
+            raise _bad_request("scheduler_operation_rejected") from None
+        finally:
+            database.dispose()
+
+    @app.get("/api/v1/scheduler/jobs/{job_id}")
+    def scheduler_job_detail(job_id: UUID) -> dict[str, object]:
+        database = _database()
+        try:
+            with database.session() as session:
+                return _scheduler_job_payload(SchedulerRepository(session).get_job(str(job_id)))
+        except NotFoundError:
+            raise HTTPException(status_code=404, detail="job not found") from None
+        except (SQLAlchemyError, ValueError, TypeError):
+            raise _bad_request("scheduler_operation_rejected") from None
+        finally:
+            database.dispose()
+
+    @app.post("/api/v1/assets/{asset_id}/download", status_code=202)
+    def download_asset(asset_id: UUID, body: AssetDownload) -> dict[str, object]:
+        if body.accept_mediacrawler_license and not body.enable_mediacrawler:
+            raise _bad_request("license_requires_enable_mediacrawler")
+        normalized_detail_reference = _safe_credential_reference(body.xhs_detail_reference_ref)
+        if normalized_detail_reference is not None and not body.enable_mediacrawler:
+            raise _bad_request("xhs_detail_reference_requires_mediacrawler")
+        database = _database()
+        try:
+            with database.session() as session:
+                if session.get(Asset, str(asset_id)) is None:
+                    raise HTTPException(status_code=404, detail="asset not found")
+        except SQLAlchemyError:
+            raise _bad_request("database_operation_failed") from None
+        finally:
+            database.dispose()
+        operation = operations.start("asset-download", exclusive_key=f"asset-download:{asset_id}")
+
+        def run_download() -> None:
+            download_database: Database | None = None
+            try:
+                run_settings = get_settings()
+                download_database = Database(run_settings.resolved_database_url)
+                payload, ok = _execute_asset_download(
+                    asset_id=asset_id,
+                    worker_id=body.worker_id,
+                    lease_seconds=body.lease_seconds,
+                    max_attempts=body.max_attempts,
+                    enable_mediacrawler=body.enable_mediacrawler,
+                    accept_mediacrawler_license=body.accept_mediacrawler_license,
+                    subscription_id=None,
+                    xhs_detail_reference_ref=normalized_detail_reference,
+                    settings=run_settings,
+                    database=download_database,
+                )
+                operations.finish(
+                    operation,
+                    result={"payload": payload, "ok": ok},
+                    exclusive_key=f"asset-download:{asset_id}",
+                )
+            except ValueError as error:
+                operations.finish(operation, error_code=str(error), exclusive_key=f"asset-download:{asset_id}")
+            except Exception:
+                operations.finish(
+                    operation,
+                    error_code="asset_download_failed",
+                    exclusive_key=f"asset-download:{asset_id}",
+                )
+            finally:
+                if download_database is not None:
+                    download_database.dispose()
+
+        threading.Thread(target=run_download, name=f"media-sync-asset-{asset_id}", daemon=True).start()
+        return {"operation_id": operation.id, "state": "running"}
 
     @app.post("/api/v1/subscriptions/{subscription_id}/pause")
     def pause_subscription(subscription_id: UUID) -> dict[str, object]:
@@ -578,7 +714,7 @@ def create_api_app(settings: Settings | None = None) -> FastAPI:
     def pipeline_run(body: PipelineRun) -> dict[str, object]:
         if body.accept_mediacrawler_license and not body.enable_mediacrawler:
             raise _bad_request("license_requires_enable_mediacrawler")
-        normalized_xhs_reference = _credential_reference(body.xhs_detail_reference_ref)
+        normalized_xhs_reference = _safe_credential_reference(body.xhs_detail_reference_ref)
         if normalized_xhs_reference is not None and not body.enable_mediacrawler:
             raise _bad_request("xhs_detail_reference_requires_mediacrawler")
         operation = operations.start("pipeline-run")

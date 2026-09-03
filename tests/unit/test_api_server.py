@@ -80,7 +80,10 @@ def test_account_lifecycle_and_login_gates(tmp_path: Path) -> None:
     assert half_gated.status_code == 400
     assert half_gated.json()["detail"] == "license_acknowledgement_required"
 
-    missing = client.post(f"/api/v1/accounts/{uuid4()}/login", json={"enable_mediacrawler": True})
+    missing = client.post(
+        f"/api/v1/accounts/{uuid4()}/login",
+        json={"enable_mediacrawler": True, "accept_mediacrawler_license": True},
+    )
     assert missing.status_code == 404
 
     qr = client.get(f"/api/v1/accounts/{account_id}/login-qr.png")
@@ -171,3 +174,45 @@ def test_background_operation_gates(tmp_path: Path) -> None:
 
     database = Database(Settings(state_dir=tmp_path / "state").resolved_database_url)
     database.dispose()
+
+
+def test_subscription_detail_job_detail_and_asset_download(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    account = client.post(
+        "/api/v1/accounts",
+        json={"platform": "bili", "display_name": "bili-main", "login_method": "qr"},
+    ).json()
+    subscription = client.post(
+        "/api/v1/subscriptions",
+        json={
+            "account_id": account["id"],
+            "platform": "bili",
+            "creator_remote_id": "2",
+            "display_name": "creator",
+            "max_items": 5,
+        },
+    ).json()
+    subscription_id = UUID(subscription["id"])
+
+    detail = client.get(f"/api/v1/subscriptions/{subscription_id}")
+    assert detail.status_code == 200
+    body = detail.json()
+    assert body["id"] == subscription["id"]
+    assert body["schedule"]["status"] == "enabled"
+    assert body["recent_runs"] == []
+    assert isinstance(body["recent_jobs"], list)
+
+    assert client.get("/api/v1/subscriptions/00000000-0000-0000-0000-000000000000").status_code == 404
+
+    missing_job = client.get("/api/v1/scheduler/jobs/00000000-0000-0000-0000-000000000000")
+    assert missing_job.status_code == 404
+
+    ungated = client.post(f"/api/v1/assets/{uuid4()}/download", json={"accept_mediacrawler_license": True})
+    assert ungated.status_code == 400
+    assert ungated.json()["detail"] == "license_requires_enable_mediacrawler"
+
+    missing_asset = client.post(
+        f"/api/v1/assets/{uuid4()}/download",
+        json={"enable_mediacrawler": False, "accept_mediacrawler_license": False},
+    )
+    assert missing_asset.status_code == 404

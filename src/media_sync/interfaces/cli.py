@@ -1949,6 +1949,150 @@ def list_assets(
     _emit_list(records, json_output=json_output, label="assets")
 
 
+def _execute_asset_download(
+    *,
+    asset_id: UUID,
+    worker_id: str,
+    lease_seconds: int,
+    max_attempts: int,
+    enable_mediacrawler: bool,
+    accept_mediacrawler_license: bool,
+    subscription_id: UUID | None,
+    xhs_detail_reference_ref: str | None,
+    settings: Settings,
+    database: Database,
+) -> tuple[dict[str, object], bool]:
+    """Run one gated asset download and return its redaction-safe payload plus ok flag.
+
+    Shared by the CLI command and the execution 0040 REST API so both drive the
+    identical preflight gates and the identical download service. Database
+    errors propagate to the caller; every blocked/failed outcome returns.
+    """
+
+    def blocked(code: str, *, retryable: bool, persisted_status: object) -> dict[str, object]:
+        return {
+            "asset_id": str(asset_id),
+            "status": "blocked",
+            "disposition": "not_started",
+            "persisted_status": persisted_status,
+            "error_code": code,
+            "retryable": retryable,
+        }
+
+    with database.session() as session:
+        asset_preflight = session.execute(
+            select(Asset.status, Asset.kind, Asset.locator, Asset.platform).where(Asset.id == str(asset_id))
+        ).one_or_none()
+    asset_status = asset_preflight[0] if asset_preflight is not None else None
+    asset_kind = asset_preflight[1] if asset_preflight is not None else None
+    asset_locator = asset_preflight[2] if asset_preflight is not None else None
+    asset_platform = asset_preflight[3] if asset_preflight is not None else None
+    if xhs_detail_reference_ref is not None and asset_platform is not None and asset_platform != Platform.XHS.value:
+        raise ValueError("XHS detail reference is available only for XHS assets")
+    requires_download = asset_status not in {
+        None,
+        AssetStatus.VERIFIED.value,
+        AssetStatus.FAILED_TERMINAL.value,
+    }
+    adapter_refresh = isinstance(asset_locator, Mapping) and asset_locator.get("type") == "adapter_refresh"
+    adapter_name = asset_locator.get("adapter") if isinstance(asset_locator, Mapping) else None
+    mediacrawler_refresh = adapter_refresh and adapter_name == AdapterName.MEDIACRAWLER.value
+    if requires_download and adapter_refresh and not enable_mediacrawler:
+        return blocked("locator_refresh_unsupported", retryable=True, persisted_status=asset_status), False
+    if requires_download and adapter_refresh and not mediacrawler_refresh:
+        return blocked("locator_refresh_unsupported", retryable=True, persisted_status=asset_status), False
+    if requires_download and mediacrawler_refresh and not accept_mediacrawler_license:
+        return blocked("license_acknowledgement_required", retryable=False, persisted_status=asset_status), False
+    if requires_download and mediacrawler_refresh and settings.mediacrawler_python_executable is None:
+        return blocked("locator_refresh_configuration_invalid", retryable=False, persisted_status=asset_status), False
+    ffprobe = shutil.which("ffprobe")
+    if requires_download and asset_kind in {"video", "audio"} and ffprobe is None:
+        return blocked("media_probe_unavailable", retryable=True, persisted_status=asset_status), False
+    ffmpeg = shutil.which("ffmpeg")
+    requires_bilibili_mux = (
+        requires_download and asset_platform == Platform.BILI.value and asset_kind == "video" and mediacrawler_refresh
+    )
+    if requires_bilibili_mux and ffmpeg is None:
+        return blocked("media_mux_unavailable", retryable=True, persisted_status=asset_status), False
+
+    limits = DownloadLimits()
+    refresher = None
+    verified_archive_recovery_preflight: Callable[[], None] | None = None
+    if mediacrawler_refresh and enable_mediacrawler and accept_mediacrawler_license:
+        refresher = LazyMediaCrawlerLocatorRefresher(
+            database,
+            asset_id=asset_id,
+            subscription_id=subscription_id,
+            lock_path=settings.mediacrawler_lock_path,
+            integration_root=settings.resolved_mediacrawler_runtime_dir,
+            python_executable=settings.mediacrawler_python_executable,
+            secret_resolver=SecretResolver.local(file_root=settings.resolved_secret_file_dir),
+            license_acknowledged=True,
+            detail_reference_ref=(xhs_detail_reference_ref if asset_platform == Platform.XHS.value else None),
+        )
+        if requires_download and asset_platform == Platform.XHS.value:
+            refresher.preflight()
+    if mediacrawler_refresh and asset_platform == Platform.XHS.value:
+        if refresher is not None:
+            verified_archive_recovery_preflight = refresher.preflight
+        else:
+
+            def unavailable_xhs_recovery_preflight() -> None:
+                code = (
+                    "locator_refresh_unsupported"
+                    if not enable_mediacrawler
+                    else "locator_refresh_configuration_invalid"
+                )
+                raise MediaDownloadError(code)
+
+            verified_archive_recovery_preflight = unavailable_xhs_recovery_preflight
+    http = SafeHttpClient(
+        SocketAddressResolver(),
+        limits=NetworkLimits(timeout_seconds=min(limits.total_timeout_seconds, 120.0)),
+    )
+    probe = FFprobeMediaProbe(ffprobe) if ffprobe is not None else None
+    muxer = FFmpegStreamCopyMuxer(ffmpeg) if ffmpeg is not None else None
+    if refresher is None:
+        downloader = SecureMediaDownloader(http, probe=probe, muxer=muxer, limits=limits)
+    else:
+        downloader = SecureMediaDownloader(http, refresher=refresher, probe=probe, muxer=muxer, limits=limits)
+    try:
+        outcome = AssetDownloadService(
+            database,
+            downloader,
+            verified_archive_recovery_preflight=verified_archive_recovery_preflight,
+        ).run(
+            AssetDownloadRequest(
+                asset_id=asset_id,
+                worker_id=worker_id,
+                work_root=settings.job_dir / "downloads",
+                archive_root=settings.archive_dir,
+                lease_seconds=lease_seconds,
+                max_attempts=max_attempts,
+            )
+        )
+    except AssetDownloadOrchestrationError as error:
+        return {
+            "asset_id": str(asset_id),
+            "status": "failed",
+            "error_code": error.code,
+            "retryable": error.retryable,
+        }, False
+    except MediaDownloadError as error:
+        return blocked(error.code, retryable=error.retryable, persisted_status=asset_status), False
+    return {
+        "asset_id": str(outcome.asset_id),
+        "generation": outcome.generation,
+        "job_id": str(outcome.job_id) if outcome.job_id is not None else None,
+        "status": outcome.status.value,
+        "disposition": outcome.disposition,
+        "archive_path": str(outcome.archive_path),
+        "checksum_sha256": outcome.checksum_sha256,
+        "size_bytes": outcome.size_bytes,
+        "mime_type": outcome.mime_type,
+    }, True
+
+
 @asset_app.command("download")
 def download_asset(
     asset_id: Annotated[UUID, typer.Option(help="Local asset UUID to download.")],
@@ -2000,218 +2144,28 @@ def download_asset(
     settings = get_settings()
     database = Database(settings.resolved_database_url)
     try:
-        with database.session() as session:
-            asset_preflight = session.execute(
-                select(Asset.status, Asset.kind, Asset.locator, Asset.platform).where(Asset.id == str(asset_id))
-            ).one_or_none()
-        asset_status = asset_preflight[0] if asset_preflight is not None else None
-        asset_kind = asset_preflight[1] if asset_preflight is not None else None
-        asset_locator = asset_preflight[2] if asset_preflight is not None else None
-        asset_platform = asset_preflight[3] if asset_preflight is not None else None
-        if (
-            normalized_detail_reference_ref is not None
-            and asset_platform is not None
-            and asset_platform != Platform.XHS.value
-        ):
-            raise typer.BadParameter("XHS detail reference is available only for XHS assets")
-        requires_download = asset_status not in {
-            None,
-            AssetStatus.VERIFIED.value,
-            AssetStatus.FAILED_TERMINAL.value,
-        }
-        adapter_refresh = isinstance(asset_locator, Mapping) and asset_locator.get("type") == "adapter_refresh"
-        adapter_name = asset_locator.get("adapter") if isinstance(asset_locator, Mapping) else None
-        mediacrawler_refresh = adapter_refresh and adapter_name == AdapterName.MEDIACRAWLER.value
-        if requires_download and adapter_refresh and not enable_mediacrawler:
-            _emit_record(
-                {
-                    "asset_id": str(asset_id),
-                    "status": "blocked",
-                    "disposition": "not_started",
-                    "persisted_status": asset_status,
-                    "error_code": "locator_refresh_unsupported",
-                    "retryable": True,
-                },
-                json_output=json_output,
-                label="Asset download",
-            )
-            raise typer.Exit(code=1)
-        if requires_download and adapter_refresh and not mediacrawler_refresh:
-            _emit_record(
-                {
-                    "asset_id": str(asset_id),
-                    "status": "blocked",
-                    "disposition": "not_started",
-                    "persisted_status": asset_status,
-                    "error_code": "locator_refresh_unsupported",
-                    "retryable": True,
-                },
-                json_output=json_output,
-                label="Asset download",
-            )
-            raise typer.Exit(code=1)
-        if requires_download and mediacrawler_refresh and not accept_mediacrawler_license:
-            _emit_record(
-                {
-                    "asset_id": str(asset_id),
-                    "status": "blocked",
-                    "disposition": "not_started",
-                    "persisted_status": asset_status,
-                    "error_code": "license_acknowledgement_required",
-                    "retryable": False,
-                },
-                json_output=json_output,
-                label="Asset download",
-            )
-            raise typer.Exit(code=1)
-        if requires_download and mediacrawler_refresh and settings.mediacrawler_python_executable is None:
-            _emit_record(
-                {
-                    "asset_id": str(asset_id),
-                    "status": "blocked",
-                    "disposition": "not_started",
-                    "persisted_status": asset_status,
-                    "error_code": "locator_refresh_configuration_invalid",
-                    "retryable": False,
-                },
-                json_output=json_output,
-                label="Asset download",
-            )
-            raise typer.Exit(code=1)
-        ffprobe = shutil.which("ffprobe")
-        if requires_download and asset_kind in {"video", "audio"} and ffprobe is None:
-            _emit_record(
-                {
-                    "asset_id": str(asset_id),
-                    "status": "blocked",
-                    "disposition": "not_started",
-                    "persisted_status": asset_status,
-                    "error_code": "media_probe_unavailable",
-                    "retryable": True,
-                },
-                json_output=json_output,
-                label="Asset download",
-            )
-            raise typer.Exit(code=1)
-        ffmpeg = shutil.which("ffmpeg")
-        requires_bilibili_mux = (
-            requires_download
-            and asset_platform == Platform.BILI.value
-            and asset_kind == "video"
-            and mediacrawler_refresh
+        payload, ok = _execute_asset_download(
+            asset_id=asset_id,
+            worker_id=worker_id,
+            lease_seconds=lease_seconds,
+            max_attempts=max_attempts,
+            enable_mediacrawler=enable_mediacrawler,
+            accept_mediacrawler_license=accept_mediacrawler_license,
+            subscription_id=subscription_id,
+            xhs_detail_reference_ref=normalized_detail_reference_ref,
+            settings=settings,
+            database=database,
         )
-        if requires_bilibili_mux and ffmpeg is None:
-            _emit_record(
-                {
-                    "asset_id": str(asset_id),
-                    "status": "blocked",
-                    "disposition": "not_started",
-                    "persisted_status": asset_status,
-                    "error_code": "media_mux_unavailable",
-                    "retryable": True,
-                },
-                json_output=json_output,
-                label="Asset download",
-            )
-            raise typer.Exit(code=1)
-
-        limits = DownloadLimits()
-        refresher = None
-        verified_archive_recovery_preflight: Callable[[], None] | None = None
-        if mediacrawler_refresh and enable_mediacrawler and accept_mediacrawler_license:
-            refresher = LazyMediaCrawlerLocatorRefresher(
-                database,
-                asset_id=asset_id,
-                subscription_id=subscription_id,
-                lock_path=settings.mediacrawler_lock_path,
-                integration_root=settings.resolved_mediacrawler_runtime_dir,
-                python_executable=settings.mediacrawler_python_executable,
-                secret_resolver=SecretResolver.local(file_root=settings.resolved_secret_file_dir),
-                license_acknowledged=True,
-                detail_reference_ref=(
-                    normalized_detail_reference_ref if asset_platform == Platform.XHS.value else None
-                ),
-            )
-            if requires_download and asset_platform == Platform.XHS.value:
-                refresher.preflight()
-        if mediacrawler_refresh and asset_platform == Platform.XHS.value:
-            if refresher is not None:
-                verified_archive_recovery_preflight = refresher.preflight
-            else:
-
-                def unavailable_xhs_recovery_preflight() -> None:
-                    code = (
-                        "locator_refresh_unsupported"
-                        if not enable_mediacrawler
-                        else "locator_refresh_configuration_invalid"
-                    )
-                    raise MediaDownloadError(code)
-
-                verified_archive_recovery_preflight = unavailable_xhs_recovery_preflight
-        http = SafeHttpClient(
-            SocketAddressResolver(),
-            limits=NetworkLimits(timeout_seconds=min(limits.total_timeout_seconds, 120.0)),
-        )
-        probe = FFprobeMediaProbe(ffprobe) if ffprobe is not None else None
-        muxer = FFmpegStreamCopyMuxer(ffmpeg) if ffmpeg is not None else None
-        if refresher is None:
-            downloader = SecureMediaDownloader(http, probe=probe, muxer=muxer, limits=limits)
-        else:
-            downloader = SecureMediaDownloader(http, refresher=refresher, probe=probe, muxer=muxer, limits=limits)
-        outcome = AssetDownloadService(
-            database,
-            downloader,
-            verified_archive_recovery_preflight=verified_archive_recovery_preflight,
-        ).run(
-            AssetDownloadRequest(
-                asset_id=asset_id,
-                worker_id=_required_option(worker_id, "worker_id"),
-                work_root=settings.job_dir / "downloads",
-                archive_root=settings.archive_dir,
-                lease_seconds=lease_seconds,
-                max_attempts=max_attempts,
-            )
-        )
-    except AssetDownloadOrchestrationError as error:
-        payload: dict[str, object] = {
-            "asset_id": str(asset_id),
-            "status": "failed",
-            "error_code": error.code,
-            "retryable": error.retryable,
-        }
-        _emit_record(payload, json_output=json_output, label="Asset download")
-        raise typer.Exit(code=1) from None
-    except MediaDownloadError as error:
-        _emit_record(
-            {
-                "asset_id": str(asset_id),
-                "status": "blocked",
-                "disposition": "not_started",
-                "persisted_status": asset_status,
-                "error_code": error.code,
-                "retryable": error.retryable,
-            },
-            json_output=json_output,
-            label="Asset download",
-        )
-        raise typer.Exit(code=1) from None
+    except ValueError as error:
+        raise typer.BadParameter(str(error)) from None
     except SQLAlchemyError:
         raise typer.BadParameter("asset download database operation failed safely") from None
     finally:
         database.dispose()
 
-    payload = {
-        "asset_id": str(outcome.asset_id),
-        "generation": outcome.generation,
-        "job_id": str(outcome.job_id) if outcome.job_id is not None else None,
-        "status": outcome.status.value,
-        "disposition": outcome.disposition,
-        "archive_path": str(outcome.archive_path),
-        "checksum_sha256": outcome.checksum_sha256,
-        "size_bytes": outcome.size_bytes,
-        "mime_type": outcome.mime_type,
-    }
     _emit_record(payload, json_output=json_output, label="Asset download")
+    if not ok:
+        raise typer.Exit(code=1)
 
 
 @emby_app.command("export")

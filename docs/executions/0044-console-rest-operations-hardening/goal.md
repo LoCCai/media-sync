@@ -2,24 +2,25 @@
 
 # Execution 0044 goal
 
-- Status: Planned — start record committed for review before implementation
-- Date: 2026-09-03
+- Status: Rescoped by execution 0048 to the minimum operations-recovery slice; UI polish is deferred to 0.2
+- Date: 2026-09-03 (rescoped)
 - Predecessor: Execution 0042 (completion archive)
-- Scope: Operations hardening of the execution 0040 web console and REST API — read-only subscription/account detail, scheduler Job detail with per-job operations, asset re-download triggering, and a consolidated operations view — closing the remaining gap against bili-sync-up's task-administration workflow
+- Scope: The operations endpoints an operator actually needs during live qualification — subscription detail with recent jobs, scheduler Job detail, and asset re-download through the existing download service — plus the minimal console affordances to drive them
 
-## Outcome (target)
+## Outcome
 
-1. `GET /api/v1/subscriptions/{id}` detail (schedules, recent runs, recent jobs) and `GET /api/v1/scheduler/jobs/{id}` detail with redaction-safe payload projection.
-2. `POST /api/v1/assets/{id}/redownload` that resets a verified asset through the existing fenced CAS path and enqueues the pipeline coordinator — reusing, not duplicating, the execution 0005 recovery semantics.
-3. Console: job detail drawer, per-asset state with re-download button, and one operations page combining operations history, lane status and scheduler controls.
-4. Every endpoint stays a thin projection over existing services; no new authority, credential surface or schema.
+1. `GET /api/v1/subscriptions/{id}`: schedule state, recent sync runs (status/counters/dates) and recent scheduler Jobs, projected with the CLI's redaction rules.
+2. `GET /api/v1/scheduler/jobs/{id}`: one redaction-safe Job projection.
+3. `POST /api/v1/assets/{id}/download`: runs the existing `AssetDownloadService` for one asset as a tracked background operation (the same service the CLI `asset download` command uses), honoring the pipeline capability gates; no reset/CAS shortcut, no state mutation beyond the service's own fenced lifecycle.
+4. Console: subscription detail drawer (schedule + recent jobs + recent runs) and a per-asset re-download button wired to the new endpoints.
+5. Offline API tests extend `tests/unit/test_api_server.py`; no new authority, credential surface or schema.
 
 ## Acceptance boundaries
 
-- Read-only or recovery-path operations only; no delete/cleanup endpoints in this execution.
-- Offline API tests extend `tests/unit/test_api_server.py`; the full suite runs on the Linux deployment host; no local deployment verification.
-- Live rows remain `NOT_RUN`.
+- Read-only detail endpoints plus one service-backed download trigger; no delete/cleanup, no lane editing from the UI.
+- Deferred to 0.2: consolidated operations dashboard, job-control buttons (resume/cancel) in the UI, failure-diagnostics views beyond payload projections.
+- Full suite runs wherever the 0048 calibration ran; live rows stay `NOT_RUN`.
 
 ## Explicitly deferred
 
-Authentication/multi-user, remote access hardening, config editing from the UI.
+Everything listed in the acceptance boundaries plus authentication/multi-user/remote hardening.
