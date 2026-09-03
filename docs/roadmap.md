@@ -92,13 +92,13 @@ Build a self-hosted service that can authenticate against all platforms supporte
 - Execution 0037 delivery (plan `d858147`, implementation `c5682e5`): the comma-joined XHS `video_url` scalar freezes into a bounded 1–16 ordered multi-video shape with above-bound normalization quarantine, a widened refresh scalar and a creator-target binding over the complete video tuple. A two-video integration composition downloads both positions and publishes two Emby episodes with zero-work replay. Focused `344 passed in 6.32s`, full `2020 passed, 1 skipped in 370.56s` and all quality/build/docs/upstream/audits pass. Live photos and every live row remain open or `NOT_RUN`.
 - Execution 0038 delivery (plan `650c256`, implementation `8c80073`): a new pinned-store shim captures the frozen `image_list[0].live_photo.stream.h264[0].master_url` for a one-image `type="normal"` note, `_normalize_xhs` materializes MIXED with one IMAGE plus one VIDEO and the creator fallback binds the exact shape. Shared fake fixtures gained the minimal store modules. A production two-asset composition publishes the Emby episode with poster, zero-work replay. Focused `355 passed in 6.92s`, detail contracts `116 passed in 80.18s`, full `2032 passed, 1 skipped in 371.84s` and all quality/build/docs/upstream/audits pass. Multi-image live galleries and every live row remain open or `NOT_RUN`.
 ### Phase 5 — Platform qualification
-
+- Status: unchanged as the final operator-assisted gate; consolidated into execution 0047 after the completion archive (execution 0042, [`archive/upstream-replication-review.md`](archive/upstream-replication-review.md)). Every live row remains `NOT_RUN` until recorded on the deployment host.
 - Qualify XHS, Douyin, Kuaishou, Bilibili, Weibo, Tieba and Zhihu using user-authorized accounts.
 - Document login steps, expected challenges, content gaps and rate limits per platform.
 - Acceptance: every platform has a capability-matrix entry and reproducible smoke-test record; unavailable credentials are marked as external validation blockers, not silently claimed as passing.
 
 ### Phase 6 — Release readiness
-
+- Status: the documentation items are delivered by executions 0045 (backup/restore and upgrade operations guide) and 0046 (security and privacy review plus release checklist); notices and license review are current as of 0046. The clean-clone acceptance is exercised on the deployment host per [`deployment.md`](deployment.md); live restore drills and any external review remain operator rows.
 - Security and privacy review, backup/restore and upgrade documentation.
 - Complete notices, license review and GitHub push checklist.
 - Acceptance: a clean clone can install, test and run from the documentation; no secret or runtime data is tracked.

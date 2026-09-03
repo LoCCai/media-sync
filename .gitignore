@@ -22,10 +22,10 @@ build/
 data/
 downloads/
 library/
-archive/
-exports/
+/archive/
+/exports/
 logs/
-jobs/
+/jobs/
 secrets/
 browser-profiles/
 .media-sync/

@@ -92,13 +92,13 @@
 - 执行 0037 交付（计划 `d858147`，实现 `c5682e5`）：逗号拼接的小红书 `video_url` 标量冻结为有界 1–16 有序多视频形状，超界归一化隔离、刷新标量放宽与完整视频元组的 creator 目标绑定。双视频集成组合双 position 下载并发布两个 Emby 集，零工作重放。专项 `344 passed in 6.32s`、完整 `2020 passed, 1 skipped in 370.56s` 及全部质量/构建/文档/上游/审计门通过。实况照片及全部真人行继续待实现或保持 `NOT_RUN`。
 - 执行 0038 交付（计划 `650c256`，实现 `8c80073`）：新的锁定 store shim 为恰一张图的 `type="normal"` note 捕获冻结的 `image_list[0].live_photo.stream.h264[0].master_url`，`_normalize_xhs` 物化为一图加一视频的 MIXED，creator 回退绑定精确形状。共享 fake fixture 补齐最小 store 模块。生产级双资产组合发布带 poster 的 Emby 集，零工作重放。专项 `355 passed in 6.92s`、detail 契约 `116 passed in 80.18s`、完整 `2032 passed, 1 skipped in 371.84s` 及全部质量/构建/文档/上游/审计门通过。多图实况 gallery 及全部真人行继续待实现或保持 `NOT_RUN`。
 ### 阶段 5 — 平台逐项验收
-
+- 状态：保持为最终操作者协助门；完成度归档（执行 0042，[`archive/upstream-replication-review.zh.md`](archive/upstream-replication-review.zh.md)）后收敛为执行 0047。全部真人行在部署主机记录前保持 `NOT_RUN`。
 - 使用用户授权账户逐项验收小红书、抖音、快手、哔哩哔哩、微博、贴吧与知乎。
 - 逐平台记录登录步骤、预期挑战、内容缺口与速率限制。
 - 验收：每个平台都有能力矩阵条目与可复现 smoke-test 记录；缺少凭据时标记为外部验证阻塞，不能静默冒充通过。
 
 ### 阶段 6 — 发布准备
-
+- 状态：文档项由执行 0045（备份恢复与升级运维指南）与 0046（安全与隐私审查加发布清单）交付；notices 与许可证审查截至 0046 为最新。干净 clone 验收按 [`deployment.zh.md`](deployment.zh.md) 在部署主机执行；恢复演练与任何外部审查仍为操作者行。
 - 安全与隐私审查，以及备份/恢复和升级文档。
 - 完成 notices、许可证审查与 GitHub 推送检查清单。
 - 验收：干净 clone 可按文档安装、测试和运行；版本库不跟踪密钥或运行数据。
