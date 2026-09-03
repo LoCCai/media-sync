@@ -35,7 +35,7 @@ SQLite <---- normalized domain ----> Filesystem
 - 已实现媒体工具使用 `httpcore`/`httpx` 流式下载、音视频强制且有界的 `ffprobe` 验证、标准库 XML 生成，以及受限冻结形状下的 FFmpeg stream-copy mux/remux/concat（DASH 合并、单段 FLV 转封装、多段拼接）。通用转码、编解码修复与幻灯片渲染仍延期。
 - 使用 `pytest`、Ruff 与 mypy，并采用确定性夹具及 golden 目录树。
 
-编写工作站历史上使用 Python 3.11.8 与 uv 0.9.18；当前工具链钉版 uv 0.12.9 并以带哈希锁在 Python 3.11/3.12/3.13 矩阵验证，容器镜像基于 Python 3.13 构建。
+工具链把 uv 钉在锁文件作者版本（0.9.18，uv.lock revision 3），并在 Python 3.11/3.12/3.13 矩阵验证；容器镜像基于 Python 3.13 且使用同一钉版 uv。执行 0048 的 0.12.9 镜像钉版与已提交锁版本不兼容，已作为阶段 B 首个构建发现重新对齐。
 
 ## 模块边界
 

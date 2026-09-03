@@ -35,7 +35,7 @@ SQLite <---- normalized domain ----> Filesystem
 - Implemented media tooling uses `httpcore`/`httpx` streaming downloads, mandatory bounded `ffprobe` validation for video/audio and standard-library XML generation, plus restricted frozen-shape FFmpeg stream-copy mux/remux/concat (DASH merge, single-segment FLV remux, multi-segment concat). General transcoding, codec repair and slideshow rendering remain deferred.
 - `pytest`, Ruff and mypy, with deterministic fixtures and golden directory trees.
 
-The authoring station historically used Python 3.11.8 and uv 0.9.18; the current toolchain pins uv 0.12.9 with a hashed lock verified across Python 3.11/3.12/3.13, and the container image builds on Python 3.13.
+The toolchain pins uv at the lock-authoring version (0.9.18, uv.lock revision 3), verified across Python 3.11/3.12/3.13; the container image builds on Python 3.13 with the same pinned uv. Execution 0048's 0.12.9 image pin was incompatible with the committed lock revision and was realigned as the first phase-B build finding.
 
 ## 3. Modules
 

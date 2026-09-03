@@ -68,7 +68,11 @@ COPY pyproject.toml uv.lock README.md ./
 COPY src ./src
 COPY scripts ./scripts
 COPY alembic.ini ./
-RUN pip install --no-cache-dir uv==0.12.9 \
+# Pin uv to the exact version that authored uv.lock (revision 3). A newer uv
+# rewrites the lock format and refuses `--locked` (phase-B finding: 0.12.9
+# failed with "lockfile needs to be updated"). Bump this ONLY together with
+# regenerating and re-validating uv.lock.
+RUN pip install --no-cache-dir uv==0.9.18 \
     && uv sync --locked --no-dev \
     && uv cache clean
 
