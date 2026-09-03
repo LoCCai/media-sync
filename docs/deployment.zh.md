@@ -8,11 +8,14 @@
 
 ```bash
 git clone <你的仓库> media-sync && cd media-sync
+sh scripts/fetch_mediacrawler.sh   # 必选：宿主机预取锁定上游
 cp docker-compose.example.yml docker-compose.yml   # 本地副本已被 git 忽略
 docker compose build          # 如需改端口/路径，先编辑你的本地副本
 ```
 
-示例 compose 默认传入中国大陆镜像构建参数：`APT_MIRROR=mirrors.aliyun.com`、`PYPI_INDEX=https://mirrors.aliyun.com/pypi/simple/`、`PLAYWRIGHT_DOWNLOAD_HOST=https://registry.npmmirror.com/-/binary/playwright`。境外构建删除这三行 `args:` 即回退官方 Debian/PyPI/Playwright 源。上游 `git clone`（GitHub）不走镜像，不通时请自备代理。
+第 0 步（`fetch_mediacrawler.sh`）按 `upstreams.lock.json` 的精确提交把 MediaCrawler 克隆到 git 忽略的 `.mediacrawler-local/`；构建会 COPY 并校验其 SHA，因此**构建容器自身不再访问 github.com**（容器网络到不了 GitHub 的大陆主机，改在宿主机这一步设置 `BUILD_HTTPS_PROXY=...`）。`git pull` 变更锁定提交后需重跑该脚本。
+
+示例 compose 默认传入中国大陆镜像构建参数：`APT_MIRROR=mirrors.aliyun.com`、`PYPI_INDEX=https://mirrors.aliyun.com/pypi/simple/`、`PLAYWRIGHT_DOWNLOAD_HOST=https://registry.npmmirror.com/-/binary/playwright`。`PYPI_INDEX` 只作用于 pip 步骤——uv 始终对 pypi.org 校验提交的锁，慢时配合 `BUILD_HTTPS_PROXY`。境外构建删除这三行 `args:` 即回退官方 Debian/PyPI/Playwright 源。
 
 RC 构建请用 digest 钉版基底镜像以保证可复现：
 

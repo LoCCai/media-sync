@@ -1,6 +1,10 @@
 .git
 .gitignore
 .upstream
+# NOTE: .mediacrawler-local/ (host-side prefetch from
+# scripts/fetch_mediacrawler.sh) is intentionally NOT ignored here — the
+# Dockerfile COPYs it so mainland builds need no in-container github.com
+# access. It is git-ignored via .gitignore instead.
 .venv
 .media-sync
 archive

@@ -8,11 +8,14 @@ This guide deploys media-sync as a self-hosted container with the pinned MediaCr
 
 ```bash
 git clone <your-fork> media-sync && cd media-sync
+sh scripts/fetch_mediacrawler.sh   # MANDATORY host-side prefetch of the locked upstream
 cp docker-compose.example.yml docker-compose.yml   # your live copy is git-ignored
 docker compose build          # edit your copy first if you need different ports/paths
 ```
 
-The example compose passes mainland-China mirror build args by default: `APT_MIRROR=mirrors.aliyun.com`, `PYPI_INDEX=https://mirrors.aliyun.com/pypi/simple/` and `PLAYWRIGHT_DOWNLOAD_HOST=https://registry.npmmirror.com/-/binary/playwright`. Building outside mainland China? Delete the three `args:` lines to fall back to official Debian/PyPI/Playwright sources. The upstream `git clone` from GitHub is not mirrored; proxy it if unreachable.
+Step 0 (`fetch_mediacrawler.sh`) clones the exact MediaCrawler commit from `upstreams.lock.json` into the git-ignored `.mediacrawler-local/` directory; the build COPYs and SHA-verifies it, so **the build container itself never touches github.com** (mainland hosts whose container network cannot reach GitHub set `BUILD_HTTPS_PROXY=...` for this host-side clone instead). Re-run the script after `git pull` changes the locked commit.
+
+The example compose passes mainland-China mirror build args by default: `APT_MIRROR=mirrors.aliyun.com`, `PYPI_INDEX=https://mirrors.aliyun.com/pypi/simple/` and `PLAYWRIGHT_DOWNLOAD_HOST=https://registry.npmmirror.com/-/binary/playwright`. `PYPI_INDEX` applies to pip steps only — uv validates the committed lock against pypi.org, so keep `BUILD_HTTPS_PROXY` handy when that is slow. Building outside mainland China? Delete the three `args:` lines to fall back to official Debian/PyPI/Playwright sources.
 
 For RC builds, pin the base image by digest so the build is reproducible:
 

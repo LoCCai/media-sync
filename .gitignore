@@ -1,5 +1,7 @@
 # Local upstream checkouts are reproducible from upstreams.lock.json.
 .upstream/
+# Host-side prefetch target for the Docker build (allowed in .dockerignore).
+.mediacrawler-local/
 
 # Python
 __pycache__/

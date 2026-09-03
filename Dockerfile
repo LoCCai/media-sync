@@ -90,17 +90,26 @@ RUN if [ -n "${BUILD_HTTPS_PROXY}" ]; then export HTTPS_PROXY="${BUILD_HTTPS_PRO
 # against the lock file's directory (/app), so the container checkout MUST be
 # /app/.upstream/MediaCrawler with its .git directory intact — the verifier
 # requires a git repository at the locked commit with a clean tracked tree.
-# The fetch uses ONLY the locked commit snapshot (--depth 1) over forced
-# HTTP/1.1: mainland-China links to GitHub regularly fail with "curl 16 Error
-# in the HTTP2 framing layer" on full clones. If direct access still fails,
-# override MEDIACRAWLER_REPO with a mirror prefix or set BUILD_HTTPS_PROXY.
+#
+# The checkout is PREFETCHED HOST-SIDE (phase-B finding d3: build containers
+# on mainland hosts cannot reach github.com, while the host itself can — it
+# cloned this repository). MANDATORY before `docker compose build`:
+#
+#   sh scripts/fetch_mediacrawler.sh          # or: BUILD_HTTPS_PROXY=... sh ...
+#
+# It clones the locked commit into .mediacrawler-local/ (git-ignored, allowed
+# into the build context). The step below verifies HEAD equals the locked
+# commit, requires a clean tree, and relocates it — the build itself needs
+# ZERO github.com access.
 ARG MEDIACRAWLER_REPO=https://github.com/NanmiCoder/MediaCrawler.git
 ARG MEDIACRAWLER_COMMIT=d6f7c5bb906b6dac40ddf343ef9e26438a3de092
-RUN if [ -n "${BUILD_HTTPS_PROXY}" ]; then export HTTPS_PROXY="${BUILD_HTTPS_PROXY}"; fi \
-    && git init --quiet /app/.upstream/MediaCrawler \
-    && git -C /app/.upstream/MediaCrawler remote add origin "${MEDIACRAWLER_REPO}" \
-    && git -c http.version=HTTP/1.1 -C /app/.upstream/MediaCrawler fetch --quiet --depth 1 origin "${MEDIACRAWLER_COMMIT}" \
-    && git -C /app/.upstream/MediaCrawler checkout --quiet FETCH_HEAD \
+COPY .mediacrawler-local/ /tmp/mediacrawler-prefetch/
+RUN mkdir -p /app/.upstream \
+    && test -d /tmp/mediacrawler-prefetch/.git \
+    && [ "$(git -C /tmp/mediacrawler-prefetch rev-parse HEAD)" = "${MEDIACRAWLER_COMMIT}" ] \
+    && [ -z "$(git -C /tmp/mediacrawler-prefetch status --porcelain)" ] \
+    && mv /tmp/mediacrawler-prefetch /app/.upstream/MediaCrawler \
+    && git -C /app/.upstream/MediaCrawler remote set-url origin "${MEDIACRAWLER_REPO}" \
     && git -C /app/.upstream/MediaCrawler rev-parse HEAD | grep -qx "${MEDIACRAWLER_COMMIT}"
 # The upstream venv installs from a hashed lock compiled from the pinned
 # checkout's requirements.txt (docker/mediacrawler-requirements.lock), so the
