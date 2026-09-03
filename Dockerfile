@@ -63,9 +63,19 @@ RUN pip install --no-cache-dir uv \
     && uv cache clean
 
 # ------------------------------------------------------- pinned MediaCrawler
+# The checkout fetches ONLY the locked commit snapshot (--depth 1) over forced
+# HTTP/1.1: mainland-China links to GitHub regularly fail with "curl 16 Error
+# in the HTTP2 framing layer" on full clones. If direct access still fails,
+# override MEDIACRAWLER_REPO with a mirror prefix or set BUILD_HTTPS_PROXY.
+ARG MEDIACRAWLER_REPO=https://github.com/NanmiCoder/MediaCrawler.git
 ARG MEDIACRAWLER_COMMIT=d6f7c5bb906b6dac40ddf343ef9e26438a3de092
-RUN git clone --quiet https://github.com/NanmiCoder/MediaCrawler.git /opt/mediacrawler \
-    && git -C /opt/mediacrawler checkout --quiet ${MEDIACRAWLER_COMMIT} \
+ARG BUILD_HTTPS_PROXY=""
+RUN if [ -n "${BUILD_HTTPS_PROXY}" ]; then export HTTPS_PROXY="${BUILD_HTTPS_PROXY}"; fi \
+    && git init --quiet /opt/mediacrawler \
+    && git -C /opt/mediacrawler remote add origin "${MEDIACRAWLER_REPO}" \
+    && git -c http.version=HTTP/1.1 -C /opt/mediacrawler fetch --quiet --depth 1 origin "${MEDIACRAWLER_COMMIT}" \
+    && git -C /opt/mediacrawler checkout --quiet FETCH_HEAD \
+    && git -C /opt/mediacrawler rev-parse HEAD | grep -qx "${MEDIACRAWLER_COMMIT}" \
     && rm -rf /opt/mediacrawler/.git
 RUN python -m venv /opt/mediacrawler-venv \
     && /opt/mediacrawler-venv/bin/pip install --no-cache-dir -r /opt/mediacrawler/requirements.txt \
