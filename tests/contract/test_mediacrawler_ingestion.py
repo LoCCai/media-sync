@@ -1613,7 +1613,9 @@ def test_xhs_multi_live_gallery_at_the_sixteen_bound_materializes() -> None:
 def test_xhs_multi_live_gallery_fails_closed_on_payload_drift(drift: object) -> None:
     payload = _multi_live_payload()
     payload.pop(XHS_LIVE_VIDEO_LIST_FIELD)
-    if isinstance(drift, dict):
+    if isinstance(drift, dict) and set(drift) in ({"urls"}, {"url"}):
+        payload[XHS_LIVE_VIDEO_LIST_FIELD] = drift
+    elif isinstance(drift, dict):
         payload.update(drift)
     else:
         payload[XHS_LIVE_VIDEO_LIST_FIELD] = drift
