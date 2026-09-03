@@ -22,7 +22,7 @@ Boundary: execution 0048 (release-candidate calibration). This table is the cano
 | Offline complete suite | ``33 failed, 2031 passed, 1 skipped` (authoring workstation, execution 0048)` on the authoring workstation; Python 3.11/3.12/3.13 matrix `: sync green and suites run on 3.11.16/3.12.14/3.13.15; all 33 divergences are child-process tests failing identically on a clean checkout of that workstation` | Execution 0048 verification; Linux-host rerun required before RC per Phase B; sanitized node-ID artifact `artifacts/pytest-windows-0049.xml` (junit) captured for the per-test Linux diff; Windows-native runs are Experimental until the divergences are classified |
 | API/console tests | Included in the complete suite | Execution 0048 verification |
 | Static gates (ruff/format/mypy/compileall/docs) | Green at 0048 | Execution 0048 verification |
-| Docker image build | `NOT_RUN` on authoring machine (no Docker); operator builds on Linux | Phase B, first release blocker |
+| Docker image build | `NOT_RUN` on authoring machine (no Docker); the operator builds on Linux from the 0049-fixed Dockerfile, gated by the in-container doctor preflight and a `mediasync` Chromium launch | Phase B, first release blocker |
 | Container health / restart persistence / backup-restore drill | `NOT_RUN` — operator (Phase B) | docs/operations.md procedures ready |
 | Live login (any platform) | `NOT_RUN` — operator (Phase C canary: Bilibili + XHS) | Execution 0047 |
 | Live crawl / download / incrementality | `NOT_RUN` — operator (Phases C–E) | Execution 0047 |
