@@ -25,6 +25,9 @@ services:
       - "127.0.0.1:8632:8632"
     volumes:
       - media-sync-data:/data
+      # To hand /data/library to a host Emby/Jellyfin, prefer an explicit bind
+      # mount instead of the named volume, e.g.  - /srv/media-sync/data:/data
+      # then point the media server at /srv/media-sync/data/library (read-only).
     shm_size: 1g
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8632/api/v1/health"]

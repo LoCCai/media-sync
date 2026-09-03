@@ -14,9 +14,14 @@
 # Build:   docker build -t media-sync:local .
 # Run:     docker compose up -d
 
-# Python 3.13 matches the environment the uv.lock was resolved and verified
-# with; a 3.12 base makes `uv sync --locked` reject the lockfile.
-FROM python:3.13-slim-bookworm AS base
+# Reproducibility: override BASE_IMAGE with a digest-pinned reference on the
+# build host and commit the value you used, e.g.
+#   docker buildx imagetools inspect python:3.13-slim-bookworm   # copy the digest
+#   docker build --build-arg BASE_IMAGE=python:3.13-slim-bookworm@sha256:<digest> ...
+# Debian package versions remain unpinned (apt snapshots are deferred); the
+# build manifest below records what actually got installed.
+ARG BASE_IMAGE=python:3.13-slim-bookworm
+FROM ${BASE_IMAGE} AS base
 
 # Mirror overrides for mainland-China builds; defaults stay on official
 # sources so the image remains reproducible anywhere. The example compose file
@@ -60,7 +65,7 @@ COPY pyproject.toml uv.lock README.md ./
 COPY src ./src
 COPY scripts ./scripts
 COPY alembic.ini ./
-RUN pip install --no-cache-dir uv \
+RUN pip install --no-cache-dir uv==0.12.9 \
     && uv sync --locked --no-dev \
     && uv cache clean
 
@@ -79,13 +84,29 @@ RUN if [ -n "${BUILD_HTTPS_PROXY}" ]; then export HTTPS_PROXY="${BUILD_HTTPS_PRO
     && git -C /opt/mediacrawler checkout --quiet FETCH_HEAD \
     && git -C /opt/mediacrawler rev-parse HEAD | grep -qx "${MEDIACRAWLER_COMMIT}" \
     && rm -rf /opt/mediacrawler/.git
+# The upstream venv installs from a hashed lock compiled from the pinned
+# checkout's requirements.txt (docker/mediacrawler-requirements.lock), so the
+# same source SHA always builds the same dependency set; playwright is thereby
+# pinned too (1.62.0), which pins the Chromium revision it downloads.
+COPY docker/mediacrawler-requirements.lock /tmp/mediacrawler-requirements.lock
 RUN python -m venv /opt/mediacrawler-venv \
-    && /opt/mediacrawler-venv/bin/pip install --no-cache-dir -r /opt/mediacrawler/requirements.txt \
+    && /opt/mediacrawler-venv/bin/pip install --no-cache-dir --require-hashes -r /tmp/mediacrawler-requirements.lock \
     && if [ -n "${PLAYWRIGHT_DOWNLOAD_HOST}" ]; then \
            export PLAYWRIGHT_DOWNLOAD_HOST="${PLAYWRIGHT_DOWNLOAD_HOST}"; \
        fi \
     && /opt/mediacrawler-venv/bin/python -m playwright install --with-deps chromium \
-    && rm -rf /opt/mediacrawler-venv/pip-cache 2>/dev/null || true
+    && rm -f /tmp/mediacrawler-requirements.lock
+
+# Build manifest: record every runtime toolchain version baked into this
+# image (review §5 reproducibility). Full SBOM generation stays deferred.
+RUN { echo "python: $(python --version)"; \
+      echo "uv: $(uv --version)"; \
+      echo "ffmpeg: $(ffmpeg -version | head -n1)"; \
+      echo "playwright: $(/opt/mediacrawler-venv/bin/python -m playwright --version)"; \
+      echo "chromium: $(/opt/mediacrawler-venv/bin/python -c 'from playwright.sync_api import sync_playwright; p = sync_playwright().start(); print(p.chromium.executable_path); p.stop()' || echo unknown)"; \
+      echo "--- app venv ---"; /app/.venv/bin/python -m pip freeze 2>/dev/null || true; \
+      echo "--- mediacrawler venv ---"; /opt/mediacrawler-venv/bin/python -m pip freeze; \
+    } > /opt/BUILD-MANIFEST.txt
 
 # --------------------------------------------------------------- runtime env
 # Data roots are volumes; the API must bind 0.0.0.0 inside the container
