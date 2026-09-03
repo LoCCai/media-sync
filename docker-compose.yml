@@ -1,0 +1,56 @@
+# media-sync self-hosted deployment (personal use; trusted networks only).
+#
+#   docker compose up -d --build
+#   open http://127.0.0.1:8632/
+#
+# The API/console has NO authentication: the port is published to the host
+# loopback by default. Change "127.0.0.1:8632:8632" only on trusted LANs.
+
+services:
+  media-sync:
+    build:
+      context: .
+      image: media-sync:local
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8632:8632"
+    volumes:
+      - media-sync-data:/data
+    shm_size: 1g
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8632/api/v1/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+
+  # Optional resident chain: keeps due subscriptions ticking and drains the
+  # download/Emby pipeline without manual web-console clicks. It shares the
+  # same data volume and runs the execution-0012 foreground supervisor with
+  # the MediaCrawler gates explicitly enabled (license acknowledged for this
+  # personal deployment by enabling this service).
+  supervisor:
+    image: media-sync:local
+    restart: unless-stopped
+    depends_on:
+      media-sync:
+        condition: service_healthy
+    volumes:
+      - media-sync-data:/data
+    shm_size: 1g
+    environment:
+      MEDIA_SYNC_STATE_DIR: /data/state
+      MEDIA_SYNC_ARCHIVE_DIR: /data/archive
+      MEDIA_SYNC_EXPORT_DIR: /data/library
+      MEDIA_SYNC_JOB_DIR: /data/jobs
+      MEDIA_SYNC_MEDIACRAWLER_PYTHON_EXECUTABLE: /opt/mediacrawler-venv/bin/python
+      MEDIA_SYNC_MEDIACRAWLER_RUNTIME_DIR: /data/mediacrawler
+      MEDIA_SYNC_MEDIACRAWLER_LOCK_PATH: /app/upstreams.lock.json
+    entrypoint: ["/usr/local/bin/media-sync-entrypoint"]
+    command: >-
+      scheduler supervise --enable-mediacrawler --accept-mediacrawler-license
+      --idle-interval-seconds 30
+    profiles: ["supervisor"]
+
+volumes:
+  media-sync-data:
