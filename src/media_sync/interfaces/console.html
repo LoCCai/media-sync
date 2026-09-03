@@ -1,0 +1,433 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>media-sync 控制台</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: system-ui, "Segoe UI", "Microsoft YaHei", sans-serif; background: #10141c; color: #e6e9ef; }
+  header { padding: 14px 22px; background: #171d29; border-bottom: 1px solid #26304a; display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+  header h1 { font-size: 18px; margin: 0; }
+  header .meta { color: #8b96ad; font-size: 12px; }
+  main { padding: 18px 22px; max-width: 1180px; margin: 0 auto; }
+  section { background: #171d29; border: 1px solid #26304a; border-radius: 10px; padding: 16px; margin-bottom: 18px; }
+  section h2 { margin: 0 0 12px; font-size: 15px; color: #9fb4e8; }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-end; }
+  .field { display: flex; flex-direction: column; gap: 4px; }
+  label { font-size: 12px; color: #8b96ad; }
+  input, select { background: #10141c; color: #e6e9ef; border: 1px solid #313d5c; border-radius: 6px; padding: 7px 9px; font-size: 13px; min-width: 120px; }
+  input[type=checkbox] { min-width: 0; }
+  button { background: #2b5bd7; border: none; color: #fff; border-radius: 6px; padding: 8px 14px; font-size: 13px; cursor: pointer; }
+  button.secondary { background: #313d5c; }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  table { width: 100%; border-collapse: collapse; font-size: 12.5px; margin-top: 10px; }
+  th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid #232c44; vertical-align: top; word-break: break-all; }
+  th { color: #8b96ad; font-weight: 500; }
+  code { color: #9fd0ff; font-size: 12px; }
+  .pill { display: inline-block; padding: 1px 8px; border-radius: 99px; font-size: 11px; border: 1px solid #313d5c; }
+  .pill.ok { color: #7ee2a8; border-color: #2f6e4f; }
+  .pill.bad { color: #ff9f9f; border-color: #7a3a3a; }
+  .pill.warn { color: #ffd479; border-color: #7a653a; }
+  .note { font-size: 12px; color: #8b96ad; margin-top: 8px; }
+  #toast { position: fixed; right: 18px; bottom: 18px; background: #1f2937; border: 1px solid #3b82f6; padding: 10px 14px; border-radius: 8px; font-size: 13px; display: none; max-width: 420px; white-space: pre-wrap; }
+  dialog { background: #171d29; color: #e6e9ef; border: 1px solid #313d5c; border-radius: 10px; padding: 18px; max-width: 420px; }
+  dialog::backdrop { background: rgba(0,0,0,.6); }
+  #qr-img { max-width: 300px; width: 100%; image-rendering: pixelated; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+  @media (max-width: 900px) { .grid2 { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>media-sync 控制台</h1>
+  <span class="meta" id="meta">加载中…</span>
+</header>
+<main>
+
+<section>
+  <h2>服务状态</h2>
+  <div class="row">
+    <button id="btn-refresh">刷新全部</button>
+    <span class="pill" id="pill-health">health</span>
+    <span class="pill" id="pill-ready">ready</span>
+  </div>
+  <div class="note">本控制台无鉴权，仅限本机/可信内网使用。MediaCrawler 相关操作需显式勾选启用与许可证确认。</div>
+</section>
+
+<section>
+  <h2>平台账户</h2>
+  <div class="row">
+    <div class="field"><label>平台</label>
+      <select id="acc-platform">
+        <option value="bili">哔哩哔哩 bili</option>
+        <option value="xhs">小红书 xhs</option>
+        <option value="dy">抖音 dy</option>
+        <option value="ks">快手 ks</option>
+        <option value="wb">微博 wb</option>
+        <option value="tieba">贴吧 tieba</option>
+        <option value="zhihu">知乎 zhihu</option>
+      </select></div>
+    <div class="field"><label>显示名</label><input id="acc-name" placeholder="bili-main"></div>
+    <div class="field"><label>登录方式</label>
+      <select id="acc-login">
+        <option value="qr">扫码 QR</option>
+      </select></div>
+    <button id="btn-acc-add">添加账户</button>
+  </div>
+  <table><thead><tr><th>账户 ID</th><th>平台</th><th>名称</th><th>登录方式</th><th>认证状态</th><th>登录会话</th><th>操作</th></tr></thead>
+  <tbody id="accounts-body"><tr><td colspan="7">—</td></tr></tbody></table>
+</section>
+
+<section>
+  <h2>创作者订阅</h2>
+  <div class="row">
+    <div class="field"><label>账户</label><select id="sub-account"></select></div>
+    <div class="field"><label>创作者 ID</label><input id="sub-remote-id" placeholder="如 B 站 UID 数字"></div>
+    <div class="field"><label>创作者名称</label><input id="sub-display-name" placeholder="显示名"></div>
+    <div class="field"><label>单次上限</label><input id="sub-max-items" type="number" value="5" min="1" max="1000"></div>
+    <div class="field"><label>允许全历史</label><input id="sub-full-history" type="checkbox"></div>
+    <button id="btn-sub-add">添加订阅</button>
+  </div>
+  <table><thead><tr><th>订阅 ID</th><th>平台</th><th>创作者</th><th>状态</th><th>下次运行</th><th>上次成功</th><th>操作</th></tr></thead>
+  <tbody id="subs-body"><tr><td colspan="7">—</td></tr></tbody></table>
+</section>
+
+<section>
+  <h2>同步运行（订阅抓取 → 下载 → Emby 导出）</h2>
+  <div class="row" style="margin-bottom:10px">
+    <button id="btn-tick">调度 tick</button>
+    <button id="btn-sched-run">运行同步 worker</button>
+    <button id="btn-pipe-run">运行下载/导出 pipeline</button>
+    <span class="field" style="flex-direction:row;align-items:center;gap:6px"><input id="mc-enable" type="checkbox"><label for="mc-enable" style="color:inherit">启用 MediaCrawler</label></span>
+    <span class="field" style="flex-direction:row;align-items:center;gap:6px"><input id="mc-license" type="checkbox"><label for="mc-license" style="color:inherit">我已确认其非商业学习许可证</label></span>
+  </div>
+  <div class="grid2">
+    <div>
+      <h2 style="font-size:13px">调度任务（sync.subscription）</h2>
+      <table><thead><tr><th>Job</th><th>订阅</th><th>状态</th><th>尝试</th><th>更新</th></tr></thead>
+      <tbody id="jobs-body"><tr><td colspan="5">—</td></tr></tbody></table>
+    </div>
+    <div>
+      <h2 style="font-size:13px">后台操作记录</h2>
+      <table><thead><tr><th>操作</th><th>状态</th><th>结果/错误</th><th>时间</th></tr></thead>
+      <tbody id="ops-body"><tr><td colspan="4">—</td></tr></tbody></table>
+    </div>
+  </div>
+</section>
+
+<section>
+  <h2>媒体资产与 Emby 导出</h2>
+  <div class="row">
+    <button id="btn-assets" class="secondary">刷新资产</button>
+    <div class="field"><label>作者 ID（导出用）</label><input id="export-author" placeholder="author UUID"></div>
+    <button id="btn-export">导出到 Emby 目录</button>
+  </div>
+  <table><thead><tr><th>资产</th><th>类型</th><th>状态</th><th>内容</th><th>归档</th></tr></thead>
+  <tbody id="assets-body"><tr><td colspan="5">—</td></tr></tbody></table>
+</section>
+
+</main>
+
+<dialog id="qr-dialog">
+  <h2 style="margin-top:0">扫码登录</h2>
+  <p class="note" id="qr-account"></p>
+  <div style="text-align:center;min-height:220px;display:flex;align-items:center;justify-content:center">
+    <img id="qr-img" alt="登录二维码" style="display:none">
+    <span id="qr-hint" class="note">等待二维码…（登录子进程启动中）</span>
+  </div>
+  <p class="note" id="qr-status"></p>
+  <div style="text-align:right"><button id="qr-close" class="secondary">关闭</button></div>
+</dialog>
+
+<div id="toast"></div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let toastTimer = null;
+function toast(message) {
+  const box = $("toast");
+  box.textContent = message;
+  box.style.display = "block";
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { box.style.display = "none"; }, 5000);
+}
+async function api(path, options = {}) {
+  const response = await fetch(path, {
+    headers: { "Content-Type": "application/json" },
+    ...options,
+  });
+  const text = await response.text();
+  const body = text ? JSON.parse(text) : null;
+  if (!response.ok) {
+    const detail = body && body.detail ? (typeof body.detail === "string" ? body.detail : JSON.stringify(body.detail)) : response.status;
+    throw new Error(detail);
+  }
+  return body;
+}
+function pill(el, text, cls) {
+  el.textContent = text;
+  el.className = "pill " + cls;
+}
+function cell(value) {
+  if (value === null || value === undefined || value === "") return "—";
+  return typeof value === "object" ? `<code>${JSON.stringify(value)}</code>` : String(value);
+}
+
+async function refreshHealth() {
+  try {
+    await api("/api/v1/health");
+    pill($("pill-health"), "health ok", "ok");
+  } catch { pill($("pill-health"), "health fail", "bad"); }
+  try {
+    await api("/api/v1/ready");
+    pill($("pill-ready"), "database ready", "ok");
+  } catch { pill($("pill-ready"), "database 未就绪", "bad"); }
+  try {
+    const settings = await api("/api/v1/settings");
+    $("meta").textContent = `v${settings.version} · ${settings.api_bind} · 归档 ${settings.archive_dir} · 导出 ${settings.export_dir}`
+      + (settings.mediacrawler_python_executable ? " · MediaCrawler 已配置" : " · MediaCrawler 未配置");
+  } catch { /* ignore */ }
+}
+
+async function refreshAccounts() {
+  const accounts = await api("/api/v1/accounts");
+  const subSelect = $("sub-account");
+  const previous = subSelect.value;
+  subSelect.innerHTML = accounts.map(a => `<option value="${a.id}">${a.platform} / ${a.display_name}</option>`).join("") || "<option value=\"\">（先添加账户）</option>";
+  if (previous && accounts.some(a => a.id === previous)) subSelect.value = previous;
+  $("accounts-body").innerHTML = accounts.length ? accounts.map(a => `
+    <tr>
+      <td><code>${a.id}</code></td>
+      <td>${a.platform}</td>
+      <td>${a.display_name}</td>
+      <td>${a.login_method}</td>
+      <td>${a.auth_status ?? "—"}</td>
+      <td id="ls-${a.id}">…</td>
+      <td><button class="secondary" onclick="startLogin('${a.id}')">扫码登录</button></td>
+    </tr>`).join("") : "<tr><td colspan=7>暂无账户</td></tr>";
+  for (const account of accounts) refreshLoginStatus(account.id);
+}
+async function refreshLoginStatus(accountId) {
+  try {
+    const status = await api(`/api/v1/accounts/${accountId}/login-status`);
+    const node = $(`ls-${accountId}`);
+    if (node) node.innerHTML = `${status.login_session_status ?? "—"} ${status.auth_status ? `<span class="pill ${status.auth_status === "authenticated" ? "ok" : "warn"}">${status.auth_status}</span>` : ""}`;
+  } catch { /* ignore */ }
+}
+async function addAccount() {
+  try {
+    const account = await api("/api/v1/accounts", {
+      method: "POST",
+      body: JSON.stringify({
+        platform: $("acc-platform").value,
+        display_name: $("acc-name").value.trim(),
+        login_method: $("acc-login").value,
+      }),
+    });
+    toast(`账户已${account.created ? "创建" : "存在"}：${account.id}`);
+    $("acc-name").value = "";
+    refreshAccounts();
+  } catch (error) { toast("添加账户失败：" + error.message); }
+}
+
+function startLogin(accountId) {
+  if (!$("mc-enable").checked || !$("mc-license").checked) {
+    toast("请先勾选「启用 MediaCrawler」与「我已确认其非商业学习许可证」");
+    return;
+  }
+  const dialog = $("qr-dialog");
+  $("qr-account").textContent = `账户 ${accountId}（超时 180 秒，请用平台 App 扫码）`;
+  $("qr-img").style.display = "none";
+  $("qr-hint").style.display = "inline";
+  $("qr-status").textContent = "";
+  dialog.showModal();
+  api(`/api/v1/accounts/${accountId}/login`, {
+    method: "POST",
+    body: JSON.stringify({ enable_mediacrawler: true, accept_mediacrawler_license: true, timeout_seconds: 180 }),
+  }).then((started) => {
+    $("qr-status").textContent = `登录进行中（操作 ${started.operation_id}）`;
+    pollLogin(accountId, started.operation_id);
+  }).catch((error) => {
+    $("qr-status").textContent = "启动登录失败：" + error.message;
+  });
+}
+let qrCacheKey = 0;
+function pollLogin(accountId, operationId) {
+  const timer = setInterval(async () => {
+    if (!$("qr-dialog").open) { clearInterval(timer); return; }
+    qrCacheKey += 1;
+    const image = $("qr-img");
+    image.src = `/api/v1/accounts/${accountId}/login-qr.png?k=${qrCacheKey}`;
+    image.style.display = "inline";
+    $("qr-hint").style.display = "none";
+    image.onerror = () => { image.style.display = "none"; $("qr-hint").style.display = "inline"; };
+    try { await refreshLoginStatus(accountId); } catch { /* ignore */ }
+    try {
+      const operation = await api(`/api/v1/operations/${operationId}`);
+      if (operation.state !== "running") {
+        clearInterval(timer);
+        $("qr-status").textContent = operation.state === "succeeded"
+          ? `登录结果：${JSON.stringify(operation.result)}`
+          : `登录失败：${operation.error_code}`;
+        refreshAccounts();
+      }
+    } catch { /* ignore */ }
+  }, 1500);
+}
+
+async function refreshSubs() {
+  const subs = await api("/api/v1/subscriptions");
+  $("subs-body").innerHTML = subs.length ? subs.map(s => `
+    <tr>
+      <td><code>${s.id}</code></td>
+      <td>${s.platform}</td>
+      <td>${s.creator_display_name} <code>${s.creator_remote_id}</code></td>
+      <td>${s.enabled ? '<span class="pill ok">启用</span>' : '<span class="pill warn">暂停</span>'}</td>
+      <td>${cell(s.next_run_at)}</td>
+      <td>${cell(s.last_success_at)}</td>
+      <td>
+        <button class="secondary" onclick="subAction('${s.id}','pause')">暂停</button>
+        <button class="secondary" onclick="subAction('${s.id}','resume')">恢复</button>
+        <button class="secondary" onclick="subAction('${s.id}','run-now')">立即运行</button>
+      </td>
+    </tr>`).join("") : "<tr><td colspan=7>暂无订阅</td></tr>";
+}
+async function addSubscription() {
+  const account = $("sub-account").value;
+  if (!account) { toast("请先添加并选择账户"); return; }
+  try {
+    const selected = Array.from($("sub-account").selectedOptions[0].textContent.split(" / "));
+    const sub = await api("/api/v1/subscriptions", {
+      method: "POST",
+      body: JSON.stringify({
+        account_id: account,
+        platform: selected[0],
+        creator_remote_id: $("sub-remote-id").value.trim(),
+        display_name: $("sub-display-name").value.trim() || $("sub-remote-id").value.trim(),
+        max_items: Number($("sub-max-items").value || 5),
+        allow_full_history: $("sub-full-history").checked,
+      }),
+    });
+    toast(`订阅已${sub.created ? "创建" : "存在"}：${sub.id}`);
+    refreshSubs();
+  } catch (error) { toast("添加订阅失败：" + error.message); }
+}
+async function subAction(id, action) {
+  try {
+    await api(`/api/v1/subscriptions/${id}/${action}`, { method: "POST" });
+    toast(`订阅 ${action} 完成`);
+    refreshSubs();
+  } catch (error) { toast(`${action} 失败：` + error.message); }
+}
+
+async function schedulerTick() {
+  try {
+    const result = await api("/api/v1/scheduler/tick", { method: "POST", body: JSON.stringify({}) });
+    toast(`tick 完成，物化 ${result.materialized_count} 个周期`);
+    refreshJobs();
+  } catch (error) { toast("tick 失败：" + error.message); }
+}
+async function schedulerRun() {
+  try {
+    const started = await api("/api/v1/scheduler/run", {
+      method: "POST",
+      body: JSON.stringify({
+        max_jobs: 1,
+        enable_mediacrawler: $("mc-enable").checked,
+        accept_mediacrawler_license: $("mc-license").checked,
+      }),
+    });
+    toast(`同步 worker 已启动（操作 ${started.operation_id}）`);
+    pollOps();
+  } catch (error) { toast("同步运行失败：" + error.message); }
+}
+async function pipelineRun() {
+  try {
+    const started = await api("/api/v1/pipeline/run", {
+      method: "POST",
+      body: JSON.stringify({
+        max_jobs: 1,
+        enable_mediacrawler: $("mc-enable").checked,
+        accept_mediacrawler_license: $("mc-license").checked,
+      }),
+    });
+    toast(`pipeline 已启动（操作 ${started.operation_id}）`);
+    pollOps();
+  } catch (error) { toast("pipeline 失败：" + error.message); }
+}
+
+async function refreshJobs() {
+  try {
+    const jobs = await api("/api/v1/scheduler/jobs?limit=20");
+    $("jobs-body").innerHTML = jobs.length ? jobs.map(j => `
+      <tr><td><code>${(j.id || "").slice(0, 8)}</code></td><td><code>${(j.subscription_id || "").slice(0, 8)}</code></td>
+      <td>${j.status ?? "—"}</td><td>${cell(j.attempts)}</td><td>${cell(j.updated_at)}</td></tr>`).join("")
+      : "<tr><td colspan=5>暂无任务</td></tr>";
+  } catch { /* ignore */ }
+}
+async function refreshOps() {
+  try {
+    const ops = await api("/api/v1/operations?limit=15");
+    $("ops-body").innerHTML = ops.length ? ops.map(o => `
+      <tr><td>${o.kind}</td>
+      <td>${o.state === "succeeded" ? '<span class="pill ok">成功</span>' : o.state === "failed" ? '<span class="pill bad">失败</span>' : '<span class="pill warn">运行中</span>'}</td>
+      <td>${cell(o.error_code ?? o.result?.results ?? o.result)}</td>
+      <td>${cell(o.started_at)}</td></tr>`).join("") : "<tr><td colspan=4>暂无操作</td></tr>";
+  } catch { /* ignore */ }
+}
+function pollOps() {
+  refreshOps();
+  const timer = setInterval(() => {
+    refreshOps(); refreshJobs();
+    api("/api/v1/operations?limit=5").then((ops) => {
+      if (!ops.some(o => o.state === "running")) clearInterval(timer);
+    }).catch(() => clearInterval(timer));
+  }, 3000);
+}
+
+async function refreshAssets() {
+  try {
+    const assets = await api("/api/v1/assets?limit=100");
+    $("assets-body").innerHTML = assets.length ? assets.map(a => `
+      <tr><td><code>${(a.id || "").slice(0, 8)}</code></td><td>${a.kind}</td><td>${a.status}</td>
+      <td><code>${(a.content_id || "").slice(0, 8)}</code></td><td>${cell(a.archive_sha256 ? String(a.archive_sha256).slice(0, 12) : null)}</td></tr>`).join("")
+      : "<tr><td colspan=5>暂无资产</td></tr>";
+  } catch (error) { toast("资产刷新失败：" + error.message); }
+}
+async function runExport() {
+  const author = $("export-author").value.trim();
+  if (!author) { toast("请填写作者 ID（可在资产列表或订阅数据中获得）"); return; }
+  try {
+    const started = await api("/api/v1/emby/export", {
+      method: "POST",
+      body: JSON.stringify({ author_id: author }),
+    });
+    toast(`Emby 导出已启动（操作 ${started.operation_id}）`);
+    pollOps();
+  } catch (error) { toast("导出失败：" + error.message); }
+}
+
+async function refreshAll() {
+  await refreshHealth();
+  await refreshAccounts();
+  await refreshSubs();
+  await refreshJobs();
+  await refreshOps();
+}
+
+$("btn-refresh").onclick = refreshAll;
+$("btn-acc-add").onclick = addAccount;
+$("btn-sub-add").onclick = addSubscription;
+$("btn-tick").onclick = schedulerTick;
+$("btn-sched-run").onclick = schedulerRun;
+$("btn-pipe-run").onclick = pipelineRun;
+$("btn-assets").onclick = refreshAssets;
+$("btn-export").onclick = runExport;
+$("qr-close").onclick = () => $("qr-dialog").close();
+
+refreshAll();
+</script>
+</body>
+</html>

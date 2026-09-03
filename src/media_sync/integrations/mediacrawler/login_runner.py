@@ -63,6 +63,8 @@ LOGIN_RUNNER_SCHEMA_VERSION = 1
 LOGIN_ONLY_CRAWLER_TYPE = "media_sync_login_only"
 MAX_LOGIN_REQUEST_BYTES = 64 * 1024
 MAX_LOGIN_RESULT_BYTES = 4 * 1024
+LOGIN_QR_IMAGE_NAME = "login-qr.png"
+_MAX_QR_IMAGE_BYTES = 2 * 1024 * 1024
 _LOGIN_REQUEST_LENGTH_BYTES = 4
 _LOGIN_RESULT_LENGTH_BYTES = 4
 _LOGIN_CONTROL_POLL_SECONDS = 0.02
@@ -216,6 +218,8 @@ class MediaCrawlerLoginProcessRunner:
                         checkout.commit,
                     )
         finally:
+            with contextlib.suppress(OSError):
+                (paths.account_root / LOGIN_QR_IMAGE_NAME).unlink(missing_ok=True)
             try:
                 cleanup_status = cleanup_attempt_root(paths)
             finally:
@@ -689,7 +693,16 @@ def fence_saved_session_qr_fallback(platform: Platform) -> Iterator[None]:
 
 
 @contextlib.contextmanager
-def _disable_qr_export(checkout: Path) -> Iterator[None]:
+def _disable_qr_export(checkout: Path, qr_relay: Path | None = None) -> Iterator[None]:
+    """Keep the QR challenge out of the child terminal and optionally relay it.
+
+    Without a relay destination the pinned ``show_qrcode`` helper becomes a
+    no-op so the QR stays inside the headed browser. With a destination the
+    exact image bytes are atomically mirrored to that path so a local web
+    console can display the challenge while the browser runs on a container
+    display. Failures to write never affect the login result.
+    """
+
     utils: Any = importlib.import_module("tools.utils")
     if not _module_belongs_to_checkout(utils, checkout):
         raise _ChildConfigurationError
@@ -700,7 +713,27 @@ def _disable_qr_export(checkout: Path) -> Iterator[None]:
     def keep_qr_in_browser(_value: object) -> None:
         return None
 
-    utils.show_qrcode = keep_qr_in_browser
+    destination = qr_relay
+
+    def relay_qr_to_file(value: object) -> None:
+        if destination is None or not isinstance(value, (bytes, bytearray)) or not value:
+            return
+        if len(value) > _MAX_QR_IMAGE_BYTES:
+            return
+        try:
+            temporary = destination.with_name(f".{destination.name}.{os.getpid()}.tmp")
+            descriptor = os.open(
+                temporary,
+                os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_BINARY", 0),
+                0o600,
+            )
+            with os.fdopen(descriptor, "wb") as output:
+                output.write(bytes(value))
+            os.replace(temporary, destination)
+        except OSError:
+            return
+
+    utils.show_qrcode = relay_qr_to_file if qr_relay is not None else keep_qr_in_browser
     try:
         yield
     finally:
@@ -731,7 +764,7 @@ async def _run_upstream(request: _ChildRequest) -> MediaCrawlerLoginStatus:
             if request.mode is MediaCrawlerLoginMode.SAVED_SESSION_PROBE
             else contextlib.nullcontext()
         )
-        with _disable_qr_export(request.checkout_root), qr_fence:
+        with _disable_qr_export(request.checkout_root, request.paths.account_root / LOGIN_QR_IMAGE_NAME), qr_fence:
             await crawler.start()
     except _LoginAuthenticated:
         return MediaCrawlerLoginStatus.AUTHENTICATED
@@ -941,6 +974,7 @@ if __name__ == "__main__":
 
 __all__ = [
     "LOGIN_ONLY_CRAWLER_TYPE",
+    "LOGIN_QR_IMAGE_NAME",
     "LOGIN_RUNNER_SCHEMA_VERSION",
     "MediaCrawlerLoginProcessRunner",
     "SavedSessionQrFallbackBlocked",

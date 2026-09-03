@@ -2545,6 +2545,50 @@ def run_sync(
         raise typer.Exit(code=2 if result.status is RunStatus.AWAITING_AUTH else 1)
 
 
+@app.command("serve")
+def serve_api(
+    host: Annotated[
+        str | None,
+        typer.Option(help="Bind address override; defaults to MEDIA_SYNC_API_HOST (127.0.0.1)."),
+    ] = None,
+    port: Annotated[
+        int | None,
+        typer.Option(min=1, max=65_535, help="Port override; defaults to MEDIA_SYNC_API_PORT (8632)."),
+    ] = None,
+) -> None:
+    """Serve the local REST API and embedded web console (no authentication)."""
+
+    settings = get_settings()
+    resolved_host = host or settings.api_host
+    resolved_port = port or settings.api_port
+    if not resolved_host or not math.isfinite(float(resolved_port)) or not 1 <= int(resolved_port) <= 65_535:
+        raise typer.BadParameter("invalid bind address")
+
+    import uvicorn
+
+    from media_sync.interfaces.api import create_api_app
+
+    typer.echo(
+        json.dumps(
+            {
+                "service": "media-sync-api",
+                "bind": f"{resolved_host}:{resolved_port}",
+                "console": "http://127.0.0.1:8632/"
+                if resolved_host == "127.0.0.1"
+                else f"http://{resolved_host}:{resolved_port}/",
+                "authentication": "none; trusted networks only",
+            },
+            ensure_ascii=True,
+        )
+    )
+    uvicorn.run(
+        create_api_app(settings),
+        host=resolved_host,
+        port=int(resolved_port),
+        log_level=settings.log_level.lower(),
+    )
+
+
 def run() -> None:
     """Console entry point useful to module runners and tests."""
 
