@@ -20,4 +20,4 @@ __pycache__
 .env
 docs
 tests
-docker-compose.yml
+docker-compose*.yml

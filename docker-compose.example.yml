@@ -1,10 +1,13 @@
-# media-sync self-hosted deployment (personal use; trusted networks only).
+# media-sync self-hosted deployment template (personal use; trusted networks only).
 #
+#   cp docker-compose.example.yml docker-compose.yml
 #   docker compose up -d --build
 #   open http://127.0.0.1:8632/
 #
-# The API/console has NO authentication: the port is published to the host
-# loopback by default. Change "127.0.0.1:8632:8632" only on trusted LANs.
+# Keep YOUR docker-compose.yml local: it is git-ignored so upstream updates
+# never conflict with your deployment configuration. The API/console has NO
+# authentication: the port is published to the host loopback by default.
+# Change "127.0.0.1:8632:8632" only on trusted LANs.
 
 services:
   media-sync:

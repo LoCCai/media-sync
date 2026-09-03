@@ -11,7 +11,7 @@
 
 1. `Dockerfile` builds two layers: the app venv (`/app/.venv`) and the pinned MediaCrawler checkout (`/opt/mediacrawler` + own venv + Playwright Chromium at `/opt/mediacrawler-venv`) at the SHA recorded in `upstreams.lock.json`, with `ffmpeg`, `Xvfb`, CJK fonts and a curl healthcheck.
 2. `docker/entrypoint.sh` starts Xvfb on `:99` (the child env allowlist already carries `DISPLAY`/`XAUTHORITY`), runs the idempotent `db init`, then execs the command.
-3. `docker-compose.yml` publishes `127.0.0.1:8632:8632` only, keeps all state under the `media-sync-data` volume (`/data`), and offers an optional `supervisor` profile running `scheduler supervise` with both MediaCrawler gates.
+3. `docker-compose.example.yml` ships as a template: the operator copies it to a git-ignored `docker-compose.yml` and edits freely, so upstream updates never conflict with local deployment configuration. It publishes `127.0.0.1:8632:8632` only, keeps all state under the `media-sync-data` volume (`/data`), and offers an optional `supervisor` profile running `scheduler supervise` with both MediaCrawler gates.
 4. Bilingual deployment documentation (`docs/deployment.md` / `.zh.md`) walks build → console QR login → subscribe → sync/pipeline → Emby library with an honest verification checklist.
 
 ## Acceptance boundaries

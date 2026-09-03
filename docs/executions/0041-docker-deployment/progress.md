@@ -9,7 +9,7 @@
 
 - `Dockerfile` (python:3.12-slim-bookworm base; app venv via `uv sync --locked --no-dev`; MediaCrawler cloned at the locked commit `d6f7c5b…` with its own venv, requirements and `playwright install --with-deps chromium`; ffmpeg/Xvfb/xauth/CJK fonts; non-root `mediasync` user; curl healthcheck; `MEDIACRAWLER_COMMIT` build arg).
 - `docker/entrypoint.sh` (Xvfb `:99`, `media-sync db init`, exec CMD) and `.dockerignore`.
-- `docker-compose.yml`: loopback-only port publishing, `media-sync-data` volume, 1 GB `/dev/shm` for Chromium, healthcheck, optional `supervisor` profile running `scheduler supervise --enable-mediacrawler --accept-mediacrawler-license --idle-interval-seconds 30`.
+- `docker-compose.example.yml` template (renamed from a tracked live file after review so operator copies never conflict with `git pull`): loopback-only port publishing, `media-sync-data` volume, 1 GB `/dev/shm` for Chromium, healthcheck, optional `supervisor` profile running `scheduler supervise --enable-mediacrawler --accept-mediacrawler-license --idle-interval-seconds 30`.
 - Bilingual `docs/deployment.md` / `docs/deployment.zh.md` with the operator verification checklist.
 
 ## Deviations and decisions
@@ -19,4 +19,4 @@
 
 ## Remaining
 
-- Operator: `docker compose build` / `up -d`, run the complete test suite inside or beside the container, perform console QR login + subscribe + sync + pipeline + Emby checks, and record honest outcomes.
+- Operator: `cp docker-compose.example.yml docker-compose.yml`, edit freely, then `docker compose build` / `up -d`, run the complete test suite inside or beside the container, perform console QR login + subscribe + sync + pipeline + Emby checks, and record honest outcomes.

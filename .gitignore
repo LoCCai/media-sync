@@ -42,3 +42,8 @@ cookies.json
 .vscode/
 .DS_Store
 Thumbs.db
+
+# Local deployment configuration copied from docker-compose.example.yml
+docker-compose.yml
+docker-compose.override.yml
+compose.override.yml

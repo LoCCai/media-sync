@@ -8,7 +8,8 @@
 
 ```bash
 git clone <你的仓库> media-sync && cd media-sync
-docker compose build          # 或：docker build -t media-sync:local .
+cp docker-compose.example.yml docker-compose.yml   # 本地副本已被 git 忽略
+docker compose build          # 如需改端口/路径，先编辑你的本地副本
 ```
 
 镜像包含两层：
@@ -30,7 +31,7 @@ docker compose up -d
 - REST 文档：<http://127.0.0.1:8632/api/docs>。
 - SQLite 状态库、归档、Emby 目录与 MediaCrawler 运行时都在 `media-sync-data` 卷的 `/data` 下。
 
-控制台与 API **没有鉴权** —— 只发布到可信网络。要在内网开放，请自行把 `docker-compose.yml` 里的 `127.0.0.1:8632:8632` 改成 `192.168.x.x:8632:8632`，风险自负。
+控制台与 API **没有鉴权** —— 只发布到可信网络。要在内网开放，请编辑你自己的本地 `docker-compose.yml`（从 example 复制而来），把 `127.0.0.1:8632:8632` 改成 `192.168.x.x:8632:8632`，风险自负；example 模板本身保持原样，`git pull` 更新时不会与你的部署配置冲突。
 
 ## 3. 控制台扫码登录
 

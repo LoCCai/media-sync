@@ -9,7 +9,7 @@
 
 - `Dockerfile`（python:3.12-slim-bookworm 基底；`uv sync --locked --no-dev` 应用 venv；MediaCrawler 按锁定提交 `d6f7c5b…` 克隆并配置独立 venv、requirements 与 `playwright install --with-deps chromium`；ffmpeg/Xvfb/xauth/中文字体；非 root `mediasync` 用户；curl 健康检查；`MEDIACRAWLER_COMMIT` 构建参数）。
 - `docker/entrypoint.sh`（Xvfb `:99`、`media-sync db init`、exec CMD）与 `.dockerignore`。
-- `docker-compose.yml`：仅回环发布端口、`media-sync-data` 卷、Chromium 所需 1 GB `/dev/shm`、健康检查、可选 `supervisor` profile（`scheduler supervise --enable-mediacrawler --accept-mediacrawler-license --idle-interval-seconds 30`）。
+- `docker-compose.example.yml` 模板（评审后由被跟踪的实文件改名而来，操作者本地副本绝不与 `git pull` 冲突）：仅回环发布端口、`media-sync-data` 卷、Chromium 所需 1 GB `/dev/shm`、健康检查、可选 `supervisor` profile（`scheduler supervise --enable-mediacrawler --accept-mediacrawler-license --idle-interval-seconds 30`）。
 - 双语 `docs/deployment.md` / `docs/deployment.zh.md` 附操作者验收清单。
 
 ## 偏差与决策
@@ -19,4 +19,4 @@
 
 ## 待完成
 
-- 操作者：`docker compose build` / `up -d`，在容器内或旁边运行完整测试套件，执行控制台扫码登录 + 订阅 + 同步 + pipeline + Emby 检查，并如实记录结果。
+- 操作者：`cp docker-compose.example.yml docker-compose.yml` 自由修改后 `docker compose build` / `up -d`，在容器内或旁边运行完整测试套件，执行控制台扫码登录 + 订阅 + 同步 + pipeline + Emby 检查，并如实记录结果。

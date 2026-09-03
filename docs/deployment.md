@@ -8,7 +8,8 @@ This guide deploys media-sync as a self-hosted container with the pinned MediaCr
 
 ```bash
 git clone <your-fork> media-sync && cd media-sync
-docker compose build          # or: docker build -t media-sync:local .
+cp docker-compose.example.yml docker-compose.yml   # your live copy is git-ignored
+docker compose build          # edit your copy first if you need different ports/paths
 ```
 
 The image contains two layers:
@@ -30,7 +31,7 @@ docker compose up -d
 - REST docs: <http://127.0.0.1:8632/api/docs>.
 - SQLite state, archive, Emby tree and MediaCrawler runtime live in the `media-sync-data` volume under `/data`.
 
-The console and API carry **no authentication** — publish the port to trusted networks only. To expose on your LAN, change `127.0.0.1:8632:8632` to `192.168.x.x:8632:8632` in `docker-compose.yml` at your own risk.
+The console and API carry **no authentication** — publish the port to trusted networks only. To expose on your LAN, edit YOUR local `docker-compose.yml` (copied from the example) and change `127.0.0.1:8632:8632` to `192.168.x.x:8632:8632` at your own risk; the example template stays untouched so `git pull` never conflicts with your deployment configuration.
 
 ## 3. QR login through the console
 
