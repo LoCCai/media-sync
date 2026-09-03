@@ -7,10 +7,10 @@
 
 ## 总体形态
 
-首版采用 Python 模块化单体。CLI、有界本地调度器与工作器目前共享同一领域层和 SQLite 数据库；本地 REST API 仍是计划能力，尚未实现。平台特有行为全部位于适配器之后；媒体下载和 Emby 渲染不接触上游字段名。
+首版采用 Python 模块化单体。CLI、有界本地调度器与工作器目前共享同一领域层和 SQLite 数据库；执行 0040 的本地 REST API 与内置 Web 控制台（`media-sync serve`）已交付。平台特有行为全部位于适配器之后；媒体下载和 Emby 渲染不接触上游字段名。
 
 ```text
-CLI / Scheduler / [planned REST API]
+CLI / Scheduler / REST API + Web 控制台（执行 0040）
            |
      Application services
            |
@@ -30,7 +30,7 @@ SQLite <---- normalized domain ----> Filesystem
 ## 技术基线
 
 - Python `>=3.11,<3.14`、`uv` 与 `src/` 包布局。
-- Typer 提供已实现 CLI，Pydantic 校验边界；FastAPI 仅为后续本地 REST 接口预留。
+- Typer 提供已实现 CLI，Pydantic 校验边界；FastAPI 承载执行 0040 的本地 REST 接口与内置控制台。
 - 使用 SQLAlchemy 2.x 与 Alembic，默认启用 SQLite WAL；仓储接口为后续 PostgreSQL 保留可能性。
 - 已实现媒体工具使用 `httpcore`/`httpx` 流式下载、音视频强制且有界的 `ffprobe` 验证及标准库 XML 生成；FFmpeg mux/幻灯片转换属于计划/延期能力，并非当前能力。
 - 使用 `pytest`、Ruff 与 mypy，并采用确定性夹具及 golden 目录树。
@@ -48,7 +48,7 @@ SQLite <---- normalized domain ----> Filesystem
 | `integrations.mediacrawler` | 外部进程、安全环境、输出导入、兼容修正 | 内嵌或修改上游源码 |
 | `media` | 安全下载、校验与强制音视频结构探测；FFmpeg 转换为计划/延期能力 | 依赖爬虫实现 |
 | `exporters.emby` | 确定性路径、NFO、图片边车 | 请求平台 API |
-| `interfaces` | 已实现 CLI 与依赖装配；REST 契约仍在计划中 | 包含业务规则 |
+| `interfaces` | 已实现 CLI、依赖装配与执行 0040 的 REST API/控制台投影 | 包含业务规则 |
 
 ## 归一化模型
 
@@ -242,7 +242,7 @@ library/
 
 ## 安全边界
 
-- REST 部署计划规则：默认只绑定 loopback，任何非 loopback 绑定前必须启用认证；目前尚未实现 REST 服务。
+- REST 部署规则（执行 0040 已实现）：默认只绑定回环、无鉴权，绝不可发布到可信网络之外；Docker compose 布局仅发布宿主机回环。
 - 凭据值优先保存在 OS keyring；无头环境可使用环境变量/文件 provider，数据库行只保存 provider/key。
 - 日志构造时先脱敏，并在 sink 边界再次脱敏。
 - 下载器解析并验证每次重定向，默认拒绝 loopback/私网/link-local 目标，并把路径限制在配置根目录内。
@@ -257,4 +257,4 @@ library/
 
 执行 0012 的仅登录协议使用相互独立的有界请求/结果长度 frame，并持续保留 START/CANCEL/EOF 父进程控制。父侧收容在 START 前附加，child 自持收容与控制 watcher 在导入上游前建立。结果发布后，guardian 会继续持有后代所有权及继承账户锁，直到父进程开始完整树关停；因此父进程被硬杀时，会先关闭所属 Windows Job 或 POSIX 进程组，另一次登录才可能获取该账户锁。持久恢复使用独立的截止时间权威：只有精确过期的 `pending|waiting_user` 二维码会话，在 Account 仍为 `qr/authenticating`、持有同一账户锁且通过仓储 CAS 时，才能原子切换为 `expired` 与 `qr/required`。PID 与仅凭锁可获取都不是恢复权威。
 
-这仍是本地前台监督器，不是自动重启 daemon、Windows Service/systemd 服务、Docker 部署或分布式 HA 协调器。REST 运维、生产守护/打包、PostgreSQL 锁及公网部署仍属于后续工作。原生平台适配器可逐步替换受限桥接；经过脱敏的 raw envelope 允许在上游或模型升级后重新归一化。
+监督器仍是本地前台进程，Docker 打包（执行 0041）通过可选 compose profile 运行它而非安装为服务。分布式 HA、PostgreSQL 锁、公网部署与控制台鉴权仍属后续工作；真实部署验证本身是操作者侧的发布门（执行 0047）。原生平台适配器可逐步替换受限桥接；经过脱敏的 raw envelope 允许在上游或模型升级后重新归一化。

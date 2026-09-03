@@ -7,10 +7,10 @@
 
 ## 1. Shape
 
-The first release is a modular Python monolith. One domain and SQLite database currently serve the CLI, bounded local scheduler and workers; a local REST API is planned but not implemented. Platform-specific behavior is behind adapters; media download and Emby rendering do not know upstream field names.
+The first release is a modular Python monolith. One domain and SQLite database currently serve the CLI, bounded local scheduler and workers, and the execution 0040 local REST API with its embedded web console (`media-sync serve`). Platform-specific behavior is behind adapters; media download and Emby rendering do not know upstream field names.
 
 ```text
-CLI / Scheduler / [planned REST API]
+CLI / Scheduler / REST API + web console (execution 0040)
            |
      Application services
            |
@@ -30,7 +30,7 @@ SQLite <---- normalized domain ----> Filesystem
 ## 2. Technology baseline
 
 - Python `>=3.11,<3.14`, `uv`, and a `src/` package layout.
-- Typer provides the implemented CLI and Pydantic validates boundaries; FastAPI is reserved for a planned local REST surface.
+- Typer provides the implemented CLI and Pydantic validates boundaries; FastAPI serves the execution 0040 local REST surface and embedded console.
 - SQLAlchemy 2.x plus Alembic, with SQLite WAL by default; repository interfaces keep PostgreSQL possible later.
 - Implemented media tooling uses `httpcore`/`httpx` streaming downloads, mandatory bounded `ffprobe` validation for video/audio and standard-library XML generation. FFmpeg muxing/slideshow transformations are planned/deferred, not current capabilities.
 - `pytest`, Ruff and mypy, with deterministic fixtures and golden directory trees.
@@ -48,7 +48,7 @@ The local machine already has Python 3.11.8, uv 0.9.18 and FFmpeg. Python 3.11 i
 | `integrations.mediacrawler` | External process, safe environment, output ingestion and compatibility shims | Vendor or modify upstream source |
 | `media` | Safe download, checksum and mandatory video/audio structural probe; FFmpeg transformations are planned/deferred | Depend on crawler implementation |
 | `exporters.emby` | Deterministic paths, NFO and artwork sidecars | Fetch platform APIs |
-| `interfaces` | Implemented CLI and dependency wiring; REST schemas remain planned | Contain business rules |
+| `interfaces` | Implemented CLI, dependency wiring and the execution 0040 REST API/console projections | Contain business rules |
 
 ## 4. Normalized model
 
@@ -242,7 +242,7 @@ After installation, every desired managed file and the manifest are identity/has
 
 ## 10. Security boundaries
 
-- Planned REST deployment rule: bind to loopback by default and require authentication before any non-loopback binding. No REST server is implemented yet.
+- REST deployment rule (implemented by execution 0040): binds to loopback by default, carries no authentication, and must never be published beyond a trusted network; the Docker compose layout publishes host loopback only.
 - Credential values live in the OS keyring where available, with environment/file providers for headless use; database rows store provider/key only.
 - Redaction happens at log construction and again at sink boundaries.
 - The downloader resolves and validates every redirect, rejects loopback/private/link-local targets by default, and confines paths to configured roots.
@@ -257,4 +257,4 @@ The bounded execution 0006 scheduler/worker CLI remains available on top of the 
 
 The execution 0012 login-only protocol uses separate bounded request/result length frames plus continuing START/CANCEL/EOF parent control. Parent containment is attached before START; child-owned containment and its control watcher exist before upstream import. After publishing a result, a guardian stays alive with descendant ownership and the inherited account lock until the parent begins complete-tree shutdown. Hard parent death therefore closes the owned Windows Job or POSIX process group before another login can acquire that account lock. Persistent recovery is a separate deadline authority: only an exact expired `pending|waiting_user` QR session whose Account remains `qr/authenticating` can transition atomically to `expired` plus `qr/required`, while holding the same account lock and passing repository CAS. PID values and mere lock availability are never recovery authority.
 
-This remains a local foreground supervisor, not an auto-restarting daemon, Windows Service/systemd unit, Docker deployment or distributed HA coordinator. REST operations, production supervision/packaging, PostgreSQL locking and public-network deployment remain later work. Native platform adapters may progressively replace the restricted bridge; redacted raw envelopes allow re-normalization after either upstream or schema upgrades.
+The supervisor remains a local foreground process, and Docker packaging (execution 0041) runs it via an optional compose profile rather than an installed service. Distributed HA, PostgreSQL locking, public-network deployment and console authentication remain later work; live deployment verification itself is the operator-side release gate (execution 0047). Native platform adapters may progressively replace the restricted bridge; redacted raw envelopes allow re-normalization after either upstream or schema upgrades.
