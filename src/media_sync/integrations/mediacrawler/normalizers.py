@@ -521,7 +521,7 @@ def _normalize_xhs(record: Mapping[str, object]) -> _ContentParts:
                 raise RecordNormalizationError(QuarantineReason.INVALID_RECORD)
             urls_value = live_list_payload.get("urls")
             if (
-                not isinstance(urls_value, list)
+                not isinstance(urls_value, (list, tuple))
                 or not 2 <= len(urls_value) <= XHS_LIVE_MAX_PAIRS
                 or len(images) != len(urls_value)
                 or any(type(url) is not str for url in urls_value)
