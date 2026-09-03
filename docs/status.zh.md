@@ -10,7 +10,7 @@
 | --- | --- |
 | 离线功能开发 | 冻结于 0039 边界（多实况 gallery），外加 0040（API/控制台）与 0044 最小运维端点；0043（弹幕/字幕）延期至 0.2 |
 | REST API + Web 控制台 | 已实现（0040、0044 最小集）；运维 UI 强化延期至 0.2 |
-| Docker 打包 | 候选文件 + 可复现加固已交付（0041、0048）；镜像构建/运行仅在操作者主机验证 |
+| Docker 打包 | 候选文件 + 可复现加固已交付（0041、0048）；0049 的 RC 前置修复（锁相对路径 checkout 保留 `.git`、Playwright 共享路径、构建清单内运行用户 Chromium 启动）待操作者主机首次真实构建/运行 |
 | 运维文档 / 安全审查 / 发布清单 | 已交付（0045、0046） |
 | 真人验收（最终门） | 开启中——执行 0047，操作者在 Linux 协助执行 |
 
@@ -20,9 +20,9 @@
 | --- | --- | --- |
 | 实现（离线形状） | 七平台 15+ 冻结形状 | 执行 0013–0039 记录 |
 | 离线完整套件 | 编写工作站 ``33 failed, 2031 passed, 1 skipped` (authoring workstation, execution 0048)`；Python 3.11/3.12/3.13 矩阵 `: sync green and suites run on 3.11.16/3.12.14/3.13.15; all 33 divergences are child-process tests failing identically on a clean checkout of that workstation` | 执行 0048 验证；按阶段 B，RC 前必须在 Linux 主机复跑；已捕获脱敏 node-ID 工件 `artifacts/pytest-windows-0049.xml`（junit）供逐项 Linux diff；在分歧裁定前 Windows 原生运行为 Experimental |
-| API/控制台测试 | 已并入完整套件 | 执行 0048 验证 |
+| API/控制台测试 | 已并入完整套件；0049 补充真实 Asset 下载操作生命周期覆盖（blocked→failed、verified 不一致→failed、完成型执行器→succeeded） | 执行 0048 与 0049 验证 |
 | 静态门（ruff/format/mypy/compileall/docs） | 0048 全绿 | 执行 0048 验证 |
-| Docker 镜像构建 | 编写机 `NOT_RUN`（无 Docker）；操作者在 Linux 构建 | 阶段 B，第一发布阻塞项 |
+| Docker 镜像构建 | 编写机 `NOT_RUN`（无 Docker）；操作者在 Linux 按 0049 修复后的 Dockerfile 构建，并以容器内 doctor 预检 + `mediasync` Chromium 启动为门 | 阶段 B，第一发布阻塞项 |
 | 容器健康 / 重启持久性 / 备份恢复演练 | `NOT_RUN`——操作者（阶段 B） | docs/operations.md 流程就绪 |
 | 真人登录（任一平台） | `NOT_RUN`——操作者（阶段 C 金丝雀：Bilibili + 小红书） | 执行 0047 |
 | 真人抓取 / 下载 / 增量性 | `NOT_RUN`——操作者（阶段 C–E） | 执行 0047 |

@@ -10,7 +10,7 @@ Boundary: execution 0048 (release-candidate calibration). This table is the cano
 | --- | --- |
 | Offline feature work | Frozen at the 0039 boundary (multi-live gallery) plus 0040 (API/console) and the 0044-minimal operations endpoints; 0043 (danmaku/subtitles) deferred to 0.2 |
 | REST API + web console | Implemented (0040, 0044-minimal); hardened operations UI deferred to 0.2 |
-| Docker packaging | Candidate files + reproducibility hardening delivered (0041, 0048); image build/run verified only on the operator host |
+| Docker packaging | Candidate files + reproducibility hardening delivered (0041, 0048); the 0049 RC-precondition fixes (lock-relative checkout with `.git`, shared Playwright path, runtime-user Chromium launch in the manifest) await their first real build/run on the operator host |
 | Operations docs / security review / release checklist | Delivered (0045, 0046) |
 | Live qualification (final gate) | Open — execution 0047, operator-assisted on Linux |
 
