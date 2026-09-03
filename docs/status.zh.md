@@ -19,7 +19,7 @@
 | 维度 | 状态 | 证据 / 阻塞 |
 | --- | --- | --- |
 | 实现（离线形状） | 七平台 15+ 冻结形状 | 执行 0013–0039 记录 |
-| 离线完整套件 | 编写工作站 ``33 failed, 2031 passed, 1 skipped` (authoring workstation, execution 0048)`；Python 3.11/3.12/3.13 矩阵 `: sync green and suites run on 3.11.16/3.12.14/3.13.15; all 33 divergences are child-process tests failing identically on a clean checkout of that workstation` | 执行 0048 验证；按阶段 B，RC 前必须在 Linux 主机复跑 |
+| 离线完整套件 | 编写工作站 ``33 failed, 2031 passed, 1 skipped` (authoring workstation, execution 0048)`；Python 3.11/3.12/3.13 矩阵 `: sync green and suites run on 3.11.16/3.12.14/3.13.15; all 33 divergences are child-process tests failing identically on a clean checkout of that workstation` | 执行 0048 验证；按阶段 B，RC 前必须在 Linux 主机复跑；已捕获脱敏 node-ID 工件 `artifacts/pytest-windows-0049.xml`（junit）供逐项 Linux diff；在分歧裁定前 Windows 原生运行为 Experimental |
 | API/控制台测试 | 已并入完整套件 | 执行 0048 验证 |
 | 静态门（ruff/format/mypy/compileall/docs） | 0048 全绿 | 执行 0048 验证 |
 | Docker 镜像构建 | 编写机 `NOT_RUN`（无 Docker）；操作者在 Linux 构建 | 阶段 B，第一发布阻塞项 |

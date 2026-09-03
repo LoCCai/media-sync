@@ -343,10 +343,9 @@ def create_api_app(settings: Settings | None = None) -> FastAPI:
     def login_status(account_id: UUID) -> dict[str, object]:
         database = _database()
         try:
-            settings = get_settings()
             MediaCrawlerLoginSessionReconciler(
                 database,
-                integration_root=settings.resolved_mediacrawler_runtime_dir,
+                integration_root=resolved.resolved_mediacrawler_runtime_dir,
             ).reconcile_account(account_id)
             with database.session() as session:
                 account = AccountRepository(session).get(str(account_id))
@@ -404,21 +403,20 @@ def create_api_app(settings: Settings | None = None) -> FastAPI:
         def run_login() -> None:
             login_database: Database | None = None
             try:
-                login_settings = get_settings()
-                login_database = Database(login_settings.resolved_database_url)
-                if login_settings.mediacrawler_python_executable is None:
+                login_database = Database(resolved.resolved_database_url)
+                if resolved.mediacrawler_python_executable is None:
                     runner: Any = _UnavailableMediaCrawlerLoginRunner()
                 else:
                     runner = MediaCrawlerLoginProcessRunner(
-                        lock_path=login_settings.mediacrawler_lock_path,
-                        integration_root=login_settings.resolved_mediacrawler_runtime_dir,
-                        python_executable=login_settings.mediacrawler_python_executable,
+                        lock_path=resolved.mediacrawler_lock_path,
+                        integration_root=resolved.resolved_mediacrawler_runtime_dir,
+                        python_executable=resolved.mediacrawler_python_executable,
                         enabled=True,
                         license_acknowledged=True,
                     )
                 reconciler = MediaCrawlerLoginSessionReconciler(
                     login_database,
-                    integration_root=login_settings.resolved_mediacrawler_runtime_dir,
+                    integration_root=resolved.resolved_mediacrawler_runtime_dir,
                 )
                 outcome = MediaCrawlerQrLoginService(login_database, runner, reconciler=reconciler).run(
                     AccountLoginRequest(
@@ -607,8 +605,7 @@ def create_api_app(settings: Settings | None = None) -> FastAPI:
         def run_download() -> None:
             download_database: Database | None = None
             try:
-                run_settings = get_settings()
-                download_database = Database(run_settings.resolved_database_url)
+                download_database = Database(resolved.resolved_database_url)
                 payload, ok = _execute_asset_download(
                     asset_id=asset_id,
                     worker_id=body.worker_id,
@@ -618,12 +615,13 @@ def create_api_app(settings: Settings | None = None) -> FastAPI:
                     accept_mediacrawler_license=body.accept_mediacrawler_license,
                     subscription_id=None,
                     xhs_detail_reference_ref=normalized_detail_reference,
-                    settings=run_settings,
+                    settings=resolved,
                     database=download_database,
                 )
                 operations.finish(
                     operation,
                     result={"payload": payload, "ok": ok},
+                    error_code=None if ok else str(payload.get("error_code") or "asset_download_failed"),
                     exclusive_key=f"asset-download:{asset_id}",
                 )
             except ValueError as error:
@@ -680,7 +678,7 @@ def create_api_app(settings: Settings | None = None) -> FastAPI:
 
             worker_database: Database | None = None
             try:
-                run_settings = get_settings()
+                run_settings = resolved
                 worker_database = Database(run_settings.resolved_database_url)
                 worker = _build_subscription_worker(
                     worker_database,
@@ -724,7 +722,7 @@ def create_api_app(settings: Settings | None = None) -> FastAPI:
 
             worker_database: Database | None = None
             try:
-                run_settings = get_settings()
+                run_settings = resolved
                 worker_database = Database(run_settings.resolved_database_url)
                 worker = _build_pipeline_worker(
                     worker_database,
@@ -814,7 +812,7 @@ def create_api_app(settings: Settings | None = None) -> FastAPI:
         def run_export() -> None:
             export_database: Database | None = None
             try:
-                run_settings = get_settings()
+                run_settings = resolved
                 export_database = Database(run_settings.resolved_database_url)
                 outcome = EmbyExportService(
                     export_database,

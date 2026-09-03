@@ -19,6 +19,10 @@ services:
         APT_MIRROR: mirrors.aliyun.com
         PYPI_INDEX: https://mirrors.aliyun.com/pypi/simple/
         PLAYWRIGHT_DOWNLOAD_HOST: https://registry.npmmirror.com/-/binary/playwright
+        # RC builds: pin the base image by digest and the build manifest
+        # records it.  docker buildx imagetools inspect python:3.13-slim-bookworm
+        # then:  export BASE_IMAGE=python:3.13-slim-bookworm@sha256:<digest>
+        BASE_IMAGE: ${BASE_IMAGE:-python:3.13-slim-bookworm}
     image: media-sync:local
     restart: unless-stopped
     ports:
@@ -28,6 +32,9 @@ services:
       # To hand /data/library to a host Emby/Jellyfin, prefer an explicit bind
       # mount instead of the named volume, e.g.  - /srv/media-sync/data:/data
       # then point the media server at /srv/media-sync/data/library (read-only).
+      # IMPORTANT: switching to a bind mount requires applying the SAME mount
+      # to the supervisor service below (and chown-ing the host dir to UID
+      # 1000), or the two services will see different data.
     shm_size: 1g
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8632/api/v1/health"]

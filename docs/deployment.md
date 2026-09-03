@@ -12,12 +12,23 @@ cp docker-compose.example.yml docker-compose.yml   # your live copy is git-ignor
 docker compose build          # edit your copy first if you need different ports/paths
 The example compose passes mainland-China mirror build args by default: `APT_MIRROR=mirrors.aliyun.com`, `PYPI_INDEX=https://mirrors.aliyun.com/pypi/simple/` and `PLAYWRIGHT_DOWNLOAD_HOST=https://registry.npmmirror.com/-/binary/playwright`. Building outside mainland China? Delete the three `args:` lines to fall back to official Debian/PyPI/Playwright sources. The upstream `git clone` from GitHub is not mirrored; proxy it if unreachable.```
 
+For RC builds, pin the base image by digest so the build is reproducible:
+
+```bash
+docker buildx imagetools inspect python:3.13-slim-bookworm   # copy the digest
+export BASE_IMAGE=python:3.13-slim-bookworm@sha256:<digest>
+docker compose build --no-cache
+```
+
+The compose template passes `BASE_IMAGE` through as a build arg and the build
+manifest records the resolved value.
+
 The image contains two layers:
 
 | Layer | Location | Purpose |
 | --- | --- | --- |
 | media-sync app venv | `/app/.venv` | The service, CLI, REST API and embedded console |
-| Pinned MediaCrawler checkout | `/opt/mediacrawler` (+ its own venv, Playwright and Chromium at `/opt/mediacrawler-venv`) | License-gated login/crawl children at the exact SHA recorded in `upstreams.lock.json` |
+| Pinned MediaCrawler checkout | `/app/.upstream/MediaCrawler` (the exact lock-relative path, `.git` kept) + its own venv at `/opt/mediacrawler-venv` with Playwright/Chromium in `/opt/ms-playwright` | License-gated login/crawl children at the exact SHA recorded in `upstreams.lock.json`; the existing verifier checks the git repository, commit and clean tree |
 
 `ffmpeg/ffprobe`, `Xvfb`, CJK fonts and a healthcheck are baked in. Building clones MediaCrawler at the locked SHA for your own non-commercial use; do not publish or redistribute the image.
 
@@ -32,6 +43,26 @@ docker compose up -d
 - SQLite state, archive, Emby tree and MediaCrawler runtime live in the `media-sync-data` volume under `/data`.
 
 The console and API carry **no authentication** — publish the port to trusted networks only. To expose on your LAN, edit YOUR local `docker-compose.yml` (copied from the example) and change `127.0.0.1:8632:8632` to `192.168.x.x:8632:8632` at your own risk; the example template stays untouched so `git pull` never conflicts with your deployment configuration.
+
+### 2.1 Preflight the in-container checkout (phase-B gate)
+
+Health and readiness only prove the process and database. Before any login,
+verify the embedded MediaCrawler checkout and the runtime toolchain:
+
+```bash
+docker compose exec media-sync   /app/.venv/bin/media-sync mediacrawler doctor --accept-license --json
+```
+
+And prove Chromium actually launches as the runtime user (not just that a path
+exists):
+
+```bash
+docker compose exec media-sync   /opt/mediacrawler-venv/bin/python -c   'from playwright.sync_api import sync_playwright
+with sync_playwright() as p:
+    b = p.chromium.launch(headless=True); print(b.version); b.close()'
+```
+
+Both must pass before phase-B proceeds to QR login.
 
 ## 3. QR login through the console
 

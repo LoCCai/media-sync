@@ -2,7 +2,7 @@
 
 # Execution 0043 plan
 
-- Status: Planned
+- Status: Deferred to 0.2; kept as the next-cycle planned start
 - Date: 2026-09-03
 
 ## Delivery sequence (when implemented)

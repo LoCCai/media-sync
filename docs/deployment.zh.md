@@ -12,12 +12,22 @@ cp docker-compose.example.yml docker-compose.yml   # 本地副本已被 git 忽�
 docker compose build          # 如需改端口/路径，先编辑你的本地副本
 示例 compose 默认传入中国大陆镜像构建参数：`APT_MIRROR=mirrors.aliyun.com`、`PYPI_INDEX=https://mirrors.aliyun.com/pypi/simple/`、`PLAYWRIGHT_DOWNLOAD_HOST=https://registry.npmmirror.com/-/binary/playwright`。境外构建删除这三行 `args:` 即回退官方 Debian/PyPI/Playwright 源。上游 `git clone`（GitHub）不走镜像，不通时请自备代理。```
 
+RC 构建请用 digest 钉版基底镜像以保证可复现：
+
+```bash
+docker buildx imagetools inspect python:3.13-slim-bookworm   # 复制摘要
+export BASE_IMAGE=python:3.13-slim-bookworm@sha256:<digest>
+docker compose build --no-cache
+```
+
+compose 模板会把 `BASE_IMAGE` 作为 build arg 透传，构建清单记录解析后的值。
+
 镜像包含两层：
 
 | 层 | 位置 | 用途 |
 | --- | --- | --- |
 | media-sync 应用 venv | `/app/.venv` | 服务本体、CLI、REST API 与内置控制台 |
-| 锁定 MediaCrawler checkout | `/opt/mediacrawler`（含独立 venv、Playwright 与 Chromium，位于 `/opt/mediacrawler-venv`） | 按锁文件精确 SHA 运行的许可证门禁登录/抓取子进程 |
+| 锁定 MediaCrawler checkout | `/app/.upstream/MediaCrawler`（锁文件相对解析的精确路径，保留 `.git`）+ 独立 venv `/opt/mediacrawler-venv`，Playwright/Chromium 位于 `/opt/ms-playwright` | 按锁文件精确 SHA 运行的许可证门禁登录/抓取子进程；既有校验器检查 git 仓库、提交与干净工作树 |
 
 `ffmpeg/ffprobe`、`Xvfb`、中文字体与健康检查均已内置。构建时会按锁定 SHA 克隆 MediaCrawler 供你自己非商业使用；不得发布或再分发该镜像。
 
@@ -32,6 +42,25 @@ docker compose up -d
 - SQLite 状态库、归档、Emby 目录与 MediaCrawler 运行时都在 `media-sync-data` 卷的 `/data` 下。
 
 控制台与 API **没有鉴权** —— 只发布到可信网络。要在内网开放，请编辑你自己的本地 `docker-compose.yml`（从 example 复制而来），把 `127.0.0.1:8632:8632` 改成 `192.168.x.x:8632:8632`，风险自负；example 模板本身保持原样，`git pull` 更新时不会与你的部署配置冲突。
+
+### 2.1 容器内 checkout 预检（阶段 B 门）
+
+健康与就绪只证明进程和数据库。登录之前，先校验内嵌 MediaCrawler checkout
+与运行时工具链：
+
+```bash
+docker compose exec media-sync   /app/.venv/bin/media-sync mediacrawler doctor --accept-license --json
+```
+
+并证明 Chromium 能以运行用户真正启动（而不只是路径存在）：
+
+```bash
+docker compose exec media-sync   /opt/mediacrawler-venv/bin/python -c   'from playwright.sync_api import sync_playwright
+with sync_playwright() as p:
+    b = p.chromium.launch(headless=True); print(b.version); b.close()'
+```
+
+两项都必须通过，阶段 B 才进入扫码登录。
 
 ## 3. 控制台扫码登录
 

@@ -47,3 +47,7 @@ Thumbs.db
 docker-compose.yml
 docker-compose.override.yml
 compose.override.yml
+
+# Local test-run artifacts (junit XML etc.); commit sanitized ones explicitly
+artifacts/
+!artifacts/README.md

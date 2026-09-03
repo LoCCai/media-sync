@@ -402,12 +402,17 @@ def _parent_result(
     *,
     returncode: int | None = None,
     stats: OutputStats | None = None,
+    detail_code: str | None = None,
 ) -> MediaCrawlerProcessResult:
     from media_sync.security import redact_text
 
     # Even fixed messages cross the sink redactor with the exact SecretValue
-    # instances retained by the prepared spec.
+    # instances retained by the prepared spec. The optional detail code is a
+    # fixed non-secret enum suffix (e.g. "unsafe_path") that lets test
+    # diagnostics distinguish WHY a completion failed without any path data.
     message = redact_text(_STATUS_MESSAGES[status], known_secrets=spec.known_secrets)
+    if detail_code is not None:
+        message = redact_text(f"{message} ({detail_code})", known_secrets=spec.known_secrets)
     return MediaCrawlerProcessResult(
         status=status,
         message=message,
@@ -1001,8 +1006,12 @@ class MediaCrawlerProcessRunner:
             return _parent_result(spec, MediaCrawlerProcessStatus.CONFIGURATION_FAILED)
         try:
             require_completion_receipt_absent(spec.manifest)
-        except CompletionReceiptError:
-            return _parent_result(spec, MediaCrawlerProcessStatus.COMPLETION_FAILED)
+        except CompletionReceiptError as error:
+            return _parent_result(
+                spec,
+                MediaCrawlerProcessStatus.COMPLETION_FAILED,
+                detail_code=str(getattr(error, "code", "unknown")),
+            )
         try:
             initial_stats = inspect_output(spec.paths.output_root, spec.manifest.watchdogs)
         except OutputInspectionError as error:
@@ -1174,7 +1183,7 @@ class MediaCrawlerProcessRunner:
                 final_stats,
                 known_secrets=spec.known_secrets,
             )
-        except CompletionReceiptError:
+        except CompletionReceiptError as error:
             if cancellation is not None and cancellation.is_set():
                 return _parent_result(
                     spec,
@@ -1187,6 +1196,7 @@ class MediaCrawlerProcessRunner:
                 MediaCrawlerProcessStatus.COMPLETION_FAILED,
                 returncode=successful_returncode,
                 stats=final_stats,
+                detail_code=str(getattr(error, "code", "unknown")),
             )
         if cancellation is not None and cancellation.is_set():
             return _parent_result(

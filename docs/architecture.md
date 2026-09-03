@@ -32,10 +32,10 @@ SQLite <---- normalized domain ----> Filesystem
 - Python `>=3.11,<3.14`, `uv`, and a `src/` package layout.
 - Typer provides the implemented CLI and Pydantic validates boundaries; FastAPI serves the execution 0040 local REST surface and embedded console.
 - SQLAlchemy 2.x plus Alembic, with SQLite WAL by default; repository interfaces keep PostgreSQL possible later.
-- Implemented media tooling uses `httpcore`/`httpx` streaming downloads, mandatory bounded `ffprobe` validation for video/audio and standard-library XML generation. FFmpeg muxing/slideshow transformations are planned/deferred, not current capabilities.
+- Implemented media tooling uses `httpcore`/`httpx` streaming downloads, mandatory bounded `ffprobe` validation for video/audio and standard-library XML generation, plus restricted frozen-shape FFmpeg stream-copy mux/remux/concat (DASH merge, single-segment FLV remux, multi-segment concat). General transcoding, codec repair and slideshow rendering remain deferred.
 - `pytest`, Ruff and mypy, with deterministic fixtures and golden directory trees.
 
-The local machine already has Python 3.11.8, uv 0.9.18 and FFmpeg. Python 3.11 is retained because it is both available and compatible with the pinned MediaCrawler requirement.
+The authoring station historically used Python 3.11.8 and uv 0.9.18; the current toolchain pins uv 0.12.9 with a hashed lock verified across Python 3.11/3.12/3.13, and the container image builds on Python 3.13.
 
 ## 3. Modules
 

@@ -9,7 +9,7 @@
 - Copyright: `Copyright (c) 2024 relakkes@gmail.com`
 - Source: `https://github.com/NanmiCoder/MediaCrawler`
 - License: `NON-COMMERCIAL LEARNING LICENSE 1.1`
-- 处理：仅作为用户另行获取的可选研究运行时；不打包、不复制、不再分发。
+- 处理：本 Git 仓库不 vendor 也不分发其源码；操作者本地构建 Docker 镜像时会按锁定提交下载并嵌入 checkout。该镜像仅供操作者个人本地使用，不得推送或再分发。
 
 该许可证将使用限制为非商业学习/研究，并禁止大规模抓取和未经书面同意的商业使用。外部进程边界不会消除这些义务。
 

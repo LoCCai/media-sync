@@ -2,7 +2,7 @@
 
 # Execution 0044 plan
 
-- Status: Planned
+- Status: Closed as absorbed — the minimal set was implemented by execution 0048; semantics fixes and lifecycle tests landed in execution 0049
 - Date: 2026-09-03
 
 ## Delivery sequence (when implemented)

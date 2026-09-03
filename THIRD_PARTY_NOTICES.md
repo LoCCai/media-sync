@@ -9,7 +9,7 @@ No third-party source code is currently vendored or copied into this repository.
 - Copyright: `Copyright (c) 2024 relakkes@gmail.com`
 - Source: `https://github.com/NanmiCoder/MediaCrawler`
 - License: `NON-COMMERCIAL LEARNING LICENSE 1.1`
-- Treatment: optional separately obtained research runtime only; not bundled, copied or redistributed
+- Treatment: this Git repository neither vendors nor distributes the source. Operator-built Docker images download and embed the locked checkout at build time; such images are for the operator's own personal local use and must not be pushed or redistributed
 
 The license restricts use to non-commercial learning/research and prohibits large-scale crawling and commercial use without written consent. An external-process boundary does not remove those obligations.
 

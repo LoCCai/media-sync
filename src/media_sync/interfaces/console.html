@@ -398,7 +398,7 @@ async function refreshAssets() {
   try {
     const assets = await api("/api/v1/assets?limit=100");
     $("assets-body").innerHTML = assets.length ? assets.map(a => `
-      <tr><td><code>${(a.id || "").slice(0, 8)}</code> <button class="secondary" onclick="assetDownload('${a.id}')">重下载</button></td><td>${a.kind}</td><td>${a.status}</td>
+      <tr><td><code>${(a.id || "").slice(0, 8)}</code> <button class="secondary" onclick="assetDownload('${a.id}')">下载/校验</button></td><td>${a.kind}</td><td>${a.status}</td>
       <td><code>${(a.content_id || "").slice(0, 8)}</code></td><td>${cell(a.archive_sha256 ? String(a.archive_sha256).slice(0, 12) : null)}</td></tr>`).join("")
       : "<tr><td colspan=5>暂无资产</td></tr>";
   } catch (error) { toast("资产刷新失败：" + error.message); }

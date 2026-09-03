@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from uuid import UUID, uuid4
 
+import pytest
 from fastapi.testclient import TestClient
 
 from media_sync.config import Settings
@@ -216,3 +217,238 @@ def test_subscription_detail_job_detail_and_asset_download(tmp_path: Path) -> No
         json={"enable_mediacrawler": False, "accept_mediacrawler_license": False},
     )
     assert missing_asset.status_code == 404
+
+
+def _wait_operation(client: TestClient, operation_id: str, *, timeout: float = 10.0) -> dict[str, object]:
+    import time as _time
+
+    deadline = _time.monotonic() + timeout
+    while _time.monotonic() < deadline:
+        body = client.get(f"/api/v1/operations/{operation_id}").json()
+        if body["state"] != "running":
+            return body
+        _time.sleep(0.02)
+    raise AssertionError("operation did not leave the running state")
+
+
+def test_asset_download_operation_lifecycle_on_a_real_asset(tmp_path: Path) -> None:
+    """A real Asset drives blocked→failed and verified→succeeded operations."""
+
+    import json
+    from datetime import UTC, datetime
+
+    from sqlalchemy import select
+
+    from media_sync.domain import AuthStatus, Platform, RunStatus
+    from media_sync.infrastructure.db import (
+        AccountRepository,
+        AuthorRepository,
+        AuthorUpsert,
+        IngestionMode,
+        MediaCrawlerIngestionService,
+        SubscriptionRepository,
+        SyncRunRepository,
+    )
+    from media_sync.infrastructure.db.models import Asset
+    from media_sync.integrations.mediacrawler.normalizers import (
+        NormalizationContext,
+        normalize_jsonl_bytes,
+    )
+
+    client = _client(tmp_path)
+    settings = client.app.state.settings  # type: ignore[attr-defined]
+    fixed_at = datetime(2026, 9, 3, 12, 0, 0, tzinfo=UTC)
+    database = Database(settings.resolved_database_url)
+    try:
+        with database.session() as session:
+            account = AccountRepository(session).create(
+                platform=Platform.KS.value,
+                adapter="mediacrawler",
+                display_name="lifecycle-account",
+                login_method="qr",
+                auth_status=AuthStatus.AUTHENTICATED.value,
+            )
+            author = AuthorRepository(session).upsert(
+                AuthorUpsert(platform=Platform.KS.value, remote_id="77", display_name="Lifecycle"),
+                seen_at=fixed_at,
+            )
+            subscription = SubscriptionRepository(session).create(account_id=account.id, author_id=author.id, policy={})
+            runs = SyncRunRepository(session)
+            run = runs.create(subscription_id=subscription.id)
+            for source, target in (
+                (RunStatus.QUEUED, RunStatus.CLAIMED),
+                (RunStatus.CLAIMED, RunStatus.RUNNING),
+                (RunStatus.RUNNING, RunStatus.INGESTING),
+            ):
+                runs.set_status(run.id, target.value, expected_status=source.value)
+
+        record = {
+            "video_id": "life-video-001",
+            "video_type": "video",
+            "title": "lifecycle",
+            "desc": "lifecycle",
+            "video_url": "https://www.kuaishou.com/short-video/life-video-001",
+            "video_cover_url": "",
+            "video_play_url": "https://cdn.example.test/life.mp4",
+        }
+        normalized = normalize_jsonl_bytes(
+            (json.dumps(record, separators=(",", ":")) + "\n").encode(),
+            NormalizationContext(
+                platform=Platform.KS,
+                creator_remote_id="77",
+                creator_display_name="Lifecycle",
+                upstream_sha="d6f7c5bb906b6dac40ddf343ef9e26438a3de092",
+                ingested_at=fixed_at,
+            ),
+        )
+        assert not normalized.quarantined
+        ingestion = MediaCrawlerIngestionService(database).ingest(
+            normalized.records,
+            subscription_id=subscription.id,
+            run_id=run.id,
+            expected_revision=0,
+            mode=IngestionMode.FORWARD,
+        )
+        assert ingestion.asset_count == 1
+
+        with database.session() as session:
+            asset = session.scalars(select(Asset)).one()
+            asset_id = UUID(asset.id)
+            locator = asset.locator
+            if isinstance(locator, str):
+                import json as _json
+
+                locator = _json.loads(locator)
+            assert isinstance(locator, dict) and locator.get("type") == "adapter_refresh"
+
+        # Blocked path: the mediacrawler gate is not satisfied → the background
+        # operation must finish FAILED with the blocked error code, not green.
+        started = client.post(
+            f"/api/v1/assets/{asset_id}/download",
+            json={"enable_mediacrawler": False, "accept_mediacrawler_license": False},
+        )
+        assert started.status_code == 202
+        blocked = _wait_operation(client, started.json()["operation_id"])
+        assert blocked["state"] == "failed"
+        assert blocked["error_code"] == "locator_refresh_unsupported"
+        assert blocked["result"]["ok"] is False
+        assert blocked["result"]["payload"]["error_code"] == "locator_refresh_unsupported"
+        assert blocked["result"]["payload"]["disposition"] == "not_started"
+
+        # Verified-without-archive path: hand-marking an asset verified without
+        # its immutable blob is a state inconsistency, and the recovery preflight
+        # must surface it as a FAILED operation instead of a fake green success.
+        with database.session() as session:
+            verified = session.get(Asset, str(asset_id))
+            assert verified is not None
+            verified.status = "verified"
+            verified.generation = 1
+            verified.verified_at = fixed_at
+        started = client.post(
+            f"/api/v1/assets/{asset_id}/download",
+            json={"enable_mediacrawler": False, "accept_mediacrawler_license": False},
+        )
+        assert started.status_code == 202
+        inconsistent = _wait_operation(client, started.json()["operation_id"])
+        assert inconsistent["state"] == "failed"
+        assert inconsistent["error_code"] == "asset_download_state_invalid"
+        assert inconsistent["result"]["ok"] is False
+        assert inconsistent["result"]["payload"]["error_code"] == "asset_download_state_invalid"
+    finally:
+        database.dispose()
+
+
+def test_asset_download_operation_succeeded_wiring_uses_captured_settings(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A completing executor drives running→succeeded with app-captured settings."""
+
+    import media_sync.interfaces.api as api_module
+
+    client = _client(tmp_path)
+    settings = client.app.state.settings  # type: ignore[attr-defined]
+    captured: dict[str, object] = {}
+
+    def fake_executor(**kwargs: object) -> tuple[dict[str, object], bool]:
+        captured["settings_state_dir"] = str(kwargs["settings"].state_dir)  # type: ignore[attr-defined]
+        return {"asset_id": "unused", "status": "ok", "disposition": "downloaded"}, True
+
+    monkeypatch.setattr(api_module, "_execute_asset_download", fake_executor)
+    asset_id = uuid4()
+
+    # Insert a minimal content+asset row directly so the 404 preflight passes.
+    from datetime import UTC, datetime
+
+    from sqlalchemy import insert
+
+    from media_sync.domain import AuthStatus, Platform
+    from media_sync.infrastructure.db import AccountRepository, AuthorRepository, AuthorUpsert
+    from media_sync.infrastructure.db.models import Asset, Content
+
+    fixed_at = datetime(2026, 9, 3, 12, 0, 0, tzinfo=UTC)
+    database = Database(settings.resolved_database_url)
+    try:
+        with database.session() as session:
+            account = AccountRepository(session).create(
+                platform=Platform.KS.value,
+                adapter="mediacrawler",
+                display_name="wiring-account",
+                login_method="qr",
+                auth_status=AuthStatus.AUTHENTICATED.value,
+            )
+            author = AuthorRepository(session).upsert(
+                AuthorUpsert(platform=Platform.KS.value, remote_id="79", display_name="Wiring"),
+                seen_at=fixed_at,
+            )
+            content_id = "wiring-content-001"
+            session.execute(
+                insert(Content).values(
+                    id=content_id,
+                    author_id=author.id,
+                    platform="ks",
+                    remote_type="content",
+                    remote_id="wiring-001",
+                    kind="video",
+                    created_at=fixed_at,
+                    updated_at=fixed_at,
+                )
+            )
+            del account
+            session.execute(
+                insert(Asset).values(
+                    id=str(asset_id),
+                    platform="ks",
+                    content_id=content_id,
+                    remote_id="wiring-001:video:0",
+                    kind="video",
+                    position=0,
+                    status="discovered",
+                    locator={
+                        "type": "adapter_refresh",
+                        "adapter": "mediacrawler",
+                        "asset_key": "wiring",
+                        "version": 1,
+                    },
+                    semantic_fingerprint="0" * 64,
+                    locator_fingerprint="1" * 64,
+                    created_at=fixed_at,
+                    updated_at=fixed_at,
+                )
+            )
+    finally:
+        database.dispose()
+
+    started = client.post(
+        f"/api/v1/assets/{asset_id}/download",
+        json={"enable_mediacrawler": False, "accept_mediacrawler_license": False},
+    )
+    assert started.status_code == 202
+    finished = _wait_operation(client, started.json()["operation_id"])
+    assert finished["state"] == "succeeded"
+    assert finished["error_code"] is None
+    assert finished["result"]["ok"] is True
+    assert finished["result"]["payload"]["disposition"] == "downloaded"
+    # The background thread used the settings captured by the app factory, not a
+    # fresh global read, so its state_dir matches the app factory's.
+    assert captured["settings_state_dir"] == str(settings.state_dir)

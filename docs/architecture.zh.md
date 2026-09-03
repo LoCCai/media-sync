@@ -32,10 +32,10 @@ SQLite <---- normalized domain ----> Filesystem
 - Python `>=3.11,<3.14`、`uv` 与 `src/` 包布局。
 - Typer 提供已实现 CLI，Pydantic 校验边界；FastAPI 承载执行 0040 的本地 REST 接口与内置控制台。
 - 使用 SQLAlchemy 2.x 与 Alembic，默认启用 SQLite WAL；仓储接口为后续 PostgreSQL 保留可能性。
-- 已实现媒体工具使用 `httpcore`/`httpx` 流式下载、音视频强制且有界的 `ffprobe` 验证及标准库 XML 生成；FFmpeg mux/幻灯片转换属于计划/延期能力，并非当前能力。
+- 已实现媒体工具使用 `httpcore`/`httpx` 流式下载、音视频强制且有界的 `ffprobe` 验证、标准库 XML 生成，以及受限冻结形状下的 FFmpeg stream-copy mux/remux/concat（DASH 合并、单段 FLV 转封装、多段拼接）。通用转码、编解码修复与幻灯片渲染仍延期。
 - 使用 `pytest`、Ruff 与 mypy，并采用确定性夹具及 golden 目录树。
 
-本机已有 Python 3.11.8、uv 0.9.18 与 FFmpeg。选择 Python 3.11 是因为本地可直接验证，且满足锁定版 MediaCrawler 的要求。
+编写工作站历史上使用 Python 3.11.8 与 uv 0.9.18；当前工具链钉版 uv 0.12.9 并以带哈希锁在 Python 3.11/3.12/3.13 矩阵验证，容器镜像基于 Python 3.13 构建。
 
 ## 模块边界
 
