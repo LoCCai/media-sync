@@ -13,7 +13,7 @@ services:
   media-sync:
     build:
       context: .
-      image: media-sync:local
+    image: media-sync:local
     restart: unless-stopped
     ports:
       - "127.0.0.1:8632:8632"
