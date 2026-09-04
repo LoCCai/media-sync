@@ -944,6 +944,11 @@ textarea:focus-visible {
     padding-left: 14px;
   }
 
+  .panel-header {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
   .form-grid {
     grid-template-columns: 1fr;
   }

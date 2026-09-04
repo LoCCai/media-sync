@@ -1,4 +1,18 @@
 export type Platform = 'bili' | 'xhs' | 'dy' | 'ks' | 'wb' | 'tieba' | 'zhihu';
+export type ContentKind = 'video' | 'image' | 'gallery' | 'text' | 'article' | 'audio' | 'dynamic' | 'mixed';
+export type AssetKind = 'image' | 'video' | 'audio' | 'subtitle' | 'cover' | 'avatar' | 'attachment';
+export type AssetStatus =
+  | 'discovered'
+  | 'queued'
+  | 'downloading'
+  | 'downloaded'
+  | 'verified'
+  | 'exported'
+  | 'failed_retryable'
+  | 'failed_terminal';
+export type ArchiveState = 'empty' | 'pending' | 'partial' | 'complete';
+export type AssetArchiveState = 'eligible' | 'not_ready';
+export type AssetAction = 'preview' | 'download' | 'export_author';
 export type CheckState = 'pass' | 'fail' | 'not_run';
 export type LoginMethod = 'qr' | 'cookie' | 'saved_session';
 export type AccountLoginMethod = LoginMethod | 'phone';
@@ -253,15 +267,24 @@ export type OperationStreamMessage = OperationStreamReady | OperationStreamEvent
 export interface Asset {
   id: string;
   author_id: string;
+  author_display_name: string;
   content_id: string;
+  content_title: string | null;
   platform: Platform;
-  kind: string;
+  kind: AssetKind;
   position: number;
   generation: number;
-  status: string;
+  status: AssetStatus;
   mime_type: string | null;
   size_bytes: number | null;
   verified_at: string | null;
+  archive: {
+    state: AssetArchiveState;
+    eligible: boolean;
+    preview_url: string | null;
+    recovery_url: string;
+  };
+  allowed_actions: AssetAction[];
 }
 
 export interface ContentItem {
@@ -271,7 +294,7 @@ export interface ContentItem {
   platform: Platform;
   remote_type: string;
   remote_id: string;
-  kind: string;
+  kind: ContentKind;
   title: string | null;
   body_excerpt: string | null;
   canonical_url: string | null;
@@ -279,6 +302,38 @@ export interface ContentItem {
   asset_count: number;
   archived_count: number;
   export_count: number;
+  archive_state: ArchiveState;
+  tombstoned: boolean;
+}
+
+export interface ContentDetail extends ContentItem {
+  body: string | null;
+  remote_updated_at: string | null;
+  first_seen_at: string;
+  last_seen_at: string;
+  assets: Asset[];
+  exports: {
+    succeeded_count: number;
+    last_exported_at: string | null;
+  };
+}
+
+export interface AssetDetail extends Asset {
+  checksum_sha256: string | null;
+  width: number | null;
+  height: number | null;
+  duration_ms: number | null;
+  downloaded_at: string | null;
+  created_at: string;
+  updated_at: string;
+  last_error_code: string | null;
+  content: {
+    id: string;
+    remote_id: string;
+    kind: ContentKind;
+    title: string | null;
+    published_at: string | null;
+  };
 }
 
 export interface LibraryAuthor {
@@ -291,6 +346,7 @@ export interface LibraryAuthor {
   archived_count: number;
   exported_count: number;
   last_published_at: string | null;
+  archive_state: ArchiveState;
 }
 
 export interface ToolCheck {
