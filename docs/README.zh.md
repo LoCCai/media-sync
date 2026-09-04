@@ -71,10 +71,10 @@
 | 0044 | 控制台/REST 运维强化 | 最小集由 0048 实现（订阅/任务详情、经服务的资产下载/校验）；本执行以被吸收方式关闭，语义修正与生命周期测试由 0049 收口 | 计划 `7c72d4e`；实现与收尾证据归 0048/0049 |
 | 0045 | 运维备份恢复升级文档 | 文档范围已完成；命令对照实际镜像审计（自审纠正了初稿虚构的 `db backup`）；演练本机 `NOT_RUN`，首次执行在 Linux | 实现与收尾为包含记录的提交 |
 | 0046 | 安全审查与发布清单 | 文档范围已完成；带残余风险的强制姿态审查、notices 复核、有序发布清单；外部审计 `NOT_RUN` | 实现与收尾为包含记录的提交 |
-| 0047 | 七平台真人验收（最终门） | 重构为金丝雀先行的验收总阶段（Linux 基线、双金丝雀、五档支持等级、幂等/真实增量拆分、Emby 强制项、`dN` 缺陷循环）；等待操作者，每条真人行如实保持 `NOT_RUN`/`BLOCKED_EXTERNAL` | goal/plan 已提交；progress/verification 由操作者收尾时撰写 |
+| 0047 | 七平台真人验收（最终门） | 阶段 B 进行中：修复版镜像、doctor、深度预检与 Chromium 已通过；Linux 套件、端口复核、重启/恢复/进程检查仍待完成；全部真人行仍为 `NOT_RUN` | goal/plan 与当前 progress/verification 已提交 |
 | 0048 | 发布候选校准 | 校准范围已完成：README/状态/架构事实恢复、0043 延期 0.2、0044 最小集实现（经共享下载助手的详情/任务/重下载端点）、0047 重构为金丝雀先行验收总阶段、构建可复现加固（钉版 uv、带哈希上游锁、构建清单）、发现并修复 0039 tuple 冻结缺陷、记录新离线数字与如实工作站存疑清单 | 实现与收尾为包含记录的提交 |
 | 0049 | RC 前置修复 | 评审修复已完成：容器 checkout 落位锁相对路径并保留 `.git`、Playwright 共享路径与运行用户启动验证、下载操作失败态与「下载/校验」语义、后台线程使用捕获设置、真实 Asset 生命周期测试、日志文档去重与索引同步、文档检查器强化、完成回执原因码透传与工作站失败清单脱敏工件；镜像构建/运行保持阶段 B | 计划与实现见执行记录 |
-| 0050 | Web Console v2 基础 | SvelteKit 5 静态 SPA、bili-sync 风格信息架构、浏览器一次性确认、账户/订阅/任务/内容/资产/媒体库/诊断/设置分页面板、FastAPI 同源服务与 `/legacy` 回退、内容/媒体库投影、安全/缓存响应头及最终镜像不含 Node 的多阶段构建；Docker/真人资格仍由操作者执行 | 实现与收尾为包含执行记录的提交 |
+| 0050 | Web Console v2 基础 | SvelteKit 5 静态 SPA 与最终镜像不含 Node 的构建已交付；修复版 Linux 镜像现已通过 doctor、深度预检和 Chromium 启动，更广资格继续归 0047 | 实现与收尾为包含执行记录的各提交 |
 执行 0005 只验收 mock、夹具与本地文件系统契约。下载器以 I/O scope 哈希、本地 OS 锁及租约/generation CAS 协调单个资产 generation，并能恢复先于数据库收尾完成的归档提交。组合 API/access key 变体及带凭据的 URL 路径会在落点被移除，但普通 `key` 字段不会被误判；direct/source hint 持久化与 `0003` legacy 回填同样拒绝这类路径。Emby 发布器通过持久数据库 Job predecessor chain 及精确 source/tree/manifest 身份确定受管所有权；磁盘 manifest 不能自行建立所有权。`0003 → 0002 → 0003` 往返会移除 generation-bound 下载身份及不可恢复的未成功 Emby 身份，同时保留已成功发布链与结构有效的发布 intent 恢复状态。最终根任务通过 540 项测试，分支感知覆盖率为 79%，全部专项、构建/打包检查及保留 SQLite/归档/导出/运维产物的零匹配扫描均通过。在 0005 边界，调度/API 与生产打包均处于延期状态；执行 0006 现在只补齐调度器的离线/Fake 切片。七平台真人登录/同步/CDN 下载及真实 Emby/Jellyfin 扫描/播放继续为 `NOT_RUN`；不可用的 refresh、平台衍生物、API 与生产打包属于未实现或延期范围，而不是 `NOT_RUN`。
 
 执行 0006 会有界物化到期周期，执行 fixed-delay 收尾、有界重试/退避及持久平台/账户启动 lane，并以精确租约、heartbeat 与取消 fencing 运行 `sync.subscription` Job。其封闭 registry 有意只随附确定性 Fake handler。重启验收会在 scheduled Fake sync 后显式调用既有安全下载器与 Emby 导出器；不宣称已有自动下游 DAG。最终根任务门禁通过 686 项测试，耗时 152.40 秒，分支感知总覆盖率 80%。MediaCrawler 定时执行、逐请求上游节流、签名 locator 刷新、REST、常驻守护及生产打包仍属于后续工作。准确离线验证记录在 [`executions/0006-durable-scheduler/verification.zh.md`](executions/0006-durable-scheduler/verification.zh.md)。

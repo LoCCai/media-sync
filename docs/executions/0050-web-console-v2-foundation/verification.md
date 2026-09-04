@@ -22,7 +22,7 @@
 | Complete Python suite | `uv run pytest -q --junitxml=artifacts/pytest-windows-0050.xml` with uv + ffmpeg/ffprobe on `PATH` | `2038 passed, 33 failed, 1 skipped` in 502.82 s; failures are classified below, not suppressed |
 | Runtime-launcher changed scope | Bridge/manifest, login/detail constructor, scheduled-handler, pipeline-runtime and CLI/API focused suites | `PASS` — `48 passed, 2 skipped` plus `311 passed`; both skips are POSIX-only symlink regressions on Windows |
 | Follow-up Python static gates | `ruff check .`, `ruff format --check .`, strict `mypy` | `PASS` — 624 files formatted and 87 typed source files |
-| Docker build/run | Operator Linux host, image from `4c6d0bf` | `PARTIAL` — build/start and direct Chromium launch passed; application doctor exposed the runtime-launcher defect described below |
+| Repaired Docker build/run | Operator Linux host after `0d73ba1` | `PASS` for the 0050 slice — build/start, application doctor, deep readiness and runtime Chromium launch passed |
 
 The final complete run includes the network-boundary response completion and the full local uv/ffmpeg/ffprobe toolchain, so package and production media integration checks executed rather than becoming environment skips.
 
@@ -32,7 +32,7 @@ The final complete run includes the network-boundary response completion and the
 - `/opt/BUILD-MANIFEST.txt` reported Chromium `151.0.7922.34`, Node `v24.20.0`, pnpm `11.19.0` and frontend lock digest `dc9a47134060f185a3942bac5262b0ca55e0457a4dcddade81803e069b9bf3a0`. Launching Playwright Chromium directly through `/opt/mediacrawler-venv/bin/python` returned the same Chromium version.
 - The application doctor passed acknowledgement, lock, checkout path, repository root, required files, canonical licence digest, locked revision, tracked blobs and clean worktree at upstream SHA `d6f7c5bb906b6dac40ddf343ef9e26438a3de092`, then failed `runtime_invalid / runtime_imports_missing`; live qualification remained `NOT_RUN`.
 - Root cause: the application resolved the normal POSIX venv symlink `/opt/mediacrawler-venv/bin/python` to its base interpreter, bypassing the venv's site-packages. The repair preserves the final launcher symlink at every probe/manifest/runner boundary while still canonicalising its parent directory. A POSIX-only regression proves import probe, browser probe, command and manifest round-trip identity; a second regression covers the scheduled handler.
-- The Dockerfile now executes the same doctor as the unprivileged `mediasync` user at build time. The repaired image has not yet been rebuilt on Linux, so a green doctor/Chromium deep preflight is not claimed yet.
+- The Dockerfile now executes the same doctor as the unprivileged `mediasync` user at build time. After rebuilding, doctor and deep readiness returned `ready`, and runtime Chromium `151.0.7922.34` matched the build manifest.
 
 ## Browser and fidelity evidence
 
@@ -50,4 +50,4 @@ The junit summary is `tests=2072 failures=33 errors=0 skipped=1`. Failures group
 
 ## Not claimed
 
-The repaired launcher image, green in-container doctor/deep preflight, restart/backup drill, real account login, crawl, CDN download and Emby/Jellyfin scan/playback are not yet claimed. The first image build/start and direct Chromium launch are claimed only as the partial operator evidence above; phase B remains blocked until the repaired no-cache rebuild passes.
+Restart/backup drills, the Linux complete suite, host-port verification, real account login, crawl, CDN download and Emby/Jellyfin scan/playback are not yet claimed. Those remaining Phase B and live rows continue under execution 0047.

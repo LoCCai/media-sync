@@ -2,7 +2,7 @@
 
 # Execution 0050 progress
 
-- Status: Offline foundation delivered; first Linux image built, runtime-launcher repair awaits operator rebuild
+- Status: Offline foundation and repaired Linux image preflight delivered; broader Phase B and live qualification continue in 0047
 - Date: 2026-09-04
 - Baseline commit: `6d68768`
 
@@ -17,6 +17,7 @@
 7. README, deployment guidance, status, journal index and this execution record now describe the one-time acknowledgement, rebuild requirement, current qualification digest and remaining Linux/live gates.
 8. The operator's first real 0050 Linux image built and started successfully. Its manifest proved Chromium `151.0.7922.34`, Node `v24.20.0`, pnpm `11.19.0` and frontend lock digest `dc9a47134060f185a3942bac5262b0ca55e0457a4dcddade81803e069b9bf3a0`; a direct runtime-user Chromium launch also succeeded.
 9. That image's doctor passed the licence, exact SHA, tracked blobs and clean-tree gates but failed `runtime_invalid / runtime_imports_missing`. The cause was `Path.resolve()` dereferencing `/opt/mediacrawler-venv/bin/python` to the base interpreter and bypassing the venv site-packages. All doctor, manifest, login, detail and scheduled-worker launch paths now preserve the venv launcher, and the Docker build runs the application doctor as `mediasync` so this class of drift aborts the build.
+10. The operator rebuilt after the launcher repair. Doctor and deep readiness now both return `ready`; runtime Chromium launches as `151.0.7922.34`, matching the build manifest. This closes the 0050 image/runtime defect while restart, backup/restore and live-platform evidence remain under 0047.
 
 ## Browser and design result
 
@@ -24,4 +25,4 @@ The implementation keeps the recognizable bili-sync skeleton—fixed grouped sid
 
 ## Remaining work
 
-Operation persistence, SSE/logs, richer detail/recovery controls, media-server scan/playback evidence, operator authentication and removal of the legacy console remain planned follow-ups. The operator must pull and rebuild the launcher repair without cache, obtain a green doctor and deep Chromium preflight, then continue 0047's Bilibili/XHS canaries; no live row changed here.
+Operation persistence, SSE/logs, richer detail/recovery controls, media-server scan/playback evidence, operator authentication and removal of the legacy console remain planned follow-ups. Execution 0047 now continues the remaining Linux baseline before Bilibili/XHS canaries; no live row changed here.
