@@ -104,6 +104,7 @@ def test_login_qr_lifecycle_distinguishes_pending_and_gone(tmp_path: Path) -> No
             login_session = LoginSessionRepository(session).create(
                 account_id=account["id"],
                 method="qr",
+                challenge_kind="qr",
             )
             login_session.status = "waiting_user"
             login_session_id = login_session.id
@@ -193,6 +194,7 @@ def test_subscription_and_scheduler_surface(tmp_path: Path) -> None:
             "creator_remote_id": "2",
             "display_name": "creator",
             "max_items": 5,
+            "allow_full_history": True,
         },
     )
     assert created.status_code == 201
@@ -297,6 +299,7 @@ def test_subscription_detail_job_detail_and_asset_download(tmp_path: Path) -> No
             "creator_remote_id": "2",
             "display_name": "creator",
             "max_items": 5,
+            "allow_full_history": True,
         },
     ).json()
     subscription_id = UUID(subscription["id"])

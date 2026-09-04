@@ -10,7 +10,6 @@ import json
 import math
 import os
 import platform as runtime_platform
-import re
 import shutil
 import signal
 import sys
@@ -32,12 +31,16 @@ from sqlalchemy.orm import Session
 from media_sync import __version__
 from media_sync.adapters.fake import FakePlatformAdapter
 from media_sync.application import (
+    AccountDraft,
     LocalPipelineRuntimeConfig,
     MediaCrawlerLoginSessionReconciler,
+    SubscriptionDraft,
     SubscriptionPipelineError,
     SubscriptionPipelineExecutor,
     SyncRequest,
     SyncService,
+    WorkbenchError,
+    WorkbenchService,
 )
 from media_sync.application.authentication import (
     AccountLoginError,
@@ -64,8 +67,6 @@ from media_sync.infrastructure.db import (
     Account,
     AccountRepository,
     Asset,
-    AuthorRepository,
-    AuthorUpsert,
     Base,
     Content,
     Database,
@@ -89,6 +90,10 @@ from media_sync.integrations.mediacrawler.bridge import (
     RunnerManifest,
     verify_manifest_checkout,
 )
+from media_sync.integrations.mediacrawler.capabilities import (
+    MediaCrawlerCapabilityError,
+    normalize_creator_stable_id,
+)
 from media_sync.integrations.mediacrawler.checkout import (
     MEDIACRAWLER_LICENSE,
     CheckoutValidationError,
@@ -108,10 +113,7 @@ from media_sync.integrations.mediacrawler.policies import (
     build_run_paths,
     normalize_creator_reference,
 )
-from media_sync.integrations.mediacrawler.subscription_policy import (
-    MAX_REQUEST_DELAY_SECONDS,
-    MediaCrawlerSubscriptionPolicy,
-)
+from media_sync.integrations.mediacrawler.subscription_policy import MAX_REQUEST_DELAY_SECONDS
 from media_sync.media import (
     DownloadLimits,
     FFmpegStreamCopyMuxer,
@@ -197,10 +199,6 @@ class SchedulerLaneScope(StrEnum):
 
     PLATFORM = "platform"
     ACCOUNT = "account"
-
-
-_MEDIACRAWLER_LOGIN_METHODS = frozenset({LoginMethod.QR, LoginMethod.COOKIE, LoginMethod.SAVED_SESSION})
-_STABLE_CREATOR_ID = re.compile(r"[A-Za-z0-9._-]{1,512}\Z")
 
 
 def _version_callback(value: bool) -> None:
@@ -1098,6 +1096,53 @@ def _credential_reference(value: str | None) -> str | None:
         ) from None
 
 
+def _account_workbench_error_message(error: WorkbenchError, *, adapter: AdapterName) -> str:
+    """Map shared fixed codes to the established CLI vocabulary."""
+
+    if error.code == "login_method_not_supported":
+        if adapter is AdapterName.FAKE:
+            return "selected login method is not supported by the fake adapter"
+        return "MediaCrawler accounts support only QR, Cookie, or saved-session login"
+    messages = {
+        "display_name_invalid": "display_name must contain between 1 and 255 printable characters",
+        "cookie_login_requires_credential_ref": "MediaCrawler Cookie login requires credential_ref",
+        "credential_ref_allowed_only_for_cookie_login": (
+            "credential_ref is allowed only for MediaCrawler Cookie login"
+        ),
+        "account_exists_with_different_configuration": ("account already exists with different login configuration"),
+    }
+    return messages.get(error.code, error.message)
+
+
+def _subscription_workbench_error_message(error: WorkbenchError, *, account_id: UUID) -> str:
+    """Map shared fixed codes without copying rejected creator or secret input."""
+
+    messages = {
+        "account_not_found": f"account not found: {account_id}",
+        "platform_conflict": "platform conflict: account and creator platforms differ",
+        "creator_remote_id_must_be_stable_id": (
+            "MediaCrawler creator_remote_id must be a stable ID; use creator_reference_ref for signed URLs"
+        ),
+        "creator_secret_ref_only_for_mediacrawler": (
+            "creator_reference_ref is available only for MediaCrawler accounts"
+        ),
+        "creator_secret_ref_not_supported": (
+            "creator_reference_ref is supported only for the XHS creator-authority flow"
+        ),
+        "invalid_creator_secret_reference": (
+            "creator_reference_ref must be an opaque env, keyring, or confined file reference"
+        ),
+        "full_history_acknowledgement_required": (
+            "allow_full_history acknowledgement is required for this MediaCrawler platform"
+        ),
+        "mediacrawler_policy_options_require_mediacrawler": (
+            "MediaCrawler scheduling policy options require a MediaCrawler account"
+        ),
+        "subscription_exists_with_different_options": ("subscription already exists with different scheduling options"),
+    }
+    return messages.get(error.code, error.message)
+
+
 def _expected_mediacrawler_creator_fingerprint(
     settings: Settings,
     *,
@@ -1219,11 +1264,12 @@ def mediacrawler_dry_run(
 ) -> None:
     """Prepare, inspect, and discard a secret-free bridge job without spawning it."""
 
-    normalized_creator_id = creator_id.strip()
-    if _STABLE_CREATOR_ID.fullmatch(normalized_creator_id) is None:
+    try:
+        normalized_creator_id = normalize_creator_stable_id(creator_id)
+    except MediaCrawlerCapabilityError:
         raise typer.BadParameter(
             "creator_id must be a stable non-secret ID; token-bearing URLs require a secret reference"
-        )
+        ) from None
     settings = get_settings()
     if settings.mediacrawler_python_executable is None:
         raise typer.BadParameter("MediaCrawler Python runtime is not configured")
@@ -1341,42 +1387,21 @@ def add_account(
 
     normalized_name = _required_option(display_name, "display_name")
     normalized_credential_ref = _credential_reference(credential_ref)
-    if adapter is AdapterName.FAKE:
-        if not FakePlatformAdapter(platform).capabilities().supports_login(login_method):
-            raise typer.BadParameter("selected login method is not supported by the fake adapter")
-    else:
-        if login_method not in _MEDIACRAWLER_LOGIN_METHODS:
-            raise typer.BadParameter("MediaCrawler accounts support only QR, Cookie, or saved-session login")
-        if login_method is LoginMethod.COOKIE and normalized_credential_ref is None:
-            raise typer.BadParameter("MediaCrawler Cookie login requires credential_ref")
-        if login_method is not LoginMethod.COOKIE and normalized_credential_ref is not None:
-            raise typer.BadParameter("credential_ref is allowed only for MediaCrawler Cookie login")
-
-    with _database_session() as session:
-        repository = AccountRepository(session)
-        existing = repository.get_by_platform_and_name(platform.value, normalized_name)
-        if existing is not None:
-            same_configuration = (
-                existing.adapter == adapter.value
-                and existing.login_method == login_method.value
-                and existing.credential_ref == normalized_credential_ref
+    try:
+        with _database_session() as session:
+            result = WorkbenchService(session).create_account(
+                AccountDraft(
+                    platform=platform,
+                    display_name=normalized_name,
+                    adapter=adapter.value,
+                    login_method=login_method,
+                    credential_ref=normalized_credential_ref,
+                )
             )
-            if not same_configuration:
-                raise typer.BadParameter("account already exists with different login configuration")
-            account = existing
-            created = False
-        else:
-            account = repository.create(
-                platform=platform.value,
-                display_name=normalized_name,
-                adapter=adapter.value,
-                login_method=login_method.value,
-                credential_ref=normalized_credential_ref,
-            )
-            created = True
-        payload = _account_payload(account, created=created)
+    except WorkbenchError as error:
+        raise typer.BadParameter(_account_workbench_error_message(error, adapter=adapter)) from None
 
-    _emit_record(payload, json_output=json_output, label="Account")
+    _emit_record(result.to_payload(), json_output=json_output, label="Account")
 
 
 @account_app.command("list")
@@ -1555,65 +1580,27 @@ def add_subscription(
     normalized_remote_id = _required_option(creator_remote_id, "creator_remote_id")
     normalized_display_name = _required_option(display_name, "display_name")
     normalized_creator_reference_ref = _credential_reference(creator_reference_ref)
-    with _database_session() as session:
-        account = AccountRepository(session).get(str(account_id))
-        if account is None:
-            raise typer.BadParameter(f"account not found: {account_id}")
-        if account.platform != platform.value:
-            raise typer.BadParameter(
-                f"platform conflict: account uses {account.platform!r}, creator uses {platform.value!r}"
-            )
-        if account.adapter != AdapterName.MEDIACRAWLER.value and normalized_creator_reference_ref is not None:
-            raise typer.BadParameter("creator_reference_ref is available only for MediaCrawler accounts")
-        if account.adapter == AdapterName.MEDIACRAWLER.value and any(
-            marker in normalized_remote_id for marker in ("://", "?", "#", "&", "=", ";")
-        ):
-            raise typer.BadParameter(
-                "MediaCrawler creator_remote_id must be a stable ID; use creator_reference_ref for signed URLs"
-            )
-
-        policy: dict[str, object] = {}
-        if account.adapter == AdapterName.MEDIACRAWLER.value:
-            policy = {
-                "mediacrawler": MediaCrawlerSubscriptionPolicy(
+    try:
+        with _database_session() as session:
+            result = WorkbenchService(session).create_subscription(
+                SubscriptionDraft(
+                    account_id=account_id,
+                    platform=platform,
+                    creator_remote_id=normalized_remote_id,
+                    display_name=normalized_display_name,
+                    creator_secret_ref=normalized_creator_reference_ref,
+                    interval_seconds=interval_seconds,
+                    max_items=max_items,
                     allow_full_history=allow_full_history,
                     request_delay_seconds=request_delay_seconds,
                     headless=headless,
-                    creator_secret_ref=normalized_creator_reference_ref,
-                ).to_payload()
-            }
-        elif allow_full_history or request_delay_seconds != 5.0 or not headless:
-            raise typer.BadParameter("MediaCrawler scheduling policy options require a MediaCrawler account")
+                )
+            )
+    except WorkbenchError as error:
+        raise typer.BadParameter(_subscription_workbench_error_message(error, account_id=account_id)) from None
 
-        author_repository = AuthorRepository(session)
-        author = author_repository.upsert(
-            AuthorUpsert(
-                platform=platform.value,
-                remote_id=normalized_remote_id,
-                display_name=normalized_display_name,
-            )
-        )
-        repository = SubscriptionRepository(session)
-        existing = repository.get_by_account_and_author(account.id, author.id)
-        if existing is not None:
-            if (
-                existing.interval_seconds != interval_seconds
-                or existing.max_items != max_items
-                or existing.policy != policy
-            ):
-                raise typer.BadParameter("subscription already exists with different scheduling options")
-            subscription = existing
-            created = False
-        else:
-            subscription = repository.create(
-                account_id=account.id,
-                author_id=author.id,
-                interval_seconds=interval_seconds,
-                max_items=max_items,
-                policy=policy,
-            )
-            created = True
-        payload = _subscription_payload(subscription, created=created)
+    payload = result.to_payload()
+    payload.pop("policy_summary", None)
 
     _emit_record(payload, json_output=json_output, label="Subscription")
 

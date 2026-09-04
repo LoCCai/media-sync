@@ -196,7 +196,18 @@ class MediaCrawlerLoginProcessRunner:
         result = MediaCrawlerLoginResult(MediaCrawlerLoginStatus.RESULT_INVALID, checkout.commit)
         cleanup_status = AttemptCleanupStatus.UNRESOLVED
         try:
-            if cancellation is not None and cancellation.is_set():
+            # The relay path is account-scoped for compatibility. Remove any
+            # abandoned image while holding the exact account lock, before the
+            # durable LoginSession is published, so a new session can never be
+            # paired with a previous attempt's challenge.
+            stale_qr_removed = True
+            try:
+                (paths.account_root / LOGIN_QR_IMAGE_NAME).unlink(missing_ok=True)
+            except OSError:
+                stale_qr_removed = False
+            if not stale_qr_removed:
+                result = MediaCrawlerLoginResult(MediaCrawlerLoginStatus.CONFIGURATION_INVALID, checkout.commit)
+            elif cancellation is not None and cancellation.is_set():
                 result = MediaCrawlerLoginResult(MediaCrawlerLoginStatus.CANCELLED, checkout.commit)
             elif request.mode is MediaCrawlerLoginMode.SAVED_SESSION_PROBE and not _profile_is_present(
                 paths.profile_root

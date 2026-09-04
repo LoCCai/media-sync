@@ -53,7 +53,10 @@ def initialized_cli_database(
         get_settings.cache_clear()
 
 
-def _row_count(database_url: str, model: type[Account] | type[LoginSession]) -> int:
+def _row_count(
+    database_url: str,
+    model: type[Account] | type[Author] | type[LoginSession] | type[Subscription],
+) -> int:
     database = Database(database_url)
     try:
         with database.session() as session:
@@ -764,6 +767,125 @@ def test_mediacrawler_subscription_stores_only_secret_creator_reference_locator(
             }
     finally:
         database.dispose()
+
+
+@pytest.mark.parametrize("platform", ["bili", "dy", "ks", "wb"])
+def test_mediacrawler_full_history_subscription_requires_confirmation_before_writes(
+    initialized_cli_database: str,
+    platform: str,
+) -> None:
+    account_result = runner.invoke(
+        app,
+        [
+            "account",
+            "add",
+            "--platform",
+            platform,
+            "--display-name",
+            f"{platform} full-history account",
+            "--adapter",
+            "mediacrawler",
+            "--login-method",
+            "qr",
+            "--json",
+        ],
+    )
+    assert account_result.exit_code == 0, account_result.output
+    account_id = json.loads(account_result.output)["id"]
+    base_arguments = [
+        "subscription",
+        "add",
+        "--account-id",
+        account_id,
+        "--platform",
+        platform,
+        "--creator-remote-id",
+        "legacy.creator-ID_1",
+        "--display-name",
+        f"{platform} creator",
+        "--json",
+    ]
+
+    rejected = runner.invoke(app, base_arguments)
+
+    assert rejected.exit_code == 2
+    assert "allow_full_history acknowledgement is required" in rejected.output
+    assert "Traceback" not in rejected.output
+    assert _row_count(initialized_cli_database, Author) == 0
+    assert _row_count(initialized_cli_database, Subscription) == 0
+
+    accepted = runner.invoke(app, [*base_arguments, "--allow-full-history"])
+
+    assert accepted.exit_code == 0, accepted.output
+    payload = json.loads(accepted.output)
+    assert payload["creator_remote_id"] == "legacy.creator-ID_1"
+    assert set(payload) == {
+        "id",
+        "account_id",
+        "platform",
+        "account_display_name",
+        "author_id",
+        "creator_remote_id",
+        "creator_display_name",
+        "enabled",
+        "interval_seconds",
+        "max_items",
+        "watermarked_at",
+        "last_success_at",
+        "next_run_at",
+        "created",
+    }
+    assert _row_count(initialized_cli_database, Author) == 1
+    assert _row_count(initialized_cli_database, Subscription) == 1
+
+
+def test_non_xhs_creator_reference_is_rejected_before_author_write(
+    initialized_cli_database: str,
+) -> None:
+    secret_reference = "env:MEDIA_SYNC_BILI_CREATOR_REFERENCE"
+    account_result = runner.invoke(
+        app,
+        [
+            "account",
+            "add",
+            "--platform",
+            "bili",
+            "--display-name",
+            "Bilibili stable-ID account",
+            "--adapter",
+            "mediacrawler",
+            "--login-method",
+            "qr",
+            "--json",
+        ],
+    )
+    assert account_result.exit_code == 0, account_result.output
+    account_id = json.loads(account_result.output)["id"]
+
+    result = runner.invoke(
+        app,
+        [
+            "subscription",
+            "add",
+            "--account-id",
+            account_id,
+            "--platform",
+            "bili",
+            "--creator-remote-id",
+            "123456",
+            "--display-name",
+            "Bilibili creator",
+            "--creator-reference-ref",
+            secret_reference,
+            "--allow-full-history",
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert "supported only for the XHS" in result.output
+    assert secret_reference not in result.output
+    assert _row_count(initialized_cli_database, Author) == 0
+    assert _row_count(initialized_cli_database, Subscription) == 0
 
 
 @pytest.mark.parametrize(

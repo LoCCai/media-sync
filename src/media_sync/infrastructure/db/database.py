@@ -15,6 +15,7 @@ from sqlalchemy.pool import StaticPool
 from .base import Base
 
 SQLITE_BUSY_TIMEOUT_MS = 5_000
+SQLITE_IMMEDIATE_OPTION = "media_sync_sqlite_begin_immediate"
 
 
 def _ensure_sqlite_parent(database_url: str) -> None:
@@ -40,7 +41,8 @@ def _configure_sqlite_connection(dbapi_connection: Any, connection_record: Any) 
 
 
 def _begin_sqlite_transaction(connection: Connection) -> None:
-    connection.exec_driver_sql("BEGIN")
+    statement = "BEGIN IMMEDIATE" if connection.get_execution_options().get(SQLITE_IMMEDIATE_OPTION) else "BEGIN"
+    connection.exec_driver_sql(statement)
 
 
 def create_database_engine(database_url: str, *, echo: bool = False) -> Engine:
@@ -110,4 +112,9 @@ class Database:
         self.engine.dispose()
 
 
-__all__ = ["SQLITE_BUSY_TIMEOUT_MS", "Database", "create_database_engine"]
+__all__ = [
+    "SQLITE_BUSY_TIMEOUT_MS",
+    "SQLITE_IMMEDIATE_OPTION",
+    "Database",
+    "create_database_engine",
+]

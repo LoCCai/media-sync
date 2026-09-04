@@ -13,6 +13,8 @@ namespace but must publish the port to a trusted network only.
 
 from __future__ import annotations
 
+import os
+import stat
 import threading
 import time
 from dataclasses import dataclass, field
@@ -22,13 +24,21 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.exc import SQLAlchemyError
 
 from media_sync import __version__
-from media_sync.application import MediaCrawlerLoginSessionReconciler
+from media_sync.application import (
+    AccountDraft,
+    MediaCrawlerLoginSessionReconciler,
+    SubscriptionDraft,
+    WorkbenchError,
+    WorkbenchService,
+    collect_account_login_preflight,
+)
 from media_sync.application.authentication import (
     AccountLoginError,
     AccountLoginRequest,
@@ -39,29 +49,32 @@ from media_sync.config import Settings, get_settings
 from media_sync.domain import AssetStatus, ContentKind, JobStatus, LoginMethod, Platform
 from media_sync.exporters.emby import EmbyExporter, ExportError
 from media_sync.infrastructure.db import (
+    AccountLoginConflictError,
     AccountRepository,
     Asset,
     Author,
-    AuthorRepository,
-    AuthorUpsert,
     Content,
     Database,
     ExportRecord,
+    LoginSession,
     LoginSessionRepository,
     NotFoundError,
+    Subscription,
     SubscriptionRepository,
     SyncRun,
 )
+from media_sync.integrations.mediacrawler import platform_capabilities_payload
 from media_sync.integrations.mediacrawler.login_runner import (
     LOGIN_QR_IMAGE_NAME,
     MediaCrawlerLoginProcessRunner,
 )
 from media_sync.integrations.mediacrawler.subscription_policy import (
     MAX_REQUEST_DELAY_SECONDS,
-    MediaCrawlerSubscriptionPolicy,
+    SUBSCRIPTION_POLICY_SCHEMA_VERSION,
+    MediaCrawlerSubscriptionPolicyError,
+    from_subscription_policy,
 )
 from media_sync.interfaces.cli import (
-    _MEDIACRAWLER_LOGIN_METHODS,
     _account_login_outcome_payload,
     _account_login_status_payload,
     _account_payload,
@@ -84,6 +97,7 @@ from media_sync.scheduler import DurableSchedulerService, SchedulerRepository, S
 _CONSOLE_PATH = Path(__file__).with_name("console.html")
 _PACKAGED_WEB_ROOT = Path(__file__).with_name("static") / "console-v2"
 _DEVELOPMENT_WEB_ROOT = Path(__file__).resolve().parents[3] / "web" / "build"
+_MAX_LOGIN_QR_BYTES = 2 * 1024 * 1024
 
 
 def _resolve_web_root() -> Path | None:
@@ -208,7 +222,7 @@ class LoginStart(BaseModel):
 class SubscriptionCreate(BaseModel):
     account_id: UUID
     platform: Platform
-    creator_remote_id: str = Field(min_length=1, max_length=512)
+    creator_remote_id: str = Field(min_length=1, max_length=255)
     display_name: str = Field(min_length=1, max_length=200)
     creator_reference_ref: str | None = None
     interval_seconds: int = Field(default=21_600, ge=60)
@@ -216,6 +230,56 @@ class SubscriptionCreate(BaseModel):
     allow_full_history: bool = False
     request_delay_seconds: float = Field(default=5.0, gt=0, le=MAX_REQUEST_DELAY_SECONDS)
     headless: bool = True
+
+
+def _subscription_policy_summary_payload(subscription: Subscription) -> dict[str, object]:
+    """Project durable policy controls without returning an opaque reference."""
+
+    adapter = subscription.account.adapter
+    if adapter != "mediacrawler":
+        return {"adapter": adapter}
+    try:
+        policy = from_subscription_policy(subscription.policy)
+    except MediaCrawlerSubscriptionPolicyError:
+        return {
+            "adapter": adapter,
+            "schema_version": None,
+            "allow_full_history": None,
+            "request_delay_seconds": None,
+            "headless": None,
+            "creator_reference_configured": False,
+        }
+    return {
+        "adapter": adapter,
+        "schema_version": SUBSCRIPTION_POLICY_SCHEMA_VERSION,
+        "allow_full_history": policy.allow_full_history,
+        "request_delay_seconds": policy.request_delay_seconds,
+        "headless": policy.headless,
+        "creator_reference_configured": policy.creator_secret_ref is not None,
+    }
+
+
+def _subscription_checkpoint_summary_payload(subscription: Subscription) -> dict[str, object]:
+    """Return checkpoint presence and counters without serializing cursor data."""
+
+    has_forward_cursor = subscription.cursor is not None
+    has_backfill_cursor = subscription.backfill_cursor is not None
+    return {
+        "has_checkpoint": bool(
+            subscription.checkpoint_revision
+            or has_forward_cursor
+            or has_backfill_cursor
+            or subscription.watermarked_at is not None
+            or subscription.last_success_at is not None
+        ),
+        "has_forward_cursor": has_forward_cursor,
+        "has_backfill_cursor": has_backfill_cursor,
+        "revision": subscription.checkpoint_revision,
+        "cursor_version": subscription.cursor_version,
+        "watermarked_at": subscription.watermarked_at.isoformat() if subscription.watermarked_at else None,
+        "watermark_count": len(subscription.watermark_remote_ids),
+        "last_success_at": subscription.last_success_at.isoformat() if subscription.last_success_at else None,
+    }
 
 
 class SchedulerTick(BaseModel):
@@ -274,6 +338,30 @@ def create_api_app(settings: Settings | None = None) -> FastAPI:
     deep_readiness_lock = threading.Lock()
     web_root = _resolve_web_root()
 
+    @app.exception_handler(RequestValidationError)
+    async def safe_request_validation_error(
+        request: Request,
+        error: RequestValidationError,
+    ) -> JSONResponse:
+        """Keep rejected request values out of FastAPI's default 422 body."""
+
+        del request
+        errors: list[dict[str, object]] = []
+        for item in error.errors():
+            location = [part for part in item.get("loc", ()) if isinstance(part, str | int)]
+            error_type = item.get("type")
+            errors.append(
+                {
+                    "location": location,
+                    "code": error_type if isinstance(error_type, str) else "validation_error",
+                }
+            )
+        return JSONResponse(
+            status_code=422,
+            content={"detail": "request_validation_failed", "errors": errors},
+            headers={"Cache-Control": "no-store"},
+        )
+
     @app.middleware("http")
     async def security_headers(request: Request, call_next: Any) -> Response:
         response: Response = await call_next(request)
@@ -297,6 +385,10 @@ def create_api_app(settings: Settings | None = None) -> FastAPI:
 
     def _bad_request(code: str) -> HTTPException:
         return HTTPException(status_code=400, detail=code)
+
+    def _workbench_error(error: WorkbenchError) -> HTTPException:
+        status_code = 404 if error.code == "account_not_found" else 400
+        return HTTPException(status_code=status_code, detail=error.code)
 
     def _safe_credential_reference(value: str | None) -> str | None:
         import typer
@@ -363,6 +455,10 @@ def create_api_app(settings: Settings | None = None) -> FastAPI:
             ),
         }
 
+    @app.get("/api/v1/platform-capabilities")
+    def platform_capabilities() -> dict[str, object]:
+        return platform_capabilities_payload()
+
     @app.get("/", include_in_schema=False)
     def console() -> Response:
         if web_root is not None:
@@ -392,37 +488,36 @@ def create_api_app(settings: Settings | None = None) -> FastAPI:
 
     @app.post("/api/v1/accounts", status_code=201)
     def create_account(body: AccountCreate) -> dict[str, object]:
-        normalized_credential_ref = _safe_credential_reference(body.credential_ref)
-        if body.login_method not in _MEDIACRAWLER_LOGIN_METHODS:
-            raise _bad_request("login_method_not_supported")
-        if body.login_method is LoginMethod.COOKIE and normalized_credential_ref is None:
-            raise _bad_request("cookie_login_requires_credential_ref")
-        if body.login_method is not LoginMethod.COOKIE and normalized_credential_ref is not None:
-            raise _bad_request("credential_ref_allowed_only_for_cookie_login")
-
         database = _database()
         try:
             with database.session() as session:
-                repository = AccountRepository(session)
-                existing = repository.get_by_platform_and_name(body.platform.value, body.display_name)
-                if existing is not None:
-                    if existing.login_method != body.login_method.value or (
-                        existing.credential_ref != normalized_credential_ref
-                    ):
-                        raise _bad_request("account_exists_with_different_configuration")
-                    return _account_payload(existing, created=False)
-                account = repository.create(
-                    platform=body.platform.value,
-                    display_name=body.display_name,
-                    adapter="mediacrawler",
-                    login_method=body.login_method.value,
-                    credential_ref=normalized_credential_ref,
+                result = WorkbenchService(session).create_account(
+                    AccountDraft(
+                        platform=body.platform,
+                        display_name=body.display_name,
+                        login_method=body.login_method,
+                        adapter="mediacrawler",
+                        credential_ref=body.credential_ref,
+                    )
                 )
-                return _account_payload(account, created=True)
+                return result.to_payload()
+        except WorkbenchError as error:
+            raise _workbench_error(error) from None
         except SQLAlchemyError:
             raise _bad_request("database_operation_failed") from None
         finally:
             database.dispose()
+
+    @app.get("/api/v1/accounts/{account_id}/login-preflight")
+    def login_preflight(
+        account_id: UUID,
+        accept_mediacrawler_license: bool = False,
+    ) -> dict[str, object]:
+        return collect_account_login_preflight(
+            resolved,
+            account_id,
+            license_acknowledged=accept_mediacrawler_license,
+        ).to_payload()
 
     @app.get("/api/v1/accounts/{account_id}/login-status")
     def login_status(account_id: UUID) -> dict[str, object]:
@@ -445,6 +540,167 @@ def create_api_app(settings: Settings | None = None) -> FastAPI:
         finally:
             database.dispose()
 
+    def _login_qr_response(
+        login_session_id: UUID,
+        *,
+        expected_account_id: UUID | None = None,
+    ) -> Response:
+        database = _database()
+        try:
+            with database.session() as session:
+                repository = LoginSessionRepository(session)
+                login_session = repository.get(str(login_session_id))
+                if login_session is None:
+                    raise HTTPException(status_code=404, detail="login_session_not_found")
+                if expected_account_id is not None and login_session.account_id != str(expected_account_id):
+                    raise HTTPException(status_code=404, detail="login_session_not_found")
+                account = AccountRepository(session).get(login_session.account_id)
+                if account is None:  # pragma: no cover - guarded by the database foreign key
+                    raise HTTPException(status_code=404, detail="login_session_not_found")
+                if (
+                    account.adapter != "mediacrawler"
+                    or login_session.method != "qr"
+                    or login_session.challenge_kind != "qr"
+                ):
+                    raise HTTPException(status_code=404, detail="login_qr_not_available")
+                try:
+                    account_id = UUID(account.id)
+                    platform = Platform(account.platform)
+                except ValueError:
+                    raise HTTPException(status_code=404, detail="login_qr_not_available") from None
+                if str(account_id) != account.id:
+                    raise HTTPException(status_code=404, detail="login_qr_not_available")
+                status = login_session.status
+                if status in {"pending", "waiting_user"}:
+                    try:
+                        current = repository.get_active_for_account(account.id)
+                    except AccountLoginConflictError:
+                        raise HTTPException(status_code=409, detail="account_login_conflict") from None
+                    if current is None or current.id != str(login_session_id):
+                        raise HTTPException(status_code=404, detail="login_qr_not_available")
+        except HTTPException:
+            raise
+        except SQLAlchemyError:
+            raise _bad_request("database_operation_failed") from None
+        finally:
+            database.dispose()
+
+        if status in {"pending", "waiting_user"}:
+            reconcile_database = _database()
+            try:
+                MediaCrawlerLoginSessionReconciler(
+                    reconcile_database,
+                    integration_root=resolved.resolved_mediacrawler_runtime_dir,
+                ).reconcile_account(account_id)
+                with reconcile_database.session() as session:
+                    repository = LoginSessionRepository(session)
+                    refreshed = repository.get(str(login_session_id))
+                    if refreshed is None:
+                        raise HTTPException(status_code=404, detail="login_session_not_found")
+                    status = refreshed.status
+                    if status in {"pending", "waiting_user"}:
+                        try:
+                            current = repository.get_active_for_account(str(account_id))
+                        except AccountLoginConflictError:
+                            raise HTTPException(status_code=409, detail="account_login_conflict") from None
+                        if current is None or current.id != str(login_session_id):
+                            raise HTTPException(status_code=404, detail="login_qr_not_available")
+            except HTTPException:
+                raise
+            except SQLAlchemyError:
+                raise _bad_request("database_operation_failed") from None
+            finally:
+                reconcile_database.dispose()
+
+        if status in {"succeeded", "expired", "failed", "cancelled"}:
+            return JSONResponse(
+                status_code=410,
+                content={"code": "login_qr_gone", "login_session_id": str(login_session_id)},
+                headers={"Cache-Control": "no-store"},
+            )
+        if status not in {"pending", "waiting_user"}:  # pragma: no cover - closed database constraint
+            raise HTTPException(status_code=404, detail="login_qr_not_available")
+
+        qr_path = (
+            resolved.resolved_mediacrawler_runtime_dir
+            / "accounts"
+            / platform.value
+            / str(account_id)
+            / LOGIN_QR_IMAGE_NAME
+        )
+        try:
+            metadata = qr_path.lstat()
+        except FileNotFoundError:
+            metadata = None
+        except OSError:
+            raise HTTPException(status_code=404, detail="login_qr_not_available") from None
+        if metadata is None:
+            return JSONResponse(
+                status_code=202,
+                content={"code": "login_qr_pending", "login_session_id": str(login_session_id)},
+                headers={"Cache-Control": "no-store"},
+            )
+        if not stat.S_ISREG(metadata.st_mode) or not 0 < metadata.st_size <= _MAX_LOGIN_QR_BYTES:
+            raise HTTPException(status_code=404, detail="login_qr_not_available")
+        try:
+            with qr_path.open("rb") as stream:
+                opened = os.fstat(stream.fileno())
+                if (
+                    not stat.S_ISREG(opened.st_mode)
+                    or opened.st_dev != metadata.st_dev
+                    or opened.st_ino != metadata.st_ino
+                    or opened.st_size != metadata.st_size
+                ):
+                    raise HTTPException(status_code=404, detail="login_qr_not_available")
+                qr_bytes = stream.read(_MAX_LOGIN_QR_BYTES + 1)
+        except HTTPException:
+            raise
+        except OSError:
+            raise HTTPException(status_code=404, detail="login_qr_not_available") from None
+        if not 0 < len(qr_bytes) <= _MAX_LOGIN_QR_BYTES:
+            raise HTTPException(status_code=404, detail="login_qr_not_available")
+
+        # The relay filename is account-scoped. Revalidate after reading the
+        # immutable bytes so a terminal transition followed by a new attempt
+        # cannot pair the requested session identity with the next QR image.
+        database = _database()
+        try:
+            with database.session() as session:
+                repository = LoginSessionRepository(session)
+                revalidated = repository.get(str(login_session_id))
+                if revalidated is None:
+                    raise HTTPException(status_code=404, detail="login_session_not_found")
+                if revalidated.status in {"succeeded", "expired", "failed", "cancelled"}:
+                    return JSONResponse(
+                        status_code=410,
+                        content={"code": "login_qr_gone", "login_session_id": str(login_session_id)},
+                        headers={"Cache-Control": "no-store"},
+                    )
+                try:
+                    current = repository.get_active_for_account(str(account_id))
+                except AccountLoginConflictError:
+                    raise HTTPException(status_code=409, detail="account_login_conflict") from None
+                if current is None or current.id != str(login_session_id):
+                    raise HTTPException(status_code=404, detail="login_qr_not_available")
+        except HTTPException:
+            raise
+        except SQLAlchemyError:
+            raise _bad_request("database_operation_failed") from None
+        finally:
+            database.dispose()
+        return Response(
+            content=qr_bytes,
+            media_type="image/png",
+            headers={
+                "Cache-Control": "no-store",
+                "X-Login-Session-Id": str(login_session_id),
+            },
+        )
+
+    @app.get("/api/v1/login-sessions/{login_session_id}/qr.png")
+    def login_session_qr(login_session_id: UUID) -> Response:
+        return _login_qr_response(login_session_id)
+
     @app.get("/api/v1/accounts/{account_id}/login-qr.png")
     def login_qr(account_id: UUID) -> Response:
         database = _database()
@@ -453,49 +709,40 @@ def create_api_app(settings: Settings | None = None) -> FastAPI:
                 account = AccountRepository(session).get(str(account_id))
                 if account is None:
                     raise HTTPException(status_code=404, detail="account not found")
-                platform = account.platform
-                sessions = LoginSessionRepository(session).list_for_account(account.id)
+                latest_id = session.scalar(
+                    select(LoginSession.id)
+                    .where(
+                        LoginSession.account_id == account.id,
+                        LoginSession.method == "qr",
+                        LoginSession.challenge_kind == "qr",
+                    )
+                    .order_by(LoginSession.created_at.desc(), LoginSession.id.desc())
+                    .limit(1)
+                )
+        except HTTPException:
+            raise
         except SQLAlchemyError:
             raise _bad_request("database_operation_failed") from None
         finally:
             database.dispose()
-        qr_path = (
-            resolved.resolved_mediacrawler_runtime_dir / "accounts" / platform / str(account_id) / LOGIN_QR_IMAGE_NAME
-        )
-        if not qr_path.is_file():
-            latest = sessions[0] if sessions else None
-            if latest is not None and latest.status in {"pending", "waiting_user"}:
-                return JSONResponse(
-                    status_code=202,
-                    content={"code": "login_qr_pending", "login_session_id": latest.id},
-                    headers={"Cache-Control": "no-store"},
-                )
-            if latest is not None and latest.status in {"succeeded", "expired", "failed", "cancelled"}:
-                return JSONResponse(
-                    status_code=410,
-                    content={"code": "login_qr_gone", "login_session_id": latest.id},
-                    headers={"Cache-Control": "no-store"},
-                )
+        if latest_id is None:
             raise HTTPException(status_code=404, detail="login_qr_not_available")
-        return FileResponse(qr_path, media_type="image/png", headers={"Cache-Control": "no-store"})
+        return _login_qr_response(UUID(latest_id), expected_account_id=account_id)
 
     @app.post("/api/v1/accounts/{account_id}/login", status_code=202)
     def start_login(account_id: UUID, body: LoginStart) -> dict[str, object]:
         if not body.enable_mediacrawler:
             raise _bad_request("mediacrawler_not_enabled")
-        if not body.accept_mediacrawler_license:
-            raise _bad_request("license_acknowledgement_required")
-
-        database = _database()
-        try:
-            with database.session() as session:
-                account = AccountRepository(session).get(str(account_id))
-                if account is None:
-                    raise HTTPException(status_code=404, detail="account not found")
-        except SQLAlchemyError:
-            raise _bad_request("database_operation_failed") from None
-        finally:
-            database.dispose()
+        preflight = collect_account_login_preflight(
+            resolved,
+            account_id,
+            license_acknowledged=body.accept_mediacrawler_license,
+        )
+        if not preflight.ok:
+            status_code = 404 if preflight.code == "account_login_not_found" else 400
+            if preflight.code == "account_login_busy":
+                status_code = 409
+            raise HTTPException(status_code=status_code, detail=preflight.code)
 
         operation = operations.start("account-login", exclusive_key=f"login:{account_id}")
 
@@ -547,7 +794,39 @@ def create_api_app(settings: Settings | None = None) -> FastAPI:
         database = _database()
         try:
             with database.session() as session:
-                return [_subscription_payload(subscription) for subscription in SubscriptionRepository(session).list()]
+                payloads: list[dict[str, object]] = []
+                for subscription in SubscriptionRepository(session).list():
+                    payload = _subscription_payload(subscription)
+                    payload["policy_summary"] = _subscription_policy_summary_payload(subscription)
+                    payloads.append(payload)
+                return payloads
+        except SQLAlchemyError:
+            raise _bad_request("database_operation_failed") from None
+        finally:
+            database.dispose()
+
+    def _subscription_draft(body: SubscriptionCreate) -> SubscriptionDraft:
+        return SubscriptionDraft(
+            account_id=body.account_id,
+            platform=body.platform,
+            creator_remote_id=body.creator_remote_id,
+            display_name=body.display_name,
+            creator_secret_ref=body.creator_reference_ref,
+            interval_seconds=body.interval_seconds,
+            max_items=body.max_items,
+            allow_full_history=body.allow_full_history,
+            request_delay_seconds=body.request_delay_seconds,
+            headless=body.headless,
+        )
+
+    @app.post("/api/v1/subscriptions/preview")
+    def preview_subscription(body: SubscriptionCreate) -> dict[str, object]:
+        database = _database()
+        try:
+            with database.session() as session:
+                return WorkbenchService(session).validate_subscription(_subscription_draft(body)).to_payload()
+        except WorkbenchError as error:
+            raise _workbench_error(error) from None
         except SQLAlchemyError:
             raise _bad_request("database_operation_failed") from None
         finally:
@@ -555,50 +834,12 @@ def create_api_app(settings: Settings | None = None) -> FastAPI:
 
     @app.post("/api/v1/subscriptions", status_code=201)
     def create_subscription(body: SubscriptionCreate) -> dict[str, object]:
-        normalized_creator_reference = _safe_credential_reference(body.creator_reference_ref)
         database = _database()
         try:
             with database.session() as session:
-                account = AccountRepository(session).get(str(body.account_id))
-                if account is None:
-                    raise HTTPException(status_code=404, detail="account not found")
-                if account.platform != body.platform.value:
-                    raise _bad_request("platform_conflict")
-                if any(marker in body.creator_remote_id for marker in ("://", "?", "#", "&", "=", ";")):
-                    raise _bad_request("creator_remote_id_must_be_stable_id")
-                policy = {
-                    "mediacrawler": MediaCrawlerSubscriptionPolicy(
-                        allow_full_history=body.allow_full_history,
-                        request_delay_seconds=body.request_delay_seconds,
-                        headless=body.headless,
-                        creator_secret_ref=normalized_creator_reference,
-                    ).to_payload()
-                }
-                author = AuthorRepository(session).upsert(
-                    AuthorUpsert(
-                        platform=body.platform.value,
-                        remote_id=body.creator_remote_id,
-                        display_name=body.display_name,
-                    )
-                )
-                repository = SubscriptionRepository(session)
-                existing = repository.get_by_account_and_author(account.id, author.id)
-                if existing is not None:
-                    if (
-                        existing.interval_seconds != body.interval_seconds
-                        or existing.max_items != body.max_items
-                        or existing.policy != policy
-                    ):
-                        raise _bad_request("subscription_exists_with_different_options")
-                    return _subscription_payload(existing, created=False)
-                subscription = repository.create(
-                    account_id=account.id,
-                    author_id=author.id,
-                    interval_seconds=body.interval_seconds,
-                    max_items=body.max_items,
-                    policy=policy,
-                )
-                return _subscription_payload(subscription, created=True)
+                return WorkbenchService(session).create_subscription(_subscription_draft(body)).to_payload()
+        except WorkbenchError as error:
+            raise _workbench_error(error) from None
         except SQLAlchemyError:
             raise _bad_request("database_operation_failed") from None
         finally:
@@ -630,6 +871,8 @@ def create_api_app(settings: Settings | None = None) -> FastAPI:
                 if subscription is None:
                     raise HTTPException(status_code=404, detail="subscription not found")
                 payload = _subscription_payload(subscription)
+                payload["policy_summary"] = _subscription_policy_summary_payload(subscription)
+                payload["checkpoint_summary"] = _subscription_checkpoint_summary_payload(subscription)
                 payload["schedule"] = _scheduler_schedule_payload(
                     SchedulerRepository(session).get_subscription_schedule(str(subscription_id))
                 )

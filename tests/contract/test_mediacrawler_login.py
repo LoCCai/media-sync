@@ -536,6 +536,53 @@ def test_hook_runs_once_with_lock_held_and_exception_prevents_spawn(
     released.release()
 
 
+def test_stale_qr_is_removed_under_account_lock_before_session_hook(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    checkout = _write_fake_checkout(tmp_path / "upstream")
+    integration_root = tmp_path / "runtime"
+    runner = _runner(checkout, integration_root)
+    request = _request(Platform.XHS, MediaCrawlerLoginMode.INTERACTIVE_QR)
+    paths = runner._prepare_paths(request)
+    qr_path = paths.account_root / runner_module.LOGIN_QR_IMAGE_NAME
+    qr_path.write_bytes(b"stale-qr-from-an-older-attempt")
+    observed: list[bool] = []
+
+    monkeypatch.setattr(
+        runner,
+        "_execute",
+        lambda *_args, **_kwargs: MediaCrawlerLoginResult(MediaCrawlerLoginStatus.AUTHENTICATED, UPSTREAM_SHA),
+    )
+
+    result = runner.run(request, on_account_locked=lambda: observed.append(qr_path.exists()))
+
+    assert result.authenticated
+    assert observed == [False]
+    assert not qr_path.exists()
+
+
+def test_unremovable_stale_qr_fails_closed_before_session_hook_or_spawn(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    checkout = _write_fake_checkout(tmp_path / "upstream")
+    integration_root = tmp_path / "runtime"
+    runner = _runner(checkout, integration_root)
+    request = _request(Platform.XHS, MediaCrawlerLoginMode.INTERACTIVE_QR)
+    paths = runner._prepare_paths(request)
+    qr_path = paths.account_root / runner_module.LOGIN_QR_IMAGE_NAME
+    qr_path.mkdir()
+    calls: list[str] = []
+    monkeypatch.setattr(runner, "_execute", lambda *_args, **_kwargs: calls.append("spawn"))
+
+    result = runner.run(request, on_account_locked=lambda: calls.append("hook"))
+
+    assert result.status is MediaCrawlerLoginStatus.CONFIGURATION_INVALID
+    assert calls == []
+    assert qr_path.is_dir()
+
+
 def test_disabled_gate_and_busy_lock_do_not_call_hook_or_spawn(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
