@@ -43,6 +43,8 @@ from media_sync.infrastructure.db import (
     utc_now,
 )
 
+from .operations import DurableSubjectHook, DurableSubjectRef
+
 EMBY_EXPORTER_NAME = "emby"
 EMBY_EXPORT_JOB_TYPE = "export.emby"
 
@@ -521,14 +523,23 @@ class EmbyExportService:
         self._publication_scope = publication_scope
         self._clock = clock
 
-    def export_author(self, request: EmbyExportRequest) -> EmbyExportOutcome:
+    def export_author(
+        self,
+        request: EmbyExportRequest,
+        *,
+        subject_hook: DurableSubjectHook | None = None,
+    ) -> EmbyExportOutcome:
         """Run one exact job from DB snapshot through publication and atomic finalize."""
 
         scan_recovery = True
         recovered_count = 0
         while True:
             try:
-                prepared = self._prepare(request, scan_recovery=scan_recovery)
+                prepared = self._prepare(
+                    request,
+                    scan_recovery=scan_recovery,
+                    subject_hook=subject_hook,
+                )
             except ExportError:
                 raise
             except RepositoryError:
@@ -614,6 +625,7 @@ class EmbyExportService:
         request: EmbyExportRequest,
         *,
         scan_recovery: bool,
+        subject_hook: DurableSubjectHook | None = None,
     ) -> _PreparedAttempt | _ExistingExport | _PreparationFailure | _RecoveryScan:
         with self._database.session() as session:
             snapshot = self._load_snapshot(session, request.author_id)
@@ -634,6 +646,7 @@ class EmbyExportService:
                     pending=recoverable,
                 )
             if head is not None and head.source_fingerprint == snapshot.source_fingerprint:
+                self._link_job_subject(session, subject_hook, head.job_id)
                 return self._load_existing_export(records, snapshot, head)
 
             predecessor_job_id = None if head is None else head.job_id
@@ -665,6 +678,7 @@ class EmbyExportService:
             )
             if job_source != snapshot.source_fingerprint or job_predecessor != predecessor_job_id:
                 raise ExportError("export_state_inconsistent")
+            self._link_job_subject(session, subject_hook, job.id)
             if job.status == "succeeded":
                 current_head, _ = self._load_publication_state(
                     session,
@@ -744,6 +758,15 @@ class EmbyExportService:
                 predecessor=head,
                 base_payload=base_payload,
             )
+
+    @staticmethod
+    def _link_job_subject(
+        session: Session,
+        subject_hook: DurableSubjectHook | None,
+        job_id: str,
+    ) -> None:
+        if subject_hook is not None:
+            subject_hook(session, DurableSubjectRef("job", job_id))
 
     def _load_publication_state(
         self,

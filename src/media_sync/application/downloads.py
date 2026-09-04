@@ -13,6 +13,8 @@ from types import MappingProxyType
 from typing import Literal
 from uuid import UUID
 
+from sqlalchemy.orm import Session
+
 from media_sync.domain import AssetKind, AssetStatus, Platform
 from media_sync.infrastructure.db import (
     AssetConflictError,
@@ -33,6 +35,8 @@ from media_sync.media import (
     parse_locator,
 )
 from media_sync.security.paths import PathLockBusyError, PathSecurityError, ensure_secure_root, exclusive_file_lock
+
+from .operations import DurableSubjectHook, DurableSubjectRef
 
 ASSET_DOWNLOAD_JOB_TYPE = "asset_download"
 
@@ -259,31 +263,48 @@ class AssetDownloadService:
         self._clock = clock
         self._verified_archive_recovery_preflight = verified_archive_recovery_preflight
 
-    def run(self, request: AssetDownloadRequest) -> AssetDownloadOutcome:
+    def run(
+        self,
+        request: AssetDownloadRequest,
+        *,
+        subject_hook: DurableSubjectHook | None = None,
+    ) -> AssetDownloadOutcome:
         """Download one asset or return its already-verified state."""
 
         try:
             work_root = ensure_secure_root(request.work_root)
             lock_relative = Path("orchestration-locks") / f"{request.asset_id}.lock"
             with exclusive_file_lock(work_root, lock_relative):
-                return self._run_locked(request)
+                return self._run_locked(request, subject_hook=subject_hook)
         except PathLockBusyError:
             raise AssetDownloadOrchestrationError("asset_download_busy") from None
         except PathSecurityError:
             error = MediaDownloadError("filesystem_unsafe")
             raise AssetDownloadOrchestrationError._from_media(error, retryable=False) from None
 
-    def _run_locked(self, request: AssetDownloadRequest) -> AssetDownloadOutcome:
+    def _run_locked(
+        self,
+        request: AssetDownloadRequest,
+        *,
+        subject_hook: DurableSubjectHook | None,
+    ) -> AssetDownloadOutcome:
         """Hold the work-root/asset orchestration lock through DB finalization."""
 
-        decision = self._begin(request)
+        decision = self._begin(request, subject_hook=subject_hook)
         if decision.recovery is not None:
             recovery = decision.recovery
             recovered_result = self._recover_published_result(request, recovery)
             if recovered_result is None:
-                decision = self._begin(request, allow_prepared_recovery=False)
+                decision = self._begin(
+                    request,
+                    allow_prepared_recovery=False,
+                    subject_hook=subject_hook,
+                )
             else:
-                prepared_recovery = self._takeover_prepared_recovery(request, recovery)
+                prepared_recovery = self._takeover_prepared_recovery(
+                    request,
+                    recovery,
+                )
                 self._validate_recovered_archive(request, prepared_recovery, recovered_result)
                 return self._finalize_success(request, prepared_recovery, recovered_result)
         if decision.outcome is not None:
@@ -545,6 +566,7 @@ class AssetDownloadService:
         request: AssetDownloadRequest,
         *,
         allow_prepared_recovery: bool = True,
+        subject_hook: DurableSubjectHook | None = None,
     ) -> _StartDecision:
         decision: _StartDecision | None = None
         try:
@@ -563,6 +585,8 @@ class AssetDownloadService:
                             or verified_job.payload.get("generation") != asset.generation
                         )
                     )
+                    if verified_job is not None and not invalid_verified_job:
+                        self._link_job_subject(session, subject_hook, verified_job.id)
                     if invalid_verified_job:
                         decision = _StartDecision(error_code="asset_download_state_invalid")
                     elif (
@@ -574,6 +598,8 @@ class AssetDownloadService:
                         decision = _StartDecision(outcome=self._verified_outcome(asset, disposition="already_verified"))
                 elif asset.status == AssetStatus.FAILED_TERMINAL.value:
                     terminal_job = jobs.get(asset.download_job_id) if asset.download_job_id is not None else None
+                    if terminal_job is not None:
+                        self._link_job_subject(session, subject_hook, terminal_job.id)
                     if (
                         allow_prepared_recovery
                         and terminal_job is not None
@@ -623,6 +649,7 @@ class AssetDownloadService:
                         max_attempts=request.max_attempts,
                         available_at=now,
                     )
+                    self._link_job_subject(session, subject_hook, job.id)
 
                     if (
                         job.payload.get("asset_id") != str(request.asset_id)
@@ -798,6 +825,15 @@ class AssetDownloadService:
         if decision is None:  # pragma: no cover - every branch closes the decision
             raise AssetDownloadOrchestrationError("asset_download_state_invalid")
         return decision
+
+    @staticmethod
+    def _link_job_subject(
+        session: Session,
+        subject_hook: DurableSubjectHook | None,
+        job_id: str,
+    ) -> None:
+        if subject_hook is not None:
+            subject_hook(session, DurableSubjectRef("job", job_id))
 
     def _finalize_success(
         self,

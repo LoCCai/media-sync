@@ -194,6 +194,31 @@ def _export(database: Database, tmp_path: Path, author_id: str, *, worker: str =
     return _service(database, tmp_path).export_author(EmbyExportRequest(author_id, worker, lease_seconds=60))
 
 
+def test_subject_hook_failure_rolls_back_export_job_before_render(database: Database, tmp_path: Path) -> None:
+    author_id, _ = _seed_author(database, tmp_path / "archive", include_video=False)
+    observed_subjects: list[tuple[str, str, str]] = []
+
+    def fail_hook(session: object, subject: object) -> None:
+        observed_subjects.append((subject.subject_type, subject.subject_id, subject.role))
+        job = JobRepository(session).get(subject.subject_id)
+        assert job is not None and job.status == "queued"
+        raise RuntimeError("subject hook failure")
+
+    with pytest.raises(ExportError) as failed:
+        _service(database, tmp_path).export_author(
+            EmbyExportRequest(author_id, "hook-worker", lease_seconds=60),
+            subject_hook=fail_hook,  # type: ignore[arg-type]
+        )
+
+    assert failed.value.code == "export_prepare_failed"
+    assert len(observed_subjects) == 1
+    assert observed_subjects[0][0::2] == ("job", "execution")
+    with database.session() as session:
+        assert list(session.scalars(select(Job)).all()) == []
+        assert list(session.scalars(select(ExportRecord)).all()) == []
+    assert not any(path.is_file() for path in (tmp_path / "library").rglob("*"))
+
+
 def test_db_snapshot_exports_golden_tree_and_is_idempotent(database: Database, tmp_path: Path) -> None:
     author_id, _ = _seed_author(database, tmp_path / "archive")
     service = _service(database, tmp_path)

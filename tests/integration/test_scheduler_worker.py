@@ -267,6 +267,43 @@ class _RaisingRandom:
 
 
 @pytest.mark.asyncio
+async def test_subject_hook_failure_rolls_back_scheduler_claim_before_handler(database: Database) -> None:
+    _seed(database, remote_id="subject-hook-rollback")
+    clock = _Clock()
+    cycle = DurableSchedulerService(database, clock=clock).tick(limit=1).cycles[0]
+    handler_called = False
+    observed_subjects: list[tuple[str, str, str]] = []
+
+    class Handler:
+        async def run(self, context: SubscriptionJobContext) -> SubscriptionHandlerResult:
+            nonlocal handler_called
+            del context
+            handler_called = True
+            return SubscriptionHandlerResult.success()
+
+    def fail_hook(session: object, subject: object) -> None:
+        observed_subjects.append((subject.subject_type, subject.subject_id, subject.role))
+        claimed = session.get(Job, subject.subject_id)
+        assert claimed is not None and claimed.status == "claimed"
+        raise RuntimeError("subject hook failure")
+
+    worker = SubscriptionWorker(
+        database,
+        SubscriptionHandlerRegistry({"fake": Handler()}),
+        clock=clock,
+    )
+    with pytest.raises(RuntimeError, match="subject hook failure"):
+        await worker.run_once(worker_id="hook-worker", subject_hook=fail_hook)  # type: ignore[arg-type]
+
+    assert handler_called is False
+    assert observed_subjects == [("job", cycle.job_id, "execution")]
+    with database.session() as session:
+        job = session.get(Job, cycle.job_id)
+        assert job is not None
+        assert (job.status, job.attempts, job.lease_owner, job.lease_token) == ("queued", 0, None, None)
+
+
+@pytest.mark.asyncio
 async def test_worker_commits_start_before_fake_handler_and_finalizes_fixed_delay(database: Database) -> None:
     subscription_id = _seed(database)
     clock = _Clock()

@@ -12,6 +12,7 @@ from threading import Event
 from types import MappingProxyType
 from typing import Literal, Protocol, cast
 
+from media_sync.application.operations import DurableSubjectHook, DurableSubjectRef
 from media_sync.infrastructure.db import Database, JobRepository, LeaseLostError
 from media_sync.infrastructure.db.models import Job
 
@@ -496,6 +497,7 @@ class PipelineSubscriptionWorker:
         lease_seconds: int = 300,
         scan_limit: int = 100,
         heartbeat_interval_seconds: float | None = None,
+        subject_hook: DurableSubjectHook | None = None,
     ) -> PipelineWorkerResult:
         """Run at most one coordinator attempt."""
 
@@ -511,6 +513,8 @@ class PipelineSubscriptionWorker:
                 scan_limit=scan_limit,
                 now=self.clock(),
             )
+            if claim is not None and subject_hook is not None:
+                subject_hook(session, DurableSubjectRef("job", claim.job_id))
         if claim is None:
             return PipelineWorkerResult.idle()
 
@@ -572,6 +576,7 @@ class PipelineSubscriptionWorker:
         scan_limit: int = 100,
         heartbeat_interval_seconds: float | None = None,
         cancellation: Event | None = None,
+        subject_hook: DurableSubjectHook | None = None,
     ) -> tuple[PipelineWorkerResult, ...]:
         """Run no more than ``max_jobs``, stopping safely between coordinators."""
 
@@ -588,6 +593,7 @@ class PipelineSubscriptionWorker:
                 lease_seconds=lease_seconds,
                 scan_limit=scan_limit,
                 heartbeat_interval_seconds=heartbeat_interval_seconds,
+                subject_hook=subject_hook,
             )
             if result.status == "idle":
                 break

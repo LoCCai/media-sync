@@ -32,6 +32,8 @@ from media_sync.integrations.mediacrawler import (
     MediaCrawlerLoginStatus,
 )
 
+from .operations import DurableSubjectHook, DurableSubjectRef
+
 _ERROR_MESSAGES = {
     "account_login_not_found": "the account was not found",
     "account_login_ineligible": "the account is not eligible for interactive MediaCrawler QR login",
@@ -311,6 +313,7 @@ class MediaCrawlerQrLoginService:
         request: AccountLoginRequest,
         *,
         cancellation: threading.Event | None = None,
+        subject_hook: DurableSubjectHook | None = None,
     ) -> AccountLoginOutcome:
         """Run one explicit QR attempt; a session starts only after account lock acquisition."""
 
@@ -339,6 +342,11 @@ class MediaCrawlerQrLoginService:
                     at=started_at,
                 )
                 waiting = repository.mark_waiting_user(started.id, at=started_at)
+                if subject_hook is not None:
+                    subject_hook(
+                        session,
+                        DurableSubjectRef("login_session", waiting.id),
+                    )
                 # Publish the exact identity before commit. If commit fails,
                 # best-effort terminalization simply finds no durable row.
                 observed = waiting

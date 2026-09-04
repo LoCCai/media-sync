@@ -154,6 +154,43 @@ def _prepare_account_root(runtime_root: Path, account_id: UUID) -> None:
     (runtime_root / "accounts" / Platform.BILI.value / str(account_id)).mkdir(parents=True)
 
 
+def test_subject_hook_failure_rolls_back_waiting_session_before_child_work(database: Database) -> None:
+    account_id = _seed_account(database)
+    after_hook_called = False
+
+    def after_hook() -> None:
+        nonlocal after_hook_called
+        after_hook_called = True
+
+    def fail_hook(session: object, subject: object) -> None:
+        waiting = session.get(LoginSession, subject.subject_id)
+        assert waiting is not None and waiting.status == "waiting_user"
+        assert (subject.subject_type, subject.role) == ("login_session", "execution")
+        raise RuntimeError("subject hook failure")
+
+    runner = _Runner(
+        _result(MediaCrawlerLoginStatus.AUTHENTICATED),
+        invoke_hook=True,
+        after_hook=after_hook,
+    )
+    service = MediaCrawlerQrLoginService(
+        database,
+        runner,
+        clock=_Clock(STARTED_AT, STARTED_AT + timedelta(seconds=1)),
+    )
+
+    with pytest.raises(AccountLoginError) as failed:
+        service.run(
+            AccountLoginRequest(account_id),
+            subject_hook=fail_hook,  # type: ignore[arg-type]
+        )
+
+    assert failed.value.code == "account_login_unexpected"
+    assert runner.hook_calls == 0
+    assert after_hook_called is False
+    assert _session_count(database) == 0
+
+
 @pytest.mark.parametrize(
     ("runner_status", "session_status", "account_status", "login_method", "authenticated"),
     [

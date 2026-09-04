@@ -255,6 +255,46 @@ def _ok_response(content: bytes = PNG) -> httpx.Response:
     )
 
 
+def test_subject_hook_failure_rolls_back_asset_job_before_network(
+    database: Database,
+    tmp_path: Path,
+) -> None:
+    asset_id = _seed_asset(database)
+    request = _request(tmp_path, asset_id)
+    network_calls = 0
+    observed_subjects: list[tuple[str, str, str]] = []
+
+    def forbidden_network(_request: httpx.Request) -> httpx.Response:
+        nonlocal network_calls
+        network_calls += 1
+        return _ok_response()
+
+    def fail_hook(session: object, subject: object) -> None:
+        observed_subjects.append((subject.subject_type, subject.subject_id, subject.role))
+        job = JobRepository(session).get(subject.subject_id)
+        assert job is not None and job.status == "queued"
+        raise RuntimeError("subject hook failure")
+
+    with pytest.raises(AssetDownloadOrchestrationError) as failed:
+        AssetDownloadService(database, _downloader(forbidden_network)).run(
+            request,
+            subject_hook=fail_hook,  # type: ignore[arg-type]
+        )
+
+    assert failed.value.code == "asset_download_start_failed"
+    assert network_calls == 0
+    assert len(observed_subjects) == 1
+    assert observed_subjects[0][0::2] == ("job", "execution")
+    with database.session() as session:
+        asset = AssetRepository(session).require(str(asset_id))
+        job = JobRepository(session).get_by_key(
+            ASSET_DOWNLOAD_JOB_TYPE,
+            asset_download_natural_key(asset_id, asset.generation),
+        )
+        assert asset.status == "discovered"
+        assert job is None
+
+
 def test_seed_to_download_is_atomic_and_already_verified_is_idempotent(
     database: Database,
     tmp_path: Path,

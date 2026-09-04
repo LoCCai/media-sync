@@ -60,6 +60,7 @@ from media_sync.application.emby import (
 )
 from media_sync.application.mediacrawler import load_normalized_output
 from media_sync.application.mediacrawler_download import LazyMediaCrawlerLocatorRefresher
+from media_sync.application.operations import DurableSubjectHook
 from media_sync.config import Settings, get_settings
 from media_sync.domain import AccountRef, AssetStatus, Cursor, DomainError, JobStatus, LoginMethod, Platform, RunStatus
 from media_sync.exporters.emby import EmbyExporter, ExportError
@@ -2165,6 +2166,7 @@ def _execute_asset_download(
     xhs_detail_reference_ref: str | None,
     settings: Settings,
     database: Database,
+    subject_hook: DurableSubjectHook | None = None,
 ) -> tuple[dict[str, object], bool]:
     """Run one gated asset download and return its redaction-safe payload plus ok flag.
 
@@ -2273,7 +2275,8 @@ def _execute_asset_download(
                 archive_root=settings.archive_dir,
                 lease_seconds=lease_seconds,
                 max_attempts=max_attempts,
-            )
+            ),
+            subject_hook=subject_hook,
         )
     except AssetDownloadOrchestrationError as error:
         return {

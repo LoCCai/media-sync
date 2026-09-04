@@ -155,6 +155,38 @@ def _seed_pipeline(database: Database, *, remote_id: str) -> tuple[str, str, str
 
 
 @pytest.mark.asyncio
+async def test_subject_hook_failure_rolls_back_pipeline_claim_before_handler(database: Database) -> None:
+    coordinator_id, _source_id, _subscription_id, _account_id, _run_id = _seed_pipeline(
+        database,
+        remote_id="subject-hook-rollback",
+    )
+    handler_called = False
+    observed_subjects: list[tuple[str, str, str]] = []
+
+    def handler(_claim: PipelineSubscriptionClaim) -> PipelineHandlerResult:
+        nonlocal handler_called
+        handler_called = True
+        return PipelineHandlerResult.success()
+
+    def fail_hook(session: object, subject: object) -> None:
+        observed_subjects.append((subject.subject_type, subject.subject_id, subject.role))
+        claimed = session.get(Job, subject.subject_id)
+        assert claimed is not None and claimed.status == "claimed"
+        raise RuntimeError("subject hook failure")
+
+    worker = PipelineSubscriptionWorker(database, handler, clock=_Clock())
+    with pytest.raises(RuntimeError, match="subject hook failure"):
+        await worker.run_once(worker_id="hook-worker", subject_hook=fail_hook)  # type: ignore[arg-type]
+
+    assert handler_called is False
+    assert observed_subjects == [("job", coordinator_id, "execution")]
+    with database.session() as session:
+        job = session.get(Job, coordinator_id)
+        assert job is not None
+        assert (job.status, job.attempts, job.lease_owner, job.lease_token) == ("queued", 0, None, None)
+
+
+@pytest.mark.asyncio
 async def test_worker_is_idle_and_never_claims_a_foreign_job(database: Database) -> None:
     called = False
 

@@ -15,6 +15,7 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.orm import Session, joinedload
 
+from media_sync.application.operations import DurableSubjectHook, DurableSubjectRef
 from media_sync.domain import AccountRef, Cursor, DomainError, LoginMethod, Platform
 from media_sync.infrastructure.db import Database
 from media_sync.infrastructure.db.models import Job, Subscription, SyncRun
@@ -594,6 +595,7 @@ class SubscriptionWorker:
         lease_seconds: int = 60,
         scan_limit: int = 100,
         heartbeat_interval_seconds: float | None = None,
+        subject_hook: DurableSubjectHook | None = None,
     ) -> SchedulerWorkerResult:
         heartbeat_interval = self._heartbeat_interval(
             heartbeat_interval_seconds,
@@ -608,6 +610,8 @@ class SubscriptionWorker:
                 adapter_allowlist=self.claim_adapter_allowlist,
                 now=self.clock(),
             )
+            if claim is not None and subject_hook is not None:
+                subject_hook(session, DurableSubjectRef("job", claim.job_id))
         if claim is None:
             return SchedulerWorkerResult.idle()
 
@@ -652,6 +656,7 @@ class SubscriptionWorker:
         scan_limit: int = 100,
         heartbeat_interval_seconds: float | None = None,
         cancellation: Event | None = None,
+        subject_hook: DurableSubjectHook | None = None,
     ) -> tuple[SchedulerWorkerResult, ...]:
         """Run a bounded batch, observing cooperative cancellation between Jobs."""
 
@@ -669,6 +674,7 @@ class SubscriptionWorker:
                 lease_seconds=lease_seconds,
                 scan_limit=scan_limit,
                 heartbeat_interval_seconds=heartbeat_interval_seconds,
+                subject_hook=subject_hook,
             )
             if result.status == "idle":
                 break
