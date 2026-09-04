@@ -7,6 +7,7 @@ import ctypes
 import errno
 import hashlib
 import json
+import math
 import os
 import re
 import stat
@@ -16,6 +17,7 @@ import time
 import unicodedata
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
+from functools import partial
 from pathlib import Path, PurePosixPath
 from typing import BinaryIO
 from uuid import uuid4
@@ -29,7 +31,16 @@ from .layout import (
     author_relative_directory,
     build_layout_plan,
 )
-from .models import ExportAuthor, ExportContent, ExportResult, ManagedFile, PublishedIdentity, RenderedExport
+from .models import (
+    ExportAuthor,
+    ExportContent,
+    ExportResult,
+    ManagedFile,
+    ManagedFileInspection,
+    PublishedIdentity,
+    PublishedTreeInspection,
+    RenderedExport,
+)
 
 _CHUNK_BYTES = 1024 * 1024
 _MAX_MANIFEST_BYTES = 16 * 1024 * 1024
@@ -37,7 +48,11 @@ _TRANSACTION_ROOT_NAME = ".media-sync-transactions-v1"
 _TRANSACTION_CONFLICT_MARKER = "RECOVERY_REQUIRED"
 _TRANSACTION_SCHEMA_VERSION = 2
 _PUBLISHED_EXPORT_INVALID = "published_export_invalid"
+_PUBLISHED_INSPECTION_DRIFTED = "published_tree_drifted"
+_PUBLISHED_INSPECTION_DEADLINE = "published_inspection_deadline"
+_PUBLISHED_INSPECTION_BUSY = "published_inspection_busy"
 _LOCK_ROOT_NAME = ".media-sync-locks-v1"
+_MAX_INSPECTION_FILES = 128
 _JOB_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z")
 _SHA256_PATTERN = re.compile(r"[0-9a-f]{64}\Z")
 _WINDOWS_ILLEGAL = frozenset('<>:"/\\|?*')
@@ -70,6 +85,17 @@ class _FileSignature:
     size: int
     modified_ns: int
     changed_ns: int
+
+
+@dataclass(frozen=True, slots=True)
+class _BoundDirectory:
+    """An existing directory pinned for one read-only tree inspection."""
+
+    path: Path
+    signature: _FileSignature
+    parent: _BoundDirectory | None
+    descriptor: int | None
+    windows_handle: int | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -154,6 +180,244 @@ def _safe_lstat_as(path: Path, error_code: str) -> os.stat_result | None:
         return _safe_lstat(path)
     except ExportConflictError:
         raise ExportConflictError(error_code) from None
+
+
+def _safe_bound_lstat(
+    directory: _BoundDirectory,
+    name: str,
+    *,
+    error_code: str,
+) -> os.stat_result | None:
+    """Stat one direct child without following it or an unpinned POSIX parent."""
+
+    if directory.descriptor is None:
+        return _safe_lstat_as(directory.path / name, error_code)
+    try:
+        result = os.stat(name, dir_fd=directory.descriptor, follow_symlinks=False)
+    except FileNotFoundError:
+        return None
+    except OSError:
+        raise ExportConflictError(error_code) from None
+    if stat.S_ISLNK(result.st_mode) or _is_reparse(result):
+        raise ExportConflictError(error_code)
+    return result
+
+
+def _verify_bound_directory(directory: _BoundDirectory, *, error_code: str) -> None:
+    """Require every pinned directory to remain at its original tree edge."""
+
+    parent = directory.parent
+    if parent is None:
+        current_stat = _safe_lstat_as(directory.path, error_code)
+    else:
+        _verify_bound_directory(parent, error_code=error_code)
+        current_stat = _safe_bound_lstat(parent, directory.path.name, error_code=error_code)
+    if current_stat is None or not stat.S_ISDIR(current_stat.st_mode):
+        raise ExportConflictError(error_code)
+    current = _signature(current_stat)
+    if not _same_identity(directory.signature, current):
+        raise ExportConflictError(error_code)
+    if directory.descriptor is not None:
+        opened_stat = os.fstat(directory.descriptor)
+        if not stat.S_ISDIR(opened_stat.st_mode) or not _same_identity(directory.signature, _signature(opened_stat)):
+            raise ExportConflictError(error_code)
+
+
+def _open_windows_directory_handle(path: Path) -> int:
+    """Pin a Windows directory without granting a concurrent delete/rename share."""
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    create_file = kernel32.CreateFileW
+    create_file.argtypes = (
+        ctypes.c_wchar_p,
+        ctypes.c_uint32,
+        ctypes.c_uint32,
+        ctypes.c_void_p,
+        ctypes.c_uint32,
+        ctypes.c_uint32,
+        ctypes.c_void_p,
+    )
+    create_file.restype = ctypes.c_void_p
+    file_share_read = 0x00000001
+    file_share_write = 0x00000002
+    open_existing = 3
+    file_flag_open_reparse_point = 0x00200000
+    file_flag_backup_semantics = 0x02000000
+    raw_handle = create_file(
+        str(path),
+        0,
+        file_share_read | file_share_write,
+        None,
+        open_existing,
+        file_flag_open_reparse_point | file_flag_backup_semantics,
+        None,
+    )
+    invalid_handle = ctypes.c_void_p(-1).value
+    if raw_handle is None or raw_handle == invalid_handle:
+        raise OSError(ctypes.get_last_error(), "could not bind existing directory")
+    return int(raw_handle)
+
+
+def _close_windows_handle(handle: int) -> None:
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    close_handle = kernel32.CloseHandle
+    close_handle.argtypes = (ctypes.c_void_p,)
+    close_handle.restype = ctypes.c_int
+    close_handle(ctypes.c_void_p(handle))
+
+
+@contextlib.contextmanager
+def _bind_existing_directory(
+    path: Path,
+    *,
+    error_code: str,
+    parent: _BoundDirectory | None = None,
+) -> Iterator[_BoundDirectory]:
+    """Open an existing directory as a stable, non-link inspection anchor."""
+
+    declared_stat = (
+        _safe_lstat_as(path, error_code)
+        if parent is None
+        else _safe_bound_lstat(parent, path.name, error_code=error_code)
+    )
+    if declared_stat is None or not stat.S_ISDIR(declared_stat.st_mode):
+        raise ExportConflictError(error_code)
+    declared = _signature(declared_stat)
+    descriptor: int | None = None
+    windows_handle: int | None = None
+    try:
+        if os.name == "nt":
+            windows_handle = _open_windows_directory_handle(path)
+            opened = declared
+        else:
+            flags = (
+                os.O_RDONLY
+                | getattr(os, "O_BINARY", 0)
+                | getattr(os, "O_CLOEXEC", 0)
+                | getattr(os, "O_DIRECTORY", 0)
+                | getattr(os, "O_NOFOLLOW", 0)
+            )
+            descriptor = os.open(path, flags) if parent is None else os.open(path.name, flags, dir_fd=parent.descriptor)
+            opened_stat = os.fstat(descriptor)
+            if not stat.S_ISDIR(opened_stat.st_mode) or _is_reparse(opened_stat):
+                raise ExportConflictError(error_code)
+            opened = _signature(opened_stat)
+        current_stat = (
+            _safe_lstat_as(path, error_code)
+            if parent is None
+            else _safe_bound_lstat(parent, path.name, error_code=error_code)
+        )
+        if current_stat is None or not stat.S_ISDIR(current_stat.st_mode):
+            raise ExportConflictError(error_code)
+        if not _same_identity(declared, opened) or not _same_identity(opened, _signature(current_stat)):
+            raise ExportConflictError(error_code)
+        bound = _BoundDirectory(path, opened, parent, descriptor, windows_handle)
+        _verify_bound_directory(bound, error_code=error_code)
+        try:
+            yield bound
+        finally:
+            _verify_bound_directory(bound, error_code=error_code)
+    except OSError:
+        raise ExportConflictError(error_code) from None
+    finally:
+        if descriptor is not None:
+            with contextlib.suppress(OSError):
+                os.close(descriptor)
+        if windows_handle is not None:
+            _close_windows_handle(windows_handle)
+
+
+def _exact_bound_child_name(directory: _BoundDirectory, expected: str, *, error_code: str) -> str | None:
+    """Resolve one direct child with the exporter's cross-platform case contract."""
+
+    _verify_bound_directory(directory, error_code=error_code)
+    try:
+        if directory.descriptor is None:
+            with os.scandir(directory.path) as entries:
+                names = [entry.name for entry in entries]
+        else:
+            names = os.listdir(directory.descriptor)
+    except OSError:
+        raise ExportConflictError(error_code) from None
+    folded = unicodedata.normalize("NFC", expected).casefold()
+    matches = [name for name in names if unicodedata.normalize("NFC", name).casefold() == folded]
+    _verify_bound_directory(directory, error_code=error_code)
+    if len(matches) > 1 or (matches and matches[0] != expected):
+        raise ExportConflictError(error_code)
+    return None if not matches else matches[0]
+
+
+def _bind_directory_parts(
+    stack: contextlib.ExitStack,
+    root: _BoundDirectory,
+    parts: Sequence[str],
+    *,
+    error_code: str,
+) -> _BoundDirectory:
+    current = root
+    for part in parts:
+        if _exact_bound_child_name(current, part, error_code=error_code) is None:
+            raise ExportConflictError(error_code)
+        current = stack.enter_context(
+            _bind_existing_directory(current.path / part, error_code=error_code, parent=current)
+        )
+    return current
+
+
+@contextlib.contextmanager
+def _safe_bound_regular_reader(
+    directory: _BoundDirectory,
+    name: str,
+    *,
+    error_code: str,
+    single_link: bool,
+) -> Iterator[BinaryIO]:
+    """Open a direct child from a pinned directory and fence its exact entry."""
+
+    _verify_bound_directory(directory, error_code=error_code)
+    declared_stat = _safe_bound_lstat(directory, name, error_code=error_code)
+    if (
+        declared_stat is None
+        or not stat.S_ISREG(declared_stat.st_mode)
+        or (single_link and declared_stat.st_nlink != 1)
+    ):
+        raise ExportConflictError(error_code)
+    declared = _signature(declared_stat)
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = (
+            os.open(directory.path / name, flags)
+            if directory.descriptor is None
+            else os.open(name, flags, dir_fd=directory.descriptor)
+        )
+    except OSError:
+        raise ExportConflictError(error_code) from None
+    handle = os.fdopen(descriptor, "rb")
+    try:
+        opened_stat = os.fstat(handle.fileno())
+        if (
+            not stat.S_ISREG(opened_stat.st_mode)
+            or _is_reparse(opened_stat)
+            or (single_link and opened_stat.st_nlink != 1)
+        ):
+            raise ExportConflictError(error_code)
+        opened = _signature(opened_stat)
+        current_stat = _safe_bound_lstat(directory, name, error_code=error_code)
+        if current_stat is None or (single_link and current_stat.st_nlink != 1):
+            raise ExportConflictError(error_code)
+        if not _same_identity(declared, opened) or not _same_identity(opened, _signature(current_stat)):
+            raise ExportConflictError(error_code)
+        _verify_bound_directory(directory, error_code=error_code)
+        yield handle
+        final = _signature(os.fstat(handle.fileno()))
+        final_path_stat = _safe_bound_lstat(directory, name, error_code=error_code)
+        if final_path_stat is None or (single_link and final_path_stat.st_nlink != 1):
+            raise ExportConflictError(error_code)
+        if final != opened or not _same_identity(final, _signature(final_path_stat)):
+            raise ExportConflictError(error_code)
+        _verify_bound_directory(directory, error_code=error_code)
+    finally:
+        handle.close()
 
 
 @contextlib.contextmanager
@@ -1584,6 +1848,49 @@ def _open_lock_file(path: Path) -> BinaryIO:
         raise
 
 
+def _open_existing_lock_file(path: Path, *, parent: _BoundDirectory) -> BinaryIO:
+    """Open a publication lock without creating or changing any bytes."""
+
+    _verify_bound_directory(parent, error_code=_PUBLISHED_INSPECTION_DRIFTED)
+    existing_stat = _safe_bound_lstat(parent, path.name, error_code=_PUBLISHED_INSPECTION_DRIFTED)
+    if (
+        existing_stat is None
+        or not stat.S_ISREG(existing_stat.st_mode)
+        or existing_stat.st_nlink != 1
+        or existing_stat.st_size < 1
+    ):
+        raise ExportConflictError(_PUBLISHED_INSPECTION_DRIFTED)
+    declared = _signature(existing_stat)
+    flags = os.O_RDWR | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = (
+            os.open(path, flags) if parent.descriptor is None else os.open(path.name, flags, dir_fd=parent.descriptor)
+        )
+    except OSError:
+        raise ExportConflictError(_PUBLISHED_INSPECTION_DRIFTED) from None
+    handle = os.fdopen(descriptor, "r+b")
+    try:
+        opened_stat = os.fstat(handle.fileno())
+        if (
+            not stat.S_ISREG(opened_stat.st_mode)
+            or _is_reparse(opened_stat)
+            or opened_stat.st_nlink != 1
+            or opened_stat.st_size < 1
+        ):
+            raise ExportConflictError(_PUBLISHED_INSPECTION_DRIFTED)
+        opened = _signature(opened_stat)
+        current_stat = _safe_bound_lstat(parent, path.name, error_code=_PUBLISHED_INSPECTION_DRIFTED)
+        if current_stat is None or current_stat.st_nlink != 1:
+            raise ExportConflictError(_PUBLISHED_INSPECTION_DRIFTED)
+        if not _same_identity(declared, opened) or not _same_identity(opened, _signature(current_stat)):
+            raise ExportConflictError(_PUBLISHED_INSPECTION_DRIFTED)
+        _verify_bound_directory(parent, error_code=_PUBLISHED_INSPECTION_DRIFTED)
+        return handle
+    except BaseException:
+        handle.close()
+        raise
+
+
 def _try_os_lock(handle: BinaryIO) -> bool:
     if os.name == "nt":
         import msvcrt
@@ -1646,6 +1953,103 @@ def _author_lock(path: Path, timeout_seconds: float) -> Iterator[None]:
                 _unlock_os(handle)
             handle.close()
         local.release()
+
+
+@contextlib.contextmanager
+def _existing_author_lock(
+    path: Path,
+    *,
+    parent: _BoundDirectory,
+    timeout_seconds: float,
+    deadline: float,
+    monotonic: Callable[[], float],
+) -> Iterator[None]:
+    """Acquire an already-published author lock without filesystem mutation."""
+
+    local = _local_lock(path)
+    remaining = deadline - monotonic()
+    if remaining <= 0:
+        raise ExportConflictError(_PUBLISHED_INSPECTION_DEADLINE)
+    wait_seconds = min(timeout_seconds, remaining)
+    if not local.acquire(timeout=wait_seconds):
+        code = _PUBLISHED_INSPECTION_DEADLINE if monotonic() >= deadline else _PUBLISHED_INSPECTION_BUSY
+        raise ExportConflictError(code)
+    handle: BinaryIO | None = None
+    locked = False
+    try:
+        _verify_bound_directory(parent, error_code=_PUBLISHED_INSPECTION_DRIFTED)
+        handle = _open_existing_lock_file(path, parent=parent)
+        lock_deadline = min(deadline, monotonic() + timeout_seconds)
+        while not _try_os_lock(handle):
+            now = monotonic()
+            if now >= lock_deadline:
+                code = _PUBLISHED_INSPECTION_DEADLINE if now >= deadline else _PUBLISHED_INSPECTION_BUSY
+                raise ExportConflictError(code)
+            time.sleep(min(0.01, max(0.0, lock_deadline - now)))
+        locked = True
+        locked_path_stat = _safe_bound_lstat(parent, path.name, error_code=_PUBLISHED_INSPECTION_DRIFTED)
+        if locked_path_stat is None or locked_path_stat.st_nlink != 1:
+            raise ExportConflictError(_PUBLISHED_INSPECTION_DRIFTED)
+        if not _same_identity(_signature(os.fstat(handle.fileno())), _signature(locked_path_stat)):
+            raise ExportConflictError(_PUBLISHED_INSPECTION_DRIFTED)
+        _verify_bound_directory(parent, error_code=_PUBLISHED_INSPECTION_DRIFTED)
+        yield
+        final_path_stat = _safe_bound_lstat(parent, path.name, error_code=_PUBLISHED_INSPECTION_DRIFTED)
+        if final_path_stat is None or final_path_stat.st_nlink != 1:
+            raise ExportConflictError(_PUBLISHED_INSPECTION_DRIFTED)
+        if not _same_identity(_signature(os.fstat(handle.fileno())), _signature(final_path_stat)):
+            raise ExportConflictError(_PUBLISHED_INSPECTION_DRIFTED)
+        _verify_bound_directory(parent, error_code=_PUBLISHED_INSPECTION_DRIFTED)
+    finally:
+        if handle is not None:
+            if locked:
+                _unlock_os(handle)
+            handle.close()
+        local.release()
+
+
+def _inspect_managed_file(
+    directory: _BoundDirectory,
+    name: str,
+    expected: ManagedFile,
+    *,
+    byte_budget: int,
+    deadline: float,
+    monotonic: Callable[[], float],
+    opened: Callable[[], None],
+) -> tuple[bool, int]:
+    """Hash one file on its opened descriptor, returning partial budget use safely."""
+
+    if monotonic() >= deadline:
+        return False, 0
+    hasher = hashlib.sha256()
+    bytes_read = 0
+    with _safe_bound_regular_reader(
+        directory,
+        name,
+        error_code=_PUBLISHED_INSPECTION_DRIFTED,
+        single_link=True,
+    ) as source:
+        opened_stat = os.fstat(source.fileno())
+        if opened_stat.st_nlink != 1 or opened_stat.st_size != expected.size_bytes:
+            raise ExportConflictError(_PUBLISHED_INSPECTION_DRIFTED)
+        opened()
+        _verify_bound_directory(directory, error_code=_PUBLISHED_INSPECTION_DRIFTED)
+        while bytes_read < expected.size_bytes:
+            if monotonic() >= deadline or bytes_read >= byte_budget:
+                return False, bytes_read
+            requested = min(_CHUNK_BYTES, expected.size_bytes - bytes_read, byte_budget - bytes_read)
+            if requested <= 0:
+                return False, bytes_read
+            chunk = source.read(requested)
+            if not chunk:
+                raise ExportConflictError(_PUBLISHED_INSPECTION_DRIFTED)
+            hasher.update(chunk)
+            bytes_read += len(chunk)
+            _verify_bound_directory(directory, error_code=_PUBLISHED_INSPECTION_DRIFTED)
+        if hasher.hexdigest() != expected.sha256:
+            raise ExportConflictError(_PUBLISHED_INSPECTION_DRIFTED)
+    return True, bytes_read
 
 
 class EmbyExporter:
@@ -1717,6 +2121,182 @@ class EmbyExporter:
             expected_manifest_sha256=expected_manifest_sha256,
         )
         return managed_file_count
+
+    def inspect_published(
+        self,
+        author: ExportAuthor,
+        expected_identity: PublishedIdentity,
+        *,
+        start_index: int,
+        limit: int,
+        max_bytes: int,
+        deadline: float,
+        monotonic: Callable[[], float] = time.monotonic,
+    ) -> PublishedTreeInspection:
+        """Verify one bounded manifest page under an existing-only author lock."""
+
+        if (
+            not isinstance(expected_identity, PublishedIdentity)
+            or isinstance(start_index, bool)
+            or not isinstance(start_index, int)
+            or start_index < 0
+            or isinstance(limit, bool)
+            or not isinstance(limit, int)
+            or not 1 <= limit <= _MAX_INSPECTION_FILES
+            or isinstance(max_bytes, bool)
+            or not isinstance(max_bytes, int)
+            or max_bytes < 0
+            or isinstance(deadline, bool)
+            or not isinstance(deadline, (int, float))
+            or not math.isfinite(deadline)
+            or not callable(monotonic)
+        ):
+            raise ExportError("invalid_published_inspection")
+
+        author_segment = author_relative_directory(author).as_posix()
+        lock_path = self._author_lock_path(author_segment)
+        try:
+            with contextlib.ExitStack() as binding_stack:
+                root = binding_stack.enter_context(
+                    _bind_existing_directory(self._export_root, error_code=_PUBLISHED_INSPECTION_DRIFTED)
+                )
+                lock_parent_parts = lock_path.parent.relative_to(self._export_root).parts
+                lock_parent = _bind_directory_parts(
+                    binding_stack,
+                    root,
+                    lock_parent_parts,
+                    error_code=_PUBLISHED_INSPECTION_DRIFTED,
+                )
+                with _existing_author_lock(
+                    lock_path,
+                    parent=lock_parent,
+                    timeout_seconds=self._lock_timeout_seconds,
+                    deadline=float(deadline),
+                    monotonic=monotonic,
+                ):
+                    author_directory_bound = _bind_directory_parts(
+                        binding_stack,
+                        root,
+                        PurePosixPath(author_segment).parts,
+                        error_code=_PUBLISHED_INSPECTION_DRIFTED,
+                    )
+                    if (
+                        _exact_bound_child_name(
+                            author_directory_bound,
+                            MANIFEST_NAME,
+                            error_code=_PUBLISHED_INSPECTION_DRIFTED,
+                        )
+                        is None
+                    ):
+                        raise ExportConflictError(_PUBLISHED_INSPECTION_DRIFTED)
+                    manifest_stat = _safe_bound_lstat(
+                        author_directory_bound,
+                        MANIFEST_NAME,
+                        error_code=_PUBLISHED_INSPECTION_DRIFTED,
+                    )
+                    if (
+                        manifest_stat is None
+                        or not stat.S_ISREG(manifest_stat.st_mode)
+                        or manifest_stat.st_nlink != 1
+                        or manifest_stat.st_size > _MAX_MANIFEST_BYTES
+                    ):
+                        raise ExportConflictError(_PUBLISHED_INSPECTION_DRIFTED)
+
+                    inspected: list[ManagedFileInspection] = []
+                    bytes_read = 0
+                    budget_exhausted = False
+                    with _safe_bound_regular_reader(
+                        author_directory_bound,
+                        MANIFEST_NAME,
+                        error_code=_PUBLISHED_INSPECTION_DRIFTED,
+                        single_link=True,
+                    ) as manifest_file:
+                        self._fault("inspect_manifest_opened")
+                        _verify_bound_directory(
+                            author_directory_bound,
+                            error_code=_PUBLISHED_INSPECTION_DRIFTED,
+                        )
+                        raw_manifest = bytearray()
+                        while True:
+                            if monotonic() >= deadline:
+                                raise ExportConflictError(_PUBLISHED_INSPECTION_DEADLINE)
+                            chunk = manifest_file.read(min(_CHUNK_BYTES, _MAX_MANIFEST_BYTES + 1 - len(raw_manifest)))
+                            _verify_bound_directory(
+                                author_directory_bound,
+                                error_code=_PUBLISHED_INSPECTION_DRIFTED,
+                            )
+                            if not chunk:
+                                break
+                            raw_manifest.extend(chunk)
+                            if len(raw_manifest) > _MAX_MANIFEST_BYTES:
+                                raise ExportConflictError(_PUBLISHED_INSPECTION_DRIFTED)
+                        manifest_bytes = bytes(raw_manifest)
+                        if _sha256_bytes(manifest_bytes) != expected_identity.manifest_sha256:
+                            raise ExportConflictError(_PUBLISHED_INSPECTION_DRIFTED)
+                        manifest = _parse_manifest(manifest_bytes, author)
+                        if (
+                            manifest.source_fingerprint != expected_identity.source_fingerprint
+                            or manifest.tree_sha256 != expected_identity.tree_sha256
+                            or start_index > len(manifest.files)
+                        ):
+                            raise ExportConflictError(_PUBLISHED_INSPECTION_DRIFTED)
+
+                        stop_index = min(len(manifest.files), start_index + limit)
+                        next_index = start_index
+                        for item in manifest.files[start_index:stop_index]:
+                            relative = _validate_relative_path(item.relative_path)
+                            with contextlib.ExitStack() as file_stack:
+                                file_parent = _bind_directory_parts(
+                                    file_stack,
+                                    author_directory_bound,
+                                    relative.parts[:-1],
+                                    error_code=_PUBLISHED_INSPECTION_DRIFTED,
+                                )
+                                file_name = _exact_bound_child_name(
+                                    file_parent,
+                                    relative.name,
+                                    error_code=_PUBLISHED_INSPECTION_DRIFTED,
+                                )
+                                if file_name is None:
+                                    raise ExportConflictError(_PUBLISHED_INSPECTION_DRIFTED)
+                                verified, consumed = _inspect_managed_file(
+                                    file_parent,
+                                    file_name,
+                                    item,
+                                    byte_budget=max_bytes - bytes_read,
+                                    deadline=float(deadline),
+                                    monotonic=monotonic,
+                                    opened=partial(self._fault, "inspect_file_opened", item.relative_path),
+                                )
+                            bytes_read += consumed
+                            if not verified:
+                                budget_exhausted = True
+                                break
+                            inspected.append(ManagedFileInspection(item.relative_path, item.sha256, item.size_bytes))
+                            next_index += 1
+
+                    managed_file_count = len(manifest.files)
+                    return PublishedTreeInspection(
+                        layout_version=LAYOUT_VERSION,
+                        source_fingerprint=manifest.source_fingerprint,
+                        tree_sha256=manifest.tree_sha256,
+                        manifest_sha256=expected_identity.manifest_sha256,
+                        managed_file_count=managed_file_count,
+                        start_index=start_index,
+                        next_index=next_index,
+                        files=tuple(inspected),
+                        bytes_read=bytes_read,
+                        complete=(start_index == 0 and next_index == managed_file_count and not budget_exhausted),
+                        budget_exhausted=budget_exhausted,
+                    )
+        except (ExportError, OSError) as error:
+            if isinstance(error, ExportError) and error.code in {
+                _PUBLISHED_INSPECTION_DRIFTED,
+                _PUBLISHED_INSPECTION_DEADLINE,
+                _PUBLISHED_INSPECTION_BUSY,
+            }:
+                raise ExportError(error.code) from None
+            raise ExportError(_PUBLISHED_INSPECTION_DRIFTED) from None
 
     def _validate_published_once(
         self,

@@ -505,6 +505,222 @@ def _parse_publication_intent(payload: Mapping[str, object], source_fingerprint:
     )
 
 
+def _resolve_publication_head(anchors: Mapping[str, _PublicationAnchor]) -> _PublicationAnchor | None:
+    if not anchors:
+        return None
+
+    children: dict[str, list[str]] = {job_id: [] for job_id in anchors}
+    genesis: list[str] = []
+    for anchor in anchors.values():
+        predecessor = anchor.predecessor_job_id
+        if predecessor is None:
+            genesis.append(anchor.job_id)
+            continue
+        if predecessor not in anchors:
+            raise ExportError("export_state_inconsistent")
+        children[predecessor].append(anchor.job_id)
+    if len(genesis) != 1 or any(len(values) > 1 for values in children.values()):
+        raise ExportError("export_state_inconsistent")
+    heads = [job_id for job_id, values in children.items() if not values]
+    if len(heads) != 1:
+        raise ExportError("export_state_inconsistent")
+    head = anchors[heads[0]]
+    visited: set[str] = set()
+    cursor: _PublicationAnchor | None = head
+    while cursor is not None:
+        if cursor.job_id in visited:
+            raise ExportError("export_state_inconsistent")
+        visited.add(cursor.job_id)
+        cursor = None if cursor.predecessor_job_id is None else anchors.get(cursor.predecessor_job_id)
+    if len(visited) != len(anchors) or genesis[0] not in visited:
+        raise ExportError("export_state_inconsistent")
+    return head
+
+
+def _load_emby_publication_head(
+    session: Session,
+    *,
+    author_id: str,
+    publication_scope: str,
+    output_path: str,
+) -> _PublicationAnchor | None:
+    """Load only the unique successful chain head for one exact publication scope."""
+
+    anchors: dict[str, _PublicationAnchor] = {}
+    jobs = list(
+        session.scalars(
+            select(Job)
+            .where(Job.job_type == EMBY_EXPORT_JOB_TYPE, Job.status == "succeeded")
+            .order_by(Job.created_at, Job.id)
+        ).all()
+    )
+    for job in jobs:
+        if not _payload_is_for_target(
+            job.payload,
+            author_id=author_id,
+            publication_scope=publication_scope,
+        ):
+            continue
+        anchors[job.id] = _parse_publication_result(
+            job,
+            author_id=author_id,
+            publication_scope=publication_scope,
+            output_path=output_path,
+        )
+    return _resolve_publication_head(anchors)
+
+
+def _load_emby_publication_state(
+    session: Session,
+    *,
+    author_id: str,
+    publication_scope: str,
+    output_path: str,
+) -> tuple[_PublicationAnchor | None, tuple[_PendingPublication, ...]]:
+    """Resolve the one valid publication chain and its direct pending work."""
+
+    anchors: dict[str, _PublicationAnchor] = {}
+    pending: list[_PendingPublication] = []
+    jobs = list(
+        session.scalars(select(Job).where(Job.job_type == EMBY_EXPORT_JOB_TYPE).order_by(Job.created_at, Job.id)).all()
+    )
+    for job in jobs:
+        if not _payload_is_for_target(
+            job.payload,
+            author_id=author_id,
+            publication_scope=publication_scope,
+        ):
+            continue
+        source_fingerprint, predecessor_job_id, payload = _parse_publication_base(
+            job,
+            author_id=author_id,
+            publication_scope=publication_scope,
+            output_path=output_path,
+        )
+        if job.status == "succeeded":
+            anchors[job.id] = _parse_publication_result(
+                job,
+                author_id=author_id,
+                publication_scope=publication_scope,
+                output_path=output_path,
+            )
+            continue
+        intent = _parse_publication_intent(payload, source_fingerprint)
+        if intent is not None and job.status == "cancelled":
+            raise ExportError("export_recovery_required")
+        pending.append(
+            _PendingPublication(
+                job_id=job.id,
+                predecessor_job_id=predecessor_job_id,
+                source_fingerprint=source_fingerprint,
+                status=job.status,
+                attempts=job.attempts,
+                lease_token=job.lease_token,
+                lease_expires_at=job.lease_expires_at,
+                payload=payload,
+                intent=intent,
+            )
+        )
+
+    head = _resolve_publication_head(anchors)
+    if head is None:
+        return None, tuple(item for item in pending if item.predecessor_job_id is None)
+    return head, tuple(item for item in pending if item.predecessor_job_id == head.job_id)
+
+
+def _verified_export_asset(asset: Asset) -> VerifiedAsset:
+    if asset.status != AssetStatus.VERIFIED.value:
+        raise ExportError("asset_not_verified")
+    local_path = asset.local_path
+    checksum = asset.checksum_sha256
+    size_bytes = asset.size_bytes
+    mime_type = asset.mime_type
+    verified_at = asset.verified_at
+    if (
+        not isinstance(local_path, str)
+        or not local_path
+        or not Path(local_path).is_absolute()
+        or not isinstance(checksum, str)
+        or size_bytes is None
+        or not isinstance(mime_type, str)
+        or not mime_type
+        or verified_at is None
+    ):
+        raise ExportError("verified_asset_incomplete")
+    remote_id = asset.remote_id or f"{asset.kind}:{asset.position}"
+    try:
+        return VerifiedAsset(
+            remote_id=remote_id,
+            kind=asset.kind,
+            position=asset.position,
+            local_path=Path(local_path),
+            checksum_sha256=checksum,
+            size_bytes=size_bytes,
+            mime_type=mime_type,
+            generation=asset.generation,
+        )
+    except (ExportError, TypeError, ValueError):
+        raise ExportError("verified_asset_incomplete") from None
+
+
+def _snapshot_from_author(author: Author) -> _Snapshot:
+    """Freeze the exact source identity used by publication and inspection."""
+
+    try:
+        export_author = ExportAuthor(
+            platform=author.platform,
+            remote_id=author.remote_id,
+            display_name=author.display_name,
+            handle=author.handle,
+        )
+    except ExportError:
+        raise ExportError("export_snapshot_invalid") from None
+
+    active_contents = sorted(
+        (content for content in author.contents if content.tombstoned_at is None),
+        key=lambda content: (content.platform, content.remote_type, content.remote_id, content.id),
+    )
+    contents: list[_SnapshotContent] = []
+    for content in active_contents:
+        assets = tuple(
+            _verified_export_asset(asset)
+            for asset in sorted(content.assets, key=lambda asset: (asset.kind, asset.position, asset.id))
+        )
+        try:
+            value = ExportContent(
+                platform=content.platform,
+                remote_type=content.remote_type,
+                remote_id=content.remote_id,
+                author_remote_id=export_author.remote_id,
+                kind=content.kind,
+                first_seen_at=content.first_seen_at,
+                title=content.title,
+                body=content.body,
+                published_at=content.published_at,
+                assets=assets,
+            )
+        except ExportError:
+            raise ExportError("export_snapshot_invalid") from None
+        contents.append(
+            _SnapshotContent(
+                content_id=content.id,
+                source_fingerprint=content_source_fingerprint(value),
+                value=value,
+            )
+        )
+
+    frozen_contents = tuple(contents)
+    source_fingerprint = export_source_fingerprint(
+        export_author,
+        tuple(item.value for item in frozen_contents),
+    )
+    output_path = author_relative_directory(export_author).as_posix()
+    relative = PurePosixPath(output_path)
+    if relative.is_absolute() or ".." in relative.parts:
+        raise ExportError("export_output_path_invalid")
+    return _Snapshot(export_author, frozen_contents, source_fingerprint, output_path)
+
+
 class EmbyExportService:
     """Export a complete active author snapshot without holding I/O transactions."""
 
@@ -776,80 +992,12 @@ class EmbyExportService:
         publication_scope: str,
         output_path: str,
     ) -> tuple[_PublicationAnchor | None, tuple[_PendingPublication, ...]]:
-        anchors: dict[str, _PublicationAnchor] = {}
-        pending: list[_PendingPublication] = []
-        jobs = list(
-            session.scalars(
-                select(Job).where(Job.job_type == EMBY_EXPORT_JOB_TYPE).order_by(Job.created_at, Job.id)
-            ).all()
+        return _load_emby_publication_state(
+            session,
+            author_id=author_id,
+            publication_scope=publication_scope,
+            output_path=output_path,
         )
-        for job in jobs:
-            if not _payload_is_for_target(
-                job.payload,
-                author_id=author_id,
-                publication_scope=publication_scope,
-            ):
-                continue
-            source_fingerprint, predecessor_job_id, payload = _parse_publication_base(
-                job,
-                author_id=author_id,
-                publication_scope=publication_scope,
-                output_path=output_path,
-            )
-            if job.status == "succeeded":
-                anchors[job.id] = _parse_publication_result(
-                    job,
-                    author_id=author_id,
-                    publication_scope=publication_scope,
-                    output_path=output_path,
-                )
-                continue
-            intent = _parse_publication_intent(payload, source_fingerprint)
-            if intent is not None and job.status == "cancelled":
-                raise ExportError("export_recovery_required")
-            pending.append(
-                _PendingPublication(
-                    job_id=job.id,
-                    predecessor_job_id=predecessor_job_id,
-                    source_fingerprint=source_fingerprint,
-                    status=job.status,
-                    attempts=job.attempts,
-                    lease_token=job.lease_token,
-                    lease_expires_at=job.lease_expires_at,
-                    payload=payload,
-                    intent=intent,
-                )
-            )
-
-        if not anchors:
-            return None, tuple(item for item in pending if item.predecessor_job_id is None)
-
-        children: dict[str, list[str]] = {job_id: [] for job_id in anchors}
-        genesis: list[str] = []
-        for anchor in anchors.values():
-            predecessor = anchor.predecessor_job_id
-            if predecessor is None:
-                genesis.append(anchor.job_id)
-                continue
-            if predecessor not in anchors:
-                raise ExportError("export_state_inconsistent")
-            children[predecessor].append(anchor.job_id)
-        if len(genesis) != 1 or any(len(values) > 1 for values in children.values()):
-            raise ExportError("export_state_inconsistent")
-        heads = [job_id for job_id, values in children.items() if not values]
-        if len(heads) != 1:
-            raise ExportError("export_state_inconsistent")
-        head = anchors[heads[0]]
-        visited: set[str] = set()
-        cursor: _PublicationAnchor | None = head
-        while cursor is not None:
-            if cursor.job_id in visited:
-                raise ExportError("export_state_inconsistent")
-            visited.add(cursor.job_id)
-            cursor = None if cursor.predecessor_job_id is None else anchors.get(cursor.predecessor_job_id)
-        if len(visited) != len(anchors) or genesis[0] not in visited:
-            raise ExportError("export_state_inconsistent")
-        return head, tuple(item for item in pending if item.predecessor_job_id == head.job_id)
 
     def _recover_published_predecessor(self, scan: _RecoveryScan) -> bool:
         matching: list[_PendingPublication] = []
@@ -1015,94 +1163,11 @@ class EmbyExportService:
         )
         if author is None:
             raise ExportError("author_not_found")
-        try:
-            export_author = ExportAuthor(
-                platform=author.platform,
-                remote_id=author.remote_id,
-                display_name=author.display_name,
-                handle=author.handle,
-            )
-        except ExportError:
-            raise ExportError("export_snapshot_invalid") from None
-
-        active_contents = sorted(
-            (content for content in author.contents if content.tombstoned_at is None),
-            key=lambda content: (content.platform, content.remote_type, content.remote_id, content.id),
-        )
-        contents: list[_SnapshotContent] = []
-        for content in active_contents:
-            assets = tuple(
-                self._verified_asset(asset)
-                for asset in sorted(content.assets, key=lambda asset: (asset.kind, asset.position, asset.id))
-            )
-            try:
-                value = ExportContent(
-                    platform=content.platform,
-                    remote_type=content.remote_type,
-                    remote_id=content.remote_id,
-                    author_remote_id=export_author.remote_id,
-                    kind=content.kind,
-                    first_seen_at=content.first_seen_at,
-                    title=content.title,
-                    body=content.body,
-                    published_at=content.published_at,
-                    assets=assets,
-                )
-            except ExportError:
-                raise ExportError("export_snapshot_invalid") from None
-            contents.append(
-                _SnapshotContent(
-                    content_id=content.id,
-                    source_fingerprint=content_source_fingerprint(value),
-                    value=value,
-                )
-            )
-
-        frozen_contents = tuple(contents)
-        source_fingerprint = export_source_fingerprint(
-            export_author,
-            tuple(item.value for item in frozen_contents),
-        )
-        output_path = author_relative_directory(export_author).as_posix()
-        relative = PurePosixPath(output_path)
-        if relative.is_absolute() or ".." in relative.parts:
-            raise ExportError("export_output_path_invalid")
-        return _Snapshot(export_author, frozen_contents, source_fingerprint, output_path)
+        return _snapshot_from_author(author)
 
     @staticmethod
     def _verified_asset(asset: Asset) -> VerifiedAsset:
-        if asset.status != AssetStatus.VERIFIED.value:
-            raise ExportError("asset_not_verified")
-        local_path = asset.local_path
-        checksum = asset.checksum_sha256
-        size_bytes = asset.size_bytes
-        mime_type = asset.mime_type
-        verified_at = asset.verified_at
-        if (
-            not isinstance(local_path, str)
-            or not local_path
-            or not Path(local_path).is_absolute()
-            or not isinstance(checksum, str)
-            or size_bytes is None
-            or not isinstance(mime_type, str)
-            or not mime_type
-            or verified_at is None
-        ):
-            raise ExportError("verified_asset_incomplete")
-        remote_id = asset.remote_id or f"{asset.kind}:{asset.position}"
-        try:
-            return VerifiedAsset(
-                remote_id=remote_id,
-                kind=asset.kind,
-                position=asset.position,
-                local_path=Path(local_path),
-                checksum_sha256=checksum,
-                size_bytes=size_bytes,
-                mime_type=mime_type,
-                generation=asset.generation,
-            )
-        except (ExportError, TypeError, ValueError):
-            raise ExportError("verified_asset_incomplete") from None
+        return _verified_export_asset(asset)
 
     def _load_existing_export(
         self,

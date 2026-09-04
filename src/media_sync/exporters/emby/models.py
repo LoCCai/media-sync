@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Self
 
 from .errors import ExportError
@@ -186,6 +186,69 @@ class PublishedIdentity:
 
 
 @dataclass(frozen=True, slots=True)
+class ManagedFileInspection:
+    """One verified manifest-managed file, without a host filesystem path."""
+
+    relative_path: str
+    sha256: str
+    size_bytes: int
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.relative_path, str):
+            raise ExportError("invalid_managed_file_inspection")
+        relative = PurePosixPath(self.relative_path)
+        if (
+            not self.relative_path
+            or "\\" in self.relative_path
+            or relative.is_absolute()
+            or relative.as_posix() != self.relative_path
+            or any(part in {"", ".", ".."} for part in relative.parts)
+        ):
+            raise ExportError("invalid_managed_file_inspection")
+        object.__setattr__(self, "sha256", _published_sha256(self.sha256))
+        if isinstance(self.size_bytes, bool) or not isinstance(self.size_bytes, int) or self.size_bytes < 0:
+            raise ExportError("invalid_managed_file_inspection")
+
+
+@dataclass(frozen=True, slots=True)
+class PublishedTreeInspection:
+    """Bounded verification of one trusted published-manifest page."""
+
+    layout_version: str
+    source_fingerprint: str
+    tree_sha256: str
+    manifest_sha256: str
+    managed_file_count: int
+    start_index: int
+    next_index: int
+    files: tuple[ManagedFileInspection, ...]
+    bytes_read: int
+    complete: bool
+    budget_exhausted: bool
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "layout_version", _text(self.layout_version, "layout_version"))
+        object.__setattr__(self, "source_fingerprint", _published_sha256(self.source_fingerprint))
+        object.__setattr__(self, "tree_sha256", _published_sha256(self.tree_sha256))
+        object.__setattr__(self, "manifest_sha256", _published_sha256(self.manifest_sha256))
+        object.__setattr__(self, "files", tuple(self.files))
+        integers = (self.managed_file_count, self.start_index, self.next_index, self.bytes_read)
+        if any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in integers):
+            raise ExportError("invalid_published_tree_inspection")
+        if (
+            self.start_index > self.next_index
+            or self.next_index > self.managed_file_count
+            or self.next_index - self.start_index != len(self.files)
+            or sum(item.size_bytes for item in self.files) > self.bytes_read
+            or not isinstance(self.complete, bool)
+            or not isinstance(self.budget_exhausted, bool)
+            or (self.complete and self.budget_exhausted)
+            or (self.complete and (self.start_index != 0 or self.next_index != self.managed_file_count))
+        ):
+            raise ExportError("invalid_published_tree_inspection")
+
+
+@dataclass(frozen=True, slots=True)
 class RenderedExport:
     """A complete job-scoped staging tree ready for guarded publication."""
 
@@ -235,7 +298,9 @@ __all__ = [
     "ExportContent",
     "ExportResult",
     "ManagedFile",
+    "ManagedFileInspection",
     "PublishedIdentity",
+    "PublishedTreeInspection",
     "RenderedExport",
     "VerifiedAsset",
 ]

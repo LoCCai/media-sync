@@ -5,6 +5,8 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
+import time
 import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
@@ -23,6 +25,7 @@ from media_sync.exporters.emby import (
     ExportError,
     ExportResult,
     ManagedFile,
+    ManagedFileInspection,
     PublishedIdentity,
     RenderedExport,
     VerifiedAsset,
@@ -33,6 +36,29 @@ NOW = datetime(2026, 8, 30, 1, 2, 3, 456789, tzinfo=UTC)
 
 def _identity(value: ExportResult | RenderedExport) -> PublishedIdentity:
     return PublishedIdentity(value.source_fingerprint, value.tree_sha256, value.manifest_sha256)
+
+
+def _inspection_entry(result: ExportResult, entry_kind: str) -> Path:
+    if entry_kind == "lock":
+        lock_files = list((result.author_directory.parent / ".media-sync-locks-v1").glob("*.lock"))
+        assert len(lock_files) == 1
+        return lock_files[0]
+    if entry_kind == "manifest":
+        return result.manifest_path
+    assert entry_kind == "managed_file"
+    relative_path = result.managed_files[0].relative_path
+    return result.author_directory.joinpath(*relative_path.split("/"))
+
+
+def _inspection_directory(result: ExportResult, directory_kind: str) -> Path:
+    root = result.author_directory.parent
+    managed_parent = _inspection_entry(result, "managed_file").parent
+    return {
+        "root": root,
+        "lock_parent": root / ".media-sync-locks-v1",
+        "author": result.author_directory,
+        "managed_parent": managed_parent,
+    }[directory_kind]
 
 
 def _write_asset(
@@ -261,6 +287,422 @@ def test_validate_published_returns_managed_count_and_ignores_unmanaged_files(tm
 
     assert count == len(result.managed_files)
     assert unmanaged.read_bytes() == b"leave me alone"
+
+
+def test_inspect_published_verifies_only_a_bounded_manifest_page(tmp_path: Path) -> None:
+    author, content = _fixture(tmp_path)
+    exporter = EmbyExporter(tmp_path / "library", staging_root=tmp_path / "work")
+    result = exporter.export(author, (content,), job_id="inspect-page", expected_predecessor=None)
+
+    inspected = exporter.inspect_published(
+        author,
+        _identity(result),
+        start_index=0,
+        limit=2,
+        max_bytes=1024 * 1024,
+        deadline=time.monotonic() + 10,
+    )
+
+    assert inspected.files == tuple(
+        ManagedFileInspection(item.relative_path, item.sha256, item.size_bytes) for item in result.managed_files[:2]
+    )
+    assert inspected.start_index == 0
+    assert inspected.next_index == 2
+    assert inspected.managed_file_count == len(result.managed_files)
+    assert inspected.complete is False
+    assert inspected.budget_exhausted is False
+    assert inspected.bytes_read == sum(item.size_bytes for item in result.managed_files[:2])
+
+
+def test_inspect_published_last_nonzero_page_is_not_a_complete_tree(tmp_path: Path) -> None:
+    author, content = _fixture(tmp_path)
+    exporter = EmbyExporter(tmp_path / "library", staging_root=tmp_path / "work")
+    result = exporter.export(author, (content,), job_id="inspect-last-page", expected_predecessor=None)
+    start_index = len(result.managed_files) - 1
+
+    inspected = exporter.inspect_published(
+        author,
+        _identity(result),
+        start_index=start_index,
+        limit=128,
+        max_bytes=1024 * 1024,
+        deadline=time.monotonic() + 10,
+    )
+
+    assert inspected.start_index == start_index
+    assert inspected.next_index == len(result.managed_files)
+    assert inspected.files == (
+        ManagedFileInspection(
+            result.managed_files[-1].relative_path,
+            result.managed_files[-1].sha256,
+            result.managed_files[-1].size_bytes,
+        ),
+    )
+    assert inspected.complete is False
+    assert inspected.budget_exhausted is False
+
+
+def test_inspect_published_stops_inside_file_without_claiming_it_verified(tmp_path: Path) -> None:
+    author, content = _fixture(tmp_path)
+    exporter = EmbyExporter(tmp_path / "library", staging_root=tmp_path / "work")
+    result = exporter.export(author, (content,), job_id="inspect-budget", expected_predecessor=None)
+
+    inspected = exporter.inspect_published(
+        author,
+        _identity(result),
+        start_index=0,
+        limit=128,
+        max_bytes=1,
+        deadline=time.monotonic() + 10,
+    )
+
+    assert inspected.files == ()
+    assert inspected.next_index == 0
+    assert inspected.bytes_read == 1
+    assert inspected.complete is False
+    assert inspected.budget_exhausted is True
+
+
+def test_inspect_published_never_creates_a_missing_lock_or_directory(tmp_path: Path) -> None:
+    author, _ = _fixture(tmp_path)
+    export_root = tmp_path / "missing-library"
+    exporter = EmbyExporter(export_root, staging_root=tmp_path / "work")
+    identity = PublishedIdentity("a" * 64, "b" * 64, "c" * 64)
+    before = set(tmp_path.iterdir())
+
+    with pytest.raises(ExportError) as raised:
+        exporter.inspect_published(
+            author,
+            identity,
+            start_index=0,
+            limit=1,
+            max_bytes=1,
+            deadline=time.monotonic() + 10,
+        )
+
+    assert raised.value.code == "published_tree_drifted"
+    assert set(tmp_path.iterdir()) == before
+    assert not export_root.exists()
+
+
+def test_inspect_published_does_not_recreate_a_removed_existing_lock(tmp_path: Path) -> None:
+    author, content = _fixture(tmp_path)
+    exporter = EmbyExporter(tmp_path / "library", staging_root=tmp_path / "work")
+    result = exporter.export(author, (content,), job_id="inspect-no-lock-create", expected_predecessor=None)
+    lock_file = next((tmp_path / "library" / ".media-sync-locks-v1").glob("*.lock"))
+    lock_file.unlink()
+    tree_before = _tree(tmp_path / "library")
+
+    with pytest.raises(ExportError) as raised:
+        exporter.inspect_published(
+            author,
+            _identity(result),
+            start_index=0,
+            limit=1,
+            max_bytes=1024,
+            deadline=time.monotonic() + 10,
+        )
+
+    assert raised.value.code == "published_tree_drifted"
+    assert _tree(tmp_path / "library") == tree_before
+    assert not lock_file.exists()
+
+
+@pytest.mark.parametrize("entry_kind", ["lock", "manifest", "managed_file"])
+def test_inspect_published_rejects_hardlinked_entries(tmp_path: Path, entry_kind: str) -> None:
+    author, content = _fixture(tmp_path)
+    exporter = EmbyExporter(tmp_path / "library", staging_root=tmp_path / "work")
+    result = exporter.export(author, (content,), job_id=f"inspect-{entry_kind}-hardlink", expected_predecessor=None)
+    target = _inspection_entry(result, entry_kind)
+    original_bytes = target.read_bytes()
+    external_link = tmp_path / f"external-{entry_kind}-hardlink"
+    try:
+        os.link(target, external_link)
+    except OSError:
+        pytest.skip("hardlink creation is unavailable on this host")
+
+    with pytest.raises(ExportError) as raised:
+        exporter.inspect_published(
+            author,
+            _identity(result),
+            start_index=0,
+            limit=128,
+            max_bytes=1024 * 1024,
+            deadline=time.monotonic() + 10,
+        )
+
+    assert raised.value.code == "published_tree_drifted"
+    assert target.read_bytes() == original_bytes
+    assert external_link.read_bytes() == original_bytes
+
+
+@pytest.mark.parametrize("entry_kind", ["lock", "manifest", "managed_file"])
+def test_inspect_published_rejects_symlinked_entries(tmp_path: Path, entry_kind: str) -> None:
+    author, content = _fixture(tmp_path)
+    exporter = EmbyExporter(tmp_path / "library", staging_root=tmp_path / "work")
+    result = exporter.export(author, (content,), job_id=f"inspect-{entry_kind}-symlink", expected_predecessor=None)
+    target = _inspection_entry(result, entry_kind)
+    original_bytes = target.read_bytes()
+    displaced = target.with_name(f"{target.name}.before-inspection")
+    target.rename(displaced)
+    try:
+        target.symlink_to(displaced)
+    except OSError:
+        displaced.rename(target)
+        pytest.skip("file symlinks are unavailable on this host")
+
+    try:
+        with pytest.raises(ExportError) as raised:
+            exporter.inspect_published(
+                author,
+                _identity(result),
+                start_index=0,
+                limit=128,
+                max_bytes=1024 * 1024,
+                deadline=time.monotonic() + 10,
+            )
+
+        assert raised.value.code == "published_tree_drifted"
+        assert displaced.read_bytes() == original_bytes
+    finally:
+        target.unlink()
+        displaced.rename(target)
+
+
+@pytest.mark.parametrize(
+    ("entry_kind", "expected_event"),
+    [
+        ("lock", "inspect_manifest_opened"),
+        ("manifest", "inspect_manifest_opened"),
+        ("managed_file", "inspect_file_opened"),
+    ],
+)
+def test_inspect_published_rejects_same_byte_entry_replacement_during_read(
+    tmp_path: Path,
+    entry_kind: str,
+    expected_event: str,
+) -> None:
+    author, content = _fixture(tmp_path)
+    entered = Event()
+    release = Event()
+    selected_relative_path: list[str] = []
+
+    def wait_after_open(event: str, relative_path: str | None) -> None:
+        if event != expected_event:
+            return
+        if entry_kind == "managed_file" and relative_path != selected_relative_path[0]:
+            return
+        entered.set()
+        assert release.wait(timeout=5)
+
+    exporter = EmbyExporter(
+        tmp_path / "library",
+        staging_root=tmp_path / "work",
+        fault_injector=wait_after_open,
+    )
+    result = exporter.export(author, (content,), job_id=f"inspect-{entry_kind}-replacement", expected_predecessor=None)
+    selected_relative_path.append(result.managed_files[0].relative_path)
+    target = _inspection_entry(result, entry_kind)
+    replacement = tmp_path / f"same-byte-{entry_kind}-replacement"
+    replacement.write_bytes(target.read_bytes())
+    replace_error: OSError | None = None
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        pending = pool.submit(
+            exporter.inspect_published,
+            author,
+            _identity(result),
+            start_index=0,
+            limit=128,
+            max_bytes=1024 * 1024,
+            deadline=time.monotonic() + 10,
+        )
+        try:
+            assert entered.wait(timeout=5)
+            try:
+                os.replace(replacement, target)
+            except OSError as error:
+                replace_error = error
+        finally:
+            release.set()
+
+        if replace_error is None:
+            with pytest.raises(ExportError) as raised:
+                pending.result(timeout=5)
+            assert raised.value.code == "published_tree_drifted"
+        else:
+            inspected = pending.result(timeout=5)
+            if os.name != "nt":
+                pytest.skip("same-filesystem entry replacement is unavailable on this host")
+            assert inspected.complete is True
+            assert target.read_bytes() == replacement.read_bytes()
+
+
+@pytest.mark.parametrize("replace_target", ["root", "lock_parent", "author", "managed_parent"])
+def test_inspect_published_rejects_parent_replaced_by_link_during_read(
+    tmp_path: Path,
+    replace_target: str,
+) -> None:
+    author, content = _fixture(tmp_path)
+    entered = Event()
+    release = Event()
+    selected_relative_path: list[str] = []
+    expected_event = "inspect_file_opened" if replace_target == "managed_parent" else "inspect_manifest_opened"
+
+    def wait_after_open(event: str, relative_path: str | None) -> None:
+        if event != expected_event:
+            return
+        if replace_target == "managed_parent" and relative_path != selected_relative_path[0]:
+            return
+        entered.set()
+        assert release.wait(timeout=5)
+
+    exporter = EmbyExporter(
+        tmp_path / "library",
+        staging_root=tmp_path / "work",
+        fault_injector=wait_after_open,
+    )
+    result = exporter.export(author, (content,), job_id=f"inspect-parent-{replace_target}", expected_predecessor=None)
+    selected_relative_path.append(result.managed_files[0].relative_path)
+    manifest_bytes = result.manifest_path.read_bytes()
+    target = _inspection_directory(result, replace_target)
+    displaced = target.with_name(f"{target.name}-during-inspection")
+    rename_error: OSError | None = None
+    link_error: OSError | None = None
+    replaced = False
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        pending = pool.submit(
+            exporter.inspect_published,
+            author,
+            _identity(result),
+            start_index=0,
+            limit=128,
+            max_bytes=1024 * 1024,
+            deadline=time.monotonic() + 10,
+        )
+        try:
+            assert entered.wait(timeout=5)
+            try:
+                target.rename(displaced)
+            except OSError as error:
+                rename_error = error
+            else:
+                try:
+                    target.symlink_to(displaced, target_is_directory=True)
+                except OSError as error:
+                    link_error = error
+                    displaced.rename(target)
+                else:
+                    replaced = True
+        finally:
+            release.set()
+
+        try:
+            if replaced:
+                with pytest.raises(ExportError) as raised:
+                    pending.result(timeout=5)
+                assert raised.value.code == "published_tree_drifted"
+            else:
+                inspected = pending.result(timeout=5)
+                if rename_error is not None and os.name == "nt":
+                    assert inspected.complete is True
+                elif link_error is not None:
+                    pytest.skip("directory symlinks are unavailable on this host")
+                else:
+                    pytest.skip("directory replacement is unavailable on this host")
+        finally:
+            if replaced:
+                target.unlink()
+                displaced.rename(target)
+
+    assert result.manifest_path.read_bytes() == manifest_bytes
+
+
+@pytest.mark.parametrize("replace_target", ["root", "lock_parent", "author", "managed_parent"])
+def test_inspect_published_rejects_same_tree_directory_replacement_during_read(
+    tmp_path: Path,
+    replace_target: str,
+) -> None:
+    author, content = _fixture(tmp_path)
+    entered = Event()
+    release = Event()
+    selected_relative_path: list[str] = []
+    expected_event = "inspect_file_opened" if replace_target == "managed_parent" else "inspect_manifest_opened"
+
+    def wait_after_open(event: str, relative_path: str | None) -> None:
+        if event != expected_event:
+            return
+        if replace_target == "managed_parent" and relative_path != selected_relative_path[0]:
+            return
+        entered.set()
+        assert release.wait(timeout=5)
+
+    exporter = EmbyExporter(
+        tmp_path / "library",
+        staging_root=tmp_path / "work",
+        fault_injector=wait_after_open,
+    )
+    result = exporter.export(
+        author,
+        (content,),
+        job_id=f"inspect-same-tree-{replace_target}",
+        expected_predecessor=None,
+    )
+    selected_relative_path.append(result.managed_files[0].relative_path)
+    target = _inspection_directory(result, replace_target)
+    replacement = tmp_path / f"same-tree-{replace_target}-replacement"
+    displaced = target.with_name(f"{target.name}-before-replacement")
+    shutil.copytree(target, replacement)
+    rename_error: OSError | None = None
+    install_error: OSError | None = None
+    replaced = False
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        pending = pool.submit(
+            exporter.inspect_published,
+            author,
+            _identity(result),
+            start_index=0,
+            limit=128,
+            max_bytes=1024 * 1024,
+            deadline=time.monotonic() + 10,
+        )
+        try:
+            assert entered.wait(timeout=5)
+            try:
+                target.rename(displaced)
+            except OSError as error:
+                rename_error = error
+            else:
+                try:
+                    replacement.rename(target)
+                except OSError as error:
+                    install_error = error
+                    displaced.rename(target)
+                else:
+                    replaced = True
+        finally:
+            release.set()
+
+        try:
+            if replaced:
+                with pytest.raises(ExportError) as raised:
+                    pending.result(timeout=5)
+                assert raised.value.code == "published_tree_drifted"
+                assert _tree(target) == _tree(displaced)
+            else:
+                inspected = pending.result(timeout=5)
+                if rename_error is not None and os.name == "nt":
+                    assert inspected.complete is True
+                elif install_error is not None:
+                    pytest.skip("same-filesystem directory replacement is unavailable on this host")
+                else:
+                    pytest.skip("directory rename is unavailable on this host")
+        finally:
+            if replaced:
+                shutil.rmtree(target)
+                displaced.rename(target)
 
 
 def test_manifest_byte_anchor_rejects_content_fingerprint_only_tampering(tmp_path: Path) -> None:
