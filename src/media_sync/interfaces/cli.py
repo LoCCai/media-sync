@@ -93,6 +93,7 @@ from media_sync.integrations.mediacrawler.checkout import (
     MEDIACRAWLER_LICENSE,
     CheckoutValidationError,
     LicenseAcknowledgementRequired,
+    verify_mediacrawler_browser,
     verify_mediacrawler_checkout,
     verify_mediacrawler_python,
 )
@@ -331,14 +332,64 @@ def collect_mediacrawler_doctor_report(
 ) -> dict[str, object]:
     """Inspect the pinned checkout/runtime without creating jobs or resolving secrets."""
 
+    checkout_check_names = (
+        "license_acknowledgement",
+        "lock",
+        "checkout_path",
+        "repository_root",
+        "required_files",
+        "license",
+        "revision",
+        "tracked_files",
+        "worktree_clean",
+    )
+    checkout_failure_check = {
+        "lock_missing": "lock",
+        "lock_invalid": "lock",
+        "lock_repository_mismatch": "lock",
+        "lock_license_mismatch": "lock",
+        "lock_commit_invalid": "lock",
+        "lock_path_invalid": "checkout_path",
+        "checkout_missing": "checkout_path",
+        "not_repository_root": "repository_root",
+        "required_file_missing": "required_files",
+        "license_unavailable": "license",
+        "license_header_mismatch": "license",
+        "license_digest_mismatch": "license",
+        "revision_mismatch": "revision",
+        "required_file_not_tracked": "tracked_files",
+        "tracked_blob_mismatch": "tracked_files",
+        "worktree_dirty": "worktree_clean",
+        "git_inspection_failed": "repository_root",
+    }
+
+    def checkout_checks(detail_code: str | None) -> dict[str, str]:
+        checks = {name: "not_run" for name in checkout_check_names}
+        if not license_acknowledged:
+            checks["license_acknowledgement"] = "fail"
+            return checks
+        if detail_code is None:
+            return {name: "pass" for name in checkout_check_names}
+        checks["license_acknowledgement"] = "pass"
+        failed_check = checkout_failure_check.get(detail_code)
+        if failed_check is None:
+            return checks
+        failed_index = checkout_check_names.index(failed_check)
+        for name in checkout_check_names[:failed_index]:
+            checks[name] = "pass"
+        checks[failed_check] = "fail"
+        return checks
+
     report: dict[str, object] = {
         "ok": False,
         "code": None,
+        "detail_code": None,
         "upstream_sha": None,
         "license": MEDIACRAWLER_LICENSE,
         "checkout_ready": False,
         "runtime_configured": settings.mediacrawler_python_executable is not None,
         "runtime_ready": False,
+        "checks": checkout_checks(None),
         "live_qualification": "NOT_RUN",
     }
     try:
@@ -346,28 +397,178 @@ def collect_mediacrawler_doctor_report(
             settings.mediacrawler_lock_path,
             license_acknowledged=license_acknowledged,
         )
-    except LicenseAcknowledgementRequired:
-        return {**report, "code": "license_acknowledgement_required"}
-    except CheckoutValidationError:
-        return {**report, "code": "checkout_invalid"}
+    except LicenseAcknowledgementRequired as error:
+        return {
+            **report,
+            "code": "license_acknowledgement_required",
+            "detail_code": error.code,
+            "checks": checkout_checks(error.code),
+        }
+    except CheckoutValidationError as error:
+        return {
+            **report,
+            "code": "checkout_invalid",
+            "detail_code": error.code,
+            "checks": checkout_checks(error.code),
+        }
 
     report.update(
         {
             "checkout_ready": True,
             "upstream_sha": checkout.commit,
+            "checks": checkout_checks(None),
         }
     )
     if settings.mediacrawler_python_executable is None:
-        return {**report, "code": "runtime_unconfigured"}
+        return {
+            **report,
+            "code": "runtime_unconfigured",
+            "detail_code": "runtime_unconfigured",
+            "checks": {**checkout_checks(None), "runtime": "fail"},
+        }
     try:
         verify_mediacrawler_python(settings.mediacrawler_python_executable)
-    except CheckoutValidationError:
-        return {**report, "code": "runtime_invalid"}
+    except CheckoutValidationError as error:
+        return {
+            **report,
+            "code": "runtime_invalid",
+            "detail_code": error.code,
+            "checks": {**checkout_checks(None), "runtime": "fail"},
+        }
     return {
         **report,
         "ok": True,
         "code": "ready",
+        "detail_code": None,
         "runtime_ready": True,
+        "checks": {**checkout_checks(None), "runtime": "pass"},
+    }
+
+
+def _readiness_path_status(path: Path) -> dict[str, object]:
+    """Return path facts without returning the configured absolute path."""
+
+    try:
+        resolved = path.expanduser().resolve()
+        exists = resolved.is_dir()
+        writable = exists and os.access(resolved, os.W_OK)
+    except OSError:
+        exists = False
+        writable = False
+    return {
+        "status": "pass" if exists and writable else "fail",
+        "exists": exists,
+        "writable": writable,
+    }
+
+
+def _read_build_manifest() -> dict[str, object]:
+    """Read only small, non-secret toolchain facts from the image manifest."""
+
+    manifest_path = Path("/opt/BUILD-MANIFEST.txt")
+    if not manifest_path.is_file():
+        return {"status": "not_run", "present": False, "facts": {}}
+    allowed = {"python", "uv", "ffmpeg", "playwright", "chromium", "base_image"}
+    facts: dict[str, str] = {}
+    try:
+        for line in manifest_path.read_text(encoding="utf-8", errors="replace")[:1_048_576].splitlines():
+            name, separator, value = line.partition(":")
+            if separator and name in allowed and value.strip():
+                facts[name] = value.strip()[:256]
+    except (OSError, UnicodeError):
+        return {"status": "fail", "present": True, "facts": {}}
+    return {"status": "pass", "present": True, "facts": facts}
+
+
+def collect_deep_readiness_report(
+    settings: Settings,
+    *,
+    license_acknowledged: bool,
+) -> dict[str, object]:
+    """Run the explicit, read-only runtime qualification used by the console."""
+
+    database: dict[str, object]
+    try:
+        database = collect_database_status(settings.resolved_database_url)
+    except (OSError, SQLAlchemyError, ValueError):
+        database = {
+            "ok": False,
+            "database_driver": "unknown",
+            "reachable": False,
+            "revision": None,
+            "expected_revision": _EXPECTED_DATABASE_REVISION,
+            "missing_tables": [],
+            "reason": "database check failed",
+        }
+
+    tool_ready = {name: shutil.which(name) is not None for name in ("git", "ffmpeg", "ffprobe", "Xvfb")}
+    tools: dict[str, object] = {
+        name: {"status": "pass" if ready else "fail", "ready": ready} for name, ready in tool_ready.items()
+    }
+    paths: dict[str, object] = {
+        "state": _readiness_path_status(settings.state_dir),
+        "archive": _readiness_path_status(settings.archive_dir),
+        "export": _readiness_path_status(settings.export_dir),
+        "jobs": _readiness_path_status(settings.job_dir),
+        "mediacrawler_runtime": _readiness_path_status(settings.resolved_mediacrawler_runtime_dir),
+    }
+    mediacrawler = collect_mediacrawler_doctor_report(
+        settings,
+        license_acknowledged=license_acknowledged,
+    )
+    browser: dict[str, object] = {
+        "status": "not_run",
+        "version": None,
+        "detail_code": None,
+    }
+    if mediacrawler.get("runtime_ready") is True and settings.mediacrawler_python_executable is not None:
+        try:
+            browser["version"] = verify_mediacrawler_browser(settings.mediacrawler_python_executable)
+            browser["status"] = "pass"
+        except CheckoutValidationError as error:
+            browser["status"] = "fail"
+            browser["detail_code"] = error.code
+
+    bind_host = settings.api_host.strip().lower()
+    if bind_host in {"127.0.0.1", "::1", "localhost"}:
+        security = {"status": "pass", "code": None}
+    else:
+        security = {"status": "warn", "code": "api_not_loopback"}
+
+    path_ready = all(isinstance(item, dict) and item.get("status") == "pass" for item in paths.values())
+    database_ready = database.get("ok") is True
+    mediacrawler_ready = mediacrawler.get("ok") is True
+    browser_ready = browser.get("status") == "pass"
+    if not database_ready:
+        code = "database_not_ready"
+    elif not mediacrawler_ready:
+        code = str(mediacrawler.get("detail_code") or mediacrawler.get("code") or "mediacrawler_not_ready")
+    elif not browser_ready:
+        code = str(browser.get("detail_code") or "browser_not_ready")
+    elif not tool_ready["git"]:
+        code = "git_unavailable"
+    elif not tool_ready["ffprobe"]:
+        code = "ffprobe_unavailable"
+    elif not tool_ready["ffmpeg"]:
+        code = "ffmpeg_unavailable"
+    elif not path_ready:
+        code = "runtime_paths_not_ready"
+    else:
+        code = "ready"
+    ok = code == "ready"
+    return {
+        "ok": ok,
+        "status": "ready" if ok else "blocked",
+        "code": code,
+        "checked_at": datetime.now(UTC).isoformat(),
+        "database": database,
+        "tools": tools,
+        "paths": paths,
+        "mediacrawler": mediacrawler,
+        "browser": browser,
+        "build_manifest": _read_build_manifest(),
+        "security": security,
+        "live_qualification": "NOT_RUN",
     }
 
 

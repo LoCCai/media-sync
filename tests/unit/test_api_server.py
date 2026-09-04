@@ -39,6 +39,56 @@ def test_health_ready_settings_and_console(tmp_path: Path) -> None:
     assert "media-sync" in console.text
 
 
+def test_deep_readiness_reports_license_gate_without_exposing_paths(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+
+    response = client.get("/api/v1/readiness/deep")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is False
+    assert body["code"] == "license_acknowledgement_required"
+    assert body["mediacrawler"]["detail_code"] == "license_acknowledgement_required"
+    assert body["mediacrawler"]["checks"]["license_acknowledgement"] == "fail"
+    assert str(tmp_path) not in response.text
+
+
+def test_login_qr_lifecycle_distinguishes_pending_and_gone(tmp_path: Path) -> None:
+    from media_sync.infrastructure.db import LoginSessionRepository
+
+    client = _client(tmp_path)
+    account = client.post(
+        "/api/v1/accounts",
+        json={"platform": "bili", "display_name": "bili-main", "login_method": "qr"},
+    ).json()
+    settings = client.app.state.settings  # type: ignore[attr-defined]
+    database = Database(settings.resolved_database_url)
+    try:
+        with database.session() as session:
+            login_session = LoginSessionRepository(session).create(
+                account_id=account["id"],
+                method="qr",
+            )
+            login_session.status = "waiting_user"
+            login_session_id = login_session.id
+
+        pending = client.get(f"/api/v1/accounts/{account['id']}/login-qr.png")
+        assert pending.status_code == 202
+        assert pending.json() == {"code": "login_qr_pending", "login_session_id": login_session_id}
+        assert pending.headers["cache-control"] == "no-store"
+
+        with database.session() as session:
+            session_login = LoginSessionRepository(session).get(login_session_id)
+            assert session_login is not None
+            session_login.status = "expired"
+
+        gone = client.get(f"/api/v1/accounts/{account['id']}/login-qr.png")
+        assert gone.status_code == 410
+        assert gone.json() == {"code": "login_qr_gone", "login_session_id": login_session_id}
+    finally:
+        database.dispose()
+
+
 def test_account_lifecycle_and_login_gates(tmp_path: Path) -> None:
     client = _client(tmp_path)
 

@@ -77,6 +77,13 @@ docker compose exec media-sync grep '^chromium:' /opt/BUILD-MANIFEST.txt
 # must print a real version — it must NOT be "chromium: launch-failed"
 ```
 
+The console's 服务状态 → 运行深度预检 repeats the runtime checks and shows
+each checkout check, a stable `detail_code`, the actual Chromium version, and the
+build-manifest version. After license acknowledgement, if it still reports a
+code such as `checkout_invalid / tracked_blob_mismatch`, repair the locked
+checkout in the image before trying QR login; failed preflight keeps QR login and
+MediaCrawler-enabled workers disabled.
+
 ## 3. QR login through the console
 
 1. Open <http://127.0.0.1:8632/>; the header should show `MediaCrawler 已配置` and both health pills green.

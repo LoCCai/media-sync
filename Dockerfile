@@ -136,12 +136,15 @@ RUN useradd --system --create-home --uid 1000 mediasync \
 # Build manifest: record every runtime toolchain version baked into this
 # image (review §5 reproducibility). The Chromium entry launches the browser
 # as the mediasync user and records the real version, not a derived path.
+# BuildKit RUN containers often expose a small /dev/shm, so this build-only
+# probe uses Chromium's disk-backed shared-memory fallback. The deep readiness
+# endpoint still performs a normal runtime-user launch in the running container.
 # Full SBOM generation stays deferred.
 RUN { echo "python: $(python --version)"; \
       echo "uv: $(uv --version)"; \
       echo "ffmpeg: $(ffmpeg -version | head -n1)"; \
       echo "playwright: $(/opt/mediacrawler-venv/bin/python -m playwright --version)"; \
-      echo "chromium: $(su mediasync -s /bin/sh -c '/opt/mediacrawler-venv/bin/python -c \"from playwright.sync_api import sync_playwright; p = sync_playwright().start(); b = p.chromium.launch(headless=True); print(b.version); b.close(); p.stop()\"' || echo launch-failed)"; \
+      echo "chromium: $(su mediasync -s /bin/sh -c '/opt/mediacrawler-venv/bin/python -c "from playwright.sync_api import sync_playwright; p = sync_playwright().start(); b = p.chromium.launch(headless=True, args=[\"--disable-dev-shm-usage\"]); print(b.version); b.close(); p.stop()"' || echo launch-failed)"; \
       echo "base_image: ${BASE_IMAGE}"; \
       echo "--- app venv ---"; /app/.venv/bin/python -m pip freeze 2>/dev/null || uv --project /app pip freeze 2>/dev/null || true; \
       echo "--- mediacrawler venv ---"; /opt/mediacrawler-venv/bin/python -m pip freeze; \

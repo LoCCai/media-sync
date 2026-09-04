@@ -180,6 +180,26 @@ def test_mediacrawler_doctor_requires_explicit_license_without_writes(tmp_path: 
     assert not tmp_path.exists() or list(tmp_path.iterdir()) == []
 
 
+def test_mediacrawler_doctor_exposes_stable_checkout_detail_code(tmp_path: Path) -> None:
+    settings = Settings(
+        state_dir=tmp_path / "state",
+        mediacrawler_lock_path=tmp_path / "missing-lock.json",
+        _env_file=None,
+    )
+
+    report = cli_module.collect_mediacrawler_doctor_report(
+        settings,
+        license_acknowledged=True,
+    )
+
+    assert report["ok"] is False
+    assert report["code"] == "checkout_invalid"
+    assert report["detail_code"] == "lock_missing"
+    assert report["checks"]["lock"] == "fail"
+    assert report["checks"]["license_acknowledgement"] == "pass"
+    assert str(tmp_path) not in json.dumps(report)
+
+
 def test_mediacrawler_doctor_ready_report_is_fixed_and_path_free(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

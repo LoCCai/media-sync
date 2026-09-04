@@ -14,10 +14,12 @@ from .bridge import (
     SavedSessionUnavailableError,
 )
 from .checkout import (
+    CheckoutValidationCode,
     CheckoutValidationError,
     LicenseAcknowledgementRequired,
     VerifiedCheckout,
     VerifiedPython,
+    verify_mediacrawler_browser,
     verify_mediacrawler_checkout,
     verify_mediacrawler_python,
 )
@@ -95,6 +97,7 @@ __all__ = [
     "AttemptCleanupStatus",
     "BridgeConfigurationError",
     "BridgeRequest",
+    "CheckoutValidationCode",
     "CheckoutValidationError",
     "CompletionReceipt",
     "CompletionReceiptError",
@@ -144,6 +147,7 @@ __all__ = [
     "load_validated_output_snapshot",
     "validate_xhs_creator_reference",
     "validate_xhs_detail_reference",
+    "verify_mediacrawler_browser",
     "verify_mediacrawler_checkout",
     "verify_mediacrawler_python",
 ]

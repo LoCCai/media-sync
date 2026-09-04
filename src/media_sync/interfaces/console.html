@@ -36,7 +36,35 @@
   dialog::backdrop { background: rgba(0,0,0,.6); }
   #qr-img { max-width: 300px; width: 100%; image-rendering: pixelated; }
   .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
-  @media (max-width: 900px) { .grid2 { grid-template-columns: 1fr; } }
+  .status-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-top: 14px; }
+  .status-card { background: #10141c; border: 1px solid #26304a; border-radius: 8px; padding: 10px; min-height: 70px; }
+  .status-card strong { display: block; font-size: 13px; margin-bottom: 6px; }
+  .status-card span { color: #8b96ad; font-size: 12px; }
+  .preflight-grid { display: grid; grid-template-columns: 1.15fr .85fr; gap: 18px; margin-top: 14px; }
+  .preflight-grid h3 { font-size: 13px; font-weight: 600; margin: 0 0 8px; color: #9fb4e8; }
+  .check-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }
+  .check-item { display: flex; align-items: center; gap: 7px; background: #10141c; border: 1px solid #26304a; border-radius: 7px; padding: 7px 8px; min-width: 0; }
+  .check-item .check-status { font-size: 11px; flex: 0 0 auto; }
+  .check-item .check-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+  .check-status.ok { color: #7ee2a8; }
+  .check-status.bad { color: #ff9f9f; }
+  .check-status.warn { color: #ffd479; }
+  .fact-list { display: grid; gap: 7px; margin: 0; }
+  .fact { display: flex; justify-content: space-between; gap: 12px; border-bottom: 1px solid #232c44; padding: 5px 0; font-size: 12px; }
+  .fact dt { color: #8b96ad; }
+  .fact dd { margin: 0; text-align: right; overflow-wrap: anywhere; }
+  .preflight-detail { min-height: 34px; margin-top: 10px; }
+  .danger-note { color: #ffd479; }
+  @media (max-width: 900px) {
+    .grid2, .preflight-grid { grid-template-columns: 1fr; }
+    .status-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  }
+  @media (max-width: 520px) {
+    main { padding: 12px; }
+    section { padding: 12px; }
+    .status-grid, .check-list { grid-template-columns: 1fr; }
+    table { display: block; overflow-x: auto; white-space: nowrap; }
+  }
 </style>
 </head>
 <body>
@@ -50,10 +78,30 @@
   <h2>服务状态</h2>
   <div class="row">
     <button id="btn-refresh">刷新全部</button>
+    <button id="btn-deep" class="secondary">运行深度预检</button>
     <span class="pill" id="pill-health">health</span>
     <span class="pill" id="pill-ready">ready</span>
+    <span class="pill" id="pill-deep">deep 未检查</span>
+    <span class="pill" id="pill-security">安全边界未检查</span>
   </div>
   <div class="note">本控制台无鉴权，仅限本机/可信内网使用。MediaCrawler 相关操作需显式勾选启用与许可证确认。</div>
+  <div class="status-grid">
+    <div class="status-card"><strong>MediaCrawler</strong><span id="status-mediacrawler">未检查</span></div>
+    <div class="status-card"><strong>Chromium</strong><span id="status-browser">未检查</span></div>
+    <div class="status-card"><strong>归档目录</strong><span id="status-archive">未检查</span></div>
+    <div class="status-card"><strong>工具链</strong><span id="status-tools">未检查</span></div>
+  </div>
+  <div class="preflight-grid">
+    <div>
+      <h3>深度预检清单</h3>
+      <div id="readiness-checks" class="check-list"><div class="note">点击“运行深度预检”查看 checkout、运行时和目录状态。</div></div>
+      <div id="readiness-detail" class="note preflight-detail"></div>
+    </div>
+    <div>
+      <h3>构建与运行事实</h3>
+      <dl id="readiness-facts" class="fact-list"><div class="note">尚未读取。</div></dl>
+    </div>
+  </div>
 </section>
 
 <section>
@@ -152,6 +200,44 @@
 <script>
 const $ = (id) => document.getElementById(id);
 let toastTimer = null;
+let deepReadiness = null;
+let qrObjectUrl = null;
+const readinessLabels = {
+  database: "数据库",
+  git: "Git",
+  ffmpeg: "ffmpeg",
+  ffprobe: "ffprobe",
+  Xvfb: "Xvfb",
+  state: "状态目录",
+  archive: "归档目录",
+  export: "导出目录",
+  jobs: "任务目录",
+  mediacrawler_runtime: "MediaCrawler 运行目录",
+  license_acknowledgement: "许可证确认",
+  lock: "上游锁文件",
+  checkout_path: "Checkout 路径",
+  repository_root: "Git 仓库根",
+  required_files: "必需文件",
+  license: "许可证摘要",
+  revision: "锁定提交",
+  tracked_files: "Tracked blob",
+  worktree_clean: "工作树干净",
+  runtime: "Python 运行时",
+  browser: "Chromium 启动",
+};
+const readinessMessages = {
+  ready: "深度预检通过，可以启动 MediaCrawler 登录和启用型同步。",
+  license_acknowledgement_required: "请勾选许可证确认后重新运行预检；未确认时不会检查上游 checkout。",
+  checkout_invalid: "MediaCrawler checkout 未通过锁定校验，请按下方 detail code 修复后重新构建。",
+  runtime_unconfigured: "未配置 MediaCrawler Python 运行时。",
+  runtime_invalid: "MediaCrawler Python 运行时未通过导入检查。",
+  browser_launch_failed: "运行用户无法启动 Chromium；请检查共享浏览器缓存、权限和容器运行时。",
+  database_not_ready: "数据库尚未就绪，先检查迁移和 /data/state 持久卷。",
+  runtime_paths_not_ready: "一个或多个受管目录不存在或不可写。",
+  ffprobe_unavailable: "缺少 ffprobe，视频/音频资产不能安全校验。",
+  ffmpeg_unavailable: "缺少 ffmpeg，Bilibili DASH 不能完成流复制封装。",
+  api_not_loopback: "应用不是回环绑定；请确认宿主机端口只暴露给可信网络并配置外部鉴权。",
+};
 function toast(message) {
   const box = $("toast");
   box.textContent = message;
@@ -176,9 +262,111 @@ function pill(el, text, cls) {
   el.textContent = text;
   el.className = "pill " + cls;
 }
+function escapeHtml(value) {
+  return String(value).replace(/[&<>"']/g, (character) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+  })[character]);
+}
 function cell(value) {
   if (value === null || value === undefined || value === "") return "—";
-  return typeof value === "object" ? `<code>${JSON.stringify(value)}</code>` : String(value);
+  return typeof value === "object" ? `<code>${escapeHtml(JSON.stringify(value))}</code>` : escapeHtml(value);
+}
+
+function statusText(status) {
+  return status === "pass" ? "通过" : status === "fail" ? "失败" : "未运行";
+}
+function statusClass(status) {
+  return status === "pass" ? "ok" : status === "fail" ? "bad" : "warn";
+}
+function readinessCheck(name, status, detail) {
+  const label = readinessLabels[name] || name;
+  const suffix = detail ? ` · ${escapeHtml(detail)}` : "";
+  return `<div class="check-item"><span class="check-status ${statusClass(status)}">${statusText(status)}</span><span class="check-name" title="${escapeHtml(label + suffix)}">${escapeHtml(label)}${suffix}</span></div>`;
+}
+function readinessStatus(value) {
+  return value && value.status ? value.status : "not_run";
+}
+function renderDeepReadiness(report) {
+  deepReadiness = report;
+  const deepLabel = report.ok ? "deep ready" : `deep 阻塞 · ${report.code || "unknown"}`;
+  pill($("pill-deep"), deepLabel, report.ok ? "ok" : "bad");
+  const security = report.security || {};
+  pill(
+    $("pill-security"),
+    security.status === "pass" ? "安全边界：回环" : "安全边界：需确认",
+    security.status === "pass" ? "ok" : "warn",
+  );
+
+  const checks = [];
+  checks.push(readinessCheck("database", report.database?.ok ? "pass" : "fail"));
+  for (const [name, status] of Object.entries(report.mediacrawler?.checks || {})) {
+    checks.push(readinessCheck(name, status));
+  }
+  checks.push(readinessCheck("browser", readinessStatus(report.browser)));
+  for (const name of ["git", "ffmpeg", "ffprobe", "Xvfb"]) {
+    checks.push(readinessCheck(name, readinessStatus(report.tools?.[name])));
+  }
+  for (const name of ["state", "archive", "export", "jobs", "mediacrawler_runtime"]) {
+    checks.push(readinessCheck(name, readinessStatus(report.paths?.[name])));
+  }
+  $("readiness-checks").innerHTML = checks.join("");
+
+  const message = readinessMessages[report.code] || "请根据失败项检查容器构建、运行时和持久目录。";
+  const detailCode = report.mediacrawler?.detail_code || report.browser?.detail_code;
+  $("readiness-detail").className = `note preflight-detail ${report.ok ? "" : "danger-note"}`;
+  $("readiness-detail").textContent = report.ok
+    ? message
+    : `${message} 当前错误码：${report.code || "unknown"}${detailCode ? ` / detail: ${detailCode}` : ""}`;
+
+  const manifestFacts = report.build_manifest?.facts || {};
+  const facts = [
+    ["最近检查", report.checked_at],
+    ["锁定 upstream SHA", report.mediacrawler?.upstream_sha],
+    ["运行时 Chromium", report.browser?.version],
+    ["构建清单 Chromium", manifestFacts.chromium],
+    ["构建清单 Playwright", manifestFacts.playwright],
+    ["API 绑定", security.status === "pass" ? "回环范围" : "非回环，请核对宿主机端口"],
+  ];
+  $("readiness-facts").innerHTML = facts.map(([label, value]) =>
+    `<div class="fact"><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value || "—")}</dd></div>`
+  ).join("");
+
+  const mediaCrawler = report.mediacrawler?.ok ? "可用" : `阻塞（${report.mediacrawler?.detail_code || report.mediacrawler?.code || "未配置"}）`;
+  $("status-mediacrawler").textContent = mediaCrawler;
+  $("status-browser").textContent = report.browser?.status === "pass"
+    ? `可启动 · ${report.browser.version}`
+    : report.browser?.status === "fail" ? `失败 · ${report.browser.detail_code || "unknown"}` : "未运行";
+  const archive = report.paths?.archive || {};
+  $("status-archive").textContent = archive.status === "pass" ? "可写" : archive.exists ? "不可写" : "不存在";
+  const toolReady = ["ffmpeg", "ffprobe"].every((name) => report.tools?.[name]?.status === "pass");
+  $("status-tools").textContent = toolReady ? "ffmpeg / ffprobe 就绪" : "媒体工具链不完整";
+  updateActionGates();
+}
+async function refreshDeepReadiness(force = false) {
+  try {
+    const accepted = $("mc-license").checked;
+    const report = await api(`/api/v1/readiness/deep?accept_mediacrawler_license=${accepted}&refresh=${force}`);
+    renderDeepReadiness(report);
+  } catch (error) {
+    deepReadiness = null;
+    pill($("pill-deep"), "deep 请求失败", "bad");
+    $("readiness-detail").textContent = `深度预检请求失败：${error.message}`;
+    updateActionGates();
+  }
+}
+function updateActionGates() {
+  const mediaCrawlerBlocked = $("mc-enable")?.checked && (!deepReadiness || !deepReadiness.ok);
+  for (const id of ["btn-sched-run", "btn-pipe-run"]) {
+    const button = $(id);
+    if (button) {
+      button.disabled = Boolean(mediaCrawlerBlocked);
+      button.title = mediaCrawlerBlocked ? "MediaCrawler 深度预检未通过" : "";
+    }
+  }
+  document.querySelectorAll(".login-button").forEach((button) => {
+    button.disabled = !deepReadiness?.ok || !$("mc-enable")?.checked || !$("mc-license")?.checked;
+    button.title = button.disabled ? "请启用 MediaCrawler、确认许可证并通过深度预检" : "";
+  });
 }
 
 async function refreshHealth() {
@@ -201,19 +389,20 @@ async function refreshAccounts() {
   const accounts = await api("/api/v1/accounts");
   const subSelect = $("sub-account");
   const previous = subSelect.value;
-  subSelect.innerHTML = accounts.map(a => `<option value="${a.id}">${a.platform} / ${a.display_name}</option>`).join("") || "<option value=\"\">（先添加账户）</option>";
+  subSelect.innerHTML = accounts.map(a => `<option value="${escapeHtml(a.id)}">${escapeHtml(a.platform)} / ${escapeHtml(a.display_name)}</option>`).join("") || "<option value=\"\">（先添加账户）</option>";
   if (previous && accounts.some(a => a.id === previous)) subSelect.value = previous;
   $("accounts-body").innerHTML = accounts.length ? accounts.map(a => `
     <tr>
-      <td><code>${a.id}</code></td>
-      <td>${a.platform}</td>
-      <td>${a.display_name}</td>
-      <td>${a.login_method}</td>
-      <td>${a.auth_status ?? "—"}</td>
+      <td><code>${escapeHtml(a.id)}</code></td>
+      <td>${escapeHtml(a.platform)}</td>
+      <td>${escapeHtml(a.display_name)}</td>
+      <td>${escapeHtml(a.login_method)}</td>
+      <td>${escapeHtml(a.auth_status ?? "—")}</td>
       <td id="ls-${a.id}">…</td>
-      <td><button class="secondary" onclick="startLogin('${a.id}')">扫码登录</button></td>
+      <td><button class="secondary login-button" onclick="startLogin('${a.id}')">扫码登录</button></td>
     </tr>`).join("") : "<tr><td colspan=7>暂无账户</td></tr>";
   for (const account of accounts) refreshLoginStatus(account.id);
+  updateActionGates();
 }
 async function refreshLoginStatus(accountId) {
   try {
@@ -243,6 +432,11 @@ function startLogin(accountId) {
     toast("请先勾选「启用 MediaCrawler」与「我已确认其非商业学习许可证」");
     return;
   }
+  if (!deepReadiness?.ok) {
+    toast(`请先通过深度预检：${deepReadiness?.code || "尚未检查"}`);
+    refreshDeepReadiness(true);
+    return;
+  }
   const dialog = $("qr-dialog");
   $("qr-account").textContent = `账户 ${accountId}（超时 180 秒，请用平台 App 扫码）`;
   $("qr-img").style.display = "none";
@@ -260,15 +454,36 @@ function startLogin(accountId) {
   });
 }
 let qrCacheKey = 0;
+async function refreshQr(accountId) {
+  qrCacheKey += 1;
+  const response = await fetch(`/api/v1/accounts/${accountId}/login-qr.png?k=${qrCacheKey}`, { cache: "no-store" });
+  const image = $("qr-img");
+  if (response.status === 200) {
+    const blob = await response.blob();
+    if (qrObjectUrl) URL.revokeObjectURL(qrObjectUrl);
+    qrObjectUrl = URL.createObjectURL(blob);
+    image.src = qrObjectUrl;
+    image.style.display = "inline";
+    $("qr-hint").style.display = "none";
+    return "available";
+  }
+  image.style.display = "none";
+  $("qr-hint").style.display = "inline";
+  if (response.status === 202) {
+    $("qr-hint").textContent = "登录进程已启动，等待二维码…";
+    return "pending";
+  }
+  if (response.status === 410) {
+    $("qr-hint").textContent = "本次登录已结束，二维码不再可用。";
+    return "gone";
+  }
+  $("qr-hint").textContent = "二维码暂不可用，请查看下方操作状态。";
+  return "unavailable";
+}
 function pollLogin(accountId, operationId) {
   const timer = setInterval(async () => {
     if (!$("qr-dialog").open) { clearInterval(timer); return; }
-    qrCacheKey += 1;
-    const image = $("qr-img");
-    image.src = `/api/v1/accounts/${accountId}/login-qr.png?k=${qrCacheKey}`;
-    image.style.display = "inline";
-    $("qr-hint").style.display = "none";
-    image.onerror = () => { image.style.display = "none"; $("qr-hint").style.display = "inline"; };
+    try { await refreshQr(accountId); } catch { /* ignore while the child starts */ }
     try { await refreshLoginStatus(accountId); } catch { /* ignore */ }
     try {
       const operation = await api(`/api/v1/operations/${operationId}`);
@@ -418,6 +633,7 @@ async function runExport() {
 
 async function refreshAll() {
   await refreshHealth();
+  await refreshDeepReadiness();
   await refreshAccounts();
   await refreshSubs();
   await refreshJobs();
@@ -425,6 +641,7 @@ async function refreshAll() {
 }
 
 $("btn-refresh").onclick = refreshAll;
+$("btn-deep").onclick = () => refreshDeepReadiness(true);
 $("btn-acc-add").onclick = addAccount;
 $("btn-sub-add").onclick = addSubscription;
 $("btn-tick").onclick = schedulerTick;
@@ -432,8 +649,23 @@ $("btn-sched-run").onclick = schedulerRun;
 $("btn-pipe-run").onclick = pipelineRun;
 $("btn-assets").onclick = refreshAssets;
 $("btn-export").onclick = runExport;
-$("qr-close").onclick = () => $("qr-dialog").close();
+function closeQrDialog() {
+  if (qrObjectUrl) {
+    URL.revokeObjectURL(qrObjectUrl);
+    qrObjectUrl = null;
+  }
+  $("qr-dialog").close();
+}
+$("qr-close").onclick = closeQrDialog;
 $("detail-close").onclick = () => $("detail-dialog").close();
+$("mc-enable").onchange = () => {
+  updateActionGates();
+  refreshDeepReadiness(true);
+};
+$("mc-license").onchange = () => {
+  updateActionGates();
+  refreshDeepReadiness(true);
+};
 
 async function subDetail(id) {
   try {

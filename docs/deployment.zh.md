@@ -74,6 +74,11 @@ docker compose exec media-sync grep '^chromium:' /opt/BUILD-MANIFEST.txt
 # 必须输出真实版本——不得是 "chromium: launch-failed"
 ```
 
+控制台「服务状态」中的「运行深度预检」会重复执行运行时检查，并显示
+checkout 的逐项状态、稳定 `detail_code`、实际 Chromium 版本和构建清单版本。
+许可证确认后若仍显示 `checkout_invalid / tracked_blob_mismatch` 等错误码，
+先修复镜像中的锁定 checkout，再尝试扫码；预检失败时扫码和启用型 worker 会保持禁用。
+
 ## 3. 控制台扫码登录
 
 1. 打开 <http://127.0.0.1:8632/>，顶栏应显示 `MediaCrawler 已配置` 且两个健康 pill 为绿。

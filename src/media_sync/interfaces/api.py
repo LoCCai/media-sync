@@ -14,6 +14,7 @@ namespace but must publish the port to a trusted network only.
 from __future__ import annotations
 
 import threading
+import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -21,7 +22,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from fastapi import FastAPI, HTTPException, Response
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
@@ -74,6 +75,7 @@ from media_sync.interfaces.cli import (
     _scheduler_worker_payload,
     _subscription_payload,
     _UnavailableMediaCrawlerLoginRunner,
+    collect_deep_readiness_report,
 )
 from media_sync.scheduler import DurableSchedulerService, SchedulerRepository, StaleLaneError
 
@@ -238,6 +240,8 @@ def create_api_app(settings: Settings | None = None) -> FastAPI:
     app = FastAPI(title="media-sync", version=__version__, docs_url="/api/docs")
     app.state.settings = resolved
     app.state.operations = operations
+    deep_readiness_cache: dict[bool, tuple[float, dict[str, object]]] = {}
+    deep_readiness_lock = threading.Lock()
 
     def _database() -> Database:
         return Database(resolved.resolved_database_url)
@@ -271,6 +275,28 @@ def create_api_app(settings: Settings | None = None) -> FastAPI:
         finally:
             database.dispose()
         return {"status": "ready", "database": "ok"}
+
+    @app.get("/api/v1/readiness/deep")
+    def deep_readiness(
+        accept_mediacrawler_license: bool = False,
+        refresh: bool = False,
+    ) -> dict[str, object]:
+        """Run the explicit runtime qualification and cache it briefly."""
+
+        cache_key = bool(accept_mediacrawler_license)
+        now = time.monotonic()
+        with deep_readiness_lock:
+            cached = deep_readiness_cache.get(cache_key)
+        if cached is not None and not refresh and now - cached[0] < 60:
+            return {**cached[1], "cached": True}
+
+        report = collect_deep_readiness_report(
+            resolved,
+            license_acknowledged=cache_key,
+        )
+        with deep_readiness_lock:
+            deep_readiness_cache[cache_key] = (time.monotonic(), report)
+        return {**report, "cached": False}
 
     @app.get("/api/v1/settings")
     def settings_view() -> dict[str, object]:
@@ -360,8 +386,8 @@ def create_api_app(settings: Settings | None = None) -> FastAPI:
         finally:
             database.dispose()
 
-    @app.get("/api/v1/accounts/{account_id}/login-qr.png", response_class=FileResponse)
-    def login_qr(account_id: UUID) -> FileResponse:
+    @app.get("/api/v1/accounts/{account_id}/login-qr.png")
+    def login_qr(account_id: UUID) -> Response:
         database = _database()
         try:
             with database.session() as session:
@@ -369,6 +395,7 @@ def create_api_app(settings: Settings | None = None) -> FastAPI:
                 if account is None:
                     raise HTTPException(status_code=404, detail="account not found")
                 platform = account.platform
+                sessions = LoginSessionRepository(session).list_for_account(account.id)
         except SQLAlchemyError:
             raise _bad_request("database_operation_failed") from None
         finally:
@@ -377,8 +404,21 @@ def create_api_app(settings: Settings | None = None) -> FastAPI:
             resolved.resolved_mediacrawler_runtime_dir / "accounts" / platform / str(account_id) / LOGIN_QR_IMAGE_NAME
         )
         if not qr_path.is_file():
+            latest = sessions[0] if sessions else None
+            if latest is not None and latest.status in {"pending", "waiting_user"}:
+                return JSONResponse(
+                    status_code=202,
+                    content={"code": "login_qr_pending", "login_session_id": latest.id},
+                    headers={"Cache-Control": "no-store"},
+                )
+            if latest is not None and latest.status in {"succeeded", "expired", "failed", "cancelled"}:
+                return JSONResponse(
+                    status_code=410,
+                    content={"code": "login_qr_gone", "login_session_id": latest.id},
+                    headers={"Cache-Control": "no-store"},
+                )
             raise HTTPException(status_code=404, detail="login_qr_not_available")
-        return FileResponse(qr_path, media_type="image/png")
+        return FileResponse(qr_path, media_type="image/png", headers={"Cache-Control": "no-store"})
 
     @app.post("/api/v1/accounts/{account_id}/login", status_code=202)
     def start_login(account_id: UUID, body: LoginStart) -> dict[str, object]:
