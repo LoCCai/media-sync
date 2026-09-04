@@ -283,7 +283,10 @@ class OperationExecutionContext:
         )
 
     def phase(self, phase: str) -> OperationSnapshot:
-        return self._coordinator._phase(self._handle, self.operation_id, phase)
+        snapshot = self._coordinator._phase(self._handle, self.operation_id, phase)
+        if snapshot.cancel_requested_at is not None and not self.cancellation.is_set():
+            self._coordinator._observe_cancel(self.operation_id, self._handle)
+        return snapshot
 
 
 @dataclass(frozen=True, slots=True)
@@ -609,6 +612,7 @@ class OperationCoordinator:
         with self._lock:
             self._closing = True
             handles = tuple(self._handles.items())
+        deadline = time.monotonic() + float(timeout)
 
         for operation_id, handle in handles:
             try:
@@ -630,9 +634,12 @@ class OperationCoordinator:
                 self._run_write(request_shutdown_cancel)
             except Exception:
                 pass
-            self._observe_cancel(operation_id, handle)
+            self._observe_cancel(
+                operation_id,
+                handle,
+                wait_timeout_seconds=max(0.0, deadline - time.monotonic()),
+            )
 
-        deadline = time.monotonic() + float(timeout)
         joined = 0
         current_thread = threading.current_thread()
         for _operation_id, handle in handles:
@@ -935,11 +942,27 @@ class OperationCoordinator:
         except Exception:
             handle.cancellation.set()
 
-    def _observe_cancel(self, operation_id: str, handle: _OperationHandle) -> None:
+    def _observe_cancel(
+        self,
+        operation_id: str,
+        handle: _OperationHandle,
+        *,
+        wait_timeout_seconds: float | None = None,
+    ) -> None:
+        wait_for_observer = False
         with self._lock:
-            if handle.cancellation.is_set() or operation_id in self._observing_cancel:
+            if handle.cancellation.is_set():
                 return
-            self._observing_cancel.add(operation_id)
+            if operation_id in self._observing_cancel:
+                wait_for_observer = True
+            else:
+                self._observing_cancel.add(operation_id)
+        if wait_for_observer:
+            # The active observer always signals in its finally block.  Wait
+            # outside the coordinator lock so it can complete and release the
+            # observation slot before this worker reaches a terminal CAS.
+            handle.cancellation.wait(wait_timeout_seconds)
+            return
         try:
             try:
 

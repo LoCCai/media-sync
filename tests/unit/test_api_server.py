@@ -334,7 +334,7 @@ def _wait_operation(client: TestClient, operation_id: str, *, timeout: float = 1
     deadline = _time.monotonic() + timeout
     while _time.monotonic() < deadline:
         body = client.get(f"/api/v1/operations/{operation_id}").json()
-        if body["state"] != "running":
+        if body["state"] not in {"queued", "running"}:
             return body
         _time.sleep(0.02)
     raise AssertionError("operation did not leave the running state")
@@ -438,11 +438,11 @@ def test_asset_download_operation_lifecycle_on_a_real_asset(tmp_path: Path) -> N
         )
         assert started.status_code == 202
         blocked = _wait_operation(client, started.json()["operation_id"])
-        assert blocked["state"] == "failed"
+        assert blocked["state"] == "failed_retryable"
         assert blocked["error_code"] == "locator_refresh_unsupported"
         assert blocked["result"]["ok"] is False
-        assert blocked["result"]["payload"]["error_code"] == "locator_refresh_unsupported"
-        assert blocked["result"]["payload"]["disposition"] == "not_started"
+        assert blocked["result"]["status"] == "blocked"
+        assert blocked["result"]["disposition"] == "not_started"
 
         # Verified-without-archive path: hand-marking an asset verified without
         # its immutable blob is a state inconsistency, and the recovery preflight
@@ -459,10 +459,10 @@ def test_asset_download_operation_lifecycle_on_a_real_asset(tmp_path: Path) -> N
         )
         assert started.status_code == 202
         inconsistent = _wait_operation(client, started.json()["operation_id"])
-        assert inconsistent["state"] == "failed"
+        assert inconsistent["state"] == "failed_terminal"
         assert inconsistent["error_code"] == "asset_download_state_invalid"
         assert inconsistent["result"]["ok"] is False
-        assert inconsistent["result"]["payload"]["error_code"] == "asset_download_state_invalid"
+        assert inconsistent["result"]["status"] == "failed"
     finally:
         database.dispose()
 
@@ -481,7 +481,14 @@ def test_asset_download_operation_succeeded_wiring_uses_captured_settings(
 
     def fake_executor(**kwargs: object) -> tuple[dict[str, object], bool]:
         captured["settings_state_dir"] = str(kwargs["settings"].state_dir)  # type: ignore[attr-defined]
-        return {"asset_id": "unused", "status": "ok", "disposition": "downloaded"}, True
+        return {
+            "asset_id": str(kwargs["asset_id"]),
+            "job_id": None,
+            "status": "verified",
+            "disposition": "downloaded",
+            "generation": 1,
+            "size_bytes": 42,
+        }, True
 
     monkeypatch.setattr(api_module, "_execute_asset_download", fake_executor)
     asset_id = uuid4()
@@ -557,7 +564,7 @@ def test_asset_download_operation_succeeded_wiring_uses_captured_settings(
     assert finished["state"] == "succeeded"
     assert finished["error_code"] is None
     assert finished["result"]["ok"] is True
-    assert finished["result"]["payload"]["disposition"] == "downloaded"
+    assert finished["result"]["disposition"] == "downloaded"
     # The background thread used the settings captured by the app factory, not a
     # fresh global read, so its state_dir matches the app factory's.
     assert captured["settings_state_dir"] == str(settings.state_dir)

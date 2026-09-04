@@ -1920,8 +1920,9 @@ def test_asset_download_without_ffprobe_allows_image_magic_validation(
                 verified_archive_recovery_preflight=verified_archive_recovery_preflight,
             )
 
-        def run(self, request: object) -> object:
+        def run(self, request: object, *, subject_hook: object = None) -> object:
             captured["request"] = request
+            captured["subject_hook"] = subject_hook
             return SimpleNamespace(
                 asset_id=asset_id,
                 generation=1,
@@ -1943,6 +1944,7 @@ def test_asset_download_without_ffprobe_allows_image_magic_validation(
     assert result.exit_code == 0, result.output
     assert json.loads(result.output)["status"] == "verified"
     assert captured["probe"] is None
+    assert captured["subject_hook"] is None
     assert captured["verified_archive_recovery_preflight"] is None
 
 
@@ -2224,8 +2226,9 @@ def test_asset_download_explicitly_wires_lazy_mediacrawler_refresh(
                 verified_archive_recovery_preflight=verified_archive_recovery_preflight,
             )
 
-        def run(self, request: object) -> object:
+        def run(self, request: object, *, subject_hook: object = None) -> object:
             captured["request"] = request
+            captured["subject_hook"] = subject_hook
             return SimpleNamespace(
                 asset_id=asset_id,
                 generation=1,
@@ -2271,6 +2274,7 @@ def test_asset_download_explicitly_wires_lazy_mediacrawler_refresh(
     assert refresh_kwargs["python_executable"] == python_executable
     assert refresh_kwargs["license_acknowledged"] is True
     assert refresh_kwargs["detail_reference_ref"] is None
+    assert captured["subject_hook"] is None
     assert captured.get("preflight_calls", 0) == expected_preflight_calls
     recovery_preflight = captured["verified_archive_recovery_preflight"]
     assert callable(recovery_preflight) is (platform == Platform.XHS.value)

@@ -13,19 +13,24 @@ namespace but must publish the port to a trusted network only.
 
 from __future__ import annotations
 
+import asyncio
+import hashlib
+import json
 import os
+import re
 import stat
 import threading
 import time
-from dataclasses import dataclass, field
+from collections.abc import AsyncIterator, Mapping, Sequence
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
-from uuid import UUID, uuid4
+from uuid import UUID
 
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.exc import SQLAlchemyError
@@ -34,17 +39,27 @@ from media_sync import __version__
 from media_sync.application import (
     AccountDraft,
     MediaCrawlerLoginSessionReconciler,
+    OperationCoordinator,
+    OperationCoordinatorError,
+    OperationExecution,
+    OperationExecutionContext,
+    OperationOutcome,
+    OperationPayloadError,
+    OperationSubmission,
     SubscriptionDraft,
     WorkbenchError,
     WorkbenchService,
     collect_account_login_preflight,
+    operation_idempotency_key_digest,
+    operation_request_fingerprint,
 )
 from media_sync.application.authentication import (
     AccountLoginError,
     AccountLoginRequest,
     MediaCrawlerQrLoginService,
 )
-from media_sync.application.emby import EmbyExportRequest, EmbyExportService
+from media_sync.application.emby import EmbyExportRequest, EmbyExportService, export_error_is_retryable
+from media_sync.application.support_bundle import SupportBundleError, SupportBundleService
 from media_sync.config import Settings, get_settings
 from media_sync.domain import AssetStatus, ContentKind, JobStatus, LoginMethod, Platform
 from media_sync.exporters.emby import EmbyExporter, ExportError
@@ -59,6 +74,14 @@ from media_sync.infrastructure.db import (
     LoginSession,
     LoginSessionRepository,
     NotFoundError,
+    Operation,
+    OperationConflictError,
+    OperationEventCursorError,
+    OperationEventSnapshot,
+    OperationSnapshot,
+    OperationStateConflictError,
+    OperationSubjectSnapshot,
+    RepositoryError,
     Subscription,
     SubscriptionRepository,
     SyncRun,
@@ -75,6 +98,7 @@ from media_sync.integrations.mediacrawler.subscription_policy import (
     from_subscription_policy,
 )
 from media_sync.interfaces.cli import (
+    _EXPECTED_DATABASE_REVISION,
     _account_login_outcome_payload,
     _account_login_status_payload,
     _account_payload,
@@ -83,11 +107,9 @@ from media_sync.interfaces.cli import (
     _build_subscription_worker,
     _credential_reference,
     _execute_asset_download,
-    _pipeline_worker_payload,
     _scheduler_cycle_payload,
     _scheduler_job_payload,
     _scheduler_schedule_payload,
-    _scheduler_worker_payload,
     _subscription_payload,
     _UnavailableMediaCrawlerLoginRunner,
     collect_deep_readiness_report,
@@ -98,6 +120,24 @@ _CONSOLE_PATH = Path(__file__).with_name("console.html")
 _PACKAGED_WEB_ROOT = Path(__file__).with_name("static") / "console-v2"
 _DEVELOPMENT_WEB_ROOT = Path(__file__).resolve().parents[3] / "web" / "build"
 _MAX_LOGIN_QR_BYTES = 2 * 1024 * 1024
+_MAX_OPERATION_LIST = 200
+_MAX_OPERATION_EVENT_PAGE = 1_000
+_OPERATION_STREAM_BATCH = 100
+_OPERATION_STREAM_POLL_SECONDS = 0.25
+_OPERATION_STREAM_KEEPALIVE_SECONDS = 10.0
+_OPERATION_STREAM_MAX_SECONDS = 30.0
+_OPERATION_RECONCILE_MIN_INTERVAL_SECONDS = 1.0
+_OPERATION_RECONCILE_SHUTDOWN_SECONDS = 1.0
+_LAST_EVENT_ID = re.compile(r"(?:0|[1-9][0-9]{0,18})\Z")
+_ACCOUNT_LOGIN_RETRYABLE_CODES = frozenset(
+    {
+        "account_login_busy",
+        "account_login_start_failed",
+        "account_login_result_invalid",
+        "account_login_conflict",
+        "account_login_unexpected",
+    }
+)
 
 
 def _resolve_web_root() -> Path | None:
@@ -129,78 +169,170 @@ def _static_response(web_root: Path, relative_path: str = "index.html") -> FileR
 # ------------------------------------------------------------------ operations
 
 
-@dataclass
-class _Operation:
-    id: str
-    kind: str
-    state: str = "running"
-    started_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
-    finished_at: str | None = None
-    result: dict[str, Any] | None = None
-    error_code: str | None = None
+def _iso(value: datetime | None) -> str | None:
+    return value.astimezone(UTC).isoformat() if value is not None else None
 
 
-class _OperationRegistry:
-    """Track in-process background operations for the web console."""
+def _operation_payload(
+    operation: OperationSnapshot,
+    *,
+    subjects: Sequence[OperationSubjectSnapshot] | None = None,
+) -> dict[str, object]:
+    """Project the version-one public shape without lease or revision data."""
 
-    def __init__(self, *, history_limit: int = 200) -> None:
-        self._lock = threading.Lock()
-        self._operations: dict[str, _Operation] = {}
-        self._order: list[str] = []
-        self._history_limit = history_limit
-        self._exclusive: dict[str, str] = {}
-
-    def start(self, kind: str, *, exclusive_key: str | None = None) -> _Operation:
-        with self._lock:
-            if exclusive_key is not None and exclusive_key in self._exclusive:
-                raise HTTPException(status_code=409, detail="operation already running")
-            operation = _Operation(id=str(uuid4()), kind=kind)
-            self._operations[operation.id] = operation
-            self._order.append(operation.id)
-            if exclusive_key is not None:
-                self._exclusive[exclusive_key] = operation.id
-            while len(self._order) > self._history_limit:
-                self._operations.pop(self._order.pop(0), None)
-            return operation
-
-    def finish(
-        self,
-        operation: _Operation,
-        *,
-        result: dict[str, Any] | None = None,
-        error_code: str | None = None,
-        exclusive_key: str | None = None,
-    ) -> None:
-        with self._lock:
-            operation.state = "succeeded" if error_code is None else "failed"
-            operation.finished_at = datetime.now(UTC).isoformat()
-            operation.result = result
-            operation.error_code = error_code
-            if exclusive_key is not None and self._exclusive.get(exclusive_key) == operation.id:
-                self._exclusive.pop(exclusive_key, None)
-
-    def payload(self, operation: _Operation) -> dict[str, Any]:
-        return {
-            "id": operation.id,
-            "kind": operation.kind,
-            "state": operation.state,
-            "started_at": operation.started_at,
-            "finished_at": operation.finished_at,
-            "result": operation.result,
-            "error_code": operation.error_code,
+    progress: dict[str, object] | None = None
+    if any(
+        value is not None for value in (operation.progress_current, operation.progress_total, operation.progress_unit)
+    ):
+        progress = {
+            "current": operation.progress_current,
+            "total": operation.progress_total,
+            "unit": operation.progress_unit,
         }
+    target = None
+    if operation.target_type is not None and operation.target_id is not None:
+        target = {"type": operation.target_type, "id": operation.target_id}
+    payload: dict[str, object] = {
+        "id": operation.id,
+        "kind": operation.kind,
+        "state": operation.state,
+        "requested_at": _iso(operation.requested_at),
+        "started_at": _iso(operation.started_at),
+        "finished_at": _iso(operation.finished_at),
+        "phase": operation.phase,
+        "progress": progress,
+        "target": target,
+        "retryable": operation.retryable,
+        "result": dict(operation.result_summary) if operation.result_summary else None,
+        "error_code": operation.error_code,
+        "correlation_id": operation.correlation_id,
+        "cancel_requested_at": _iso(operation.cancel_requested_at),
+        "allowed_actions": list(operation.allowed_actions),
+        "event_sequence": operation.event_sequence,
+    }
+    if subjects is not None:
+        payload["subjects"] = [
+            {
+                "type": subject.subject_type,
+                "id": subject.subject_id,
+                "role": subject.role,
+                "created_at": _iso(subject.created_at),
+            }
+            for subject in subjects
+        ]
+    return payload
 
-    def get(self, operation_id: str) -> _Operation:
-        with self._lock:
-            operation = self._operations.get(operation_id)
-        if operation is None:
-            raise HTTPException(status_code=404, detail="operation not found")
-        return operation
 
-    def list(self, *, limit: int = 50) -> list[dict[str, Any]]:
+def _operation_event_payload(
+    event: OperationEventSnapshot,
+    *,
+    operation: OperationSnapshot | None = None,
+) -> dict[str, object]:
+    subject = None
+    if event.subject_type is not None and event.subject_id is not None:
+        subject = {"type": event.subject_type, "id": event.subject_id}
+    payload: dict[str, object] = {
+        "stream_sequence": event.stream_sequence,
+        "operation_id": event.operation_id,
+        "operation_sequence": event.operation_sequence,
+        "created_at": _iso(event.at),
+        "level": event.level,
+        "event_code": event.event_code,
+        "phase": event.phase,
+        "message_key": event.message_key,
+        "from_state": event.from_state,
+        "to_state": event.to_state,
+        "subject": subject,
+        "context": dict(event.safe_context),
+    }
+    if operation is not None:
+        payload["operation"] = _operation_payload(operation)
+    return payload
+
+
+def _operation_start_payload(submission: OperationSubmission) -> dict[str, object]:
+    return {
+        "operation_id": submission.operation_id,
+        "state": submission.operation.state,
+        "replayed": submission.replayed,
+        "correlation_id": submission.operation.correlation_id,
+    }
+
+
+def _private_reference_digest(value: str | None) -> str | None:
+    if value is None:
+        return None
+    return hashlib.sha256(b"media-sync:operation-private-reference:v1\0" + value.encode("utf-8")).hexdigest()
+
+
+def _sse_frame(
+    event: str,
+    payload: Mapping[str, object],
+    *,
+    event_id: int | None = None,
+) -> bytes:
+    encoded = json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+    lines = []
+    if event_id is not None:
+        lines.append(f"id: {event_id}")
+    lines.extend((f"event: {event}", f"data: {encoded}", ""))
+    return ("\n".join(lines) + "\n").encode("utf-8")
+
+
+class _OperationReconciliationTrigger:
+    """Start at most one best-effort reconciliation without delaying reads."""
+
+    def __init__(self, operations: OperationCoordinator, *, limit: int = 100) -> None:
+        self._operations = operations
+        self._limit = limit
+        self._lock = threading.Lock()
+        self._thread: threading.Thread | None = None
+        self._last_started = float("-inf")
+        self._closed = False
+
+    def trigger(self) -> bool:
+        now = time.monotonic()
         with self._lock:
-            items = [self._operations[operation_id] for operation_id in reversed(self._order[-limit:])]
-        return [self.payload(operation) for operation in items]
+            if self._closed or (self._thread is not None and self._thread.is_alive()):
+                return False
+            if now - self._last_started < _OPERATION_RECONCILE_MIN_INTERVAL_SECONDS:
+                return False
+            worker = threading.Thread(
+                target=self._run,
+                name="media-sync-operation-reconciliation",
+                daemon=True,
+            )
+            self._thread = worker
+            self._last_started = now
+            try:
+                worker.start()
+            except RuntimeError:
+                if self._thread is worker:
+                    self._thread = None
+                return False
+        return True
+
+    def close(self, *, timeout_seconds: float = 0.0) -> None:
+        if isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, int | float) or timeout_seconds < 0:
+            raise ValueError("timeout_seconds must be non-negative")
+        with self._lock:
+            self._closed = True
+            worker = self._thread
+        if worker is not None and worker is not threading.current_thread() and worker.is_alive():
+            worker.join(float(timeout_seconds))
+
+    def _run(self) -> None:
+        current = threading.current_thread()
+        try:
+            self._operations.reconcile_expired(limit=self._limit)
+        except Exception:
+            # Reads remain authoritative even when opportunistic recovery is
+            # unavailable. A later trigger can retry without exposing details.
+            pass
+        finally:
+            with self._lock:
+                if self._thread is current:
+                    self._thread = None
 
 
 # ---------------------------------------------------------------------- models
@@ -326,12 +458,37 @@ class AssetDownload(BaseModel):
 
 
 def create_api_app(settings: Settings | None = None) -> FastAPI:
-    """Build the local FastAPI application; creating it never touches state."""
+    """Build the local FastAPI application without migrating durable state."""
 
     resolved = settings or get_settings()
-    operations = _OperationRegistry()
+    operation_database = Database(resolved.resolved_database_url)
+    operations = OperationCoordinator(operation_database)
+    operation_reconciliation = _OperationReconciliationTrigger(operations)
+    support_bundle_service = SupportBundleService(
+        operation_database,
+        application_version=__version__,
+        expected_revision=_EXPECTED_DATABASE_REVISION,
+    )
 
-    app = FastAPI(title="media-sync", version=__version__, docs_url="/api/docs")
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+        del _app
+        try:
+            operations.start()
+            # Recovery is single-flight and best effort so a busy durable store
+            # cannot hold liveness or the ASGI event loop hostage.
+            operation_reconciliation.trigger()
+            yield
+        finally:
+            operation_reconciliation.close()
+            await asyncio.to_thread(operations.shutdown)
+            await asyncio.to_thread(
+                operation_reconciliation.close,
+                timeout_seconds=_OPERATION_RECONCILE_SHUTDOWN_SECONDS,
+            )
+            operation_database.dispose()
+
+    app = FastAPI(title="media-sync", version=__version__, docs_url="/api/docs", lifespan=lifespan)
     app.state.settings = resolved
     app.state.operations = operations
     deep_readiness_cache: dict[bool, tuple[float, dict[str, object]]] = {}
@@ -398,9 +555,105 @@ def create_api_app(settings: Settings | None = None) -> FastAPI:
         except typer.BadParameter:
             raise _bad_request("invalid_credential_reference") from None
 
+    def _operation_identity(
+        request: Request,
+        kind: str,
+        *,
+        target_id: str | None,
+        parameters: Mapping[str, object],
+    ) -> tuple[str, str | None]:
+        header_values = request.headers.getlist("idempotency-key")
+        if len(header_values) > 1:
+            raise _bad_request("operation_idempotency_key_invalid")
+        try:
+            fingerprint = operation_request_fingerprint(kind, target_id=target_id, parameters=parameters)
+            key_hash = operation_idempotency_key_digest(header_values[0]) if header_values else None
+        except OperationPayloadError as error:
+            raise _bad_request(error.code) from None
+        return fingerprint, key_hash
+
+    def _idempotent_replay(
+        kind: str,
+        *,
+        key_hash: str | None,
+        request_fingerprint: str,
+    ) -> OperationSubmission | None:
+        if key_hash is None:
+            return None
+        try:
+            with operation_database.session() as session:
+                existing = session.scalar(
+                    select(Operation).where(
+                        Operation.kind == kind,
+                        Operation.idempotency_key_hash == key_hash,
+                    )
+                )
+            if existing is None:
+                return None
+            if existing.request_fingerprint != request_fingerprint:
+                raise HTTPException(status_code=409, detail="idempotency_key_reused")
+            return OperationSubmission(operations.get(existing.id), replayed=True)
+        except HTTPException:
+            raise
+        except (RepositoryError, SQLAlchemyError):
+            raise HTTPException(status_code=503, detail="operation_store_unavailable") from None
+
+    def _submit_operation(execution: OperationExecution) -> OperationSubmission:
+        try:
+            return operations.submit(execution)
+        except OperationConflictError as error:
+            raise HTTPException(status_code=409, detail=error.code) from None
+        except OperationPayloadError as error:
+            raise _bad_request(error.code) from None
+        except OperationCoordinatorError as error:
+            raise HTTPException(status_code=503, detail=error.code) from None
+        except (RepositoryError, SQLAlchemyError):
+            raise HTTPException(status_code=503, detail="operation_store_unavailable") from None
+        except (TypeError, ValueError):
+            raise _bad_request("operation_request_invalid") from None
+
+    def _canonical_operation_id(value: str) -> str:
+        try:
+            canonical = str(UUID(value))
+        except (AttributeError, TypeError, ValueError):
+            raise HTTPException(status_code=404, detail="operation_not_found") from None
+        if canonical != value:
+            raise HTTPException(status_code=404, detail="operation_not_found")
+        return canonical
+
+    def _operation_detail(operation_id: str) -> dict[str, object]:
+        canonical_id = _canonical_operation_id(operation_id)
+        try:
+            operation = operations.get(canonical_id)
+            subjects = operations.list_subjects(canonical_id)
+            return _operation_payload(operation, subjects=subjects)
+        except NotFoundError:
+            raise HTTPException(status_code=404, detail="operation_not_found") from None
+        except (RepositoryError, SQLAlchemyError):
+            raise HTTPException(status_code=503, detail="operation_store_unavailable") from None
+
+    def _reconcile_operation_reads() -> None:
+        operation_reconciliation.trigger()
+
     @app.get("/api/v1/health")
     def health() -> dict[str, str]:
         return {"status": "ok"}
+
+    @app.get("/api/v1/support-bundle")
+    def support_bundle() -> Response:
+        try:
+            content = support_bundle_service.build()
+        except SupportBundleError as error:
+            return JSONResponse(
+                status_code=503,
+                content={"detail": error.code},
+                headers={"Cache-Control": "no-store"},
+            )
+        return Response(
+            content=content,
+            media_type="application/json",
+            headers={"Cache-Control": "no-store"},
+        )
 
     @app.get("/api/v1/ready")
     def ready() -> dict[str, object]:
@@ -730,25 +983,50 @@ def create_api_app(settings: Settings | None = None) -> FastAPI:
         return _login_qr_response(UUID(latest_id), expected_account_id=account_id)
 
     @app.post("/api/v1/accounts/{account_id}/login", status_code=202)
-    def start_login(account_id: UUID, body: LoginStart) -> dict[str, object]:
+    def start_login(account_id: UUID, body: LoginStart, request: Request) -> dict[str, object]:
         if not body.enable_mediacrawler:
             raise _bad_request("mediacrawler_not_enabled")
+        request_fingerprint, key_hash = _operation_identity(
+            request,
+            "account-login",
+            target_id=str(account_id),
+            parameters={
+                "timeout_microseconds": round(body.timeout_seconds * 1_000_000),
+                "enable_mediacrawler": body.enable_mediacrawler,
+                "accept_mediacrawler_license": body.accept_mediacrawler_license,
+            },
+        )
+        replay = _idempotent_replay(
+            "account-login",
+            key_hash=key_hash,
+            request_fingerprint=request_fingerprint,
+        )
+        if replay is not None:
+            return _operation_start_payload(replay)
         preflight = collect_account_login_preflight(
             resolved,
             account_id,
             license_acknowledged=body.accept_mediacrawler_license,
         )
         if not preflight.ok:
+            replay = _idempotent_replay(
+                "account-login",
+                key_hash=key_hash,
+                request_fingerprint=request_fingerprint,
+            )
+            if replay is not None:
+                return _operation_start_payload(replay)
             status_code = 404 if preflight.code == "account_login_not_found" else 400
             if preflight.code == "account_login_busy":
                 status_code = 409
             raise HTTPException(status_code=status_code, detail=preflight.code)
 
-        operation = operations.start("account-login", exclusive_key=f"login:{account_id}")
-
-        def run_login() -> None:
+        def run_login(context: OperationExecutionContext) -> OperationOutcome:
             login_database: Database | None = None
             try:
+                phase = context.phase("authenticating")
+                if phase.cancel_requested_at is not None or context.cancel_requested:
+                    return OperationOutcome.cancelled()
                 login_database = Database(resolved.resolved_database_url)
                 if resolved.mediacrawler_python_executable is None:
                     runner: Any = _UnavailableMediaCrawlerLoginRunner()
@@ -769,23 +1047,55 @@ def create_api_app(settings: Settings | None = None) -> FastAPI:
                         account_id=account_id,
                         timeout_seconds=body.timeout_seconds,
                         poll_seconds=min(0.05, body.timeout_seconds / 2),
+                    ),
+                    cancellation=context.cancellation,
+                    subject_hook=context.subject_hook,
+                )
+                raw_result = _account_login_outcome_payload(outcome)
+                result = {
+                    key: raw_result[key]
+                    for key in (
+                        "account_id",
+                        "login_session_id",
+                        "runner_status",
+                        "login_session_status",
+                        "auth_status",
+                        "expires_at",
+                        "completed_at",
                     )
+                }
+                if outcome.authenticated:
+                    return OperationOutcome.success(result)
+                if outcome.runner_status.value == "cancelled" or outcome.session_status == "cancelled":
+                    return OperationOutcome.cancelled(result)
+                error_code = (
+                    "operation_login_expired"
+                    if outcome.runner_status.value in {"expired", "timed_out"}
+                    else "operation_login_failed"
                 )
-                operations.finish(
-                    operation,
-                    result=_account_login_outcome_payload(outcome),
-                    exclusive_key=f"login:{account_id}",
-                )
+                return OperationOutcome.failed(error_code, retryable=False, payload=result)
             except AccountLoginError as error:
-                operations.finish(operation, error_code=error.code, exclusive_key=f"login:{account_id}")
-            except Exception:
-                operations.finish(operation, error_code="account_login_unexpected", exclusive_key=f"login:{account_id}")
+                return OperationOutcome.failed(
+                    error.code,
+                    retryable=error.code in _ACCOUNT_LOGIN_RETRYABLE_CODES,
+                )
             finally:
                 if login_database is not None:
                     login_database.dispose()
 
-        threading.Thread(target=run_login, name=f"media-sync-login-{account_id}", daemon=True).start()
-        return {"operation_id": operation.id, "state": "running"}
+        submission = _submit_operation(
+            OperationExecution(
+                kind="account-login",
+                request_fingerprint=request_fingerprint,
+                idempotency_key_hash=key_hash,
+                exclusive_key=f"account-login:{account_id}",
+                target_type="account",
+                target_id=str(account_id),
+                phase="preparing",
+                execute=run_login,
+            )
+        )
+        return _operation_start_payload(submission)
 
     # --------------------------------------------------------- subscriptions
 
@@ -927,30 +1237,58 @@ def create_api_app(settings: Settings | None = None) -> FastAPI:
             database.dispose()
 
     @app.post("/api/v1/assets/{asset_id}/download", status_code=202)
-    def download_asset(asset_id: UUID, body: AssetDownload) -> dict[str, object]:
+    def download_asset(asset_id: UUID, body: AssetDownload, request: Request) -> dict[str, object]:
         if body.accept_mediacrawler_license and not body.enable_mediacrawler:
             raise _bad_request("license_requires_enable_mediacrawler")
         normalized_detail_reference = _safe_credential_reference(body.xhs_detail_reference_ref)
         if normalized_detail_reference is not None and not body.enable_mediacrawler:
             raise _bad_request("xhs_detail_reference_requires_mediacrawler")
+        request_fingerprint, key_hash = _operation_identity(
+            request,
+            "asset-download",
+            target_id=str(asset_id),
+            parameters={
+                "lease_seconds": body.lease_seconds,
+                "max_attempts": body.max_attempts,
+                "enable_mediacrawler": body.enable_mediacrawler,
+                "accept_mediacrawler_license": body.accept_mediacrawler_license,
+                "xhs_detail_reference_digest": _private_reference_digest(normalized_detail_reference),
+            },
+        )
+        replay = _idempotent_replay(
+            "asset-download",
+            key_hash=key_hash,
+            request_fingerprint=request_fingerprint,
+        )
+        if replay is not None:
+            return _operation_start_payload(replay)
         database = _database()
         try:
             with database.session() as session:
                 if session.get(Asset, str(asset_id)) is None:
+                    replay = _idempotent_replay(
+                        "asset-download",
+                        key_hash=key_hash,
+                        request_fingerprint=request_fingerprint,
+                    )
+                    if replay is not None:
+                        return _operation_start_payload(replay)
                     raise HTTPException(status_code=404, detail="asset not found")
         except SQLAlchemyError:
             raise _bad_request("database_operation_failed") from None
         finally:
             database.dispose()
-        operation = operations.start("asset-download", exclusive_key=f"asset-download:{asset_id}")
 
-        def run_download() -> None:
+        def run_download(context: OperationExecutionContext) -> OperationOutcome:
             download_database: Database | None = None
             try:
+                phase = context.phase("downloading")
+                if phase.cancel_requested_at is not None or context.cancel_requested:
+                    return OperationOutcome.cancelled()
                 download_database = Database(resolved.resolved_database_url)
                 payload, ok = _execute_asset_download(
                     asset_id=asset_id,
-                    worker_id=body.worker_id,
+                    worker_id=context.worker_id,
                     lease_seconds=body.lease_seconds,
                     max_attempts=body.max_attempts,
                     enable_mediacrawler=body.enable_mediacrawler,
@@ -959,27 +1297,46 @@ def create_api_app(settings: Settings | None = None) -> FastAPI:
                     xhs_detail_reference_ref=normalized_detail_reference,
                     settings=resolved,
                     database=download_database,
+                    subject_hook=context.subject_hook,
                 )
-                operations.finish(
-                    operation,
-                    result={"payload": payload, "ok": ok},
-                    error_code=None if ok else str(payload.get("error_code") or "asset_download_failed"),
-                    exclusive_key=f"asset-download:{asset_id}",
+                result = {
+                    "asset_id": str(asset_id),
+                    "job_id": payload.get("job_id"),
+                    "ok": ok,
+                    "status": payload.get("status", "failed"),
+                    "disposition": payload.get("disposition"),
+                    "generation": payload.get("generation"),
+                    "size_bytes": payload.get("size_bytes"),
+                }
+                if ok:
+                    return OperationOutcome.success(result)
+                error_code = payload.get("error_code")
+                if not isinstance(error_code, str):
+                    error_code = "asset_download_failed"
+                return OperationOutcome.failed(
+                    error_code,
+                    retryable=payload.get("retryable") is True,
+                    payload=result,
                 )
-            except ValueError as error:
-                operations.finish(operation, error_code=str(error), exclusive_key=f"asset-download:{asset_id}")
-            except Exception:
-                operations.finish(
-                    operation,
-                    error_code="asset_download_failed",
-                    exclusive_key=f"asset-download:{asset_id}",
-                )
+            except ValueError:
+                return OperationOutcome.failed("asset_download_request_invalid", retryable=False)
             finally:
                 if download_database is not None:
                     download_database.dispose()
 
-        threading.Thread(target=run_download, name=f"media-sync-asset-{asset_id}", daemon=True).start()
-        return {"operation_id": operation.id, "state": "running"}
+        submission = _submit_operation(
+            OperationExecution(
+                kind="asset-download",
+                request_fingerprint=request_fingerprint,
+                idempotency_key_hash=key_hash,
+                exclusive_key=f"asset-download:{asset_id}",
+                target_type="asset",
+                target_id=str(asset_id),
+                phase="preparing",
+                execute=run_download,
+            )
+        )
+        return _operation_start_payload(submission)
 
     @app.post("/api/v1/subscriptions/{subscription_id}/pause")
     def pause_subscription(subscription_id: UUID) -> dict[str, object]:
@@ -1010,16 +1367,29 @@ def create_api_app(settings: Settings | None = None) -> FastAPI:
             database.dispose()
 
     @app.post("/api/v1/scheduler/run", status_code=202)
-    def scheduler_run(body: SchedulerRun) -> dict[str, object]:
+    def scheduler_run(body: SchedulerRun, request: Request) -> dict[str, object]:
         if body.accept_mediacrawler_license and not body.enable_mediacrawler:
             raise _bad_request("license_requires_enable_mediacrawler")
-        operation = operations.start("scheduler-run")
+        request_fingerprint, key_hash = _operation_identity(
+            request,
+            "scheduler-run",
+            target_id=None,
+            parameters={
+                "max_jobs": body.max_jobs,
+                "global_capacity": body.global_capacity,
+                "lease_seconds": body.lease_seconds,
+                "scan_limit": body.scan_limit,
+                "enable_mediacrawler": body.enable_mediacrawler,
+                "accept_mediacrawler_license": body.accept_mediacrawler_license,
+            },
+        )
 
-        def run_worker() -> None:
-            import asyncio
-
+        def run_worker(context: OperationExecutionContext) -> OperationOutcome:
             worker_database: Database | None = None
             try:
+                phase = context.phase("claiming_jobs")
+                if phase.cancel_requested_at is not None or context.cancel_requested:
+                    return OperationOutcome.cancelled({"statuses": []})
                 run_settings = resolved
                 worker_database = Database(run_settings.resolved_database_url)
                 worker = _build_subscription_worker(
@@ -1030,46 +1400,78 @@ def create_api_app(settings: Settings | None = None) -> FastAPI:
                 )
                 results = asyncio.run(
                     worker.run_bounded(
-                        worker_id=f"api-{uuid4()}",
+                        worker_id=context.worker_id,
                         max_jobs=body.max_jobs,
                         global_capacity=body.global_capacity,
                         lease_seconds=body.lease_seconds,
                         scan_limit=body.scan_limit,
+                        cancellation=context.cancellation,
+                        subject_hook=context.subject_hook,
                     )
                 )
-                operations.finish(
-                    operation,
-                    result={"results": [_scheduler_worker_payload(item) for item in results]},
+                statuses = [item.status for item in results]
+                context.progress(
+                    phase="jobs_processed",
+                    current=len(statuses),
+                    total=body.max_jobs,
+                    unit="jobs",
                 )
+                result = {"statuses": statuses}
+                if context.cancel_requested and len(statuses) < body.max_jobs:
+                    return OperationOutcome.cancelled(result)
+                return OperationOutcome.success(result)
             except Exception:
-                operations.finish(operation, error_code="scheduler_run_failed")
+                return OperationOutcome.failed("scheduler_run_failed", retryable=True)
             finally:
                 if worker_database is not None:
                     worker_database.dispose()
 
-        threading.Thread(target=run_worker, name="media-sync-scheduler-run", daemon=True).start()
-        return {"operation_id": operation.id, "state": "running"}
+        submission = _submit_operation(
+            OperationExecution(
+                kind="scheduler-run",
+                request_fingerprint=request_fingerprint,
+                idempotency_key_hash=key_hash,
+                exclusive_key="scheduler-run:global",
+                phase="preparing",
+                execute=run_worker,
+            )
+        )
+        return _operation_start_payload(submission)
 
     @app.post("/api/v1/pipeline/run", status_code=202)
-    def pipeline_run(body: PipelineRun) -> dict[str, object]:
+    def pipeline_run(body: PipelineRun, request: Request) -> dict[str, object]:
         if body.accept_mediacrawler_license and not body.enable_mediacrawler:
             raise _bad_request("license_requires_enable_mediacrawler")
         normalized_xhs_reference = _safe_credential_reference(body.xhs_detail_reference_ref)
         if normalized_xhs_reference is not None and not body.enable_mediacrawler:
             raise _bad_request("xhs_detail_reference_requires_mediacrawler")
-        operation = operations.start("pipeline-run")
+        request_fingerprint, key_hash = _operation_identity(
+            request,
+            "pipeline-run",
+            target_id=None,
+            parameters={
+                "max_jobs": body.max_jobs,
+                "lease_seconds": body.lease_seconds,
+                "scan_limit": body.scan_limit,
+                "retry_delay_seconds": body.retry_delay_seconds,
+                "enable_mediacrawler": body.enable_mediacrawler,
+                "accept_mediacrawler_license": body.accept_mediacrawler_license,
+                "xhs_detail_reference_digest": _private_reference_digest(normalized_xhs_reference),
+            },
+        )
 
-        def run_pipeline() -> None:
-            import asyncio
-
+        def run_pipeline(context: OperationExecutionContext) -> OperationOutcome:
             worker_database: Database | None = None
             try:
+                phase = context.phase("claiming_jobs")
+                if phase.cancel_requested_at is not None or context.cancel_requested:
+                    return OperationOutcome.cancelled({"statuses": []})
                 run_settings = resolved
                 worker_database = Database(run_settings.resolved_database_url)
                 worker = _build_pipeline_worker(
                     worker_database,
                     run_settings,
-                    worker_id=body.worker_id,
+                    worker_id=context.worker_id,
                     retry_delay_seconds=body.retry_delay_seconds,
                     enable_mediacrawler=body.enable_mediacrawler,
                     accept_mediacrawler_license=body.accept_mediacrawler_license,
@@ -1077,24 +1479,42 @@ def create_api_app(settings: Settings | None = None) -> FastAPI:
                 )
                 results = asyncio.run(
                     worker.run_bounded(
-                        worker_id=body.worker_id,
+                        worker_id=context.worker_id,
                         max_jobs=body.max_jobs,
                         lease_seconds=body.lease_seconds,
                         scan_limit=body.scan_limit,
+                        cancellation=context.cancellation,
+                        subject_hook=context.subject_hook,
                     )
                 )
-                operations.finish(
-                    operation,
-                    result={"results": [_pipeline_worker_payload(item) for item in results]},
+                statuses = [item.status for item in results]
+                context.progress(
+                    phase="jobs_processed",
+                    current=len(statuses),
+                    total=body.max_jobs,
+                    unit="jobs",
                 )
+                result = {"statuses": statuses}
+                if context.cancel_requested and len(statuses) < body.max_jobs:
+                    return OperationOutcome.cancelled(result)
+                return OperationOutcome.success(result)
             except Exception:
-                operations.finish(operation, error_code="pipeline_run_failed")
+                return OperationOutcome.failed("pipeline_run_failed", retryable=True)
             finally:
                 if worker_database is not None:
                     worker_database.dispose()
 
-        threading.Thread(target=run_pipeline, name="media-sync-pipeline-run", daemon=True).start()
-        return {"operation_id": operation.id, "state": "running"}
+        submission = _submit_operation(
+            OperationExecution(
+                kind="pipeline-run",
+                request_fingerprint=request_fingerprint,
+                idempotency_key_hash=key_hash,
+                exclusive_key="pipeline-run:global",
+                phase="preparing",
+                execute=run_pipeline,
+            )
+        )
+        return _operation_start_payload(submission)
 
     @app.get("/api/v1/scheduler/jobs")
     def list_scheduler_jobs(
@@ -1293,12 +1713,23 @@ def create_api_app(settings: Settings | None = None) -> FastAPI:
             database.dispose()
 
     @app.post("/api/v1/emby/export", status_code=202)
-    def emby_export(body: EmbyExport) -> dict[str, object]:
-        operation = operations.start("emby-export", exclusive_key=f"emby-export:{body.author_id}")
+    def emby_export(body: EmbyExport, request: Request) -> dict[str, object]:
+        request_fingerprint, key_hash = _operation_identity(
+            request,
+            "emby-export",
+            target_id=str(body.author_id),
+            parameters={
+                "lease_seconds": body.lease_seconds,
+                "max_attempts": body.max_attempts,
+            },
+        )
 
-        def run_export() -> None:
+        def run_export(context: OperationExecutionContext) -> OperationOutcome:
             export_database: Database | None = None
             try:
+                phase = context.phase("exporting")
+                if phase.cancel_requested_at is not None or context.cancel_requested:
+                    return OperationOutcome.cancelled()
                 run_settings = resolved
                 export_database = Database(run_settings.resolved_database_url)
                 outcome = EmbyExportService(
@@ -1310,40 +1741,215 @@ def create_api_app(settings: Settings | None = None) -> FastAPI:
                 ).export_author(
                     EmbyExportRequest(
                         author_id=str(body.author_id),
-                        worker_id=body.worker_id,
+                        worker_id=context.worker_id,
                         lease_seconds=body.lease_seconds,
                         max_attempts=body.max_attempts,
-                    )
+                    ),
+                    subject_hook=context.subject_hook,
                 )
-                operations.finish(
-                    operation,
-                    result={
+                return OperationOutcome.success(
+                    {
                         "author_id": str(body.author_id),
+                        "job_id": outcome.job_id,
                         "already_exported": outcome.already_exported,
-                        "output_path": str(outcome.output_path),
-                    },
-                    exclusive_key=f"emby-export:{body.author_id}",
+                        "managed_file_count": outcome.managed_file_count,
+                    }
                 )
             except ExportError as error:
-                operations.finish(operation, error_code=error.code, exclusive_key=f"emby-export:{body.author_id}")
-            except Exception:
-                operations.finish(operation, error_code="export_failed", exclusive_key=f"emby-export:{body.author_id}")
+                return OperationOutcome.failed(
+                    error.code,
+                    retryable=export_error_is_retryable(error.code),
+                )
             finally:
                 if export_database is not None:
                     export_database.dispose()
 
-        threading.Thread(target=run_export, name="media-sync-emby-export", daemon=True).start()
-        return {"operation_id": operation.id, "state": "running"}
+        submission = _submit_operation(
+            OperationExecution(
+                kind="emby-export",
+                request_fingerprint=request_fingerprint,
+                idempotency_key_hash=key_hash,
+                exclusive_key=f"emby-export:{body.author_id}",
+                target_type="author",
+                target_id=str(body.author_id),
+                phase="preparing",
+                execute=run_export,
+            )
+        )
+        return _operation_start_payload(submission)
 
     # ------------------------------------------------------------ operations
 
     @app.get("/api/v1/operations")
-    def list_operations(limit: int = 50) -> list[dict[str, object]]:
-        return operations.list(limit=max(1, min(limit, 200)))
+    def list_operations(
+        kind: str | None = None,
+        state: str | None = None,
+        target_type: str | None = None,
+        target_id: UUID | None = None,
+        correlation_id: UUID | None = None,
+        before_requested_at: datetime | None = None,
+        before_id: UUID | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, object]]:
+        if not 1 <= limit <= _MAX_OPERATION_LIST:
+            raise _bad_request("operation_query_invalid")
+        if (target_type is None) != (target_id is None):
+            raise _bad_request("operation_query_invalid")
+        if (before_requested_at is None) != (before_id is None):
+            raise _bad_request("operation_query_invalid")
+        before = None
+        if before_requested_at is not None and before_id is not None:
+            if before_requested_at.tzinfo is None or before_requested_at.utcoffset() is None:
+                raise _bad_request("operation_query_invalid")
+            before = (before_requested_at, str(before_id))
+        _reconcile_operation_reads()
+        try:
+            snapshots = operations.list_operations(
+                kind=kind,
+                state=state,
+                target_type=target_type,
+                target_id=str(target_id) if target_id is not None else None,
+                correlation_id=str(correlation_id) if correlation_id is not None else None,
+                before=before,
+                limit=limit,
+            )
+            return [_operation_payload(operation) for operation in snapshots]
+        except ValueError:
+            raise _bad_request("operation_query_invalid") from None
+        except (RepositoryError, SQLAlchemyError):
+            raise HTTPException(status_code=503, detail="operation_store_unavailable") from None
+
+    # This fixed route must precede the dynamic operation-id route. EventSource
+    # reconnects with the last committed global stream cursor in this header.
+    @app.get("/api/v1/operations/events")
+    async def operation_event_stream(request: Request) -> StreamingResponse:
+        cursor_headers = request.headers.getlist("last-event-id")
+        if len(cursor_headers) > 1:
+            raise _bad_request("operation_event_cursor_invalid")
+        cursor: int | None = None
+        if cursor_headers:
+            raw_cursor = cursor_headers[0]
+            if _LAST_EVENT_ID.fullmatch(raw_cursor) is None:
+                raise _bad_request("operation_event_cursor_invalid")
+            cursor = int(raw_cursor)
+
+        _reconcile_operation_reads()
+        try:
+            _pruned_through, high_water = await asyncio.to_thread(operations.stream_bounds)
+            if cursor is not None:
+                await asyncio.to_thread(operations.events_after, cursor, limit=1)
+        except OperationEventCursorError as error:
+            status_code = 410 if error.code == "operation_event_cursor_expired" else 400
+            raise HTTPException(status_code=status_code, detail=error.code) from None
+        except (RepositoryError, SQLAlchemyError):
+            raise HTTPException(status_code=503, detail="operation_store_unavailable") from None
+
+        initial_cursor = high_water if cursor is None else cursor
+
+        async def stream(after_sequence: int) -> AsyncIterator[bytes]:
+            yield _sse_frame(
+                "ready",
+                {"type": "ready", "high_water": high_water},
+                event_id=after_sequence,
+            )
+            deadline = time.monotonic() + _OPERATION_STREAM_MAX_SECONDS
+            last_write = time.monotonic()
+            current = after_sequence
+            while time.monotonic() < deadline:
+                if await request.is_disconnected():
+                    break
+                try:
+                    events = await asyncio.to_thread(
+                        operations.events_after,
+                        current,
+                        limit=_OPERATION_STREAM_BATCH,
+                    )
+                except (OperationEventCursorError, RepositoryError, SQLAlchemyError):
+                    break
+                if events:
+                    for event in events:
+                        try:
+                            snapshot = await asyncio.to_thread(operations.get, event.operation_id)
+                        except (NotFoundError, RepositoryError, SQLAlchemyError):
+                            snapshot = None
+                        event_payload = _operation_event_payload(event, operation=snapshot)
+                        yield _sse_frame(
+                            "operation",
+                            {"type": "operation", "event": event_payload},
+                            event_id=event.stream_sequence,
+                        )
+                        current = event.stream_sequence
+                    last_write = time.monotonic()
+                    continue
+                now = time.monotonic()
+                if now - last_write >= _OPERATION_STREAM_KEEPALIVE_SECONDS:
+                    yield b": keepalive\n\n"
+                    last_write = now
+                await asyncio.sleep(_OPERATION_STREAM_POLL_SECONDS)
+
+        return StreamingResponse(
+            stream(initial_cursor),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-store",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
+    @app.get("/api/v1/operations/{operation_id}/events")
+    def operation_events(
+        operation_id: str,
+        after: int = 0,
+        limit: int = 100,
+    ) -> list[dict[str, object]]:
+        canonical_id = _canonical_operation_id(operation_id)
+        if after < 0 or not 1 <= limit <= _MAX_OPERATION_EVENT_PAGE:
+            raise _bad_request("operation_event_cursor_invalid")
+        try:
+            events = operations.events_for_operation(
+                canonical_id,
+                after_operation_sequence=after,
+                limit=limit,
+            )
+            return [_operation_event_payload(event) for event in events]
+        except NotFoundError:
+            raise HTTPException(status_code=404, detail="operation_not_found") from None
+        except OperationEventCursorError as error:
+            raise _bad_request(error.code) from None
+        except (RepositoryError, SQLAlchemyError):
+            raise HTTPException(status_code=503, detail="operation_store_unavailable") from None
+
+    @app.post("/api/v1/operations/{operation_id}/cancel")
+    def cancel_operation(operation_id: str) -> dict[str, object]:
+        canonical_id = _canonical_operation_id(operation_id)
+        try:
+            operation = operations.request_cancel(canonical_id)
+        except NotFoundError:
+            raise HTTPException(status_code=404, detail="operation_not_found") from None
+        except OperationStateConflictError:
+            try:
+                observed = operations.get(canonical_id)
+                operation = (
+                    operations.request_cancel(canonical_id) if observed.state in {"queued", "running"} else observed
+                )
+            except OperationStateConflictError:
+                raise HTTPException(status_code=409, detail="operation_state_conflict") from None
+            except NotFoundError:
+                raise HTTPException(status_code=404, detail="operation_not_found") from None
+            except (RepositoryError, SQLAlchemyError):
+                raise HTTPException(status_code=503, detail="operation_store_unavailable") from None
+        except (RepositoryError, SQLAlchemyError):
+            raise HTTPException(status_code=503, detail="operation_store_unavailable") from None
+        try:
+            subjects = operations.list_subjects(canonical_id)
+        except (RepositoryError, SQLAlchemyError):
+            raise HTTPException(status_code=503, detail="operation_store_unavailable") from None
+        return _operation_payload(operation, subjects=subjects)
 
     @app.get("/api/v1/operations/{operation_id}")
     def get_operation(operation_id: str) -> dict[str, object]:
-        return operations.payload(operations.get(operation_id))
+        _reconcile_operation_reads()
+        return _operation_detail(operation_id)
 
     @app.get("/{frontend_path:path}", include_in_schema=False)
     def console_spa(frontend_path: str) -> Response:

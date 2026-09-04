@@ -83,6 +83,7 @@ _MAX_JSON_DEPTH = 4
 _MAX_JSON_ITEMS = 256
 _MAX_JSON_SEQUENCE = 128
 _MAX_JSON_STRING = 512
+_MAX_EVENT_SEQUENCE = 9_223_372_036_854_775_807
 _OWNED_PROGRESS_EVENT_CODES = frozenset(
     {
         "operation_cancel_observed",
@@ -1055,7 +1056,11 @@ class OperationRepository:
         operation_id: str | None = None,
         limit: int = 100,
     ) -> builtins.list[OperationEventSnapshot]:
-        if type(after_stream_sequence) is not int or after_stream_sequence < 0:
+        if (
+            type(after_stream_sequence) is not int
+            or after_stream_sequence < 0
+            or after_stream_sequence > _MAX_EVENT_SEQUENCE
+        ):
             raise OperationEventCursorError("operation_event_cursor_invalid")
         bounded_limit = _positive_limit(limit, maximum=1_000)
         pruned_through, last = self.stream_bounds()
@@ -1077,7 +1082,11 @@ class OperationRepository:
         limit: int = 100,
     ) -> builtins.list[OperationEventSnapshot]:
         normalized_id = _canonical_uuid(operation_id, "operation_id")
-        if type(after_operation_sequence) is not int or after_operation_sequence < 0:
+        if (
+            type(after_operation_sequence) is not int
+            or after_operation_sequence < 0
+            or after_operation_sequence > _MAX_EVENT_SEQUENCE
+        ):
             raise OperationEventCursorError("operation_event_cursor_invalid", normalized_id)
         bounded_limit = _positive_limit(limit, maximum=1_000)
         if self.session.scalar(select(Operation.id).where(Operation.id == normalized_id)) is None:

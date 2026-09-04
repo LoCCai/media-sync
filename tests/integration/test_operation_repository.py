@@ -936,10 +936,14 @@ def test_event_cursor_validation_expiry_and_operation_filter(database: Database)
         filtered = repository.events_after(0, operation_id=second_id, limit=10)
         assert filtered and {event.operation_id for event in filtered} == {second_id}
 
-        for invalid in (-1, True, last + 1):
+        for invalid in (-1, True, last + 1, 2**63):
             with pytest.raises(OperationEventCursorError) as error:
                 repository.events_after(invalid)  # type: ignore[arg-type]
             assert error.value.code == "operation_event_cursor_invalid"
+
+        with pytest.raises(OperationEventCursorError) as oversized:
+            repository.events_for_operation(first_id, after_operation_sequence=2**63)
+        assert oversized.value.code == "operation_event_cursor_invalid"
 
         stream_state = session.get(OperationEventStreamState, 1)
         assert stream_state is not None

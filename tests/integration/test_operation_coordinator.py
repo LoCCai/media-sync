@@ -174,6 +174,189 @@ def test_cancel_observed_once_and_domain_success_wins_race(database: Database) -
     coordinator.shutdown()
 
 
+def test_phase_waits_for_existing_cancel_observer_before_terminal(
+    database: Database,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    execute_entered = threading.Event()
+    allow_phase = threading.Event()
+    second_observer_entered = threading.Event()
+    phase_returned = threading.Event()
+    observer_write_entered = threading.Event()
+    observer_write_release = threading.Event()
+    existing_observer_wait_entered = threading.Event()
+
+    def execute(context: OperationExecutionContext) -> OperationOutcome:
+        execute_entered.set()
+        assert allow_phase.wait(5)
+        snapshot = context.phase("safe_boundary")
+        phase_returned.set()
+        assert snapshot.cancel_requested_at is not None
+        assert context.cancel_requested is True
+        return OperationOutcome.cancelled()
+
+    owner = OperationCoordinator(
+        Database(database.url),
+        lease_seconds=120,
+        heartbeat_interval_seconds=60,
+    )
+    canceller = OperationCoordinator(
+        Database(database.url),
+        lease_seconds=120,
+        heartbeat_interval_seconds=60,
+    )
+    observer: threading.Thread | None = None
+    try:
+        submission = owner.submit(_execution(execute, suffix=31))
+        assert execute_entered.wait(5)
+        requested = canceller.request_cancel(submission.operation_id)
+        assert requested.cancel_requested_at is not None
+
+        handle = owner._local_handle(submission.operation_id)
+        assert handle is not None
+        original_run_write = owner._run_write
+        original_observe_cancel = owner._observe_cancel
+        original_cancel_wait = handle.cancellation.wait
+        observe_calls = 0
+        observe_calls_lock = threading.Lock()
+
+        def tracked_cancel_wait(timeout: float | None = None) -> bool:
+            existing_observer_wait_entered.set()
+            return original_cancel_wait(timeout)
+
+        def gated_run_write(action: object) -> object:
+            if getattr(action, "__name__", "") == "observe":
+                observer_write_entered.set()
+                assert observer_write_release.wait(5)
+            assert callable(action)
+            return original_run_write(action)
+
+        def tracked_observe_cancel(operation_id: str, current_handle: object) -> None:
+            nonlocal observe_calls
+            with observe_calls_lock:
+                observe_calls += 1
+                if observe_calls == 2:
+                    second_observer_entered.set()
+            original_observe_cancel(operation_id, current_handle)  # type: ignore[arg-type]
+
+        owner._run_write = gated_run_write  # type: ignore[method-assign]
+        owner._observe_cancel = tracked_observe_cancel  # type: ignore[method-assign]
+        monkeypatch.setattr(handle.cancellation, "wait", tracked_cancel_wait)
+        observer = threading.Thread(
+            target=owner._observe_cancel,
+            args=(submission.operation_id, handle),
+            daemon=True,
+        )
+        observer.start()
+        assert observer_write_entered.wait(5)
+
+        allow_phase.set()
+        assert second_observer_entered.wait(5)
+        assert existing_observer_wait_entered.wait(5)
+        assert phase_returned.is_set() is False
+        assert owner.get(submission.operation_id).state == "running"
+
+        observer_write_release.set()
+        observer.join(5)
+        assert observer.is_alive() is False
+        terminal = _wait_terminal(owner, submission.operation_id)
+        assert terminal.state == "cancelled"
+
+        cancel_codes = [
+            event.event_code
+            for event in owner.events_for_operation(submission.operation_id)
+            if event.event_code.startswith("operation_cancel")
+        ]
+        assert cancel_codes == [
+            "operation_cancel_requested",
+            "operation_cancel_observed",
+            "operation_cancelled",
+        ]
+    finally:
+        allow_phase.set()
+        observer_write_release.set()
+        if observer is not None:
+            observer.join(5)
+        owner.shutdown()
+        canceller.shutdown()
+        owner._database.dispose()
+        canceller._database.dispose()
+
+
+def test_shutdown_timeout_bounds_existing_cancel_observer_wait(
+    database: Database,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    execute_entered = threading.Event()
+    execute_release = threading.Event()
+    observer_write_entered = threading.Event()
+    observer_write_release = threading.Event()
+
+    def execute(_context: OperationExecutionContext) -> OperationOutcome:
+        execute_entered.set()
+        assert execute_release.wait(5)
+        return OperationOutcome.success({"statuses": []})
+
+    owner = OperationCoordinator(
+        Database(database.url),
+        lease_seconds=120,
+        heartbeat_interval_seconds=60,
+    )
+    canceller = OperationCoordinator(
+        Database(database.url),
+        lease_seconds=120,
+        heartbeat_interval_seconds=60,
+    )
+    observer: threading.Thread | None = None
+    try:
+        submission = owner.submit(_execution(execute, suffix=32))
+        assert execute_entered.wait(5)
+        requested = canceller.request_cancel(submission.operation_id)
+        assert requested.cancel_requested_at is not None
+
+        handle = owner._local_handle(submission.operation_id)
+        assert handle is not None
+        original_run_write = owner._run_write
+        observed_wait_timeouts: list[float | None] = []
+
+        def gated_run_write(action: object) -> object:
+            if getattr(action, "__name__", "") == "observe":
+                observer_write_entered.set()
+                assert observer_write_release.wait(5)
+            assert callable(action)
+            return original_run_write(action)
+
+        def nonblocking_wait(timeout: float | None = None) -> bool:
+            observed_wait_timeouts.append(timeout)
+            return False
+
+        owner._run_write = gated_run_write  # type: ignore[method-assign]
+        monkeypatch.setattr(handle.cancellation, "wait", nonblocking_wait)
+        observer = threading.Thread(
+            target=owner._observe_cancel,
+            args=(submission.operation_id, handle),
+            daemon=True,
+        )
+        observer.start()
+        assert observer_write_entered.wait(5)
+
+        summary = owner.shutdown(timeout_seconds=0)
+
+        assert summary.requested == 1
+        assert summary.joined == 0
+        assert summary.still_running == 1
+        assert observed_wait_timeouts == [0.0]
+    finally:
+        observer_write_release.set()
+        execute_release.set()
+        if observer is not None:
+            observer.join(5)
+        owner.shutdown()
+        canceller.shutdown()
+        owner._database.dispose()
+        canceller._database.dispose()
+
+
 def test_central_monitor_heartbeats_one_blocked_execution(database: Database) -> None:
     entered = threading.Event()
     release = threading.Event()
