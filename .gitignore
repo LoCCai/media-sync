@@ -16,20 +16,28 @@ dist/
 build/
 *.egg-info/
 
+# Web Console v2
+web/node_modules/
+web/.svelte-kit/
+web/build/
+web/coverage/
+web/test-results/
+web/playwright-report/
+
 # Runtime data and secrets
 .env
 *.db
 *.sqlite
 *.sqlite3
 data/
-downloads/
-library/
+/downloads/
+/library/
 /archive/
 /exports/
-logs/
+/logs/
 /jobs/
-secrets/
-browser-profiles/
+/secrets/
+/browser-profiles/
 .media-sync/
 .quarantine/
 .cleanup-security-v1/

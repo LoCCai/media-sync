@@ -6,6 +6,12 @@
 # Dockerfile COPYs it so mainland builds need no in-container github.com
 # access. It is git-ignored via .gitignore instead.
 .venv
+web/node_modules
+web/.svelte-kit
+web/build
+web/coverage
+web/test-results
+web/playwright-report
 .media-sync
 archive
 exports

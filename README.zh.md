@@ -6,14 +6,14 @@
 
 ## 当前状态
 
-单一事实来源是 [`docs/status.zh.md`](docs/status.zh.md)。执行 0048 边界摘要：
+单一事实来源是 [`docs/status.zh.md`](docs/status.zh.md)。执行 0050 边界摘要：
 
 | 维度 | 状态 |
 | --- | --- |
-| 离线实现 | 冻结于 0039 功能边界 + 0040 API/控制台 + 0044 最小运维端点；弹幕/字幕延期至 0.2 |
+| 离线实现 | 平台形状冻结于 0039，外加 0040/0044 API 运维面与 0050 Web Console v2 基础；弹幕/字幕仍延期 |
 | 离线验证 | 编写工作站完整套件：见 [`docs/status.zh.md`](docs/status.zh.md)；已跑 Python 3.11/3.12/3.13 矩阵 |
-| REST API + Web 控制台 | 已交付（`media-sync serve`、中文控制台、二维码中继） |
-| Docker 打包 | 候选文件 + 可复现加固已交付；**镜像构建/运行仅在操作者 Linux 主机验证** |
+| REST API + Web 控制台 | 已交付 SvelteKit 5 SPA：仪表盘、账户、订阅、任务、内容、资产、媒体库、诊断和设置；`/legacy` 保留回退 |
+| Docker 打包 | 已交付前端多阶段构建与运行时打包；**0050 镜像仍需在操作者 Linux 主机验证构建/运行** |
 | 真人验收 | **全部平台/CDN/Emby 行 `NOT_RUN`**——执行 0047 是操作者协助的最终门 |
 | 发布阻塞 | Linux 基线（阶段 B）+ 真人行零记录；见 [`docs/status.zh.md`](docs/status.zh.md) |
 
@@ -35,7 +35,7 @@ uv run media-sync pipeline run --max-jobs 1 --json
 
 ## 部署与真人验证
 
-Docker 部署、Web 控制台扫码登录与七平台资格验收流程见 [`docs/deployment.zh.md`](docs/deployment.zh.md)（构建/运行）、[`docs/operations.zh.md`](docs/operations.zh.md)（备份/恢复/升级）与 [`docs/executions/0047-seven-platform-live-qualification/`](docs/executions/0047-seven-platform-live-qualification/)（带支持等级的验收计划）。API/控制台无鉴权：只保持在回环或可信网络内。
+Docker 部署、Web 控制台扫码登录与七平台资格验收流程见 [`docs/deployment.zh.md`](docs/deployment.zh.md)（构建/运行）、[`docs/operations.zh.md`](docs/operations.zh.md)（备份/恢复/升级）与 [`docs/executions/0047-seven-platform-live-qualification/`](docs/executions/0047-seven-platform-live-qualification/)（带支持等级的验收计划）。Console v2 每个浏览器只在首次打开时确认个人使用与许可证，之后本地记住；运行时 checkout 与许可证门禁仍由后端强制执行。API/控制台无鉴权：只保持在回环或可信网络内。
 
 ## 范围
 

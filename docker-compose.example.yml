@@ -14,13 +14,14 @@ services:
     build:
       context: .
       # Mainland-China mirror defaults (Aliyun apt + pip PyPI mirror +
-      # npmmirror Playwright binaries). PYPI_INDEX applies to pip steps only —
+      # npmmirror npm packages/Playwright binaries). PYPI_INDEX applies to pip steps only —
       # uv always validates the committed lock against pypi.org, so keep
       # BUILD_HTTPS_PROXY handy if that is slow. Building outside mainland
-      # China? Delete these three lines.
+      # China? Delete these four mirror lines.
       args:
         APT_MIRROR: mirrors.aliyun.com
         PYPI_INDEX: https://mirrors.aliyun.com/pypi/simple/
+        NPM_REGISTRY: https://registry.npmmirror.com
         PLAYWRIGHT_DOWNLOAD_HOST: https://registry.npmmirror.com/-/binary/playwright
         # RC builds: pin the base image by digest and the build manifest
         # records it.  docker buildx imagetools inspect python:3.13-slim-bookworm

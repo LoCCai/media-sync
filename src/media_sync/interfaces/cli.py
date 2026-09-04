@@ -468,7 +468,17 @@ def _read_build_manifest() -> dict[str, object]:
     manifest_path = Path("/opt/BUILD-MANIFEST.txt")
     if not manifest_path.is_file():
         return {"status": "not_run", "present": False, "facts": {}}
-    allowed = {"python", "uv", "ffmpeg", "playwright", "chromium", "base_image"}
+    allowed = {
+        "python",
+        "uv",
+        "ffmpeg",
+        "playwright",
+        "chromium",
+        "base_image",
+        "node",
+        "pnpm",
+        "web_lock_sha256",
+    }
     facts: dict[str, str] = {}
     try:
         for line in manifest_path.read_text(encoding="utf-8", errors="replace")[:1_048_576].splitlines():
@@ -530,10 +540,16 @@ def collect_deep_readiness_report(
             browser["detail_code"] = error.code
 
     bind_host = settings.api_host.strip().lower()
-    if bind_host in {"127.0.0.1", "::1", "localhost"}:
-        security = {"status": "pass", "code": None}
-    else:
-        security = {"status": "warn", "code": "api_not_loopback"}
+    loopback_only = bind_host in {"127.0.0.1", "::1", "localhost"}
+    security = {
+        "status": "pass" if loopback_only else "warn",
+        "code": None if loopback_only else "api_not_loopback",
+        "safe": loopback_only,
+        "requires_operator_review": not loopback_only,
+        "api_host": settings.api_host,
+        "api_port": settings.api_port,
+        "note": "loopback_only" if loopback_only else "verify_host_port_is_trusted",
+    }
 
     path_ready = all(isinstance(item, dict) and item.get("status") == "pass" for item in paths.values())
     database_ready = database.get("ok") is True

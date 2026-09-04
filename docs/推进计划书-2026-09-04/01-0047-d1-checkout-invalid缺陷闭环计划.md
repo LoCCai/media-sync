@@ -126,13 +126,13 @@ sha256sum "$c/LICENSE"
 '
 ```
 
-期望摘要：
+期望资格摘要（先将 `CRLF` 规范化为 `LF`，拒绝裸 `CR`）：
 
 ```text
-9a2eed2fd5410cc59cfceae5d965c2a13d36907caa8bc6316d71e67391bbd5aa
+aeff21de8609bec9d6e939bbbba7c2914ae0a6e7c9470ea7945c03f7d17a2a33
 ```
 
-若不一致，不得绕过。重新从锁定提交建立 checkout，并检查换行转换。
+原始文件摘要会因 Windows `CRLF` checkout 与 Linux `LF` checkout 不同，不能直接作为跨平台资格值。资格检查只规范化换行；随后仍以 Git tracked blob 和干净工作树证明文件与锁定提交一致。若规范化摘要不一致，不得绕过，应重新从锁定提交建立 checkout。
 
 ### 4.3 Git 仓库身份或权限问题
 

@@ -27,7 +27,14 @@ def _client(tmp_path: Path) -> TestClient:
     return TestClient(create_api_app(settings))
 
 
-def test_health_ready_settings_and_console(tmp_path: Path) -> None:
+def test_health_ready_settings_and_console(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    web_root = tmp_path / "console-v2"
+    immutable_root = web_root / "_app" / "immutable"
+    immutable_root.mkdir(parents=True)
+    (web_root / "index.html").write_text("<!doctype html><title>media-sync Console v2</title>", encoding="utf-8")
+    (immutable_root / "app.js").write_text("export {};", encoding="utf-8")
+    monkeypatch.setattr("media_sync.interfaces.api._resolve_web_root", lambda: web_root)
+
     client = _client(tmp_path)
 
     assert client.get("/api/v1/health").json() == {"status": "ok"}
@@ -37,6 +44,26 @@ def test_health_ready_settings_and_console(tmp_path: Path) -> None:
     console = client.get("/")
     assert console.status_code == 200
     assert "media-sync" in console.text
+    assert console.headers["x-content-type-options"] == "nosniff"
+    assert console.headers["x-frame-options"] == "DENY"
+    assert "default-src 'self'" in console.headers["content-security-policy"]
+
+    nested_route = client.get("/accounts")
+    assert nested_route.status_code == 200
+    assert "media-sync" in nested_route.text
+
+    immutable_asset = client.get("/_app/immutable/app.js")
+    assert immutable_asset.status_code == 200
+    assert immutable_asset.headers["cache-control"] == "public, max-age=31536000, immutable"
+
+    legacy = client.get("/legacy")
+    assert legacy.status_code == 200
+    assert "media-sync 控制台" in legacy.text
+    assert legacy.headers["cache-control"] == "no-cache"
+
+    missing_api = client.get("/api/v1/not-a-route")
+    assert missing_api.status_code == 404
+    assert missing_api.headers["cache-control"] == "no-store"
 
 
 def test_deep_readiness_reports_license_gate_without_exposing_paths(tmp_path: Path) -> None:
@@ -50,6 +77,15 @@ def test_deep_readiness_reports_license_gate_without_exposing_paths(tmp_path: Pa
     assert body["code"] == "license_acknowledgement_required"
     assert body["mediacrawler"]["detail_code"] == "license_acknowledgement_required"
     assert body["mediacrawler"]["checks"]["license_acknowledgement"] == "fail"
+    assert body["security"] == {
+        "status": "pass",
+        "code": None,
+        "safe": True,
+        "requires_operator_review": False,
+        "api_host": "127.0.0.1",
+        "api_port": 8632,
+        "note": "loopback_only",
+    }
     assert str(tmp_path) not in response.text
 
 
@@ -197,6 +233,26 @@ def test_subscription_and_scheduler_surface(tmp_path: Path) -> None:
     assets = client.get("/api/v1/assets")
     assert assets.status_code == 200
     assert assets.json() == []
+
+    contents = client.get("/api/v1/contents")
+    assert contents.status_code == 200
+    assert contents.json() == []
+
+    library = client.get("/api/v1/library")
+    assert library.status_code == 200
+    assert library.json() == [
+        {
+            "author_id": subscription["author_id"],
+            "platform": "bili",
+            "display_name": "creator",
+            "remote_id": "2",
+            "content_count": 0,
+            "asset_count": 0,
+            "archived_count": 0,
+            "exported_count": 0,
+            "last_published_at": None,
+        }
+    ]
 
 
 def test_background_operation_gates(tmp_path: Path) -> None:

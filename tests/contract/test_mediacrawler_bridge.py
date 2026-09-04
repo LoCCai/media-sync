@@ -34,9 +34,11 @@ from media_sync.integrations.mediacrawler.bridge import (
 from media_sync.integrations.mediacrawler.checkout import (
     MEDIACRAWLER_LICENSE,
     MEDIACRAWLER_LICENSE_SHA256,
+    CheckoutValidationCode,
     CheckoutValidationError,
     LicenseAcknowledgementRequired,
     VerifiedPython,
+    _qualified_license_sha256,
     verify_mediacrawler_checkout,
     verify_mediacrawler_python,
 )
@@ -507,7 +509,7 @@ def _make_fake_project(root: Path) -> FakeProject:
     checkout = root / ".upstream" / "MediaCrawler"
     (checkout / "config").mkdir(parents=True)
     license_bytes = QUALIFIED_LICENSE.read_bytes()
-    assert hashlib.sha256(license_bytes).hexdigest() == MEDIACRAWLER_LICENSE_SHA256
+    assert _qualified_license_sha256(license_bytes) == MEDIACRAWLER_LICENSE_SHA256
     (checkout / "LICENSE").write_bytes(license_bytes)
     (checkout / "config" / "__init__.py").write_text(textwrap.dedent(_CONFIG_SOURCE).lstrip(), encoding="utf-8")
     (checkout / "main.py").write_text(textwrap.dedent(_MAIN_SOURCE).lstrip(), encoding="utf-8")
@@ -643,6 +645,19 @@ def _records(output_root: Path) -> list[dict[str, object]]:
 def test_checkout_requires_license_acknowledgement(fake_project: FakeProject) -> None:
     with pytest.raises(LicenseAcknowledgementRequired):
         verify_mediacrawler_checkout(fake_project.lock_path, license_acknowledged=False)
+
+
+def test_license_qualification_is_stable_across_lf_and_crlf() -> None:
+    canonical = QUALIFIED_LICENSE.read_bytes().replace(b"\r\n", b"\n")
+    assert b"\r" not in canonical
+    assert _qualified_license_sha256(canonical) == MEDIACRAWLER_LICENSE_SHA256
+    assert _qualified_license_sha256(canonical.replace(b"\n", b"\r\n")) == MEDIACRAWLER_LICENSE_SHA256
+
+
+def test_license_qualification_rejects_bare_carriage_returns() -> None:
+    with pytest.raises(CheckoutValidationError) as malformed:
+        _qualified_license_sha256(b"NON-COMMERCIAL LEARNING LICENSE 1.1\rmalformed\n")
+    assert malformed.value.code == CheckoutValidationCode.LICENSE_DIGEST_MISMATCH.value
 
 
 @pytest.mark.parametrize("mutation", ["wrong_sha", "dirty", "untracked", "missing", "license"])

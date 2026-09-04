@@ -21,10 +21,10 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
-from fastapi import FastAPI, HTTPException, Response
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import SQLAlchemyError
 
 from media_sync import __version__
@@ -36,15 +36,17 @@ from media_sync.application.authentication import (
 )
 from media_sync.application.emby import EmbyExportRequest, EmbyExportService
 from media_sync.config import Settings, get_settings
-from media_sync.domain import AssetStatus, JobStatus, LoginMethod, Platform
+from media_sync.domain import AssetStatus, ContentKind, JobStatus, LoginMethod, Platform
 from media_sync.exporters.emby import EmbyExporter, ExportError
 from media_sync.infrastructure.db import (
     AccountRepository,
     Asset,
+    Author,
     AuthorRepository,
     AuthorUpsert,
     Content,
     Database,
+    ExportRecord,
     LoginSessionRepository,
     NotFoundError,
     SubscriptionRepository,
@@ -80,6 +82,34 @@ from media_sync.interfaces.cli import (
 from media_sync.scheduler import DurableSchedulerService, SchedulerRepository, StaleLaneError
 
 _CONSOLE_PATH = Path(__file__).with_name("console.html")
+_PACKAGED_WEB_ROOT = Path(__file__).with_name("static") / "console-v2"
+_DEVELOPMENT_WEB_ROOT = Path(__file__).resolve().parents[3] / "web" / "build"
+
+
+def _resolve_web_root() -> Path | None:
+    """Find a complete packaged or local-development Console v2 build."""
+
+    for candidate in (_PACKAGED_WEB_ROOT, _DEVELOPMENT_WEB_ROOT):
+        resolved = candidate.resolve()
+        if (resolved / "index.html").is_file():
+            return resolved
+    return None
+
+
+def _static_response(web_root: Path, relative_path: str = "index.html") -> FileResponse:
+    """Serve one confined SPA file with appropriate cache semantics."""
+
+    root = web_root.resolve()
+    candidate = (root / relative_path).resolve()
+    if not candidate.is_relative_to(root) or not candidate.is_file():
+        candidate = root / "index.html"
+    immutable = relative_path.startswith("_app/immutable/") and candidate.name != "index.html"
+    return FileResponse(
+        candidate,
+        headers={
+            "Cache-Control": "public, max-age=31536000, immutable" if immutable else "no-cache",
+        },
+    )
 
 
 # ------------------------------------------------------------------ operations
@@ -242,6 +272,25 @@ def create_api_app(settings: Settings | None = None) -> FastAPI:
     app.state.operations = operations
     deep_readiness_cache: dict[bool, tuple[float, dict[str, object]]] = {}
     deep_readiness_lock = threading.Lock()
+    web_root = _resolve_web_root()
+
+    @app.middleware("http")
+    async def security_headers(request: Request, call_next: Any) -> Response:
+        response: Response = await call_next(request)
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("Referrer-Policy", "no-referrer")
+        response.headers.setdefault("X-Frame-Options", "DENY")
+        response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+        if not request.url.path.startswith("/api/"):
+            response.headers.setdefault(
+                "Content-Security-Policy",
+                "default-src 'self'; img-src 'self' blob: data:; style-src 'self' 'unsafe-inline'; "
+                "script-src 'self' 'unsafe-inline'; connect-src 'self'; object-src 'none'; "
+                "base-uri 'self'; frame-ancestors 'none'",
+            )
+        if request.url.path.startswith("/api/"):
+            response.headers.setdefault("Cache-Control", "no-store")
+        return response
 
     def _database() -> Database:
         return Database(resolved.resolved_database_url)
@@ -316,7 +365,17 @@ def create_api_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/", include_in_schema=False)
     def console() -> Response:
+        if web_root is not None:
+            return _static_response(web_root)
         return Response(content=_CONSOLE_PATH.read_text(encoding="utf-8"), media_type="text/html; charset=utf-8")
+
+    @app.get("/legacy", include_in_schema=False)
+    def legacy_console() -> Response:
+        return Response(
+            content=_CONSOLE_PATH.read_text(encoding="utf-8"),
+            media_type="text/html; charset=utf-8",
+            headers={"Cache-Control": "no-cache"},
+        )
 
     # ------------------------------------------------------------- accounts
 
@@ -845,6 +904,151 @@ def create_api_app(settings: Settings | None = None) -> FastAPI:
         finally:
             database.dispose()
 
+    @app.get("/api/v1/contents")
+    def list_contents(
+        platform: Platform | None = None,
+        kind: ContentKind | None = None,
+        limit: int = 200,
+    ) -> list[dict[str, object]]:
+        """Return a bounded, redaction-safe content catalogue projection."""
+
+        asset_count = (
+            select(func.count(Asset.id)).where(Asset.content_id == Content.id).correlate(Content).scalar_subquery()
+        )
+        archived_count = (
+            select(func.count(Asset.id))
+            .where(Asset.content_id == Content.id, Asset.status.in_(("verified", "exported")))
+            .correlate(Content)
+            .scalar_subquery()
+        )
+        export_count = (
+            select(func.count(ExportRecord.id))
+            .where(ExportRecord.content_id == Content.id, ExportRecord.status == "succeeded")
+            .correlate(Content)
+            .scalar_subquery()
+        )
+        database = _database()
+        try:
+            with database.session() as session:
+                statement = (
+                    select(
+                        Content,
+                        Author.display_name,
+                        asset_count.label("asset_count"),
+                        archived_count.label("archived_count"),
+                        export_count.label("export_count"),
+                    )
+                    .join(Author, Content.author_id == Author.id)
+                    .order_by(Content.published_at.desc(), Content.created_at.desc(), Content.id.desc())
+                    .limit(max(1, min(limit, 1_000)))
+                )
+                if platform is not None:
+                    statement = statement.where(Content.platform == platform.value)
+                if kind is not None:
+                    statement = statement.where(Content.kind == kind.value)
+                rows = session.execute(statement).all()
+                return [
+                    {
+                        "id": content.id,
+                        "author_id": content.author_id,
+                        "author_display_name": author_display_name,
+                        "platform": content.platform,
+                        "remote_type": content.remote_type,
+                        "remote_id": content.remote_id,
+                        "kind": content.kind,
+                        "title": content.title,
+                        "body_excerpt": content.body[:280] if content.body else None,
+                        "canonical_url": content.canonical_url,
+                        "published_at": content.published_at.isoformat() if content.published_at else None,
+                        "asset_count": row_asset_count,
+                        "archived_count": row_archived_count,
+                        "export_count": row_export_count,
+                    }
+                    for content, author_display_name, row_asset_count, row_archived_count, row_export_count in rows
+                ]
+        except SQLAlchemyError:
+            raise _bad_request("database_operation_failed") from None
+        finally:
+            database.dispose()
+
+    @app.get("/api/v1/library")
+    def list_library(limit: int = 200) -> list[dict[str, object]]:
+        """Summarize the media library per author without exposing host paths."""
+
+        content_count = (
+            select(func.count(Content.id)).where(Content.author_id == Author.id).correlate(Author).scalar_subquery()
+        )
+        asset_count = (
+            select(func.count(Asset.id))
+            .select_from(Asset)
+            .join(Content, Asset.content_id == Content.id)
+            .where(Content.author_id == Author.id)
+            .correlate(Author)
+            .scalar_subquery()
+        )
+        archived_count = (
+            select(func.count(Asset.id))
+            .select_from(Asset)
+            .join(Content, Asset.content_id == Content.id)
+            .where(Content.author_id == Author.id, Asset.status.in_(("verified", "exported")))
+            .correlate(Author)
+            .scalar_subquery()
+        )
+        exported_count = (
+            select(func.count(ExportRecord.id))
+            .select_from(ExportRecord)
+            .join(Content, ExportRecord.content_id == Content.id)
+            .where(Content.author_id == Author.id, ExportRecord.status == "succeeded")
+            .correlate(Author)
+            .scalar_subquery()
+        )
+        last_published_at = (
+            select(func.max(Content.published_at))
+            .where(Content.author_id == Author.id)
+            .correlate(Author)
+            .scalar_subquery()
+        )
+        database = _database()
+        try:
+            with database.session() as session:
+                rows = session.execute(
+                    select(
+                        Author,
+                        content_count.label("content_count"),
+                        asset_count.label("asset_count"),
+                        archived_count.label("archived_count"),
+                        exported_count.label("exported_count"),
+                        last_published_at.label("last_published_at"),
+                    )
+                    .order_by(Author.display_name, Author.id)
+                    .limit(max(1, min(limit, 1_000)))
+                ).all()
+                return [
+                    {
+                        "author_id": author.id,
+                        "platform": author.platform,
+                        "display_name": author.display_name,
+                        "remote_id": author.remote_id,
+                        "content_count": row_content_count,
+                        "asset_count": row_asset_count,
+                        "archived_count": row_archived_count,
+                        "exported_count": row_exported_count,
+                        "last_published_at": last_published.isoformat() if last_published else None,
+                    }
+                    for (
+                        author,
+                        row_content_count,
+                        row_asset_count,
+                        row_archived_count,
+                        row_exported_count,
+                        last_published,
+                    ) in rows
+                ]
+        except SQLAlchemyError:
+            raise _bad_request("database_operation_failed") from None
+        finally:
+            database.dispose()
+
     @app.post("/api/v1/emby/export", status_code=202)
     def emby_export(body: EmbyExport) -> dict[str, object]:
         operation = operations.start("emby-export", exclusive_key=f"emby-export:{body.author_id}")
@@ -897,6 +1101,12 @@ def create_api_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/api/v1/operations/{operation_id}")
     def get_operation(operation_id: str) -> dict[str, object]:
         return operations.payload(operations.get(operation_id))
+
+    @app.get("/{frontend_path:path}", include_in_schema=False)
+    def console_spa(frontend_path: str) -> Response:
+        if frontend_path.startswith("api/") or web_root is None:
+            raise HTTPException(status_code=404, detail="not found")
+        return _static_response(web_root, frontend_path or "index.html")
 
     return app
 

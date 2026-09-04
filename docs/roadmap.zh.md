@@ -45,8 +45,8 @@
 - 状态：执行 0009 的功能优先刷新 MVP 已在提交 `98cf387` 中实现，执行 0010 的持久入队与显式有界 pipeline worker 已在提交 `f2e5899` 完成，执行 0011 的显式 QR 登录/saved-session 交接已在提交 `8bb16f6` 完成，执行 0012 的父进程硬终止收容、受截止时间 fencing 保护的登录回收和本地前台监督器已在提交 `28655f8` 完成。0012 专项门禁通过 283 项并跳过 1 项；完整套件通过 1156 项，跳过的仍是同一 Windows 不适用项。该前台监督器不是已安装或自动重启的 daemon。跨主机 HA、七平台完整下载和真人平台/CDN/Emby 验收仍未声明；全部真人行保持 `NOT_RUN`。
 
 - Job 调度、重试/退避及启动并发/节流：已在执行 0006 的 Fake/离线边界内交付。
-- 账户、订阅、同步与导出的本地 REST API：执行 0040 离线范围已交付（`/api/v1` + `media-sync serve` + 内置控制台与登录二维码中继）；完整套件与真人验证在 Linux 部署主机运行。
-- 健康/就绪端点：随 0040 API 交付；Docker 打包：以执行 0041 文件交付、仅回环发布（操作者在 Linux 构建）；结构化日志与 compose supervisor 之外的 daemon 化继续延期。
+- 账户、订阅、同步与导出的本地 REST API 已在执行 0040 离线范围交付；执行 0050 新增 SvelteKit Console v2 基础、内容/媒体库读模型与浏览器一次性确认，同时保留 `/api/v1` 和 `/legacy` 回退。
+- 健康/深度就绪端点与网络边界事实已进入分页面诊断 UI。Docker 打包现包含 0050 最终镜像不含 Node 的多阶段静态构建，宿主模板仍只发布回环；持久操作历史、SSE/结构化日志、操作者鉴权及 compose supervisor 之外的 daemon 化继续延期。
 - 执行 0007 离线验收：策略/产物/attempt 身份、移出事件循环的父进程 heartbeat、父死亡/control handshake、精确 fencing、保守状态映射、四状态清理及七平台协议链均已实现并执行。重复 runner 取消及确定性批次间取消 barrier 已证明先 join 再 unwind，且第二批无变更。AC6 仍为 `PARTIAL`，仅因为 child 退出后/seal 前及 seal 后/导入前的确定性 barrier 尚不完整。AC13 为 `PARTIAL`：清理/脱敏/哨兵覆盖已较充分，但“已知密钥/非零/timeout/全部超限/回执/取消/lease 丢失 × 保留文件系统/SQLite/运维落点”的完整矩阵尚不完整。
 - 执行 0008 已完成上述两项 partial 的离线继任收口：child-exit/pre-seal 及单次/重复 post-seal/pre-ingest barrier 通过；精确“11 种失败 × 3 类落点”矩阵以 fail-closed 文件系统/SQLite 扫描及固定运维权限证明 33 个 cell。完整套件通过 837 项测试、1 项 Windows 不适用的 skip，分支感知覆盖率 79%。refresh 与 DAG 工作仍不属于本结论。
 - 执行 0009 交付：精确当前来源、有界 detail 刷新及默认关闭的显式资产下载接线已实现。在该历史边界，离线形状为小红书 image/video、抖音 image/video/audio/cover、快手 video/cover 与 Bilibili cover；当前 Bilibili 能力已由下方执行 0013 扩展。小红书多 note 权限查找和更多平台 Asset 留待后续。

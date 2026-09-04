@@ -2,15 +2,15 @@
 
 # 项目统一状态（单一事实来源）
 
-边界：执行 0049（RC 前置修复）。本表是权威状态视图；逐执行细节见 [`executions/`](README.zh.md)，证据见各验证记录。每次收尾时更新本页。
+边界：执行 0050（Web Console v2 基础）。本表是权威状态视图；逐执行细节见 [`executions/`](README.zh.md)，证据见各验证记录。每次收尾时更新本页。
 
 ## 里程碑状态
 
 | 里程碑 | 状态 |
 | --- | --- |
-| 离线功能开发 | 冻结于 0039 边界（多实况 gallery），外加 0040（API/控制台）与 0044 最小运维端点；0043（弹幕/字幕）延期至 0.2 |
-| REST API + Web 控制台 | 已实现（0040、0044 最小集）；运维 UI 强化延期至 0.2 |
-| Docker 打包 | 候选文件 + 可复现加固已交付（0041、0048）；0049 的 RC 前置修复（锁相对路径 checkout 保留 `.git`、Playwright 共享路径、构建清单内运行用户 Chromium 启动）待操作者主机首次真实构建/运行 |
+| 离线功能开发 | 平台形状冻结于 0039，外加 0040/0044 运维面与 0050 Console v2 控制面基础；0043（弹幕/字幕）仍延期 |
+| REST API + Web 控制台 | 已实现 SvelteKit 5 Console v2 基础（0050）：九个路由页面、真实既有操作、内容/媒体库投影、一次性确认与 `/legacy` 回退；持久化/SSE/日志仍待后续 |
+| Docker 打包 | 候选镜像、可复现加固及最终镜像不含 Node 的 Console v2 多阶段构建已交付（0041、0048–0050）；0050 镜像待操作者主机首次真实构建/运行 |
 | 运维文档 / 安全审查 / 发布清单 | 已交付（0045、0046） |
 | 真人验收（最终门） | 开启中——执行 0047，操作者在 Linux 协助执行 |
 
@@ -19,10 +19,10 @@
 | 维度 | 状态 | 证据 / 阻塞 |
 | --- | --- | --- |
 | 实现（离线形状） | 七平台 15+ 冻结形状 | 执行 0013–0039 记录 |
-| 离线完整套件 | 最新：执行 0049 编写工作站 `2066 passed, 1 skipped`（全绿运行）。历史：执行 0048 在同一工作站记录过非确定的 33/35 项子进程密封失败运行，因此在裁定前 Windows 原生运行保持 Experimental；Linux 阶段 B 复跑仍是权威 | 执行 0048 与 0049 验证；junit 工件为工作站本地文件（`artifacts/` 下原始 XML 被 git 忽略——仓库只保留脱敏摘要与工件约定） |
-| API/控制台测试 | 已并入完整套件；0049 补充真实 Asset 下载操作生命周期覆盖（blocked→failed、verified 不一致→failed、完成型执行器→succeeded） | 执行 0048 与 0049 验证 |
-| 静态门（ruff/format/mypy/compileall/docs） | 0049 全绿 | 执行 0049 验证 |
-| Docker 镜像构建 | 编写机 `NOT_RUN`（无 Docker）；操作者在 Linux 按 0049 修复后的 Dockerfile 构建，并以容器内 doctor 预检 + `mediasync` Chromium 启动为门 | 阶段 B，第一发布阻塞项 |
+| 离线完整套件 | 执行 0050 编写工作站在 uv + ffmpeg/ffprobe 可用时运行：`2038 passed, 33 failed, 1 skipped`；33 项全部属于既有 Windows completion-receipt/进程非确定族（0048：33/35 项失败；0049：一次全绿）。Windows 保持 Experimental，Linux 阶段 B 仍为权威 | 执行 0050 验证与脱敏 junit 分组；原始 XML 继续在 `artifacts/` 下被 Git 忽略 |
+| API/控制台测试 | API `9 passed`；checkout/许可证专项 `16 passed`；Svelte 单元 `2 passed`；九路由浏览器冒烟与一次性确认交互通过，控制台零错误 | 执行 0050 验证 |
+| 静态门（ruff/format/mypy/compileall/docs/前端检查与构建） | 0050 变更范围全绿 | 执行 0050 验证 |
+| Docker 镜像构建 | 编写机 `NOT_RUN`（无 Docker）；操作者在 Linux 构建 0050 Dockerfile，再以静态包清单事实、容器内 doctor 预检及 `mediasync` Chromium 启动为门 | 阶段 B，第一发布阻塞项 |
 | 容器健康 / 重启持久性 / 备份恢复演练 | `NOT_RUN`——操作者（阶段 B） | docs/operations.md 流程就绪 |
 | 真人登录（任一平台） | `NOT_RUN`——操作者（阶段 C 金丝雀：Bilibili + 小红书） | 执行 0047 |
 | 真人抓取 / 下载 / 增量性 | `NOT_RUN`——操作者（阶段 C–E） | 执行 0047 |

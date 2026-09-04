@@ -22,3 +22,7 @@ Authoring-station captures so far:
 - `pytest-windows-0049.xml` — green run: `tests=2067 failures=0 errors=0 skipped=1`
   (0048's runs on the same station recorded 33/35 failures — see execution 0049
   verification for the nondeterminism analysis).
+- `pytest-windows-0050.xml` — `tests=2072 failures=33 errors=0 skipped=1`; the
+  failures reproduce the previously recorded Windows completion-receipt/process
+  family. The raw XML remains ignored; see execution 0050 verification for the
+  sanitized grouping and changed-scope green gates.

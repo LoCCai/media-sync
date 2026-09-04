@@ -17,7 +17,10 @@ from .policies import require_confined
 MEDIACRAWLER_NAME = "MediaCrawler"
 MEDIACRAWLER_REPOSITORY = "https://github.com/NanmiCoder/MediaCrawler.git"
 MEDIACRAWLER_LICENSE = "NON-COMMERCIAL LEARNING LICENSE 1.1"
-MEDIACRAWLER_LICENSE_SHA256 = "9a2eed2fd5410cc59cfceae5d965c2a13d36907caa8bc6316d71e67391bbd5aa"
+# Canonical LF digest of LICENSE at the pinned upstream revision. Git may
+# materialize the same tracked blob with CRLF on Windows, so qualification
+# normalizes only line endings before comparing this content identity.
+MEDIACRAWLER_LICENSE_SHA256 = "aeff21de8609bec9d6e939bbbba7c2914ae0a6e7c9470ea7945c03f7d17a2a33"
 MAX_LOCK_BYTES = 1_048_576
 MINIMUM_PYTHON = (3, 11)
 
@@ -276,6 +279,18 @@ def _tracked_blob(checkout: Path, relative_path: str) -> str:
     return committed_blob
 
 
+def _qualified_license_sha256(license_bytes: bytes) -> str:
+    """Return the canonical LF digest while rejecting malformed CR bytes."""
+
+    canonical = license_bytes.replace(b"\r\n", b"\n")
+    if b"\r" in canonical:
+        raise CheckoutValidationError(
+            "MediaCrawler checkout license contains unsupported line endings",
+            CheckoutValidationCode.LICENSE_DIGEST_MISMATCH,
+        )
+    return hashlib.sha256(canonical).hexdigest()
+
+
 def verify_mediacrawler_python(python_executable: Path) -> VerifiedPython:
     """Doctor an explicitly configured Python without importing upstream source."""
 
@@ -384,7 +399,7 @@ def verify_mediacrawler_checkout(
             "MediaCrawler checkout license does not match the lock",
             CheckoutValidationCode.LICENSE_HEADER_MISMATCH,
         )
-    if hashlib.sha256(license_bytes).hexdigest() != MEDIACRAWLER_LICENSE_SHA256:
+    if _qualified_license_sha256(license_bytes) != MEDIACRAWLER_LICENSE_SHA256:
         raise CheckoutValidationError(
             "MediaCrawler checkout license digest is not qualified",
             CheckoutValidationCode.LICENSE_DIGEST_MISMATCH,

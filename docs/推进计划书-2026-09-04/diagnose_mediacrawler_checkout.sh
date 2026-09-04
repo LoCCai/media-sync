@@ -68,8 +68,11 @@ git -C "$c" -c core.autocrlf=input status --porcelain --untracked-files=all 2>&1
 
 echo "-- license --"
 head -n1 "$c/LICENSE" 2>&1
+echo "raw digest (diagnostic only):"
 sha256sum "$c/LICENSE" 2>&1
-echo "expected: 9a2eed2fd5410cc59cfceae5d965c2a13d36907caa8bc6316d71e67391bbd5aa"
+echo "canonical LF qualification digest:"
+/app/.venv/bin/python -c "from pathlib import Path; import hashlib; value=Path(\"$c/LICENSE\").read_bytes().replace(b\"\\r\\n\", b\"\\n\"); assert b\"\\r\" not in value; print(hashlib.sha256(value).hexdigest())" 2>&1
+echo "expected canonical: aeff21de8609bec9d6e939bbbba7c2914ae0a6e7c9470ea7945c03f7d17a2a33"
 
 for f in LICENSE main.py config/__init__.py; do
   echo "-- tracked blob: $f --"

@@ -1,13 +1,13 @@
 # media-sync 后续推进计划书合集
 
 - 编制日期：2026-09-04
-- 评审边界：`LoCCai/media-sync` 当前 `main`，阶段 B 容器已启动但 MediaCrawler checkout 资格检查失败
+- 评审边界：`LoCCai/media-sync` 执行 0050 收尾；阶段 B 需用最新提交重建镜像
 - 现场状态：
   - Web/API 服务正常，`health` 与数据库 `ready` 正常；
   - Chromium 在运行容器内可由 `mediasync` 用户启动，版本 `151.0.7922.34`；
-  - `mediacrawler doctor` 返回 `checkout_invalid`；
-  - Bilibili 与小红书登录均收敛为 `account_login_configuration_invalid`，二维码未生成；
-  - 当前控制台仍是单文件运维控制台，尚不是完整的媒体归档管理后台；
+  - `license_digest_mismatch` 根因已修复为跨平台 canonical-LF 资格摘要；旧容器仍需重建后复验 doctor；
+  - Bilibili 与小红书真人登录在最新镜像复验前仍保持 `NOT_RUN`，不得沿用旧镜像失败作为新版本结论；
+  - SvelteKit 5 Web Console v2 基础已实现，旧单文件控制台仅保留在 `/legacy` 作为迁移回退；
   - 当前端口发布为 `0.0.0.0:8632`，而应用没有自身鉴权。
 
 ## 总体判断
@@ -33,15 +33,15 @@
 ## 推荐执行顺序
 
 ```text
-0047-d1  checkout_invalid 精确定位与修复
+0047-d1  checkout_invalid 精确定位与修复（已完成）
     ↓
-0047-d2  深度就绪检查、构建/运行时事实统一
+0047-d2  深度就绪检查、构建/运行时事实统一（已完成）
     ↓
 阶段 B   Linux 完整门禁、持久性、备份恢复
     ↓
 阶段 C   Bilibili + 小红书真人金丝雀
     ↓
-0050     Web Console v2 基础设施
+0050     Web Console v2 基础设施（已完成，可与阶段 B 独立交付）
     ↓
 0051     账户登录与订阅工作台
     ↓

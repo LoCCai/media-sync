@@ -6,14 +6,14 @@
 
 ## Current status
 
-The single source of truth is [`docs/status.md`](docs/status.md). Summary at the execution 0048 boundary:
+The single source of truth is [`docs/status.md`](docs/status.md). Summary at the execution 0050 boundary:
 
 | Dimension | State |
 | --- | --- |
-| Offline implementation | Frozen at the 0039 feature boundary + 0040 API/console + 0044-minimal operations endpoints; danmaku/subtitles deferred to 0.2 |
+| Offline implementation | Frozen platform shapes through 0039, plus the 0040/0044 API operations and the 0050 Web Console v2 foundation; danmaku/subtitles remain deferred |
 | Offline verification | Complete suite on the authoring workstation: see [`docs/status.md`](docs/status.md); Python 3.11/3.12/3.13 matrix ran |
-| REST API + web console | Delivered (`media-sync serve`, Chinese console, QR relay) |
-| Docker packaging | Candidate files + reproducibility hardening delivered; **image build/run verified only on the operator's Linux host** |
+| REST API + web console | SvelteKit 5 SPA delivered with dashboard, accounts, subscriptions, jobs, content, assets, library, diagnostics and settings; `/legacy` remains available for rollback |
+| Docker packaging | Multi-stage frontend build and runtime packaging delivered; **the 0050 image build/run still requires verification on the operator's Linux host** |
 | Live qualification | **Every platform/CDN/Emby row `NOT_RUN`** — execution 0047 is the operator-assisted final gate |
 | Release blockers | Linux baseline (Phase B) + zero live rows; see [`docs/status.md`](docs/status.md) |
 
@@ -35,7 +35,7 @@ Quality gates: `uv run ruff check . && uv run ruff format --check .`, `uv run my
 
 ## Deployment and live verification
 
-Docker deployment, web-console QR login and the seven-platform qualification procedure are documented in [`docs/deployment.md`](docs/deployment.md) (build/run), [`docs/operations.md`](docs/operations.md) (backup/restore/upgrade) and [`docs/executions/0047-seven-platform-live-qualification/`](docs/executions/0047-seven-platform-live-qualification/) (the acceptance plan with support tiers). The API/console carries no authentication: keep it on loopback or a trusted network.
+Docker deployment, web-console QR login and the seven-platform qualification procedure are documented in [`docs/deployment.md`](docs/deployment.md) (build/run), [`docs/operations.md`](docs/operations.md) (backup/restore/upgrade) and [`docs/executions/0047-seven-platform-live-qualification/`](docs/executions/0047-seven-platform-live-qualification/) (the acceptance plan with support tiers). Console v2 asks for the personal-use/license acknowledgement once per browser and remembers it locally; runtime checkout and license gates are still enforced by the backend. The API/console carries no authentication: keep it on loopback or a trusted network.
 
 ## Scope
 

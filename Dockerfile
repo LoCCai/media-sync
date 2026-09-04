@@ -22,6 +22,28 @@
 # Debian package versions remain unpinned (apt snapshots are deferred); the
 # build manifest below records what actually got installed.
 ARG BASE_IMAGE=python:3.13-slim-bookworm
+ARG NODE_IMAGE=node:24-bookworm-slim
+ARG NPM_REGISTRY=https://registry.npmjs.org
+
+# ----------------------------------------------------------- Web Console v2
+# Build the SvelteKit SPA separately. Node.js and pnpm never enter the final
+# runtime image; only fingerprinted static output is copied into the package.
+FROM ${NODE_IMAGE} AS web-build
+ARG NPM_REGISTRY
+WORKDIR /web
+RUN npm config set registry "${NPM_REGISTRY}" \
+    && npm install --global pnpm@11.19.0
+COPY web/package.json web/pnpm-lock.yaml web/pnpm-workspace.yaml ./
+RUN pnpm install --frozen-lockfile
+COPY web/ ./
+RUN pnpm check \
+    && pnpm test \
+    && pnpm build \
+    && { echo "node: $(node --version)"; \
+         echo "pnpm: $(pnpm --version)"; \
+         echo "web_lock_sha256: $(sha256sum pnpm-lock.yaml | cut -d' ' -f1)"; \
+       } > /web/WEB-BUILD-MANIFEST.txt
+
 FROM ${BASE_IMAGE} AS base
 # Re-declare so the build manifest can record the (possibly digest-pinned) base.
 ARG BASE_IMAGE
@@ -72,6 +94,8 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 WORKDIR /app
 COPY pyproject.toml uv.lock README.md ./
 COPY src ./src
+COPY --from=web-build /web/build ./src/media_sync/interfaces/static/console-v2
+COPY --from=web-build /web/WEB-BUILD-MANIFEST.txt /tmp/WEB-BUILD-MANIFEST.txt
 COPY scripts ./scripts
 COPY alembic.ini ./
 # Pin uv to the exact version that authored uv.lock (revision 3). A newer uv
@@ -146,9 +170,11 @@ RUN { echo "python: $(python --version)"; \
       echo "playwright: $(/opt/mediacrawler-venv/bin/python -m playwright --version)"; \
       echo "chromium: $(su mediasync -s /bin/sh -c '/opt/mediacrawler-venv/bin/python -c "from playwright.sync_api import sync_playwright; p = sync_playwright().start(); b = p.chromium.launch(headless=True, args=[\"--disable-dev-shm-usage\"]); print(b.version); b.close(); p.stop()"' || echo launch-failed)"; \
       echo "base_image: ${BASE_IMAGE}"; \
+      cat /tmp/WEB-BUILD-MANIFEST.txt; \
       echo "--- app venv ---"; /app/.venv/bin/python -m pip freeze 2>/dev/null || uv --project /app pip freeze 2>/dev/null || true; \
       echo "--- mediacrawler venv ---"; /opt/mediacrawler-venv/bin/python -m pip freeze; \
-    } > /opt/BUILD-MANIFEST.txt
+    } > /opt/BUILD-MANIFEST.txt \
+    && rm -f /tmp/WEB-BUILD-MANIFEST.txt
 
 # --------------------------------------------------------------- runtime env
 # Data roots are volumes; the API must bind 0.0.0.0 inside the container
