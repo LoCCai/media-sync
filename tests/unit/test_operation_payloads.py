@@ -29,6 +29,9 @@ SUBJECT_ID = "66666666-6666-4666-8666-666666666666"
 REFERENCE_DIGEST = "a" * 64
 PROFILE_FINGERPRINT = "b" * 64
 LIBRARY_ID_DIGEST = "c" * 64
+PUBLICATION_FINGERPRINT = "d" * 64
+SELECTOR_FINGERPRINT = "e" * 64
+ITEM_FINGERPRINT = "f" * 64
 KIND_ROUTES = {
     "account-login": "/api/v1/accounts/{account_id}/login",
     "asset-download": "/api/v1/assets/{asset_id}/download",
@@ -329,6 +332,86 @@ def test_media_server_result_summary_is_closed_and_redaction_safe(
     assert "private-sentinel" not in repr(captured.value)
 
 
+def test_media_server_observation_summary_projects_pending_and_observed_checkpoints() -> None:
+    pending = {
+        "schema_version": 2,
+        "mode": "post_refresh_item_observation",
+        "provider": "jellyfin",
+        "server_version": "10.10.7",
+        "profile_fingerprint": PROFILE_FINGERPRINT,
+        "library_id_digest": LIBRARY_ID_DIGEST,
+        "scan_state": "accepted",
+        "publication_fingerprint": PUBLICATION_FINGERPRINT,
+        "selector_fingerprint": SELECTOR_FINGERPRINT,
+        "baseline_state": "not_found",
+        "observation_state": "pending",
+        "match_count": 0,
+        "verification_count": 0,
+        "accepted_at": "2026-09-05T10:00:00+08:00",
+    }
+
+    assert operation_result_summary("media-server-scan", pending) == {
+        **pending,
+        "accepted_at": "2026-09-05T02:00:00+00:00",
+    }
+
+    observed = {
+        **pending,
+        "observation_state": "observed",
+        "match_count": 1,
+        "verification_count": 2,
+        "item_fingerprint": ITEM_FINGERPRINT,
+        "observed_at": datetime(2026, 9, 5, 2, 1, tzinfo=UTC),
+    }
+    assert operation_result_summary("media-server-scan", observed) == {
+        **observed,
+        "accepted_at": "2026-09-05T02:00:00+00:00",
+        "observed_at": "2026-09-05T02:01:00+00:00",
+    }
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        {"schema_version": 1},
+        {"mode": "provider_task_completion"},
+        {"baseline_state": "matched"},
+        {"profile_fingerprint": "not-a-digest"},
+        {"match_count": 1},
+        {"observation_state": "pending", "verification_count": 1},
+        {"observation_state": "observed", "match_count": 1, "verification_count": 2},
+        {
+            "observation_state": "observed",
+            "match_count": 1,
+            "verification_count": 2,
+            "item_fingerprint": ITEM_FINGERPRINT,
+            "observed_at": "2026-09-05T02:00:01.999999+00:00",
+        },
+    ],
+)
+def test_media_server_observation_summary_rejects_non_evidence_shapes(mutation: dict[str, object]) -> None:
+    payload: dict[str, object] = {
+        "schema_version": 2,
+        "mode": "post_refresh_item_observation",
+        "provider": "emby",
+        "server_version": "4.9.5",
+        "profile_fingerprint": PROFILE_FINGERPRINT,
+        "library_id_digest": LIBRARY_ID_DIGEST,
+        "scan_state": "accepted",
+        "publication_fingerprint": PUBLICATION_FINGERPRINT,
+        "selector_fingerprint": SELECTOR_FINGERPRINT,
+        "baseline_state": "not_found",
+        "observation_state": "pending",
+        "match_count": 0,
+        "verification_count": 0,
+        "accepted_at": "2026-09-05T02:00:00+00:00",
+    }
+    payload.update(mutation)
+
+    with pytest.raises(OperationPayloadError, match="operation_result_invalid"):
+        operation_result_summary("media-server-scan", payload)
+
+
 @pytest.mark.parametrize(
     ("event_code", "context", "expected"),
     [
@@ -519,6 +602,73 @@ def test_request_fingerprint_changes_with_kind_target_or_parameter() -> None:
     )
 
     assert len({base, changed_target, changed_parameter, changed_kind}) == 4
+
+
+def test_media_server_scan_legacy_fingerprint_is_frozen_and_author_mode_is_distinct() -> None:
+    legacy = operation_request_fingerprint(
+        "media-server-scan",
+        target_id=None,
+        parameters={"profile_fingerprint": PROFILE_FINGERPRINT},
+    )
+    author = operation_request_fingerprint(
+        "media-server-scan",
+        target_id=AUTHOR_ID,
+        parameters={
+            "profile_fingerprint": PROFILE_FINGERPRINT,
+            "mode": "post_refresh_item_observation",
+            "publication_fingerprint": PUBLICATION_FINGERPRINT,
+        },
+    )
+
+    assert legacy == "38940fd2eab5c1af56d1f6ab715f268227d8c65be6c60bb330fb7131e2d8930d"
+    assert author != legacy
+    assert operation_event_context(
+        "operation_requested",
+        {"kind": "media-server-scan", "target_id": AUTHOR_ID},
+    ) == {
+        "kind": "media-server-scan",
+        "target_type": "author",
+        "target_id": AUTHOR_ID,
+    }
+
+
+@pytest.mark.parametrize(
+    ("target_id", "parameters"),
+    [
+        (
+            None,
+            {
+                "profile_fingerprint": PROFILE_FINGERPRINT,
+                "mode": "post_refresh_item_observation",
+                "publication_fingerprint": PUBLICATION_FINGERPRINT,
+            },
+        ),
+        (AUTHOR_ID, {"profile_fingerprint": PROFILE_FINGERPRINT}),
+        (
+            AUTHOR_ID,
+            {
+                "profile_fingerprint": PROFILE_FINGERPRINT,
+                "mode": "provider_task_completion",
+                "publication_fingerprint": PUBLICATION_FINGERPRINT,
+            },
+        ),
+        (
+            AUTHOR_ID,
+            {
+                "profile_fingerprint": PROFILE_FINGERPRINT,
+                "mode": "post_refresh_item_observation",
+                "publication_fingerprint": PUBLICATION_FINGERPRINT,
+                "server_path": "/private/sentinel",
+            },
+        ),
+    ],
+)
+def test_media_server_scan_request_fingerprint_enforces_exact_mode_target_pair(
+    target_id: str | None,
+    parameters: dict[str, object],
+) -> None:
+    with pytest.raises(OperationPayloadError, match="operation_request_identity_invalid"):
+        operation_request_fingerprint("media-server-scan", target_id=target_id, parameters=parameters)
 
 
 @pytest.mark.parametrize(

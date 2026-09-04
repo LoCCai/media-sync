@@ -15,7 +15,7 @@ import hashlib
 import json
 import re
 from collections.abc import Mapping, Sequence
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import MappingProxyType
 from typing import Final, Literal, TypeAlias, cast
 from uuid import UUID
@@ -140,6 +140,9 @@ _ASSET_SUMMARY_STATUSES: Final = frozenset(
 _ASSET_DISPOSITIONS: Final = frozenset({"not_started", "downloaded", "already_verified"})
 _MEDIA_SERVER_PROVIDERS: Final = frozenset({"emby", "jellyfin"})
 _MEDIA_SERVER_SCAN_STATES: Final = frozenset({"accepted"})
+_MEDIA_SERVER_OBSERVATION_MODES: Final = frozenset({"post_refresh_item_observation"})
+_MEDIA_SERVER_BASELINE_STATES: Final = frozenset({"not_found"})
+_MEDIA_SERVER_OBSERVATION_STATES: Final = frozenset({"pending", "observed"})
 _BATCH_RESULT_STATUSES: Final = frozenset(
     {
         "idle",
@@ -210,6 +213,10 @@ _REQUEST_PARAMETER_FIELDS: Final = MappingProxyType(
         ),
         "emby-export": frozenset({"lease_seconds", "max_attempts"}),
         "media-server-probe": frozenset({"profile_fingerprint"}),
+        # ``media-server-scan`` has two exact parameter shapes.  The legacy
+        # shape is kept here so its serialized v1 request identity remains
+        # byte-for-byte stable; the author shape is selected explicitly in
+        # ``_request_parameters`` below.
         "media-server-scan": frozenset({"profile_fingerprint"}),
     }
 )
@@ -543,6 +550,95 @@ def _media_server_summary(
     return result
 
 
+def _media_server_observation_summary(payload: Mapping[str, object]) -> dict[str, object]:
+    """Project one running or terminal author-observation checkpoint."""
+
+    error_code = "operation_result_invalid"
+    base_fields = {
+        "schema_version",
+        "mode",
+        "provider",
+        "server_version",
+        "profile_fingerprint",
+        "library_id_digest",
+        "scan_state",
+        "publication_fingerprint",
+        "selector_fingerprint",
+        "baseline_state",
+        "observation_state",
+        "match_count",
+        "verification_count",
+        "accepted_at",
+    }
+    raw_state = payload.get("observation_state")
+    expected_fields = base_fields | ({"item_fingerprint", "observed_at"} if raw_state == "observed" else set())
+    _exact_fields(payload, expected_fields, error_code=error_code)
+
+    schema_version = _count(payload["schema_version"], error_code=error_code, minimum=2, maximum=2)
+    mode = _stable_code(
+        payload["mode"],
+        error_code=error_code,
+        allowed=_MEDIA_SERVER_OBSERVATION_MODES,
+    )
+    provider = _stable_code(
+        payload["provider"],
+        error_code=error_code,
+        allowed=_MEDIA_SERVER_PROVIDERS,
+    )
+    server_version = _media_server_version(payload["server_version"], error_code=error_code)
+    profile_fingerprint = _sha256(payload["profile_fingerprint"], error_code=error_code)
+    library_id_digest = _sha256(payload["library_id_digest"], error_code=error_code)
+    scan_state = _stable_code(
+        payload["scan_state"],
+        error_code=error_code,
+        allowed=_MEDIA_SERVER_SCAN_STATES,
+    )
+    publication_fingerprint = _sha256(payload["publication_fingerprint"], error_code=error_code)
+    selector_fingerprint = _sha256(payload["selector_fingerprint"], error_code=error_code)
+    baseline_state = _stable_code(
+        payload["baseline_state"],
+        error_code=error_code,
+        allowed=_MEDIA_SERVER_BASELINE_STATES,
+    )
+    observation_state = _stable_code(
+        payload["observation_state"],
+        error_code=error_code,
+        allowed=_MEDIA_SERVER_OBSERVATION_STATES,
+    )
+    match_count = _count(payload["match_count"], error_code=error_code, maximum=1)
+    verification_count = _count(payload["verification_count"], error_code=error_code, maximum=2)
+    accepted_at = _time(payload["accepted_at"], error_code=error_code)
+
+    result: dict[str, object] = {
+        "schema_version": schema_version,
+        "mode": mode,
+        "provider": provider,
+        "server_version": server_version,
+        "profile_fingerprint": profile_fingerprint,
+        "library_id_digest": library_id_digest,
+        "scan_state": scan_state,
+        "publication_fingerprint": publication_fingerprint,
+        "selector_fingerprint": selector_fingerprint,
+        "baseline_state": baseline_state,
+        "observation_state": observation_state,
+        "match_count": match_count,
+        "verification_count": verification_count,
+        "accepted_at": accepted_at,
+    }
+    if observation_state == "pending":
+        if match_count != 0 or verification_count != 0:
+            raise _fail(error_code)
+        return result
+    if match_count != 1 or verification_count != 2:
+        raise _fail(error_code)
+    item_fingerprint = _sha256(payload["item_fingerprint"], error_code=error_code)
+    observed_at = _time(payload["observed_at"], error_code=error_code)
+    if datetime.fromisoformat(observed_at) - datetime.fromisoformat(accepted_at) < timedelta(seconds=2):
+        raise _fail(error_code)
+    result.update(item_fingerprint=item_fingerprint, observed_at=observed_at)
+    return result
+
+
 def operation_result_summary(kind: object, payload: object) -> dict[str, object]:
     """Return the sole durable result shape for one of the seven operation kinds."""
 
@@ -559,7 +655,11 @@ def operation_result_summary(kind: object, payload: object) -> dict[str, object]
     elif normalized_kind == "media-server-probe":
         result = _media_server_summary("media-server-probe", normalized_payload)
     else:
-        result = _media_server_summary("media-server-scan", normalized_payload)
+        result = (
+            _media_server_observation_summary(normalized_payload)
+            if normalized_payload.get("schema_version") == 2
+            else _media_server_summary("media-server-scan", normalized_payload)
+        )
     _assert_bounded_shape(
         result,
         maximum_bytes=MAX_OPERATION_RESULT_BYTES,
@@ -584,6 +684,8 @@ def operation_event_context(event_code: object, context: object) -> dict[str, ob
         kind = _kind(payload["kind"])
         expected_target = _KIND_TARGET_TYPES[kind]
         raw_target = payload["target_id"]
+        if kind == "media-server-scan" and raw_target is not None:
+            expected_target = "author"
         if expected_target is None:
             if raw_target is not None:
                 raise _fail(error_code)
@@ -652,6 +754,29 @@ def operation_event_context(event_code: object, context: object) -> dict[str, ob
 
 def _request_parameters(kind: OperationKind, parameters: object) -> dict[str, object]:
     payload = _mapping(parameters, error_code="operation_request_identity_invalid")
+    if kind == "media-server-scan":
+        legacy_fields = _REQUEST_PARAMETER_FIELDS[kind]
+        observation_fields = frozenset({"profile_fingerprint", "mode", "publication_fingerprint"})
+        if set(payload) == set(legacy_fields):
+            return {
+                "profile_fingerprint": _sha256(
+                    payload["profile_fingerprint"], error_code="operation_request_identity_invalid"
+                ),
+            }
+        _exact_fields(payload, observation_fields, error_code="operation_request_identity_invalid")
+        return {
+            "profile_fingerprint": _sha256(
+                payload["profile_fingerprint"], error_code="operation_request_identity_invalid"
+            ),
+            "mode": _stable_code(
+                payload["mode"],
+                error_code="operation_request_identity_invalid",
+                allowed=_MEDIA_SERVER_OBSERVATION_MODES,
+            ),
+            "publication_fingerprint": _sha256(
+                payload["publication_fingerprint"], error_code="operation_request_identity_invalid"
+            ),
+        }
     expected = _REQUEST_PARAMETER_FIELDS[kind]
     _exact_fields(payload, expected, error_code="operation_request_identity_invalid")
     error_code = "operation_request_identity_invalid"
@@ -697,7 +822,7 @@ def _request_parameters(kind: OperationKind, parameters: object) -> dict[str, ob
                 payload["xhs_detail_reference_digest"], error_code=error_code
             ),
         }
-    if kind in {"media-server-probe", "media-server-scan"}:
+    if kind == "media-server-probe":
         return {
             "profile_fingerprint": _sha256(payload["profile_fingerprint"], error_code=error_code),
         }
@@ -721,13 +846,20 @@ def operation_request_fingerprint(
     """
 
     normalized_kind = _kind(kind)
+    normalized_parameters = _request_parameters(normalized_kind, parameters)
     target_type = _KIND_TARGET_TYPES[normalized_kind]
+    if normalized_kind == "media-server-scan" and target_id is not None:
+        target_type = "author"
     if target_type is None:
         if target_id is not None:
             raise _fail("operation_request_identity_invalid")
         normalized_target: str | None = None
     else:
         normalized_target = _uuid(target_id, error_code="operation_request_identity_invalid")
+    if normalized_kind == "media-server-scan":
+        author_mode = "mode" in normalized_parameters
+        if author_mode != (target_type == "author"):
+            raise _fail("operation_request_identity_invalid")
     normalized = {
         "schema_version": OPERATION_PAYLOAD_SCHEMA_VERSION,
         "method": "POST",
@@ -735,7 +867,7 @@ def operation_request_fingerprint(
         "kind": normalized_kind,
         "target_type": target_type,
         "target_id": normalized_target,
-        "parameters": _request_parameters(normalized_kind, parameters),
+        "parameters": normalized_parameters,
     }
     _assert_bounded_shape(
         normalized,

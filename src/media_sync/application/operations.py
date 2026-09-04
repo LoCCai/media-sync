@@ -42,6 +42,7 @@ from .operation_payloads import (
     OperationKind,
     OperationPayloadError,
     operation_event_context,
+    operation_request_fingerprint,
     operation_result_summary,
 )
 
@@ -174,6 +175,7 @@ class OperationExecution:
     requested_by: str = "local-api"
     correlation_id: str | None = None
     phase: str = "starting"
+    subjects: tuple[OperationSubjectInput, ...] = ()
 
     def __post_init__(self) -> None:
         if self.kind not in OPERATION_KINDS:
@@ -188,8 +190,10 @@ class OperationExecution:
             raise TypeError("execute must be callable")
         if (self.target_type is None) != (self.target_id is None):
             raise ValueError("target_type and target_id must be supplied together")
-        expected_target_type = _KIND_TARGET_TYPES[self.kind]
-        if self.target_type != expected_target_type:
+        expected_target_types = (
+            {None, "author"} if self.kind == "media-server-scan" else {_KIND_TARGET_TYPES[self.kind]}
+        )
+        if self.target_type not in expected_target_types:
             raise ValueError("target_type does not match operation kind")
         if self.target_id is not None:
             try:
@@ -200,6 +204,10 @@ class OperationExecution:
                 raise ValueError("target_id must be a canonical UUID")
         if not isinstance(self.phase, str) or not self.phase:
             raise ValueError("phase must be non-empty")
+        if not isinstance(self.subjects, tuple) or any(
+            not isinstance(subject, OperationSubjectInput) for subject in self.subjects
+        ):
+            raise TypeError("subjects must be a tuple of OperationSubjectInput values")
 
 
 @dataclass(frozen=True, slots=True)
@@ -286,6 +294,24 @@ class OperationExecutionContext:
 
     def phase(self, phase: str) -> OperationSnapshot:
         snapshot = self._coordinator._phase(self._handle, self.operation_id, phase)
+        if snapshot.cancel_requested_at is not None and not self.cancellation.is_set():
+            self._coordinator._observe_cancel(self.operation_id, self._handle)
+        return snapshot
+
+    def checkpoint(
+        self,
+        *,
+        phase: str,
+        result_summary: Mapping[str, object],
+    ) -> OperationSnapshot:
+        """Persist a validated running result without ending the operation."""
+
+        snapshot = self._coordinator._checkpoint(
+            self._handle,
+            self.operation_id,
+            phase=phase,
+            result_summary=result_summary,
+        )
         if snapshot.cancel_requested_at is not None and not self.cancellation.is_set():
             self._coordinator._observe_cancel(self.operation_id, self._handle)
         return snapshot
@@ -408,6 +434,7 @@ class OperationCoordinator:
                 requested_by=execution.requested_by,
                 correlation_id=execution.correlation_id,
                 phase=execution.phase,
+                subjects=execution.subjects,
                 at=self._now(),
             )
             if not start.replayed:
@@ -734,6 +761,52 @@ class OperationCoordinator:
             snapshot = repository.require_for_update(operation_id)
             if snapshot.state != "running":
                 return snapshot
+            observation_checkpoint = self._media_server_observation_checkpoint(snapshot)
+            if snapshot.kind == "media-server-scan" and snapshot.target_type == "author":
+                if observation_checkpoint is not None:
+                    if observation_checkpoint["observation_state"] == "observed":
+                        subjects = repository.list_subjects(operation_id)
+                        if self._valid_media_server_publication_job(session, snapshot, subjects):
+                            return repository.finish_succeeded(
+                                operation_id,
+                                expected_revision=snapshot.revision,
+                                lease_owner=handle.lease_owner,
+                                lease_token=handle.lease_token,
+                                result_summary=observation_checkpoint,
+                                at=self._now(),
+                            )
+                    return repository.finish_failed(
+                        operation_id,
+                        expected_revision=snapshot.revision,
+                        lease_owner=handle.lease_owner,
+                        lease_token=handle.lease_token,
+                        retryable=False,
+                        error_code="media_server_scan_completion_unknown",
+                        result_summary=observation_checkpoint,
+                        at=self._now(),
+                    )
+                if snapshot.phase in {"accepted", "polling", "observed"}:
+                    return repository.finish_failed(
+                        operation_id,
+                        expected_revision=snapshot.revision,
+                        lease_owner=handle.lease_owner,
+                        lease_token=handle.lease_token,
+                        retryable=False,
+                        error_code="media_server_scan_completion_unknown",
+                        result_summary={},
+                        at=self._now(),
+                    )
+                if intent.state == "succeeded" or (snapshot.phase == "dispatching" and intent.state != "cancelled"):
+                    return repository.finish_failed(
+                        operation_id,
+                        expected_revision=snapshot.revision,
+                        lease_owner=handle.lease_owner,
+                        lease_token=handle.lease_token,
+                        retryable=False,
+                        error_code="media_server_scan_acceptance_unknown",
+                        result_summary={},
+                        at=self._now(),
+                    )
             if intent.state == "succeeded":
                 if snapshot.kind == "media-server-scan" and snapshot.cancel_requested_at is not None:
                     return repository.finish_failed(
@@ -784,6 +857,38 @@ class OperationCoordinator:
         except Exception:
             return False
         return True
+
+    @staticmethod
+    def _media_server_observation_checkpoint(
+        snapshot: OperationSnapshot | OperationRecoveryCandidate,
+    ) -> Mapping[str, object] | None:
+        if snapshot.kind != "media-server-scan" or snapshot.target_type != "author":
+            return None
+        try:
+            summary = operation_result_summary("media-server-scan", snapshot.result_summary)
+        except OperationPayloadError:
+            return None
+        if summary.get("schema_version") != 2:
+            return None
+        observation_state = summary.get("observation_state")
+        phase_matches = (observation_state == "pending" and snapshot.phase in {"accepted", "polling"}) or (
+            observation_state == "observed" and snapshot.phase == "observed"
+        )
+        if not phase_matches or snapshot.target_id is None:
+            return None
+        try:
+            expected_fingerprint = operation_request_fingerprint(
+                "media-server-scan",
+                target_id=snapshot.target_id,
+                parameters={
+                    "profile_fingerprint": summary["profile_fingerprint"],
+                    "mode": summary["mode"],
+                    "publication_fingerprint": summary["publication_fingerprint"],
+                },
+            )
+        except (KeyError, OperationPayloadError):
+            return None
+        return summary if snapshot.request_fingerprint == expected_fingerprint else None
 
     def _finish_outcome(
         self,
@@ -878,6 +983,48 @@ class OperationCoordinator:
             )
 
         return self._run_write(change_phase)
+
+    def _checkpoint(
+        self,
+        handle: _OperationHandle,
+        operation_id: str,
+        *,
+        phase: str,
+        result_summary: Mapping[str, object],
+    ) -> OperationSnapshot:
+        def checkpoint(session: Session) -> OperationSnapshot:
+            repository = OperationRepository(session)
+            snapshot = repository.require_for_update(operation_id)
+            try:
+                summary = operation_result_summary(snapshot.kind, result_summary)
+            except OperationPayloadError:
+                raise
+            if snapshot.kind == "media-server-scan":
+                observation = summary.get("schema_version") == 2
+                if observation != (snapshot.target_type == "author"):
+                    raise OperationPayloadError("operation_result_invalid")
+                if observation:
+                    observation_state = summary.get("observation_state")
+                    expected_phase = (
+                        {"pending": "accepted", "observed": "observed"}.get(observation_state)
+                        if isinstance(observation_state, str)
+                        else None
+                    )
+                    if phase != expected_phase:
+                        raise OperationPayloadError("operation_result_invalid")
+            context = operation_event_context("operation_phase_changed", {"phase": phase})
+            return repository.checkpoint(
+                operation_id,
+                expected_revision=snapshot.revision,
+                lease_owner=handle.lease_owner,
+                lease_token=handle.lease_token,
+                phase=phase,
+                result_summary=summary,
+                context=context,
+                at=self._now(),
+            )
+
+        return self._run_write(checkpoint)
 
     def _link_subject(
         self,
@@ -1016,6 +1163,8 @@ class OperationCoordinator:
         candidate: OperationRecoveryCandidate,
         subjects: Sequence[OperationSubjectSnapshot],
     ) -> _ReconciliationDecision:
+        if candidate.kind == "media-server-scan" and candidate.target_type == "author":
+            return self._reconcile_media_server_observation(session, candidate, subjects)
         if candidate.kind in {"media-server-probe", "media-server-scan"}:
             # Phase A deliberately persists no remote task identity.  An
             # expired process lease therefore cannot establish acceptance or
@@ -1030,6 +1179,62 @@ class OperationCoordinator:
         if candidate.kind == "emby-export":
             return self._reconcile_emby(session, candidate, subjects)
         return self._interrupted("job", "incomplete")
+
+    def _reconcile_media_server_observation(
+        self,
+        session: Session,
+        candidate: OperationRecoveryCandidate,
+        subjects: Sequence[OperationSubjectSnapshot],
+    ) -> _ReconciliationDecision:
+        checkpoint = self._media_server_observation_checkpoint(candidate)
+        phase = candidate.phase
+        if phase in {"preparing", "baselining"}:
+            return self._interrupted("job", "incomplete")
+        if phase == "dispatching":
+            return _ReconciliationDecision(
+                "failed_terminal",
+                "media_server_scan_acceptance_unknown",
+                "job",
+                "incomplete",
+            )
+        if (
+            phase == "observed"
+            and checkpoint is not None
+            and checkpoint["observation_state"] == "observed"
+            and self._valid_media_server_publication_job(session, candidate, subjects)
+        ):
+            return _ReconciliationDecision(
+                "succeeded",
+                None,
+                "job",
+                "succeeded",
+                checkpoint,
+            )
+        if phase in {"accepted", "polling", "observed"} or checkpoint is not None:
+            return _ReconciliationDecision(
+                "failed_terminal",
+                "media_server_scan_completion_unknown",
+                "job",
+                "incomplete",
+                checkpoint or {},
+            )
+        return self._interrupted("job", "incomplete")
+
+    @staticmethod
+    def _valid_media_server_publication_job(
+        session: Session,
+        operation: OperationSnapshot | OperationRecoveryCandidate,
+        subjects: Sequence[OperationSubjectSnapshot],
+    ) -> bool:
+        related_jobs = [item.subject_id for item in subjects if item.subject_type == "job" and item.role == "related"]
+        job = session.get(Job, related_jobs[0]) if len(related_jobs) == 1 else None
+        return bool(
+            job is not None
+            and job.status == "succeeded"
+            and job.job_type == "export.emby"
+            and isinstance(job.payload, Mapping)
+            and job.payload.get("author_id") == operation.target_id
+        )
 
     def _reconcile_login(
         self,

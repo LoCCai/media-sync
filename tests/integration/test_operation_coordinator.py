@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 from sqlalchemy import func, select
 
+from media_sync.application.operation_payloads import operation_request_fingerprint
 from media_sync.application.operations import (
     DurableSubjectRef,
     OperationCoordinator,
@@ -28,10 +29,78 @@ from media_sync.infrastructure.db import (
     Operation,
     OperationEvent,
     OperationRepository,
+    OperationStateConflictError,
     OperationSubjectInput,
 )
 
 NOW = datetime(2026, 9, 4, 8, tzinfo=UTC)
+AUTHOR_ID = "55555555-5555-4555-8555-555555555555"
+PUBLICATION_JOB_ID = "66666666-6666-4666-8666-666666666666"
+OTHER_AUTHOR_ID = "77777777-7777-4777-8777-777777777777"
+
+
+def _observation_payload(*, observed: bool = False) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "schema_version": 2,
+        "mode": "post_refresh_item_observation",
+        "provider": "emby",
+        "server_version": "4.9.5",
+        "profile_fingerprint": "c" * 64,
+        "library_id_digest": "d" * 64,
+        "scan_state": "accepted",
+        "publication_fingerprint": "e" * 64,
+        "selector_fingerprint": "f" * 64,
+        "baseline_state": "not_found",
+        "observation_state": "observed" if observed else "pending",
+        "match_count": 1 if observed else 0,
+        "verification_count": 2 if observed else 0,
+        "accepted_at": NOW.isoformat(),
+    }
+    if observed:
+        payload.update(
+            item_fingerprint="1" * 64,
+            observed_at=(NOW + timedelta(seconds=2)).isoformat(),
+        )
+    return payload
+
+
+def _author_scan_fingerprint() -> str:
+    return operation_request_fingerprint(
+        "media-server-scan",
+        target_id=AUTHOR_ID,
+        parameters={
+            "profile_fingerprint": "c" * 64,
+            "mode": "post_refresh_item_observation",
+            "publication_fingerprint": "e" * 64,
+        },
+    )
+
+
+def _succeeded_publication_job(database: Database, *, natural_key: str) -> str:
+    with database.session() as session:
+        jobs = JobRepository(session)
+        publication = jobs.enqueue(
+            job_type="export.emby",
+            natural_key=natural_key,
+            payload={"author_id": AUTHOR_ID},
+            available_at=NOW,
+        )
+        claimed = jobs.claim(publication.id, worker_id="publisher", lease_seconds=60, now=NOW)
+        assert claimed is not None and claimed.lease_token is not None
+        running = jobs.start(
+            publication.id,
+            worker_id="publisher",
+            lease_token=claimed.lease_token,
+            now=NOW,
+        )
+        assert running.lease_token is not None
+        jobs.complete(
+            publication.id,
+            worker_id="publisher",
+            lease_token=running.lease_token,
+            now=NOW,
+        )
+        return publication.id
 
 
 @pytest.fixture
@@ -357,6 +426,197 @@ def test_media_server_scan_final_lock_before_cancel_preserves_success(
         canceller.shutdown()
         owner._database.dispose()
         canceller._database.dispose()
+
+
+def test_author_scan_persists_target_and_related_publication_before_callable(database: Database) -> None:
+    observed_subjects: list[tuple[str, str, str]] = []
+    coordinator = OperationCoordinator(database, heartbeat_interval_seconds=0.05)
+
+    def execute(context: OperationExecutionContext) -> OperationOutcome:
+        observed_subjects.extend(
+            (subject.subject_type, subject.subject_id, subject.role)
+            for subject in coordinator.list_subjects(context.operation_id)
+        )
+        return OperationOutcome.failed(
+            "media_server_scan_observation_precondition_failed",
+            retryable=False,
+        )
+
+    submission = coordinator.submit(
+        OperationExecution(
+            kind="media-server-scan",
+            request_fingerprint="2" * 64,
+            exclusive_key="media-server:author-observation",
+            target_type="author",
+            target_id=AUTHOR_ID,
+            subjects=(OperationSubjectInput("job", PUBLICATION_JOB_ID, "related"),),
+            phase="preparing",
+            execute=execute,
+        )
+    )
+    terminal = _wait_terminal(coordinator, submission.operation_id)
+
+    assert terminal.target_type == "author"
+    assert terminal.target_id == AUTHOR_ID
+    assert terminal.state == "failed_terminal"
+    assert terminal.error_code == "media_server_scan_observation_precondition_failed"
+    assert observed_subjects == [
+        ("author", AUTHOR_ID, "target"),
+        ("job", PUBLICATION_JOB_ID, "related"),
+    ]
+    coordinator.shutdown()
+
+
+def test_author_scan_exception_after_accepted_checkpoint_is_completion_unknown(database: Database) -> None:
+    accepted = _observation_payload()
+
+    def execute(context: OperationExecutionContext) -> OperationOutcome:
+        checkpoint = context.checkpoint(phase="accepted", result_summary=accepted)
+        assert checkpoint.result_summary == accepted
+        raise RuntimeError("private post-acceptance sentinel")
+
+    coordinator = OperationCoordinator(database, heartbeat_interval_seconds=0.05)
+    submission = coordinator.submit(
+        OperationExecution(
+            kind="media-server-scan",
+            request_fingerprint=_author_scan_fingerprint(),
+            exclusive_key="media-server:accepted-exception",
+            target_type="author",
+            target_id=AUTHOR_ID,
+            phase="dispatching",
+            execute=execute,
+        )
+    )
+    terminal = _wait_terminal(coordinator, submission.operation_id)
+
+    assert terminal.state == "failed_terminal"
+    assert terminal.error_code == "media_server_scan_completion_unknown"
+    assert terminal.result_summary == accepted
+    assert [event.event_code for event in coordinator.events_for_operation(submission.operation_id)][-2:] == [
+        "operation_phase_changed",
+        "operation_failed",
+    ]
+    coordinator.shutdown()
+
+
+def test_author_scan_observed_checkpoint_wins_later_cancel(database: Database) -> None:
+    observed_written = threading.Event()
+    release = threading.Event()
+    observed = _observation_payload(observed=True)
+    publication_job_id = _succeeded_publication_job(database, natural_key="online-observed-publication")
+
+    def execute(context: OperationExecutionContext) -> OperationOutcome:
+        context.checkpoint(phase="accepted", result_summary=_observation_payload())
+        context.checkpoint(
+            phase="observed",
+            result_summary=observed,
+        )
+        observed_written.set()
+        assert release.wait(5)
+        return OperationOutcome.success(observed)
+
+    owner = OperationCoordinator(Database(database.url), lease_seconds=120, heartbeat_interval_seconds=60)
+    canceller = OperationCoordinator(Database(database.url), lease_seconds=120, heartbeat_interval_seconds=60)
+    try:
+        submission = owner.submit(
+            OperationExecution(
+                kind="media-server-scan",
+                request_fingerprint=_author_scan_fingerprint(),
+                exclusive_key="media-server:observed-wins",
+                target_type="author",
+                target_id=AUTHOR_ID,
+                subjects=(OperationSubjectInput("job", publication_job_id, "related"),),
+                phase="dispatching",
+                execute=execute,
+            )
+        )
+        assert observed_written.wait(5)
+        cancelled = canceller.request_cancel(submission.operation_id)
+        assert cancelled.cancel_requested_at is not None
+        release.set()
+        terminal = _wait_terminal(owner, submission.operation_id)
+
+        assert terminal.state == "succeeded"
+        assert terminal.error_code is None
+        assert terminal.cancel_requested_at is not None
+        assert terminal.result_summary == observed
+    finally:
+        release.set()
+        owner.shutdown()
+        canceller.shutdown()
+        owner._database.dispose()
+        canceller._database.dispose()
+
+
+def test_author_scan_observed_checkpoint_requires_bound_request_identity(database: Database) -> None:
+    observed = _observation_payload(observed=True)
+    publication_job_id = _succeeded_publication_job(database, natural_key="online-unbound-publication")
+
+    def execute(context: OperationExecutionContext) -> OperationOutcome:
+        context.checkpoint(phase="accepted", result_summary=_observation_payload())
+        context.checkpoint(phase="observed", result_summary=observed)
+        return OperationOutcome.success(observed)
+
+    coordinator = OperationCoordinator(database, heartbeat_interval_seconds=0.05)
+    submission = coordinator.submit(
+        OperationExecution(
+            kind="media-server-scan",
+            request_fingerprint="9" * 64,
+            exclusive_key="media-server:unbound-observation",
+            target_type="author",
+            target_id=AUTHOR_ID,
+            subjects=(OperationSubjectInput("job", publication_job_id, "related"),),
+            phase="dispatching",
+            execute=execute,
+        )
+    )
+    terminal = _wait_terminal(coordinator, submission.operation_id)
+
+    assert terminal.state == "failed_terminal"
+    assert terminal.error_code == "media_server_scan_completion_unknown"
+    assert terminal.result_summary == {}
+    coordinator.shutdown()
+
+
+def test_author_scan_cancel_before_observed_checkpoint_retains_acceptance(database: Database) -> None:
+    accepted_written = threading.Event()
+    checkpoint_rejected = threading.Event()
+
+    def execute(context: OperationExecutionContext) -> OperationOutcome:
+        context.checkpoint(phase="accepted", result_summary=_observation_payload())
+        accepted_written.set()
+        assert context.cancellation.wait(5)
+        try:
+            context.checkpoint(
+                phase="observed",
+                result_summary=_observation_payload(observed=True),
+            )
+        except OperationStateConflictError as error:
+            assert error.code == "operation_cancel_precedes_checkpoint"
+            checkpoint_rejected.set()
+        return OperationOutcome.cancelled()
+
+    coordinator = OperationCoordinator(database, heartbeat_interval_seconds=0.05)
+    submission = coordinator.submit(
+        OperationExecution(
+            kind="media-server-scan",
+            request_fingerprint=_author_scan_fingerprint(),
+            exclusive_key="media-server:cancel-first",
+            target_type="author",
+            target_id=AUTHOR_ID,
+            phase="dispatching",
+            execute=execute,
+        )
+    )
+    assert accepted_written.wait(5)
+    coordinator.request_cancel(submission.operation_id)
+    terminal = _wait_terminal(coordinator, submission.operation_id)
+
+    assert checkpoint_rejected.is_set()
+    assert terminal.state == "failed_terminal"
+    assert terminal.error_code == "media_server_scan_completion_unknown"
+    assert terminal.result_summary == _observation_payload()
+    coordinator.shutdown()
 
 
 def test_phase_waits_for_existing_cancel_observer_before_terminal(
@@ -974,6 +1234,180 @@ def test_restart_reconciliation_interrupts_media_server_work_without_remote_subj
         event = coordinator.events_for_operation(operation_id)[-1]
         assert event.event_code == "operation_reconciled"
         assert event.safe_context == {"subject_type": "job", "subject_state": "missing"}
+    coordinator.shutdown()
+
+
+def test_restart_reconciliation_classifies_author_scan_phases_and_checkpoints(
+    database: Database,
+) -> None:
+    operation_ids: dict[str, str] = {}
+    with database.session() as session:
+        jobs = JobRepository(session)
+        publication_jobs = {
+            "valid": jobs.enqueue(
+                job_type="export.emby",
+                natural_key="phase-b-recovery-publication",
+                payload={"author_id": AUTHOR_ID},
+                available_at=NOW,
+            ),
+            "wrong_job_type": jobs.enqueue(
+                job_type="asset_download",
+                natural_key="phase-b-recovery-wrong-job-type",
+                payload={"author_id": AUTHOR_ID},
+                available_at=NOW,
+            ),
+            "wrong_job_author": jobs.enqueue(
+                job_type="export.emby",
+                natural_key="phase-b-recovery-wrong-job-author",
+                payload={"author_id": OTHER_AUTHOR_ID},
+                available_at=NOW,
+            ),
+        }
+        for job in publication_jobs.values():
+            claimed_job = jobs.claim(job.id, worker_id="publisher", lease_seconds=60, now=NOW)
+            assert claimed_job is not None and claimed_job.lease_token is not None
+            running_job = jobs.start(
+                job.id,
+                worker_id="publisher",
+                lease_token=claimed_job.lease_token,
+                now=NOW,
+            )
+            assert running_job.lease_token is not None
+            jobs.complete(
+                job.id,
+                worker_id="publisher",
+                lease_token=running_job.lease_token,
+                now=NOW,
+            )
+
+        repository = OperationRepository(session)
+        for phase in ("preparing", "baselining", "dispatching", "accepted", "polling", "observed"):
+            subjects = (
+                (OperationSubjectInput("job", publication_jobs["valid"].id, "related"),) if phase == "observed" else ()
+            )
+            initial_phase = "accepted" if phase == "polling" else phase
+            started = repository.create_or_replay(
+                kind="media-server-scan",
+                request_fingerprint=_author_scan_fingerprint(),
+                target_type="author",
+                target_id=AUTHOR_ID,
+                phase=initial_phase,
+                subjects=subjects,
+                at=NOW,
+            )
+            lease = repository.claim(
+                started.operation_id,
+                expected_revision=started.revision,
+                lease_owner=f"expired-observation-{phase}",
+                lease_seconds=1,
+                at=NOW,
+            )
+            if phase in {"accepted", "polling", "observed"}:
+                checkpoint = repository.checkpoint(
+                    started.operation_id,
+                    expected_revision=lease.revision,
+                    lease_owner=lease.lease_owner,
+                    lease_token=lease.lease_token,
+                    phase="observed" if phase == "observed" else "accepted",
+                    result_summary=_observation_payload(observed=phase == "observed"),
+                    at=NOW,
+                )
+                if phase == "polling":
+                    repository.progress(
+                        started.operation_id,
+                        expected_revision=checkpoint.revision,
+                        lease_owner=lease.lease_owner,
+                        lease_token=lease.lease_token,
+                        phase="polling",
+                        event_code="operation_phase_changed",
+                        at=NOW,
+                    )
+            operation_ids[phase] = started.operation_id
+
+        invalid_observations = {
+            "fingerprint_mismatch": ("7" * 64, publication_jobs["valid"].id),
+            "wrong_job_type": (_author_scan_fingerprint(), publication_jobs["wrong_job_type"].id),
+            "wrong_job_author": (_author_scan_fingerprint(), publication_jobs["wrong_job_author"].id),
+        }
+        for case, (request_fingerprint, publication_job_id) in invalid_observations.items():
+            started = repository.create_or_replay(
+                kind="media-server-scan",
+                request_fingerprint=request_fingerprint,
+                target_type="author",
+                target_id=AUTHOR_ID,
+                phase="observed",
+                subjects=(OperationSubjectInput("job", publication_job_id, "related"),),
+                at=NOW,
+            )
+            lease = repository.claim(
+                started.operation_id,
+                expected_revision=started.revision,
+                lease_owner=f"expired-observation-{case}",
+                lease_seconds=1,
+                at=NOW,
+            )
+            repository.checkpoint(
+                started.operation_id,
+                expected_revision=lease.revision,
+                lease_owner=lease.lease_owner,
+                lease_token=lease.lease_token,
+                phase="observed",
+                result_summary=_observation_payload(observed=True),
+                at=NOW,
+            )
+            operation_ids[case] = started.operation_id
+
+    coordinator = OperationCoordinator(database, heartbeat_interval_seconds=0.05)
+    summary = coordinator.reconcile_expired(at=NOW + timedelta(seconds=2))
+
+    assert summary.scanned == 9
+    assert summary.interrupted == 2
+    assert summary.failed_terminal == 6
+    assert summary.succeeded == 1
+    preparing = coordinator.get(operation_ids["preparing"])
+    baselining = coordinator.get(operation_ids["baselining"])
+    dispatching = coordinator.get(operation_ids["dispatching"])
+    accepted = coordinator.get(operation_ids["accepted"])
+    polling = coordinator.get(operation_ids["polling"])
+    observed = coordinator.get(operation_ids["observed"])
+    assert (preparing.state, preparing.error_code) == ("interrupted", "operation_interrupted")
+    assert (baselining.state, baselining.error_code) == ("interrupted", "operation_interrupted")
+    assert (dispatching.state, dispatching.error_code) == (
+        "failed_terminal",
+        "media_server_scan_acceptance_unknown",
+    )
+    assert (accepted.state, accepted.error_code, accepted.result_summary) == (
+        "failed_terminal",
+        "media_server_scan_completion_unknown",
+        _observation_payload(),
+    )
+    assert (polling.state, polling.error_code, polling.result_summary) == (
+        "failed_terminal",
+        "media_server_scan_completion_unknown",
+        _observation_payload(),
+    )
+    assert (observed.state, observed.error_code, observed.result_summary) == (
+        "succeeded",
+        None,
+        _observation_payload(observed=True),
+    )
+    fingerprint_mismatch = coordinator.get(operation_ids["fingerprint_mismatch"])
+    assert (
+        fingerprint_mismatch.state,
+        fingerprint_mismatch.error_code,
+        fingerprint_mismatch.result_summary,
+    ) == ("failed_terminal", "media_server_scan_completion_unknown", {})
+    for case in ("wrong_job_type", "wrong_job_author"):
+        invalid_publication = coordinator.get(operation_ids[case])
+        assert (
+            invalid_publication.state,
+            invalid_publication.error_code,
+            invalid_publication.result_summary,
+        ) == (
+            "failed_terminal",
+            "media_server_scan_completion_unknown",
+            _observation_payload(observed=True),
+        )
     coordinator.shutdown()
 
 

@@ -43,6 +43,34 @@ def _uuid(value: int) -> str:
     return str(UUID(int=value))
 
 
+AUTHOR_ID = _uuid(500)
+
+
+def _observation_summary(*, observed: bool = False) -> dict[str, object]:
+    summary: dict[str, object] = {
+        "schema_version": 2,
+        "mode": "post_refresh_item_observation",
+        "provider": "emby",
+        "server_version": "4.9.5",
+        "profile_fingerprint": "c" * 64,
+        "library_id_digest": "d" * 64,
+        "scan_state": "accepted",
+        "publication_fingerprint": "e" * 64,
+        "selector_fingerprint": "f" * 64,
+        "baseline_state": "not_found",
+        "observation_state": "observed" if observed else "pending",
+        "match_count": 1 if observed else 0,
+        "verification_count": 2 if observed else 0,
+        "accepted_at": NOW.isoformat(),
+    }
+    if observed:
+        summary.update(
+            item_fingerprint="1" * 64,
+            observed_at=(NOW + timedelta(seconds=2)).isoformat(),
+        )
+    return summary
+
+
 @pytest.fixture
 def database(tmp_path: Path) -> Iterator[Database]:
     instance = Database(f"sqlite+pysqlite:///{(tmp_path / 'operations.sqlite3').as_posix()}")
@@ -469,6 +497,115 @@ def test_cross_session_cancel_is_observed_by_stale_revision_heartbeat(database: 
             at=NOW + timedelta(seconds=3),
         )
         assert terminal.state == "cancelled"
+
+
+def test_running_checkpoint_preserves_accepted_fact_and_rejects_cancelled_observation(
+    database: Database,
+) -> None:
+    with database.session() as session:
+        repository = OperationRepository(session)
+        started = repository.create_or_replay(
+            kind="media-server-scan",
+            request_fingerprint="9" * 64,
+            target_type="author",
+            target_id=AUTHOR_ID,
+            phase="dispatching",
+            at=NOW,
+        )
+        lease = repository.claim(
+            started.operation_id,
+            expected_revision=started.revision,
+            lease_owner="observation-owner",
+            lease_seconds=60,
+            at=NOW,
+        )
+
+    with Database(database.url).session() as session:
+        cancelled = OperationRepository(session).request_cancel(
+            started.operation_id,
+            expected_revision=lease.revision,
+            at=NOW + timedelta(seconds=1),
+        )
+        assert cancelled.cancel_requested_at is not None
+
+    with database.session() as session:
+        repository = OperationRepository(session)
+        accepted = repository.checkpoint(
+            started.operation_id,
+            expected_revision=lease.revision,
+            lease_owner=lease.lease_owner,
+            lease_token=lease.lease_token,
+            phase="accepted",
+            result_summary=_observation_summary(),
+            at=NOW + timedelta(seconds=2),
+        )
+        assert accepted.state == "running"
+        assert accepted.phase == "accepted"
+        assert accepted.cancel_requested_at is not None
+        assert accepted.result_summary == _observation_summary()
+
+        with pytest.raises(OperationStateConflictError) as raised:
+            repository.checkpoint(
+                started.operation_id,
+                expected_revision=accepted.revision,
+                lease_owner=lease.lease_owner,
+                lease_token=lease.lease_token,
+                phase="observed",
+                result_summary=_observation_summary(observed=True),
+                at=NOW + timedelta(seconds=3),
+            )
+        assert raised.value.code == "operation_cancel_precedes_checkpoint"
+        current = repository.require(started.operation_id)
+        assert current.phase == "accepted"
+        assert current.result_summary == _observation_summary()
+        assert [event.event_code for event in repository.events_for_operation(started.operation_id)][-2:] == [
+            "operation_cancel_requested",
+            "operation_phase_changed",
+        ]
+
+
+@pytest.mark.parametrize(
+    ("phase", "observed"),
+    [("observed", False), ("accepted", True), ("polling", False), ("polling", True)],
+)
+def test_author_observation_checkpoint_rejects_phase_evidence_mismatch(
+    database: Database,
+    phase: str,
+    observed: bool,
+) -> None:
+    with database.session() as session:
+        repository = OperationRepository(session)
+        started = repository.create_or_replay(
+            kind="media-server-scan",
+            request_fingerprint="8" * 64,
+            target_type="author",
+            target_id=AUTHOR_ID,
+            phase="dispatching",
+            at=NOW,
+        )
+        lease = repository.claim(
+            started.operation_id,
+            expected_revision=started.revision,
+            lease_owner="mismatched-checkpoint-owner",
+            lease_seconds=60,
+            at=NOW,
+        )
+
+        with pytest.raises(OperationPayloadError) as raised:
+            repository.checkpoint(
+                started.operation_id,
+                expected_revision=lease.revision,
+                lease_owner=lease.lease_owner,
+                lease_token=lease.lease_token,
+                phase=phase,
+                result_summary=_observation_summary(observed=observed),
+                at=NOW + timedelta(seconds=1),
+            )
+
+        assert raised.value.code == "operation_checkpoint_invalid"
+        current = repository.require(started.operation_id)
+        assert current.phase == "dispatching"
+        assert current.result_summary == {}
 
 
 @pytest.mark.parametrize(

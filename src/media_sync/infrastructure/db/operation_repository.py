@@ -194,6 +194,7 @@ class OperationSnapshot:
     cancel_requested_at: datetime | None
     error_code: str | None
     result_summary: Mapping[str, Any] = field(repr=False)
+    request_fingerprint: str = field(default="", repr=False)
     event_sequence: int = 0
     revision: int = 0
 
@@ -244,6 +245,7 @@ class OperationSubjectSnapshot:
 class OperationRecoveryCandidate:
     operation_id: str
     kind: str
+    request_fingerprint: str = field(repr=False)
     state: str
     revision: int
     lease_owner: str
@@ -252,6 +254,8 @@ class OperationRecoveryCandidate:
     cancel_requested_at: datetime | None
     target_type: str | None
     target_id: str | None
+    phase: str | None
+    result_summary: Mapping[str, Any] = field(repr=False)
 
 
 def _aware_utc(value: datetime | None = None) -> datetime:
@@ -842,6 +846,80 @@ class OperationRepository:
             }[normalized_event_code],
             safe_context=normalized_context,
             at=at,
+        )
+        return self._snapshot(operation)
+
+    def checkpoint(
+        self,
+        operation_id: str,
+        *,
+        expected_revision: int,
+        lease_owner: str,
+        lease_token: str,
+        phase: str,
+        result_summary: Mapping[str, Any],
+        context: Mapping[str, Any] | None = None,
+        at: datetime | None = None,
+    ) -> OperationSnapshot:
+        """Persist one fenced running-result checkpoint and phase atomically."""
+
+        normalized_id = _canonical_uuid(operation_id, "operation_id")
+        revision = _revision(expected_revision)
+        owner = _label(lease_owner, "lease_owner", 255)
+        token = _canonical_uuid(lease_token, "lease_token")
+        normalized_phase = _phase(phase)
+        if normalized_phase is None:
+            raise ValueError("checkpoint phase must be non-empty")
+        summary = _safe_json_object(result_summary, maximum_bytes=_MAX_RESULT_BYTES)
+        normalized_context = _exact_event_context(context, {"phase": normalized_phase})
+        current = _aware_utc(at)
+
+        _reserve_sqlite_writer(self.session)
+        owned = self.session.scalar(select(Operation).where(Operation.id == normalized_id).with_for_update())
+        if owned is None:
+            raise NotFoundError("operation not found")
+        if (
+            owned.state != "running"
+            or owned.revision < revision
+            or owned.lease_owner != owner
+            or owned.lease_token != token
+        ):
+            self._raise_lease_conflict(normalized_id)
+        assert owned is not None
+        reject_cancelled_observation = False
+        if owned.kind == "media-server-scan" and owned.target_type == "author":
+            observation_state = summary.get("observation_state")
+            expected_phase = (
+                {"pending": "accepted", "observed": "observed"}.get(observation_state)
+                if isinstance(observation_state, str)
+                else None
+            )
+            if summary.get("schema_version") != 2 or expected_phase != normalized_phase:
+                raise OperationPayloadError("operation_checkpoint_invalid", normalized_id)
+            reject_cancelled_observation = observation_state == "observed"
+        if reject_cancelled_observation and owned.cancel_requested_at is not None:
+            raise OperationStateConflictError("operation_cancel_precedes_checkpoint", normalized_id)
+
+        conditions: list[Any] = [
+            Operation.state == "running",
+            _owned_revision_condition(revision),
+            Operation.lease_owner == owner,
+            Operation.lease_token == token,
+        ]
+        if reject_cancelled_observation:
+            conditions.append(Operation.cancel_requested_at.is_(None))
+        operation = self._mutate_with_event(
+            normalized_id,
+            conditions=tuple(conditions),
+            values={"phase": normalized_phase, "result_summary": summary},
+            event_code="operation_phase_changed",
+            from_state="running",
+            to_state="running",
+            level="info",
+            message_key="operation.phase_changed",
+            safe_context=normalized_context,
+            at=current,
+            lease_conflict=True,
         )
         return self._snapshot(operation)
 
@@ -1457,6 +1535,7 @@ class OperationRepository:
             cancel_requested_at=operation.cancel_requested_at,
             error_code=operation.error_code,
             result_summary=dict(operation.result_summary),
+            request_fingerprint=operation.request_fingerprint,
             event_sequence=operation.event_sequence,
             revision=operation.revision,
         )
@@ -1486,6 +1565,7 @@ class OperationRepository:
         return OperationRecoveryCandidate(
             operation_id=operation.id,
             kind=operation.kind,
+            request_fingerprint=operation.request_fingerprint,
             state=operation.state,
             revision=operation.revision,
             lease_owner=operation.lease_owner,
@@ -1494,6 +1574,8 @@ class OperationRepository:
             cancel_requested_at=operation.cancel_requested_at,
             target_type=operation.target_type,
             target_id=operation.target_id,
+            phase=operation.phase,
+            result_summary=dict(operation.result_summary),
         )
 
 
