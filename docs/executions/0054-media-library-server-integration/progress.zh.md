@@ -37,4 +37,4 @@
 
 ## 待实现与外部门
 
-阶段 A 没有剩余实现工作。执行 0054 继续为需另行冻结的 0054-B 保持开启；该阶段必须实现可 mock 的扫描完成进度及 provider/path 项目查找。已经实现的连接探测、Library 发现及定向刷新接受，其真人使用在执行 0047 下仍为 `NOT_RUN`。扫描完成和项目查找在 0054-B 落地前仍为 `NOT_IMPLEMENTED`。播放证据写入、浏览器可写设置、多配置、鉴权及破坏性/保留运维继续归 0055。导出后自动扫描是 `NOT_IMPLEMENTED`，且尚无已冻结后续归属。七平台全部真人账户、作者、增量、CDN 及 Linux 持久性/恢复行也继续为 `NOT_RUN`。
+阶段 A 没有剩余实现工作。[执行 0054-B](phase-b/plan.zh.md) 现已冻结有界 provider/path 项目查找与如实的 absent-to-unique-match 刷新后观察。共同 API 不返回持久任务身份，因此该阶段明确不声明 provider task completion。已经实现的连接探测、Library 发现及定向刷新接受，其真人使用在执行 0047 下仍为 `NOT_RUN`。项目查找与刷新后观察在阶段 B 落地前仍为 `NOT_IMPLEMENTED`；provider task completion 在其落地后也继续为 `NOT_IMPLEMENTED`。播放证据写入、浏览器可写设置、多配置、鉴权及破坏性/保留运维继续归 0055。导出后自动扫描是 `NOT_IMPLEMENTED`，且尚无已冻结后续归属。七平台全部真人账户、作者、增量、CDN 及 Linux 持久性/恢复行也继续为 `NOT_RUN`。

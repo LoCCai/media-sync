@@ -2,14 +2,14 @@
 
 # Unified project status (single source of truth)
 
-Boundary: execution 0054-A is delivered and frozen-verified from baseline `22b5864` and plans `793d33b`/`d913537`; execution 0054 remains open for a separately frozen phase B covering scan completion and provider/path item lookup. Execution 0047 remains the open P0 operator gate, and its Linux persistence/recovery/process checks plus every implemented live login/crawl/CDN/media-server row remain `NOT_RUN`. Absent capabilities are `NOT_IMPLEMENTED`, not unexecuted live rows. This table is the canonical status view; per-execution detail lives in [`executions/`](README.md) and evidence in each verification record. Update this page at every closeout.
+Boundary: execution 0054-A is delivered and frozen-verified from baseline `22b5864` and plans `793d33b`/`d913537`; [execution 0054-B](executions/0054-media-library-server-integration/phase-b/plan.md) is now frozen for provider/path item lookup and truthful post-refresh item observation. Provider task completion remains unsupported by the common APIs and is not a phase-B claim. Execution 0047 remains the open P0 operator gate, and its Linux persistence/recovery/process checks plus every implemented live login/crawl/CDN/media-server row remain `NOT_RUN`. Absent capabilities are `NOT_IMPLEMENTED`, not unexecuted live rows. This table is the canonical status view; per-execution detail lives in [`executions/`](README.md) and evidence in each verification record. Update this page at every closeout.
 
 ## Milestone status
 
 | Milestone | Status |
 | --- | --- |
 | Offline feature work | Platform shapes frozen at the 0039 boundary plus 0040/0044 operations and the 0050 Console v2 control-plane foundation; 0043 (danmaku/subtitles) remains deferred |
-| REST API + web console | 0050–0053 foundations plus 0054-A safe managed-tree paging, redacted media-server posture, durable probe/targeted-refresh Operations and qualification evidence are delivered; 0054-B scan completion/item lookup is not yet frozen |
+| REST API + web console | 0050–0053 foundations plus 0054-A safe managed-tree paging, redacted media-server posture, durable probe/targeted-refresh Operations and qualification evidence are delivered; 0054-B item lookup/post-refresh observation is frozen but not implemented |
 | Docker packaging | Candidate image plus reproducibility hardening and the Node-free multi-stage Console v2 build delivered (0041, 0048–0050); the repaired operator image built/started with green doctor, deep readiness and Chromium launch |
 | Operations docs / security review / release checklist | Delivered (0045, 0046) |
 | Live qualification (final gate) | Open — execution 0047, operator-assisted on Linux |
@@ -27,7 +27,8 @@ Boundary: execution 0054-A is delivered and frozen-verified from baseline `22b58
 | Live login (any platform) | `NOT_RUN` — operator (Phase C canary: Bilibili + XHS) | Execution 0047 |
 | Live crawl / download / incrementality | `NOT_RUN` — operator (Phases C–E) | Execution 0047 |
 | Real Emby/Jellyfin connection, Library discovery and targeted-refresh acceptance | `NOT_RUN` — implemented in 0054-A but no authorized server was used | Executions 0054 and 0047 |
-| Scan completion and provider/path item lookup | `NOT_IMPLEMENTED` — separately frozen 0054-B scope; no human status | Execution 0054 qualification boundary |
+| Provider/path item lookup and post-refresh item observation | `NOT_IMPLEMENTED` — 0054-B scope is frozen; implementation has not started and there is no human status | Execution 0054-B plan |
+| Provider task completion | `NOT_IMPLEMENTED` — the common Emby/Jellyfin refresh APIs provide no durable task identity; phase B does not claim it | Execution 0054-B truth boundary |
 | Playback-evidence mutation / automatic post-export scan | `NOT_IMPLEMENTED` — playback recording remains 0055; automatic chaining has no frozen assignment | Execution 0054 qualification boundary |
 | External security audit | `NOT_RUN` — optional | docs/security-review.md residual risks |
 
