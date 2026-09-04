@@ -6,6 +6,8 @@ describe('console formatters', () => {
   it('formats stable status labels and tones', () => {
     expect(statusLabel('failed_retryable')).toBe('可重试');
     expect(statusTone('failed_retryable')).toBe('danger');
+    expect(statusLabel('interrupted')).toBe('已中断');
+    expect(statusTone('interrupted')).toBe('danger');
     expect(statusTone('authenticated')).toBe('success');
   });
 

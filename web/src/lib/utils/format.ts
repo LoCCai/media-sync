@@ -26,6 +26,7 @@ const STATUS_LABELS: Record<string, string> = {
   failed: '失败',
   failed_retryable: '可重试',
   failed_terminal: '终止失败',
+  interrupted: '已中断',
   not_run: '未运行',
   paused: '已暂停',
   pass: '通过',
@@ -51,7 +52,7 @@ export function statusTone(
 ): 'success' | 'warning' | 'danger' | 'info' | '' {
   if (!status) return '';
   if (['authenticated', 'enabled', 'exported', 'succeeded', 'verified'].includes(status)) return 'success';
-  if (['failed', 'failed_retryable', 'failed_terminal'].includes(status)) return 'danger';
+  if (['failed', 'failed_retryable', 'failed_terminal', 'interrupted'].includes(status)) return 'danger';
   if (['expired', 'required', 'retry_wait', 'unknown', 'waiting_auth', 'waiting_user'].includes(status)) {
     return 'warning';
   }
