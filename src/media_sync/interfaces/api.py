@@ -886,7 +886,7 @@ def create_api_app(settings: Settings | None = None) -> FastAPI:
     def _library_inspection_payload(inspection: LibraryInspection) -> dict[str, object]:
         publication = inspection.publication
         return {
-            "schema_version": 1,
+            "schema_version": 2,
             "author_id": inspection.author_id,
             "publication": (
                 {

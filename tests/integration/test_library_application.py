@@ -124,6 +124,7 @@ def test_paginated_inspection_reaches_end_without_claiming_whole_tree_completion
     assert complete.page.complete is True
     assert complete.page.start_index == 0
     assert complete.page.next_cursor is None
+    assert complete.allowed_actions == ("refresh_and_verify",)
 
 
 def test_cursor_is_tamper_evident_and_stale_after_new_publication(
@@ -174,6 +175,7 @@ def test_freshness_is_independent_from_published_tree_integrity(
         content.title = "Not published yet"
     outdated = library.inspect(author_id, max_bytes=1_000_000, deadline_seconds=10)
     assert (outdated.freshness, outdated.integrity) == ("outdated", "complete")
+    assert outdated.allowed_actions == ("export_author",)
 
     with database.session() as session:
         from media_sync.infrastructure.db.models import Content
@@ -195,6 +197,7 @@ def test_freshness_is_independent_from_published_tree_integrity(
     blocked = library.inspect(author_id, max_bytes=1_000_000, deadline_seconds=10)
     assert (blocked.freshness, blocked.integrity) == ("blocked", "complete")
     assert blocked.freshness_reason_code == "library_snapshot_blocked"
+    assert blocked.allowed_actions == ()
 
 
 def test_not_published_and_empty_publication_are_distinct(
@@ -214,6 +217,7 @@ def test_not_published_and_empty_publication_are_distinct(
     export_service.export_author(EmbyExportRequest(author_id, "empty-publisher"))
     empty = library.inspect(author_id, max_bytes=1_000_000, deadline_seconds=10)
     assert (empty.freshness, empty.integrity) == ("current", "complete")
+    assert empty.allowed_actions == ("refresh_and_verify",)
     assert empty.publication is not None and empty.publication.managed_file_count > 0
     with database.session() as session:
         assert session.scalar(select(func.count()).select_from(ExportRecord)) == 0

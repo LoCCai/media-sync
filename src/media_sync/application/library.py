@@ -202,9 +202,12 @@ def _freshness(state: _LibraryState) -> tuple[LibraryFreshness, str | None]:
 
 
 def _allowed_actions(freshness: LibraryFreshness, integrity: LibraryIntegrity) -> tuple[str, ...]:
+    actions: list[str] = []
     if freshness in {"not_published", "outdated"} and integrity not in {"drifted", "inconsistent"}:
-        return ("export_author",)
-    return ()
+        actions.append("export_author")
+    if freshness == "current" and integrity == "complete":
+        actions.append("refresh_and_verify")
+    return tuple(actions)
 
 
 class LibraryInspectionService:

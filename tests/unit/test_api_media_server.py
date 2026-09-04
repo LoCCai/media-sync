@@ -346,7 +346,7 @@ def test_unconfigured_media_server_and_qualifications_are_explicit(tmp_path: Pat
     qualifications = client.get("/api/v1/qualifications")
     assert qualifications.status_code == 200
     body = qualifications.json()
-    assert body["schema_version"] == 1
+    assert body["schema_version"] == 2
     assert body["policy"]["automated_evidence_confers_human_pass"] is False
     assert [row["platform"] for row in body["platforms"]] == [
         "xhs",
@@ -359,11 +359,25 @@ def test_unconfigured_media_server_and_qualifications_are_explicit(tmp_path: Pat
     ]
     media_capabilities = {row["capability"]: row for row in body["media_server"]["human_qualification"]}
     assert media_capabilities["connection_probe"]["human_status"] == "NOT_RUN"
-    assert media_capabilities["scan_completion"] == {
-        "capability": "scan_completion",
+    assert media_capabilities["item_lookup"] == {
+        "capability": "item_lookup",
+        "implementation_status": "IMPLEMENTED",
+        "human_status": "NOT_RUN",
+    }
+    assert media_capabilities["post_refresh_item_observation"] == {
+        "capability": "post_refresh_item_observation",
+        "implementation_status": "IMPLEMENTED",
+        "human_status": "NOT_RUN",
+    }
+    assert media_capabilities["provider_task_completion"] == {
+        "capability": "provider_task_completion",
         "implementation_status": "NOT_IMPLEMENTED",
         "human_status": None,
+        "reason": "provider_api_unsupported",
     }
+    assert media_capabilities["playback_evidence"]["human_status"] is None
+    assert media_capabilities["automatic_post_export_scan"]["human_status"] is None
+    assert "scan_completion" not in media_capabilities
     assert body["media_server"]["automated_evidence"] == {
         "latest_probe": None,
         "latest_targeted_scan": None,

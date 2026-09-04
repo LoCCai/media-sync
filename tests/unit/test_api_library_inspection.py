@@ -113,7 +113,7 @@ def test_library_detail_projects_only_logical_manifest_nodes_and_fixed_facts(
 
     assert response.status_code == 200
     body = response.json()
-    assert body["schema_version"] == 1
+    assert body["schema_version"] == 2
     assert body["author_id"] == author_id
     assert body["freshness"] == "current"
     assert body["integrity"] == "page_verified"

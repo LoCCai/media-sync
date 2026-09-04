@@ -30,7 +30,7 @@ from media_sync.infrastructure.db import (
 HumanQualificationStatus: TypeAlias = Literal["PASS", "FAIL", "NOT_RUN", "BLOCKED_EXTERNAL"]
 ImplementationStatus: TypeAlias = Literal["IMPLEMENTED", "NOT_IMPLEMENTED"]
 
-QUALIFICATION_SCHEMA_VERSION: Final = 1
+QUALIFICATION_SCHEMA_VERSION: Final = 2
 HUMAN_QUALIFICATION_STATUSES: Final = frozenset({"PASS", "FAIL", "NOT_RUN", "BLOCKED_EXTERNAL"})
 IMPLEMENTATION_STATUSES: Final = frozenset({"IMPLEMENTED", "NOT_IMPLEMENTED"})
 _PLATFORM_ORDER: Final = tuple(platform.value for platform in Platform)
@@ -46,10 +46,10 @@ _MEDIA_SERVER_IMPLEMENTED: Final = (
     "connection_probe",
     "library_discovery",
     "targeted_scan_acceptance",
+    "item_lookup",
+    "post_refresh_item_observation",
 )
 _MEDIA_SERVER_NOT_IMPLEMENTED: Final = (
-    "scan_completion",
-    "item_lookup",
     "playback_evidence",
     "automatic_post_export_scan",
 )
@@ -63,13 +63,21 @@ class QualificationError(RuntimeError):
         self.code = code
 
 
-def _human_capability(name: str, implementation: ImplementationStatus) -> dict[str, object]:
-    return {
+def _human_capability(
+    name: str,
+    implementation: ImplementationStatus,
+    *,
+    reason: Literal["provider_api_unsupported"] | None = None,
+) -> dict[str, object]:
+    capability: dict[str, object] = {
         "capability": name,
         "implementation_status": implementation,
         # An unimplemented capability cannot have a live qualification run.
         "human_status": "NOT_RUN" if implementation == "IMPLEMENTED" else None,
     }
+    if reason is not None:
+        capability["reason"] = reason
+    return capability
 
 
 def _counts_by_platform(rows: Sequence[tuple[str, int]]) -> dict[str, int]:
@@ -93,7 +101,7 @@ def _operation_evidence(operation: OperationSnapshot | None) -> dict[str, object
 
 
 class QualificationService:
-    """Build schema-v1 evidence without inferring live qualification PASS."""
+    """Build schema-v2 evidence without inferring live qualification PASS."""
 
     def __init__(self, database: Database) -> None:
         if not isinstance(database, Database):
@@ -142,6 +150,11 @@ class QualificationService:
             },
             "human_qualification": [
                 *(_human_capability(capability, "IMPLEMENTED") for capability in _MEDIA_SERVER_IMPLEMENTED),
+                _human_capability(
+                    "provider_task_completion",
+                    "NOT_IMPLEMENTED",
+                    reason="provider_api_unsupported",
+                ),
                 *(_human_capability(capability, "NOT_IMPLEMENTED") for capability in _MEDIA_SERVER_NOT_IMPLEMENTED),
             ],
         }

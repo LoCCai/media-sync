@@ -1,4 +1,4 @@
-"""Schema-v1 automated versus human qualification boundary."""
+"""Schema-v2 automated versus human qualification boundary."""
 
 from __future__ import annotations
 
@@ -27,7 +27,14 @@ def _database(tmp_path: Path) -> Database:
     return Database(database_url)
 
 
-def _operation(kind: str, *, state: str, result: dict[str, object]) -> OperationSnapshot:
+def _operation(
+    kind: str,
+    *,
+    state: str,
+    result: dict[str, object],
+    target_type: str | None = None,
+    target_id: str | None = None,
+) -> OperationSnapshot:
     at = datetime(2026, 9, 5, 1, 2, 3, tzinfo=UTC)
     return OperationSnapshot(
         id=str(uuid4()),
@@ -41,8 +48,8 @@ def _operation(kind: str, *, state: str, result: dict[str, object]) -> Operation
         started_at=at,
         finished_at=at,
         requested_by="local-api",
-        target_type=None,
-        target_id=None,
+        target_type=target_type,
+        target_id=target_id,
         correlation_id=str(uuid4()),
         cancel_requested_at=None,
         error_code=None,
@@ -136,15 +143,42 @@ def test_qualification_snapshot_counts_local_evidence_without_promoting_human_pa
                 "library_present": True,
             },
         )
+        scan = _operation(
+            "media-server-scan",
+            state="succeeded",
+            result={
+                "schema_version": 2,
+                "mode": "post_refresh_item_observation",
+                "provider": "emby",
+                "server_version": "4.9.0",
+                "profile_fingerprint": "5" * 64,
+                "library_id_digest": "6" * 64,
+                "scan_state": "accepted",
+                "publication_fingerprint": "7" * 64,
+                "selector_fingerprint": "8" * 64,
+                "baseline_state": "not_found",
+                "observation_state": "observed",
+                "match_count": 1,
+                "verification_count": 2,
+                "accepted_at": "2026-09-05T01:02:03+00:00",
+                "item_fingerprint": "9" * 64,
+                "observed_at": "2026-09-05T01:02:05+00:00",
+            },
+            target_type="author",
+            target_id=author_id,
+        )
         payload = QualificationService(database).snapshot(
             media_server_configured=True,
-            media_server_operations={"media-server-probe": probe},
+            media_server_operations={
+                "media-server-probe": probe,
+                "media-server-scan": scan,
+            },
             generated_at=at,
         )
     finally:
         database.dispose()
 
-    assert payload["schema_version"] == 1
+    assert payload["schema_version"] == 2
     assert payload["policy"]["automated_evidence_confers_human_pass"] is False  # type: ignore[index]
     platform_rows = {row["platform"]: row for row in payload["platforms"]}  # type: ignore[union-attr]
     bili = platform_rows["bili"]
@@ -168,20 +202,48 @@ def test_qualification_snapshot_counts_local_evidence_without_promoting_human_pa
     latest_probe = media_server["automated_evidence"]["latest_probe"]  # type: ignore[index]
     assert latest_probe["operation_id"] == probe.id
     assert latest_probe["result"]["provider"] == "emby"
+    latest_scan = media_server["automated_evidence"]["latest_targeted_scan"]  # type: ignore[index]
+    assert latest_scan["operation_id"] == scan.id
+    assert latest_scan["result"]["observation_state"] == "observed"
     capability_rows = {
         row["capability"]: row
         for row in media_server["human_qualification"]  # type: ignore[index]
     }
-    assert capability_rows["targeted_scan_acceptance"] == {
-        "capability": "targeted_scan_acceptance",
-        "implementation_status": "IMPLEMENTED",
-        "human_status": "NOT_RUN",
-    }
-    assert capability_rows["scan_completion"] == {
-        "capability": "scan_completion",
+    assert list(capability_rows) == [
+        "connection_probe",
+        "library_discovery",
+        "targeted_scan_acceptance",
+        "item_lookup",
+        "post_refresh_item_observation",
+        "provider_task_completion",
+        "playback_evidence",
+        "automatic_post_export_scan",
+    ]
+    for capability in (
+        "connection_probe",
+        "library_discovery",
+        "targeted_scan_acceptance",
+        "item_lookup",
+        "post_refresh_item_observation",
+    ):
+        assert capability_rows[capability] == {
+            "capability": capability,
+            "implementation_status": "IMPLEMENTED",
+            "human_status": "NOT_RUN",
+        }
+    assert capability_rows["provider_task_completion"] == {
+        "capability": "provider_task_completion",
         "implementation_status": "NOT_IMPLEMENTED",
         "human_status": None,
+        "reason": "provider_api_unsupported",
     }
+    for capability in ("playback_evidence", "automatic_post_export_scan"):
+        assert capability_rows[capability] == {
+            "capability": capability,
+            "implementation_status": "NOT_IMPLEMENTED",
+            "human_status": None,
+        }
+    assert all(row["human_status"] != "PASS" for row in capability_rows.values())
 
 
 def test_qualification_snapshot_has_all_seven_platforms_and_no_host_or_secret_fields(tmp_path: Path) -> None:
