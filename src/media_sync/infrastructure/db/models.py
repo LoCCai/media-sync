@@ -7,6 +7,7 @@ from typing import Any
 
 from sqlalchemy import (
     JSON,
+    BigInteger,
     Boolean,
     CheckConstraint,
     ForeignKey,
@@ -15,6 +16,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    event,
     text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -74,6 +76,60 @@ ACTIVE_SYNC_JOB_STATUSES = frozenset(
 SCHEDULER_LANE_SCOPE_TYPES = frozenset({"platform", "account"})
 CIRCUIT_STATES = frozenset({"closed", "open", "half_open"})
 ASSET_REFRESH_OBSERVATION_KINDS = frozenset({"ingested", "legacy_unique_inferred"})
+OPERATION_KINDS = frozenset(
+    {
+        "account-login",
+        "asset-download",
+        "emby-export",
+        "pipeline-run",
+        "scheduler-run",
+    }
+)
+OPERATION_STATES = frozenset(
+    {
+        "queued",
+        "running",
+        "succeeded",
+        "failed_retryable",
+        "failed_terminal",
+        "cancelled",
+        "interrupted",
+    }
+)
+ACTIVE_OPERATION_STATES = frozenset({"queued", "running"})
+TERMINAL_OPERATION_STATES = frozenset(OPERATION_STATES - ACTIVE_OPERATION_STATES)
+OPERATION_FAILURE_STATES = frozenset({"failed_retryable", "failed_terminal", "interrupted"})
+OPERATION_EVENT_LEVELS = frozenset({"info", "warning", "error"})
+OPERATION_EVENT_CODES = frozenset(
+    {
+        "operation_cancel_observed",
+        "operation_cancel_requested",
+        "operation_cancelled",
+        "operation_entity_linked",
+        "operation_failed",
+        "operation_interrupted",
+        "operation_phase_changed",
+        "operation_progressed",
+        "operation_reconciled",
+        "operation_requested",
+        "operation_started",
+        "operation_succeeded",
+    }
+)
+OPERATION_SUBJECT_TYPES = frozenset(
+    {
+        "account",
+        "asset",
+        "author",
+        "content",
+        "export_record",
+        "job",
+        "login_session",
+        "subscription",
+        "sync_run",
+    }
+)
+OPERATION_SUBJECT_ROLES = frozenset({"target", "execution", "result", "related"})
 
 
 def _quoted_values(values: frozenset[str]) -> str:
@@ -634,6 +690,287 @@ class SchedulerLane(TimestampMixin, Base):
     revision: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
 
 
+class OperationEventStreamState(Base):
+    """Singleton transactional clock used by the resumable operation stream."""
+
+    __tablename__ = "operation_event_stream_state"
+    __table_args__ = (
+        CheckConstraint("id = 1", name="singleton"),
+        CheckConstraint("last_sequence >= 0", name="last_sequence_nonnegative"),
+        CheckConstraint("pruned_through_sequence >= 0", name="pruned_through_sequence_nonnegative"),
+        CheckConstraint(
+            "pruned_through_sequence <= last_sequence",
+            name="pruned_through_not_after_last",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=False)
+    last_sequence: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0, server_default="0")
+    pruned_through_sequence: Mapped[int] = mapped_column(
+        BigInteger,
+        nullable=False,
+        default=0,
+        server_default="0",
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        UTCDateTime(),
+        default=utc_now,
+        server_default=text("CURRENT_TIMESTAMP"),
+        nullable=False,
+    )
+
+
+class Operation(Base):
+    """One durable operator request, distinct from Jobs and domain runs."""
+
+    __tablename__ = "operations"
+    _active_exclusive_predicate = f"exclusive_key IS NOT NULL AND state IN ({_quoted_values(ACTIVE_OPERATION_STATES)})"
+    _idempotency_predicate = "idempotency_key_hash IS NOT NULL"
+    _terminal_values = _quoted_values(TERMINAL_OPERATION_STATES)
+    _failure_values = _quoted_values(OPERATION_FAILURE_STATES)
+    __table_args__ = (
+        CheckConstraint(f"kind IN ({_quoted_values(OPERATION_KINDS)})", name="kind"),
+        CheckConstraint(f"state IN ({_quoted_values(OPERATION_STATES)})", name="state"),
+        CheckConstraint(
+            f"target_type IS NULL OR target_type IN ({_quoted_values(OPERATION_SUBJECT_TYPES)})",
+            name="target_type",
+        ),
+        CheckConstraint(
+            "(target_type IS NULL AND target_id IS NULL) OR (target_type IS NOT NULL AND target_id IS NOT NULL)",
+            name="target_shape",
+        ),
+        CheckConstraint(
+            "idempotency_key_hash IS NULL OR "
+            "(length(idempotency_key_hash) = 64 AND lower(idempotency_key_hash) = idempotency_key_hash)",
+            name="idempotency_key_hash_shape",
+        ),
+        CheckConstraint(
+            "length(request_fingerprint) = 64 AND lower(request_fingerprint) = request_fingerprint",
+            name="request_fingerprint_shape",
+        ),
+        CheckConstraint("event_sequence >= 0", name="event_sequence_nonnegative"),
+        CheckConstraint("revision >= 0", name="revision_nonnegative"),
+        CheckConstraint(
+            "progress_current IS NULL OR progress_current >= 0",
+            name="progress_current_nonnegative",
+        ),
+        CheckConstraint(
+            "progress_total IS NULL OR progress_total >= 0",
+            name="progress_total_nonnegative",
+        ),
+        CheckConstraint(
+            "progress_current IS NULL OR progress_total IS NULL OR progress_current <= progress_total",
+            name="progress_order",
+        ),
+        CheckConstraint(
+            "progress_unit IS NULL OR progress_current IS NOT NULL OR progress_total IS NOT NULL",
+            name="progress_unit_shape",
+        ),
+        CheckConstraint("started_at IS NULL OR started_at >= requested_at", name="started_at_order"),
+        CheckConstraint("finished_at IS NULL OR finished_at >= requested_at", name="finished_at_order"),
+        CheckConstraint(
+            "cancel_requested_at IS NULL OR cancel_requested_at >= requested_at",
+            name="cancel_requested_at_order",
+        ),
+        CheckConstraint(
+            "(state = 'queued' AND started_at IS NULL AND finished_at IS NULL "
+            "AND lease_owner IS NULL AND lease_token IS NULL AND lease_expires_at IS NULL) OR "
+            "(state = 'running' AND started_at IS NOT NULL AND finished_at IS NULL "
+            "AND lease_owner IS NOT NULL AND lease_token IS NOT NULL AND lease_expires_at IS NOT NULL) OR "
+            f"(state IN ({_terminal_values}) AND finished_at IS NOT NULL "
+            "AND lease_owner IS NULL AND lease_token IS NULL AND lease_expires_at IS NULL)",
+            name="lifecycle_shape",
+        ),
+        CheckConstraint(
+            f"(state IN ({_failure_values}) AND error_code IS NOT NULL) OR "
+            f"(state NOT IN ({_failure_values}) AND error_code IS NULL)",
+            name="error_shape",
+        ),
+        Index("ix_operations_state_requested_at", "state", "requested_at", "id"),
+        Index("ix_operations_lease_recovery", "state", "lease_expires_at", "id"),
+        Index("ix_operations_target", "target_type", "target_id", "requested_at"),
+        Index("ix_operations_correlation_id", "correlation_id", "requested_at"),
+        Index(
+            "uq_operations_active_exclusive_key",
+            "exclusive_key",
+            unique=True,
+            sqlite_where=text(_active_exclusive_predicate),
+            postgresql_where=text(_active_exclusive_predicate),
+        ),
+        Index(
+            "uq_operations_kind_idempotency_key_hash",
+            "kind",
+            "idempotency_key_hash",
+            unique=True,
+            sqlite_where=text(_idempotency_predicate),
+            postgresql_where=text(_idempotency_predicate),
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    kind: Mapped[str] = mapped_column(String(64), nullable=False)
+    state: Mapped[str] = mapped_column(String(32), nullable=False, default="queued", server_default="queued")
+    phase: Mapped[str | None] = mapped_column(String(64))
+    progress_current: Mapped[int | None] = mapped_column(BigInteger)
+    progress_total: Mapped[int | None] = mapped_column(BigInteger)
+    progress_unit: Mapped[str | None] = mapped_column(String(32))
+    requested_at: Mapped[datetime] = mapped_column(
+        UTCDateTime(),
+        default=utc_now,
+        server_default=text("CURRENT_TIMESTAMP"),
+        nullable=False,
+    )
+    started_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    finished_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    requested_by: Mapped[str] = mapped_column(
+        String(128),
+        nullable=False,
+        default="local-api",
+        server_default="local-api",
+    )
+    idempotency_key_hash: Mapped[str | None] = mapped_column(String(64))
+    request_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    exclusive_key: Mapped[str | None] = mapped_column(String(512))
+    target_type: Mapped[str | None] = mapped_column(String(32))
+    target_id: Mapped[str | None] = mapped_column(String(36))
+    correlation_id: Mapped[str] = mapped_column(String(36), nullable=False, default=new_uuid)
+    cancel_requested_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    error_code: Mapped[str | None] = mapped_column(String(128))
+    result_summary: Mapped[dict[str, Any]] = mapped_column(
+        JSON,
+        nullable=False,
+        default=dict,
+        server_default=text("'{}'"),
+    )
+    event_sequence: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0, server_default="0")
+    revision: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0, server_default="0")
+    lease_owner: Mapped[str | None] = mapped_column(String(255))
+    lease_token: Mapped[str | None] = mapped_column(String(36))
+    lease_expires_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    updated_at: Mapped[datetime] = mapped_column(
+        UTCDateTime(),
+        default=utc_now,
+        server_default=text("CURRENT_TIMESTAMP"),
+        nullable=False,
+    )
+
+    events: Mapped[list[OperationEvent]] = relationship(
+        back_populates="operation",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        order_by="OperationEvent.operation_sequence",
+    )
+    subjects: Mapped[list[OperationSubject]] = relationship(
+        back_populates="operation",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+
+
+class OperationEvent(Base):
+    """Immutable, globally replayable event for one durable Operation."""
+
+    __tablename__ = "operation_events"
+    __table_args__ = (
+        UniqueConstraint("operation_id", "operation_sequence"),
+        CheckConstraint("stream_sequence >= 1", name="stream_sequence_positive"),
+        CheckConstraint("operation_sequence >= 1", name="operation_sequence_positive"),
+        CheckConstraint(f"level IN ({_quoted_values(OPERATION_EVENT_LEVELS)})", name="level"),
+        CheckConstraint(f"event_code IN ({_quoted_values(OPERATION_EVENT_CODES)})", name="event_code"),
+        CheckConstraint(
+            f"from_state IS NULL OR from_state IN ({_quoted_values(OPERATION_STATES)})",
+            name="from_state",
+        ),
+        CheckConstraint(
+            f"to_state IS NULL OR to_state IN ({_quoted_values(OPERATION_STATES)})",
+            name="to_state",
+        ),
+        CheckConstraint(
+            f"subject_type IS NULL OR subject_type IN ({_quoted_values(OPERATION_SUBJECT_TYPES)})",
+            name="subject_type",
+        ),
+        CheckConstraint(
+            "(subject_type IS NULL AND subject_id IS NULL) OR (subject_type IS NOT NULL AND subject_id IS NOT NULL)",
+            name="subject_shape",
+        ),
+        Index("ix_operation_events_operation_sequence", "operation_id", "operation_sequence"),
+        Index("ix_operation_events_subject", "subject_type", "subject_id", "stream_sequence"),
+        Index("ix_operation_events_at", "at", "stream_sequence"),
+    )
+
+    stream_sequence: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=False)
+    operation_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("operations.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    operation_sequence: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    at: Mapped[datetime] = mapped_column(
+        UTCDateTime(),
+        default=utc_now,
+        server_default=text("CURRENT_TIMESTAMP"),
+        nullable=False,
+    )
+    level: Mapped[str] = mapped_column(String(16), nullable=False, default="info", server_default="info")
+    event_code: Mapped[str] = mapped_column(String(128), nullable=False)
+    from_state: Mapped[str | None] = mapped_column(String(32))
+    to_state: Mapped[str | None] = mapped_column(String(32))
+    phase: Mapped[str | None] = mapped_column(String(64))
+    message_key: Mapped[str | None] = mapped_column(String(128))
+    subject_type: Mapped[str | None] = mapped_column(String(32))
+    subject_id: Mapped[str | None] = mapped_column(String(36))
+    safe_context: Mapped[dict[str, Any]] = mapped_column(
+        JSON,
+        nullable=False,
+        default=dict,
+        server_default=text("'{}'"),
+    )
+
+    operation: Mapped[Operation] = relationship(back_populates="events")
+
+
+class OperationSubject(Base):
+    """Bounded polymorphic association retained independently of domain rows."""
+
+    __tablename__ = "operation_subjects"
+    __table_args__ = (
+        CheckConstraint(f"subject_type IN ({_quoted_values(OPERATION_SUBJECT_TYPES)})", name="subject_type"),
+        CheckConstraint(f"role IN ({_quoted_values(OPERATION_SUBJECT_ROLES)})", name="role"),
+        Index("ix_operation_subjects_subject", "subject_type", "subject_id", "operation_id"),
+    )
+
+    operation_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("operations.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    subject_type: Mapped[str] = mapped_column(String(32), primary_key=True)
+    subject_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    role: Mapped[str] = mapped_column(String(32), primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(
+        UTCDateTime(),
+        default=utc_now,
+        server_default=text("CURRENT_TIMESTAMP"),
+        nullable=False,
+    )
+
+    operation: Mapped[Operation] = relationship(back_populates="subjects")
+
+
+@event.listens_for(OperationEventStreamState.__table__, "after_create")
+def _seed_operation_event_stream_state(target: Any, connection: Any, **_: Any) -> None:
+    """Make ``Base.metadata.create_all`` as usable as the packaged migration."""
+
+    connection.execute(
+        target.insert().values(
+            id=1,
+            last_sequence=0,
+            pruned_through_sequence=0,
+            updated_at=utc_now(),
+        )
+    )
+
+
 class ExportRecord(TimestampMixin, Base):
     __tablename__ = "export_records"
     __table_args__ = (
@@ -661,6 +998,7 @@ class ExportRecord(TimestampMixin, Base):
 
 
 __all__ = [
+    "ACTIVE_OPERATION_STATES",
     "ACTIVE_SYNC_JOB_STATUSES",
     "ASSET_KINDS",
     "ASSET_REFRESH_OBSERVATION_KINDS",
@@ -671,10 +1009,18 @@ __all__ = [
     "JOB_STATUSES",
     "LOGIN_METHODS",
     "LOGIN_SESSION_STATUSES",
+    "OPERATION_EVENT_CODES",
+    "OPERATION_EVENT_LEVELS",
+    "OPERATION_FAILURE_STATES",
+    "OPERATION_KINDS",
+    "OPERATION_STATES",
+    "OPERATION_SUBJECT_ROLES",
+    "OPERATION_SUBJECT_TYPES",
     "PLATFORMS",
     "RUN_STATUSES",
     "SCHEDULER_LANE_SCOPE_TYPES",
     "TERMINAL_JOB_STATUSES",
+    "TERMINAL_OPERATION_STATES",
     "TERMINAL_RUN_STATUSES",
     "Account",
     "Asset",
@@ -684,6 +1030,10 @@ __all__ = [
     "ExportRecord",
     "Job",
     "LoginSession",
+    "Operation",
+    "OperationEvent",
+    "OperationEventStreamState",
+    "OperationSubject",
     "RunEvent",
     "SchedulerLane",
     "Subscription",

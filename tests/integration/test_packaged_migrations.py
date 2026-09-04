@@ -12,6 +12,7 @@ import sys
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from importlib.resources import as_file, files
+from io import StringIO
 from pathlib import Path
 from uuid import UUID
 from zipfile import ZipFile
@@ -84,6 +85,21 @@ def _downgrade_packaged_database(database_url: str, revision: str) -> None:
         command.downgrade(configuration, revision)
 
 
+def _offline_0006_sql(database_url: str) -> str:
+    output = StringIO()
+    migrations = files(MIGRATIONS_PACKAGE)
+    with as_file(migrations) as migration_path:
+        configuration = Config(output_buffer=output)
+        configuration.set_main_option("script_location", str(migration_path))
+        configuration.set_main_option("sqlalchemy.url", database_url)
+        command.upgrade(
+            configuration,
+            "0005_asset_refresh_sources:0006_operations_observability",
+            sql=True,
+        )
+    return output.getvalue()
+
+
 def _execution_0005_job_evidence(connection: Connection) -> dict[str, dict[str, object]]:
     rows = connection.execute(
         text(
@@ -123,7 +139,7 @@ def test_programmatic_upgrade_uses_packaged_resources_and_handles_percent_path(t
     try:
         assert "accounts" in inspect(engine).get_table_names()
         with engine.connect() as connection:
-            assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0005_asset_refresh_sources"
+            assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0006_operations_observability"
     finally:
         engine.dispose()
 
@@ -156,6 +172,7 @@ def test_built_wheel_contains_and_runs_packaged_migrations(tmp_path: Path) -> No
             "media_sync/infrastructure/db/migrations/versions/0003_media_download_emby.py",
             "media_sync/infrastructure/db/migrations/versions/0004_scheduler_control_plane.py",
             "media_sync/infrastructure/db/migrations/versions/0005_asset_refresh_sources.py",
+            "media_sync/infrastructure/db/migrations/versions/0006_operations_observability.py",
         }
         assert required_resources <= wheel_names
         wheel.extractall(installed_root)
@@ -181,7 +198,7 @@ try:
     if "accounts" not in inspect(engine).get_table_names():
         raise AssertionError("packaged migration did not create accounts")
     with engine.connect() as connection:
-        if connection.scalar(text("SELECT version_num FROM alembic_version")) != "0005_asset_refresh_sources":
+        if connection.scalar(text("SELECT version_num FROM alembic_version")) != "0006_operations_observability":
             raise AssertionError("unexpected migration revision")
 finally:
     engine.dispose()
@@ -204,6 +221,115 @@ finally:
         text=True,
     )
     assert smoke.returncode == 0, smoke.stdout + smoke.stderr
+
+
+@pytest.mark.parametrize(
+    ("database_url", "timestamp_type"),
+    [
+        ("sqlite+pysqlite:///offline.sqlite3", "DATETIME"),
+        ("postgresql://example.invalid/media_sync", "TIMESTAMP WITH TIME ZONE"),
+    ],
+)
+def test_0006_offline_ddl_is_portable_and_uses_an_explicit_stream_clock(
+    database_url: str,
+    timestamp_type: str,
+) -> None:
+    sql = _offline_0006_sql(database_url)
+
+    for table_name in (
+        "operation_event_stream_state",
+        "operations",
+        "operation_events",
+        "operation_subjects",
+    ):
+        assert f"CREATE TABLE {table_name}" in sql
+    assert f"updated_at {timestamp_type}" in sql
+    assert "stream_sequence BIGINT NOT NULL" in sql
+    assert "stream_sequence BIGSERIAL" not in sql
+    assert "stream_sequence GENERATED" not in sql
+    assert (
+        "INSERT INTO operation_event_stream_state (id, last_sequence, pruned_through_sequence) VALUES (1, 0, 0)"
+    ) in sql
+    assert (
+        "CREATE UNIQUE INDEX uq_operations_active_exclusive_key ON operations (exclusive_key) "
+        "WHERE exclusive_key IS NOT NULL AND state IN ('queued', 'running')"
+    ) in sql
+    assert (
+        "CREATE UNIQUE INDEX uq_operations_kind_idempotency_key_hash "
+        "ON operations (kind, idempotency_key_hash) WHERE idempotency_key_hash IS NOT NULL"
+    ) in sql
+    assert "ck_operation_events_event_code" in sql
+    if database_url.startswith("postgresql"):
+        assert "id SERIAL" not in sql
+
+
+def test_0006_sqlite_roundtrip_creates_only_bounded_operation_control_plane(tmp_path: Path) -> None:
+    database_path = tmp_path / "operations-observability.sqlite3"
+    database_url = f"sqlite+pysqlite:///{database_path.as_posix()}"
+    operation_tables = {
+        "operation_event_stream_state",
+        "operation_events",
+        "operation_subjects",
+        "operations",
+    }
+    upgrade_database(database_url, "0005_asset_refresh_sources")
+    engine = create_engine(database_url)
+    try:
+        assert operation_tables.isdisjoint(inspect(engine).get_table_names())
+    finally:
+        engine.dispose()
+
+    def assert_head() -> None:
+        current_engine = create_engine(database_url)
+        try:
+            inspector = inspect(current_engine)
+            assert operation_tables <= set(inspector.get_table_names())
+            assert inspector.get_pk_constraint("operation_events")["constrained_columns"] == ["stream_sequence"]
+            assert {column["name"] for column in inspector.get_columns("operation_subjects")} == {
+                "operation_id",
+                "subject_type",
+                "subject_id",
+                "role",
+                "created_at",
+            }
+            operation_indexes = {index["name"]: index for index in inspector.get_indexes("operations")}
+            assert operation_indexes["uq_operations_active_exclusive_key"]["unique"] == 1
+            assert operation_indexes["uq_operations_kind_idempotency_key_hash"]["unique"] == 1
+            event_foreign_keys = {
+                tuple(foreign_key["constrained_columns"]): foreign_key["options"].get("ondelete")
+                for foreign_key in inspector.get_foreign_keys("operation_events")
+            }
+            subject_foreign_keys = {
+                tuple(foreign_key["constrained_columns"]): foreign_key["options"].get("ondelete")
+                for foreign_key in inspector.get_foreign_keys("operation_subjects")
+            }
+            assert event_foreign_keys == {("operation_id",): "CASCADE"}
+            assert subject_foreign_keys == {("operation_id",): "CASCADE"}
+            with current_engine.connect() as connection:
+                assert (
+                    connection.scalar(text("SELECT version_num FROM alembic_version"))
+                    == "0006_operations_observability"
+                )
+                assert connection.execute(
+                    text("SELECT id, last_sequence, pruned_through_sequence FROM operation_event_stream_state")
+                ).all() == [(1, 0, 0)]
+                assert connection.execute(text("PRAGMA foreign_key_check")).all() == []
+        finally:
+            current_engine.dispose()
+
+    upgrade_database(database_url)
+    assert_head()
+    _downgrade_packaged_database(database_url, "0005_asset_refresh_sources")
+    downgraded = create_engine(database_url)
+    try:
+        assert operation_tables.isdisjoint(inspect(downgraded).get_table_names())
+        with downgraded.connect() as connection:
+            assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0005_asset_refresh_sources"
+            assert connection.execute(text("PRAGMA foreign_key_check")).all() == []
+    finally:
+        downgraded.dispose()
+    upgrade_database(database_url)
+    assert_head()
 
 
 def test_0005_roundtrip_conservatively_backfills_only_unique_mediacrawler_source(tmp_path: Path) -> None:
@@ -308,7 +434,8 @@ def test_0005_roundtrip_conservatively_backfills_only_unique_mediacrawler_source
             }
             with engine.connect() as connection:
                 assert (
-                    connection.scalar(text("SELECT version_num FROM alembic_version")) == "0005_asset_refresh_sources"
+                    connection.scalar(text("SELECT version_num FROM alembic_version"))
+                    == "0006_operations_observability"
                 )
                 rows = connection.execute(
                     text(
@@ -1043,7 +1170,7 @@ def test_0004_real_0003_roundtrip_preserves_0005_evidence_and_releases_sync_iden
     upgraded_engine = create_engine(database_url)
     try:
         with upgraded_engine.begin() as connection:
-            assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0005_asset_refresh_sources"
+            assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0006_operations_observability"
             assert _execution_0005_job_evidence(connection) == before_jobs
             assert _emby_record_evidence(connection) == before_records
             assert (
@@ -1157,7 +1284,7 @@ def test_0004_real_0003_roundtrip_preserves_0005_evidence_and_releases_sync_iden
     reupgraded_engine = create_engine(database_url)
     try:
         with reupgraded_engine.begin() as connection:
-            assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0005_asset_refresh_sources"
+            assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0006_operations_observability"
             assert (
                 connection.scalar(
                     text("SELECT schedule_revision FROM subscriptions WHERE id = :id"),
