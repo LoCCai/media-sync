@@ -2,52 +2,52 @@
 
 # Execution 0052 plan
 
-- Status: Active
+- Status: Delivery and local verification complete; publication reconciliation follows the closeout commit
 - Plan date: 2026-09-04
 - Baseline: `d64b97b`
-- Planned database revision: `0006_operations_observability`
-- Plan commit: the commit containing this record (self SHA not embedded)
+- Database revision: `0006_operations_observability`
+- Closeout commit: the commit containing this record (self SHA not embedded)
 
 ## Baseline decision
 
-Execution 0051 removed account/subscription validation ambiguity but intentionally retained process-local Operations and polling. The next independently deliverable control-plane slice is durable operation ownership and observation. Execution 0047 remains the P0 Linux/live gate; 0052 proceeds in parallel without converting any unexecuted operator row into a pass.
+Execution 0051 removed account/subscription validation ambiguity but intentionally retained process-local Operations and polling. Execution 0052 therefore delivers the independently testable control-plane slice of durable operation ownership, safe observation and cooperative cancellation. Execution 0047 remains the P0 Linux/live gate; no offline work here converts an unexecuted operator row into a pass.
 
-One correction is explicit: the 0051 closeout grouped subscription deletion with 0052. Hard deletion needs authenticated operator authority and a retention/cascade policy, so 0052 records pause/resume and operation audit facts but leaves destructive deletion to 0055. This narrows authority and does not change the original seven-platform subscription/Emby objective.
+One scope correction is now frozen. Subscription pause/resume audit and destructive deletion require authenticated operator authority and a retention/cascade policy, so both remain behind Execution 0055. This execution records cancellation audit facts for the five API workflows only. It does not change the original seven-platform subscription and Emby/Jellyfin objective.
 
-## Delivery sequence
+## Executed delivery sequence
 
-1. Record a clean baseline, inventory the five process-local operation workflows, freeze safe operation kinds/error codes/event codes and define one versioned public payload.
-2. Add migration `0006` with `operations`, `operation_events`, bounded `operation_subjects` links and a singleton `operation_event_stream_state` counter. Store a canonical request fingerprint beside each optional idempotency-key hash so a reused key cannot authorize a different request. Allocate `stream_sequence` by locking and updating the counter row in the event transaction, because PostgreSQL sequence values do not imply commit order. Add partial unique indexes for active exclusive scopes and `(kind, idempotency_key_hash)`, plus constraints for states, timestamps, progress, subject shape and lease shape.
-3. Add typed persistence/application services for atomic create-or-replay, claim/start, heartbeat, progress, event append, cancellation request, success/failure/cancel completion, list/detail pagination and expired-lease reconciliation. All mutations use expected state/revision and lease-token fencing.
-4. Add closed result-summary and event-context projectors per operation kind. Unknown keys or unsafe values fail closed before persistence; redaction is defense in depth rather than the primary boundary.
-5. Replace `_OperationRegistry` in the API. Support `Idempotency-Key` on the five asynchronous POST routes, return replay/conflict facts without exposing internal keys, heartbeat owners in the background, and keep domain Job/LoginSession state authoritative. Generate Job worker-owner values from the Operation UUID; retain request `worker_id` only as a deprecated compatibility input and never use it as durable ownership or log context.
-6. Add `GET /api/v1/operations`, exact detail and paginated event routes, `POST /api/v1/operations/{id}/cancel`, and `GET /api/v1/operations/events` SSE. On a fresh connection publish ready/high-water and let the client load a bounded snapshot; on reconnect catch up strictly after the global cursor before tailing. Bound batches, keepalives, connection lifetime and input sizes, and poll the database so events from other API processes are visible.
-7. Wire cooperative cancellation: direct signal for account login, stop-before-next-item for bounded scheduler/pipeline workers, and safe-boundary observation for asset/Emby work. Resolve finish-versus-cancel races from durable domain truth rather than arrival order.
-8. Reconcile expired operations at app startup and on bounded reads. Preserve valid foreign leases, derive terminal state from linked Job/LoginSession evidence where unambiguous, otherwise record `interrupted`; never auto-resume an in-memory callable.
-9. Upgrade the Jobs route into the task center, add typed event-stream support, filters/detail timeline/progress/allowed actions/cancel controls and a bounded polling fallback when SSE is unavailable.
-10. Add a safe support-bundle endpoint or command backed by allowlisted project/build/schema/readiness/count/recent-code projections and a mandatory second-pass forbidden-value scan before bytes are returned.
-11. Run focused concurrency/state/migration/SSE/API/Web/security tests, then Ruff/format/strict mypy/compileall/build, documentation/upstream/repository audits and the complete Python suite. Record Linux/live/media-server rows as `NOT_RUN` unless real operator evidence is supplied.
-12. Update bilingual progress, verification, status, roadmap and execution index records; commit implementation and closeout with bilingual subject/body, push `main`, and reconcile local and GitHub SHAs.
+1. Froze five operation kinds, seven states, twelve lifecycle event codes, fixed error codes and one v1 safe payload contract.
+2. Added migration `0006` with `operations`, `operation_events`, bounded `operation_subjects` and singleton `operation_event_stream_state`. Active exclusive scopes and `(kind, idempotency_key_hash)` are unique where applicable; lifecycle, progress, target, lease, error and digest shapes are database-constrained.
+3. Implemented atomic create-or-replay, claim/start, heartbeat, progress/event/link append, cancellation request, terminal completion, keyset pagination, stream bounds and expired-lease reconciliation. Lease tokens fence stale owners, while the global event cursor is allocated by updating the counter row inside the event transaction.
+4. Added per-kind closed request identities, result summaries and event-context projectors. Unknown fields and unsafe values fail closed before persistence; raw request bodies, exceptions, references, URLs, paths, QR bytes and caller worker identities have no payload representation.
+5. Added an `OperationCoordinator` that creates/replays and claims in one transaction, starts a callable only after commit, derives worker ownership server-side, heartbeats leases, observes cancellation and records subjects through transactional hooks. Authoritative reads take SQLite writer reservation with bounded fresh-transaction retries, and pending terminal intent is retried by the monitor. Concurrent observers wait for durable cancellation observation so the event history remains `requested` → `observed` → `cancelled`, including across coordinator instances.
+6. Replaced API process-local operation wiring for account login, asset download, scheduler run, pipeline run and Emby export. All five POST routes accept a strictly validated `Idempotency-Key`; private references contribute only a domain-separated digest to the request fingerprint; request `worker_id` is ignored for durable ownership and never serialized.
+7. Added bounded list/detail/per-operation-event APIs, two-stage cancel, and global SSE. The ready frame always uses `event_id=initial_cursor`: a fresh connection captures the current high-water, while a reconnect retains the supplied cursor so replay cannot skip events committed between sessions. Reconnects strictly replay committed events after that cursor, reject invalid/future cursors and return fixed `410 operation_event_cursor_expired` for pruned history.
+8. Added conservative startup and bounded-read reconciliation as non-blocking, single-flight background work. Valid foreign leases remain untouched; expired operations converge from unambiguous Job/LoginSession evidence or to `interrupted`; failures release the single-flight slot for retry, shutdown prevents new triggers, and no in-memory callable is automatically resumed.
+9. Upgraded the Jobs route into a task center with a 200-item bounded snapshot, kind/state/text filters, detail and event timeline, progress, subject links, derived actions, cancel control, EventSource updates, sequence de-duplication and bounded polling fallback.
+10. Added `GET /api/v1/support-bundle` as a canonical JSON response with `application/json` and `Cache-Control: no-store`. Its fixed, aggregate-only shape contains project/build/schema readiness, entity counts, operation state/kind counts and bounded recent fixed error-code counts; it is capped at 16 KiB and scanned again before output. Database failure returns only `support_bundle_database_failed`.
+11. Hardened cancellation at the domain handoff. The coordinator refreshes the authoritative phase snapshot, and all five workflows recheck both persisted `cancel_requested_at` and the local cancellation context immediately before entering a non-interruptible domain call. Once that call starts, a durable domain success truthfully wins over a later cancellation request.
+12. Completed the final focused, frozen complete-suite, static/package, Web, upstream and tracked-output audits. Update the bilingual execution/global records, then commit with bilingual subject/body, push `main`, and reconcile local, `origin/main` and GitHub SHAs without embedding a nonexistent self SHA.
 
-## Design constraints
+## Frozen contract corrections
 
-- Operation, Job, SyncRun and LoginSession remain distinct truths. An Operation is an operator request; bounded `operation_subjects` and event subjects may link multiple durable identities without pretending that one Job represents a whole bounded worker invocation or hiding links in result JSON.
-- Store only the SHA-256 digest of a validated `Idempotency-Key`, plus a canonical request fingerprint that proves a replay is the same method, route, target and normalized body without retaining the body itself. Exclusive keys are server-generated from a closed kind/UUID mapping and never accepted from request bodies.
-- `retryable` and `allowed_actions` are derived from state and fixed error classifications, not independent writable truths.
-- A cancellation request is not a terminal transition. Only the current fenced owner or restart reconciler can publish the final state after the work reaches a safe boundary.
-- The SSE cursor is the transactionally allocated global `stream_sequence`; operation-local sequence and any row identity remain separate invariants. Neither an autoincrement/sequence primary key nor wall-clock time is accepted as a reconnect cursor.
-- Event/result JSON is small, shallow and allowlisted. No generic dictionary, request body or exception string crosses the persistence boundary.
-- SQLite remains the default single-host database. PostgreSQL-compatible DDL is retained, but multi-host HA and external message brokers are not claimed.
+- Persist only the validated `Idempotency-Key` SHA-256 digest plus a canonical request fingerprint. Never persist or return the raw key.
+- `requested_by` is a fixed internal provenance label, not caller-controlled request data, and is absent from public API/SSE/Web payloads.
+- Lease owner, token and expiry plus repository revision and fingerprints are private fencing state. The Web task center displays phase/progress/subjects and derived `allowed_actions`, never lease controls.
+- Operation events are the 0052 structured diagnostic surface. Generic application file logs, exception-text logging, log-file selection/tailing/download and a separate Logs page are not implemented or claimed.
+- The support bundle is a small JSON aggregate, not a ZIP and not a broad host/config/process/event export.
+- Existing scheduler/supervisor Jobs remain distinct durable truth. Execution 0052 does not claim one universal supervisor, broker or operation stream for every non-API task.
+- Subscription pause/resume audit and deletion remain deferred to 0055. A backend retry endpoint is also not delivered; `retryable` is informative and current `allowed_actions` exposes only safe cancellation for eligible active operations.
 
-## Verification plan
+## Verification and closeout result
 
-- Persistence: metadata/DDL parity, migration upgrade/downgrade/wheel, constraints/indexes/FKs, global cursor commit-order monotonicity under concurrent writers and 10,000-event keyset pagination.
-- Concurrency: SQLite multi-connection active exclusivity, idempotency replay/conflict, event sequence allocation, cancel-versus-finish and lease-token ABA/fencing.
-- Recovery: live foreign lease preservation, expired operation convergence and Job/LoginSession-authoritative terminal mapping.
-- API/SSE: five workflow compatibility paths, list/detail/filter pagination, exact cancel semantics, catch-up/tail/reconnect/keepalive/disconnect and fixed invalid-cursor errors.
-- Security: sentinel scans for credentials, signed queries, QR bytes, exception text, paths, owner IDs, lease tokens and raw idempotency keys across database, JSON, SSE, UI and support-bundle bytes.
-- Frontend: type check, state reducers, SSE reconnect plus polling fallback, filters, timeline, progress and action gates.
+- The final focused operation/API regression selection passed 78 tests with one known Starlette/httpx deprecation warning. Earlier implementation selections (141 persistence/migration/CLI, 207 coordinator/domain, 241 integration and 30 support tests) overlap and are retained only as development checkpoints; they are never added together.
+- The frozen complete suite passed `2315 passed, 3 skipped, 1 warning in 555.05s (0:09:15)`. The three skips are Windows-inapplicable POSIX virtual-environment/permission cases; the warning is the same existing Starlette/httpx deprecation.
+- Whole-repository Ruff passed; Ruff format covered 662 files; strict mypy passed for 94 source files; compileall passed; `uv build` produced the sdist and wheel.
+- Web Prettier passed; Vitest passed 17 tests; Svelte/TypeScript reported 0 errors and 0 warnings; the adapter-static production build passed. Current Web tests exercise typed operation state/reducer/reconnect/fallback behavior, not real browser route interaction; route-level interaction/E2E remains follow-up quality debt.
+- Both pinned upstreams verified locked and clean. The tracked generated/local-output audit passed across 733 files; documentation and `git diff --check` pass. `.mimosa/`, `.upstream`, databases, XML reports, `node_modules`, `web/build`, `.svelte-kit` and `dist` remain excluded from the commit.
+- Evidence policy: keep Linux persistence/process/backup checks, all live platform rows and real Emby/Jellyfin rescan/playback `NOT_RUN` under Execution 0047 unless operator evidence is actually produced.
 
 ## Commit policy
 
-Commit this bilingual goal/plan/baseline before implementation. Prefer separate bilingual commits for migration/repository, API/runtime, Web task center and final documentation. Never stage `.mimosa/`, `.upstream`, local databases, support-bundle fixtures containing sentinels, JUnit XML, `node_modules`, `web/build`, `.svelte-kit` or distribution output.
+The implementation is intentionally split into bilingual commits for Web state foundations, safe payloads, cancellation boundaries, the task center, migration/repository, the support bundle and the coordinator. API/SSE integration and this closeout are committed separately with bilingual subject/body. Never stage generated or local-state paths listed above.

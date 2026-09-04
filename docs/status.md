@@ -2,14 +2,14 @@
 
 # Unified project status (single source of truth)
 
-Boundary: execution 0051 is implemented, verified and pushed as the latest delivered product boundary; execution 0052 planning and pre-change baseline are complete and implementation is active. Execution 0047 remains the open P0 operator gate, and its Linux persistence/recovery/process checks plus every live login/crawl/CDN and real Emby/Jellyfin row remain `NOT_RUN`. This table is the canonical status view; per-execution detail lives in [`executions/`](README.md) and evidence in each verification record. Update this page at every closeout.
+Boundary: execution 0052 is delivered and frozen-verified locally; the commit containing this record is its publication boundary and is reconciled with GitHub immediately after commit without embedding its own SHA. Execution 0047 remains the open P0 operator gate, and its Linux persistence/recovery/process checks plus every live login/crawl/CDN and real Emby/Jellyfin row remain `NOT_RUN`. This table is the canonical status view; per-execution detail lives in [`executions/`](README.md) and evidence in each verification record. Update this page at every closeout.
 
 ## Milestone status
 
 | Milestone | Status |
 | --- | --- |
 | Offline feature work | Platform shapes frozen at the 0039 boundary plus 0040/0044 operations and the 0050 Console v2 control-plane foundation; 0043 (danmaku/subtitles) remains deferred |
-| REST API + web console | SvelteKit 5 Console v2 foundation implemented (0050); capability-driven account/subscription workbench implemented and verified (0051); persistent Operation/Event storage, commit-ordered SSE, cooperative cancellation, restart reconciliation, safe structured events and the task center are active in 0052 |
+| REST API + web console | SvelteKit 5 Console v2 foundation (0050), the capability-driven account/subscription workbench (0051), and 0052 durable Operation/Event/subject state for five API workflows, commit-ordered SSE, cross-coordinator two-stage cancellation, non-blocking single-flight reconciliation, task center and narrow JSON support response are delivered |
 | Docker packaging | Candidate image plus reproducibility hardening and the Node-free multi-stage Console v2 build delivered (0041, 0048–0050); the repaired operator image built/started with green doctor, deep readiness and Chromium launch |
 | Operations docs / security review / release checklist | Delivered (0045, 0046) |
 | Live qualification (final gate) | Open — execution 0047, operator-assisted on Linux |
@@ -19,9 +19,9 @@ Boundary: execution 0051 is implemented, verified and pushed as the latest deliv
 | Dimension | State | Evidence / blocker |
 | --- | --- | --- |
 | Implementation (offline shapes) | 15+ frozen shapes across seven platforms | Executions 0013–0039 records |
-| Offline complete suite | Execution 0050 authoring-station run with uv + ffmpeg/ffprobe available: `2038 passed, 33 failed, 1 skipped`; all 33 belong to the Windows completion-receipt/process family already observed as nondeterministic (0048: 33/35 failures; 0049: one green run). Windows stays Experimental and Linux phase B remains authoritative | Execution 0050 verification and sanitized junit grouping; raw XML remains git-ignored under `artifacts/` |
-| API/console tests | API `9 passed`; checkout/license focus `16 passed`; Svelte units `2 passed`; nine-route browser smoke and one-time acknowledgement interaction pass with zero console errors | Execution 0050 verification |
-| Static gates (ruff/format/mypy/compileall/docs/frontend check/build) | Green for 0050 changed scope; launcher follow-up: `48 passed, 2 skipped` plus `311 passed`, Ruff/format/mypy green | Execution 0050 verification |
+| Offline complete suite | Execution 0052 frozen suite: `2315 passed, 3 skipped, 1 warning in 555.05s`; skips are the three Windows-inapplicable POSIX venv/permission cases and the warning is the existing Starlette/httpx deprecation. Linux phase B remains authoritative | Execution 0052 verification |
+| API/console tests | Execution 0052 focused Operation/API integration `241 passed`; support service/HTTP `30 passed`; Web `17 passed`, Svelte check 0 errors/0 warnings and production build pass. Focused selections overlap; real Jobs-route browser interaction remains follow-up quality debt | Execution 0052 verification |
+| Static gates (ruff/format/mypy/compileall/docs/frontend check/build) | 0052 whole-repository Ruff, 662-file format check, strict mypy over 94 source files, compileall, sdist/wheel, 466-file docs check, Web format/check/test/build, two locked upstreams, 733-file tracked-output audit and `git diff --check` all pass | Execution 0052 verification |
 | Docker image build | `PASS` for build/runtime preflight: repaired image started; doctor and deep readiness are `ready`; runtime Chromium `151.0.7922.34` matches the build manifest | Executions 0050 and 0047 verification |
 | Container readiness / restart persistence / backup-restore drill | Deep readiness `PASS`; restart persistence and backup/restore `NOT_RUN` | Execution 0047; docs/operations.md procedures ready |
 | Live login (any platform) | `NOT_RUN` — operator (Phase C canary: Bilibili + XHS) | Execution 0047 |

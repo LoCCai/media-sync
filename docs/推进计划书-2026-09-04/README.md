@@ -1,7 +1,7 @@
 # media-sync 后续推进计划书合集
 
 - 编制日期：2026-09-04
-- 评审边界：原稿基于执行 0050 收尾；现已校准到 0051 离线/API/前端范围完成并推送，0052 规划与基线完成、实现进行中
+- 评审边界：原稿基于执行 0050 收尾；现已校准到 0052 本地交付与冻结验证完成，完整套件为 2315 passed、3 skipped，全部仓库门通过；包含本记录的收尾提交随后发布并核对 GitHub
 - 现场状态：
   - Web/API 服务正常，`health` 与数据库 `ready` 正常；
   - Chromium 在运行容器内可由 `mediasync` 用户启动，版本 `151.0.7922.34`；
@@ -15,7 +15,7 @@
 项目核心领域模型、下载/归档/Emby 输出和调度基础已经远超“原型”水平。后续不应继续优先扩充更多媒体形状，而应沿两条主线推进：
 
 1. **先完成真实运行闭环**：`checkout_invalid` 与深度预检已经闭环；当前 P0 是阶段 B 的 Linux 持久性/恢复/进程证据和阶段 C 真人金丝雀。
-2. **并行建设 Web Console v2**：0050 基础与 0051 七平台账户/订阅工作台已经交付；下一步由 0052 建设持久 Operation/Event、SSE、结构化日志、取消与重启恢复，再继续内容、资产、归档和 Emby 模型，不复制 bili-sync-up 的单平台领域模型。
+2. **并行建设 Web Console v2**：0050 基础、0051 七平台账户/订阅工作台及 0052 持久 Operation/Event、提交有序 SSE、跨 coordinator 两阶段取消、非阻塞单飞协调和任务中心已经交付；下一切片继续内容、资产与安全归档浏览，再推进 Emby 模型，不复制 bili-sync-up 的单平台领域模型。
 
 ## 文件索引
 
@@ -45,7 +45,7 @@
     ↓
 0051     能力驱动的账户登录与订阅工作台（已实现并完成离线/API/前端验证）
     ↓
-0052     持久操作、任务队列、日志与事件流（进行中）
+0052     持久操作、任务队列、安全事件流与窄化支持包（已交付，2315 passed、3 skipped）
     ↓
 0053     内容、资产、归档与媒体库浏览
     ↓
@@ -66,3 +66,5 @@
 - bili-sync-up Web 侧栏：<https://github.com/NeeYoonc/bili-sync-up/blob/dcb5bb73b56ac45b2525da14b389e185b0ea6dbd/web/src/lib/components/app-sidebar.svelte>
 - bili-sync-up 实时任务队列：<https://github.com/NeeYoonc/bili-sync-up/blob/dcb5bb73b56ac45b2525da14b389e185b0ea6dbd/web/src/routes/queue/%2Bpage.svelte>
 - bili-sync-up 日志页：<https://github.com/NeeYoonc/bili-sync-up/blob/dcb5bb73b56ac45b2525da14b389e185b0ea6dbd/web/src/routes/logs/%2Bpage.svelte>
+
+0052 只借鉴任务队列的信息层级，没有复制通用日志文件页。已交付面是五类 API Operation 的安全结构化事件、Jobs 路由任务中心及 16 KiB 仅聚合 JSON 支持响应；不暴露 raw idempotency key、requester、lease、revision 或请求指纹。独立 Logs 页面、统一 supervisor 接入、订阅 pause/resume/delete 审计与宽泛支持归档均继续后移。当前 Web 单元覆盖状态/reducer/重连/轮询回退，真实浏览器路由交互测试列为后续质量债。

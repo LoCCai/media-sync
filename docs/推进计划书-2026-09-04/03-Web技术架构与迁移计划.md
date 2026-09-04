@@ -1,6 +1,6 @@
 # Web Console v2 技术架构与迁移计划
 
-> 状态校准（2026-09-04，`38e0ebe` 后）：0050-A/B/C 已由 Console v2 基础交付。下文原称 0050-D 的持久事件流现在归 Execution 0052，原称 0050-E 的 legacy 移除归 Execution 0056；章节编号保留为历史设计索引。
+> 状态校准（2026-09-05）：0050-A/B/C 已由 Console v2 基础交付，原称 0050-D 的范围由 Execution 0052 交付为持久 Operation/Event、单一提交有序 SSE、跨 coordinator 两阶段取消、任务中心与有界轮询回退；冻结完整套件 2315 passed、3 skipped，全部仓库门通过。原称 0050-E 的 legacy 移除仍归 Execution 0056。独立 Logs 路由、通用文件日志与真实 Jobs 路由浏览器 interaction/E2E 未在 0052 交付，章节编号保留为历史设计索引。
 
 ## 1. 推荐方案
 
@@ -75,7 +75,7 @@ routers/logs.py
 routers/settings.py
 ```
 
-不要求改变模块化单体，只是拆分接口文件。
+这是目标目录而非当前文件清单。不要求改变模块化单体，只是逐步拆分接口文件；0052 的 Operation/SSE/支持包接线仍位于现有 `api.py`，没有为满足目录图而虚构 `routers/logs.py`。
 
 ## 3. Docker 构建
 
@@ -154,12 +154,9 @@ openapi.json
 
 优先使用 SSE：
 
-- 任务状态；
-- 操作进度；
-- 日志尾随；
-- 深度预检结果；
-- 登录状态；
-- 二维码可用事件。
+- Operation 状态与进度；
+- 安全 Operation Event 时间线；
+- 任务中心有界快照刷新提示。
 
 原因：
 
@@ -170,14 +167,13 @@ openapi.json
 
 WebSocket 仅在未来需要双向终端或高频交互时引入。
 
-建议端点：
+0052 冻结并实现的端点：
 
 ```text
-GET /api/v1/events
-GET /api/v1/jobs/events
-GET /api/v1/logs/events
-GET /api/v1/accounts/{id}/login/events
+GET /api/v1/operations/events
 ```
+
+首次连接的 ready 帧以捕获的 high-water 作为 `initial_cursor`，并配合 `GET /api/v1/operations?limit=200` 有界快照；浏览器重连在补发前保持调用方 `Last-Event-ID`，严格补发事务已提交 cursor 之后的事件。不存在已实现的通用 `/events`、Job 日志流或登录专用 SSE；二维码生命周期继续使用精确 LoginSession QR 轮询。
 
 ## 6. 静态资源服务
 
@@ -226,12 +222,13 @@ FastAPI：
 - Emby 导出；
 - 重试/取消。
 
-### 7.4 0050-D：事件流
+### 7.4 0050-D：持久 Operation 事件流（由 0052 实现）
 
-- 持久 operation；
-- SSE；
-- 实时队列；
-- 日志。
+- migration `0006` 持久 Operation/Event/subject 与全局事务 cursor；
+- 五类 API 工作流的有界列表、详情、事件、取消及单一 SSE；
+- Jobs 路由任务中心、事件时间线与有界轮询回退；
+- 安全 Operation Event，而不是通用文件日志或独立 Logs 页面；
+- 16 KiB、仅聚合、输出后二次扫描的 JSON 支持响应。
 
 ### 7.5 0050-E：移除 legacy
 
@@ -262,13 +259,15 @@ FastAPI：
 
 E2E 使用 Fake adapter 和临时 SQLite，不触发真人平台。
 
+0052 当前证据为 17 项 Vitest（Operation 类型化状态、筛选、快照/事件合并、cursor 去重、重连与轮询回退）、零 error/零 warning 的 Svelte check 及生产构建。尚未挂载真实 Jobs 路由执行浏览器 interaction；该项明确保留为后续质量债，不能用工具函数单测替代 E2E 结论。
+
 ## 9. 性能边界
 
 - 所有列表服务端分页；
 - 首页聚合接口避免十几个请求；
 - 内容缩略图延迟加载；
 - 原始 payload 不直接返回；
-- 日志虚拟滚动；
+- Operation 事件时间线有界读取与裁剪；
 - SSE 连接数量有界；
 - 不在浏览器中加载大媒体文件；
 - 媒体预览使用 Range 和安全白名单端点。
@@ -278,5 +277,5 @@ E2E 使用 Fake adapter 和临时 SQLite，不触发真人平台。
 - Web v2 静态资源可独立移除；
 - `/legacy` 保留一个发布周期；
 - 后端 API 与 CLI 不依赖前端；
-- 前端失败不能阻止 scheduler/supervisor；
+- 前端失败不能阻止既有 scheduler/supervisor Job；0052 不声明把全部 supervisor 工作统一为 Operation；
 - schema 迁移必须可前向兼容旧控制台。
