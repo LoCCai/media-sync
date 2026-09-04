@@ -1,5 +1,7 @@
 # 执行 0047-d1：`checkout_invalid` 缺陷闭环计划
 
+> 状态校准（2026-09-04，`38e0ebe` 后）：本文件保留为缺陷处置设计与历史验收清单。canonical-LF 许可证资格、venv launcher、doctor、深度预检与 Chromium 启动已经通过；真人 Bilibili/XHS QR、Linux 完整套件和其余阶段 B/C 证据已转回 Execution 0047，仍为 `NOT_RUN`，不属于 d1 已完成声明。
+
 ## 1. 现场结论
 
 已经确认：

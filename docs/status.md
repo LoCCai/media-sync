@@ -2,14 +2,14 @@
 
 # Unified project status (single source of truth)
 
-Boundary: execution 0050 (Web Console v2 foundation). This table is the canonical status view; per-execution detail lives in [`executions/`](README.md) and evidence in each verification record. Update this page at every closeout.
+Boundary: execution 0051 planning and pre-change baseline are complete, but implementation is not yet claimed; 0050 remains the latest delivered product boundary. This table is the canonical status view; per-execution detail lives in [`executions/`](README.md) and evidence in each verification record. Update this page at every closeout.
 
 ## Milestone status
 
 | Milestone | Status |
 | --- | --- |
 | Offline feature work | Platform shapes frozen at the 0039 boundary plus 0040/0044 operations and the 0050 Console v2 control-plane foundation; 0043 (danmaku/subtitles) remains deferred |
-| REST API + web console | SvelteKit 5 Console v2 foundation implemented (0050): nine routed surfaces, real existing operations, content/library projections, one-time acknowledgement and `/legacy` rollback; persistence/SSE/logs remain follow-ups |
+| REST API + web console | SvelteKit 5 Console v2 foundation implemented (0050): nine routed surfaces, real existing operations, content/library projections, one-time acknowledgement and `/legacy` rollback; the capability-driven account/subscription workbench is active in 0051, while persistence/SSE/logs remain 0052 |
 | Docker packaging | Candidate image plus reproducibility hardening and the Node-free multi-stage Console v2 build delivered (0041, 0048–0050); the repaired operator image built/started with green doctor, deep readiness and Chromium launch |
 | Operations docs / security review / release checklist | Delivered (0045, 0046) |
 | Live qualification (final gate) | Open — execution 0047, operator-assisted on Linux |
