@@ -240,6 +240,8 @@ library/
 
 `source.json` 采用白名单，不含 raw envelope、locator、请求 header 或来源 URL。经过脱敏的非机密 raw envelope 按设计保存在 SQLite 供重新归一化，但绝不进入导出树。layout v1 是首个实际实现的导出器，因此无需迁移旧媒体库。
 
+执行 0054-A 新增对该受管树的只读检查，但不会把文件系统变成新的权威。服务先通过数据库 publication scope 与唯一成功 `export.emby` 前驱链 head 解析作者 UUID，再绑定严格 managed manifest。existing-only 作者锁、进程级 single-flight、逐页文件/字节/截止时间预算，以及绑定 publication Job 与 manifest SHA-256 的不透明 cursor，共同阻止修复副作用、路径披露及跨发布版本混页。响应只返回 manifest 受管逻辑相对节点，以及白名单身份、新鲜度、完整性和用户修改保护事实；宿主路径、非受管名称、原始 Job payload、locator、来源 URL 与文件字节继续保持私有。
+
 ## 安全边界
 
 - REST 部署规则（执行 0040 已实现）：默认只绑定回环、无鉴权，绝不可发布到可信网络之外；Docker compose 布局仅发布宿主机回环。
@@ -250,6 +252,9 @@ library/
 - 下载与导出 Job payload 保存不披露路径的 scope 哈希，而不是原始文件系统根目录。
 - 携带凭据的值在进入 SQLite 与运维 sink 前被移除或脱敏；经过脱敏的非机密 raw envelope 只作为数据库重新归一化来源，绝不进入 Emby 输出。
 - 0.x 将运行文件系统根目录及其祖先视为操作员控制的可信边界；不支持同权限恶意进程修改父目录的部署模型。
+- 执行 0054-A 只接受一个不可变、由环境变量托管的 Emby/Jellyfin 配置。API 只暴露手工构建的安全摘要。API key 值只在最终 connector 边界解析；该值与完整 secret reference 都绝不进入 API 响应、Operation payload、SQLite 或保留日志。
+- 媒体服务器流量被限制在已配置的规范 origin 与显式 IP/CIDR 策略内。每个 DNS 答案都必须被允许；实际连接会固定，同时保留原始 Host/TLS SNI；环境代理被禁用，重定向被拒绝，请求正文也不能覆盖服务器、library、路径、凭据或网络策略。
+- Probe 与定向刷新是默认关闭、共用一个配置互斥域的持久 Operation。transport gate 是应用层 dispatch 线性化边界：在 gate 前胜出的取消或截止时间会阻止 POST；gate 后的超时、断连、取消或传输歧义统一成为不可重试的 `media_server_scan_acceptance_unknown`。成功的 `media-server-scan` 只证明固定定向刷新已接受，绝不证明扫描完成或可播放。
 
 ## 部署与演进
 
@@ -258,3 +263,5 @@ library/
 执行 0012 的仅登录协议使用相互独立的有界请求/结果长度 frame，并持续保留 START/CANCEL/EOF 父进程控制。父侧收容在 START 前附加，child 自持收容与控制 watcher 在导入上游前建立。结果发布后，guardian 会继续持有后代所有权及继承账户锁，直到父进程开始完整树关停；因此父进程被硬杀时，会先关闭所属 Windows Job 或 POSIX 进程组，另一次登录才可能获取该账户锁。持久恢复使用独立的截止时间权威：只有精确过期的 `pending|waiting_user` 二维码会话，在 Account 仍为 `qr/authenticating`、持有同一账户锁且通过仓储 CAS 时，才能原子切换为 `expired` 与 `qr/required`。PID 与仅凭锁可获取都不是恢复权威。
 
 监督器仍是本地前台进程，Docker 打包（执行 0041）通过可选 compose profile 运行它而非安装为服务。分布式 HA、PostgreSQL 锁、公网部署与控制台鉴权仍属后续工作；真实部署验证本身是操作者侧的发布门（执行 0047）。原生平台适配器可逐步替换受限桥接；经过脱敏的 raw envelope 允许在上游或模型升级后重新归一化。
+
+执行 0054-A 还引入资格 schema v1，把本地自动化证据、实现状态和真人资格保持为三项相互独立的事实。`connection_probe`、`library_discovery` 与 `targeted_scan_acceptance` 已实现，但在获授权真实服务器上执行前，真人状态继续为 `NOT_RUN`。`scan_completion`、`item_lookup`、`playback_evidence` 与 `automatic_post_export_scan` 为 `NOT_IMPLEMENTED`，因此没有真人状态。执行 0054 继续为另行冻结的阶段 B 保持开启；该阶段只覆盖扫描完成进度与 provider/path 项目查找。经鉴权的播放证据写入、浏览器可写设置、多配置、保留/破坏性维护与访问控制继续属于执行 0055；导出后自动扫描尚无已冻结的后续归属。

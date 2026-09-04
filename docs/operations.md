@@ -2,14 +2,16 @@
 
 # Operations: backup, restore and upgrade
 
-Applies to the Docker compose deployment from [`deployment.md`](deployment.md). All persistent state lives in the `media-sync-data` volume mounted at `/data`:
+Applies to the Docker compose deployment from [`deployment.md`](deployment.md). All application-managed persistent state lives in the `media-sync-data` volume mounted at `/data`:
 
 | Path | Contents | Backup value |
 | --- | --- | --- |
-| `/data/state/media-sync.sqlite3` | The database: accounts, subscriptions, contents, assets, jobs, export records | Critical (contains credential *references*, never raw secrets) |
+| `/data/state/media-sync.sqlite3` | The database: accounts, subscriptions, contents, assets, jobs, export records, durable Operations and Events | Critical (contains account credential *references*, never raw secrets; media-server keys and references are not stored here) |
 | `/data/archive/` | Immutable SHA-256 media blobs | Critical (re-derivable only by re-downloading everything) |
 | `/data/library/` | The Emby/Jellyfin tree (NFO, posters, episodes) | Re-derivable from database + archive via re-export |
 | `/data/jobs/`, `/data/mediacrawler/` | Work roots, manifests, browser profiles | Disposable; browser profiles lost means re-login |
+
+The execution 0054-A media-server profile is deployment configuration, not application data in this volume. Preserve its non-secret environment selectors and the external `env:` / `file:` / `keyring:` secret-provider material through the operator's configuration and secret-management process. Never add the raw API key or complete secret reference to a database/archive backup, support bundle or Git.
 
 ## Backup
 
@@ -32,6 +34,8 @@ docker compose exec media-sync /app/.venv/bin/python -c \
 # then copy /data/state/backup.sqlite3 plus archive/ out of the volume as above
 ```
 
+The SQLite backup includes durable `media-server-probe` / `media-server-scan` audit rows and their allowlisted evidence, but not the environment-owned profile or secret. Back up those deployment inputs separately as described above.
+
 ## Restore
 
 1. Stop the stack: `docker compose stop`.
@@ -43,8 +47,9 @@ docker run --rm -v media-sync_media-sync-data:/data -v "$PWD/backup:/backup" alp
   sh -c "tar xzf /backup/media-sync-data-DATE.tgz -C /data"
 ```
 
-3. Start again: `docker compose up -d`. The entrypoint runs `media-sync db init`, which applies any pending migrations idempotently; a restored database at an older revision is upgraded automatically.
-4. Verify: `curl -fsS http://127.0.0.1:8632/api/v1/ready` and check the console shows accounts/subscriptions; spot-check one archived file's SHA-256 if you want deep assurance.
+3. Restore or recreate the Git-ignored deployment configuration and external secret-provider material. Keep `MEDIA_SYNC_MEDIA_SERVER_OPERATIONS_ENABLED=false` until the restored safe summary, origin, TLS posture, network-rule count and Library digest have been checked.
+4. Start again: `docker compose up -d`. The entrypoint runs `media-sync db init`, which applies any pending migrations idempotently; a restored database at an older revision is upgraded automatically.
+5. Verify: `curl -fsS http://127.0.0.1:8632/api/v1/ready` and check the console shows accounts/subscriptions and the expected redacted media-server posture; spot-check one archived file's SHA-256 if you want deep assurance. Enable media-server Operations only after that verification.
 
 If only the database was lost (archive intact), restoring just `state/` is enough; assets re-verify against existing blobs without re-downloading. If the browser profiles under `mediacrawler/` were lost, accounts stay `saved_session` records but the upstream sessions must be re-established via one QR login per account.
 
@@ -58,4 +63,6 @@ docker compose build
 docker compose up -d
 ```
 
-Schema migrations run at container start (`db init` is idempotent). `uv.lock` guarantees the same dependency set the release was tested with. The live `docker-compose.yml` is git-ignored, so upstream updates never conflict with your deployment configuration. Roll back a bad release with `git checkout <previous-tag-or-sha>` and rebuild — database down-migrations are not automatic; check the release notes before downgrading.
+Schema migrations run at container start (`db init` is idempotent). `uv.lock` guarantees the same dependency set the release was tested with. The live `docker-compose.yml` is git-ignored, so upstream updates never conflict with your deployment configuration.
+
+Revision `0007_media_server_operations` is forward-only once the database contains any `media-server-probe` or `media-server-scan` row. Its downgrade deliberately fails closed instead of deleting durable audit evidence, and an older application must not be run against that database. A database with no new-kind rows may use the tested downgrade path, but down-migrations are never automatic. Before checking out an older tag/SHA, inspect the release notes and database state; if new-kind rows exist, restore a compatible pre-upgrade backup or continue with an application version that understands revision `0007`.

@@ -6,15 +6,15 @@
 
 ## 当前状态
 
-单一事实来源是 [`docs/status.zh.md`](docs/status.zh.md)。执行 0050 边界摘要：
+单一事实来源是 [`docs/status.zh.md`](docs/status.zh.md)。执行 0054-A 边界摘要：
 
 | 维度 | 状态 |
 | --- | --- |
-| 离线实现 | 平台形状冻结于 0039，外加 0040/0044 API 运维面与 0050 Web Console v2 基础；弹幕/字幕仍延期 |
-| 离线验证 | 编写工作站完整套件：见 [`docs/status.zh.md`](docs/status.zh.md)；已跑 Python 3.11/3.12/3.13 矩阵 |
-| REST API + Web 控制台 | 已交付 SvelteKit 5 SPA：仪表盘、账户、订阅、任务、内容、资产、媒体库、诊断和设置；`/legacy` 保留回退 |
-| Docker 打包 | 已交付前端多阶段构建与运行时打包；**0050 镜像仍需在操作者 Linux 主机验证构建/运行** |
-| 真人验收 | **全部平台/CDN/Emby 行 `NOT_RUN`**——执行 0047 是操作者协助的最终门 |
+| 离线实现 | 平台形状冻结于 0039，并已交付 API/运维、Console v2、内容/归档浏览及 0054-A 安全受管树/媒体服务器控制；弹幕/字幕和 0054-B 扫描完成/项目查找仍开放 |
+| 离线验证 | 执行 0054-A 冻结套件：**2620 passed、3 skipped、1 个既有 warning**；见 [`docs/status.zh.md`](docs/status.zh.md) |
+| REST API + Web 控制台 | SvelteKit 5 SPA 已含安全受管树分页、脱敏媒体服务器姿态、持久 probe/定向刷新动作及资格证据；`/legacy` 保留回退 |
+| Docker 打包 | 前端/运行时多阶段打包及修复镜像预检通过；0047 Linux 重启/恢复/进程证据仍为 `NOT_RUN` |
+| 真人验收 | **全部已实现平台/CDN/媒体服务器真人行保持 `NOT_RUN`**；0054-A 尚不存在的能力是 `NOT_IMPLEMENTED`，不是“尚未运行的真人行” |
 | 发布阻塞 | Linux 基线（阶段 B）+ 真人行零记录；见 [`docs/status.zh.md`](docs/status.zh.md) |
 
 逐执行细节、证据与准确命令都在 [`docs/executions/`](docs/README.zh.md)——本 README 有意不堆叠执行叙事。

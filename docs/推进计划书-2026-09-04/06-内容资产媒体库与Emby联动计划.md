@@ -1,6 +1,6 @@
 # 内容、资产、媒体库与 Emby/Jellyfin 联动计划
 
-> 执行切片校准（2026-09-05）：Execution 0053 已基于 `be26cc7` 与计划 `66e18ff` 交付兼容服务端筛选、安全内容/资产详情、官方域名 canonical 链接、同描述符 GET/HEAD 归档预览、既有持久 asset-download 恢复复用，以及 Contents/Assets/Library 目录升级。单 Range 只用于完整表示验证后的 GET，HEAD 忽略 Range，`If-Range` 只接受精确强 ETag。冻结套件通过 2456 项、跳过 3 项，本地 query/弹窗浏览器 smoke 通过。下一切片 0054 负责媒体库真实树、Emby/Jellyfin 连接/扫描/资格；鉴权、删除、保留与孤儿清理仍归 0055。
+> 执行切片校准（2026-09-05）：Execution 0053 已交付内容/资产安全浏览；0054-A 已交付数据库发布链授权的只读媒体库树、单一环境托管 Emby/Jellyfin 配置、连接探测/Library 发现/定向刷新接受及三分资格，并以 2620 passed、3 skipped 完成冻结验证。0054-B 尚待另行冻结且只覆盖扫描完成进度与 provider/path 项目查找。经鉴权的播放证据、鉴权、删除、保留与孤儿清理仍归 0055；导出后自动扫描尚无冻结归属。
 
 ## 1. 目标
 
@@ -111,6 +111,8 @@
 
 ## 6. 媒体库树
 
+0054-A 已按数据库中成功发布链与 manifest cursor 授权分页只读检查。它会重新验证受管树，但不会修复、删除、重新发布、创建作者锁或向浏览器暴露宿主路径；下列更丰富的 drift/修复视图仍是后续产品范围。
+
 按导出器真实结构展示作者/季/集：
 
 ```text
@@ -137,27 +139,30 @@
 
 ## 7. Emby/Jellyfin 连接
 
-### 配置
+### 配置（0054-A 已实现）
 
-- server URL；
-- library ID；
-- API key 只保存 secret ref；
+- 单一、不可变、由环境托管的 canonical server origin；
+- 固定 library ID；
+- API key 只通过 secret ref 在最终 connector 边界解析；
 - 路径映射：
   - media-sync `/data/library`
-  - Emby 容器内路径；
+  - API 返回的精确 Emby/Jellyfin 服务器侧绝对路径；
+- 显式 IP/CIDR 允许范围与 DNS pinning；
 - TLS 验证；
 - 超时；
-- 是否允许自动扫描。
+- 默认关闭的 probe/scan Operation gate；该 gate 不是导出后自动扫描开关。
 
-### API 能力
+浏览器可写设置和多配置属于 0055。导出后自动扫描尚未实现，也尚无冻结的后续归属。
 
-- 测试连接；
-- 获取服务器版本；
-- 获取媒体库；
-- 触发指定媒体库扫描；
-- 查询扫描进度；
-- 通过 provider ID 或路径查找项目；
-- 记录抽样播放资格。
+### API 能力及阶段分界
+
+- **0054-A 已实现**：测试连接并获取服务器版本；
+- **0054-A 已实现**：精确唯一匹配配置的 Library ID 与路径；
+- **0054-A 已实现**：只触发固定 Library 的定向刷新并将接受事实持久化为 Operation；
+- **0054-B 尚待另行冻结**：查询扫描完成进度；
+- **0054-B 尚待另行冻结**：通过 provider ID 或路径查找项目；
+- **0055**：经鉴权记录抽样播放资格；
+- **尚无冻结归属**：导出后自动触发扫描。
 
 ### 安全
 
@@ -169,7 +174,7 @@
 
 ## 8. 资格视图
 
-每个平台显示：
+每个平台继续显示：
 
 | 项目 | 状态 |
 |---|---|
@@ -180,11 +185,21 @@
 | 媒体下载 |  |
 | SHA 归档 |  |
 | Emby 导出 |  |
-| Emby 扫描 |  |
-| 抽样播放 |  |
 | 最终等级 | Supported 等 |
 
-证据关联到具体 Operation、Job、Content 和媒体服务器版本。
+0054-A 另把媒体服务器自动化证据、实现状态和真人状态保持为三个独立事实：
+
+| capability | implementation_status | human_status |
+|---|---|---|
+| `connection_probe` | `IMPLEMENTED` | `NOT_RUN`，直至获授权真机执行 |
+| `library_discovery` | `IMPLEMENTED` | `NOT_RUN`，直至获授权真机执行 |
+| `targeted_scan_acceptance` | `IMPLEMENTED` | `NOT_RUN`，直至获授权真机执行 |
+| `scan_completion` | `NOT_IMPLEMENTED` | 无（`null`） |
+| `item_lookup` | `NOT_IMPLEMENTED` | 无（`null`） |
+| `playback_evidence` | `NOT_IMPLEMENTED` | 无（`null`） |
+| `automatic_post_export_scan` | `NOT_IMPLEMENTED` | 无（`null`） |
+
+本地数据库计数和成功 Operation 只进入 `automated_evidence`，不能自动授予真人 PASS。证据关联到具体 Operation、Job、Content 和媒体服务器版本。
 
 ## 9. 图文内容策略
 
@@ -207,6 +222,7 @@ Emby 输出继续保持确定性侧车和可选视频化策略，但不能把“
 - 不向前端泄露签名 URL；
 - 任一归档缺失能被检测；
 - 媒体库树与磁盘 manifest 一致；
-- Emby 扫描结果可追溯；
-- Supported 平台至少有一个可播放样本；
+- 0054-A 的 Emby/Jellyfin 定向刷新接受可追溯，但不宣称扫描完成；
+- 扫描完成与项目查找在 0054-B 另行冻结并实现后再验收；
+- Supported 平台的可播放样本在 0055 经鉴权记录播放证据后再验收；
 - 图文内容在 Web 中可完整阅读。

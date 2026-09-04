@@ -2,7 +2,7 @@
 
 # Execution 0054 goal
 
-- Status: In progress
+- Status: Phase A delivered and frozen-verified; Execution 0054 remains open for a separately frozen Phase B
 - Started: 2026-09-05 02:45 +08:00
 - Predecessor: `22b5864` (Execution 0053 closeout)
 - Scope: Phase A of 0054 — safe published-library inspection, one environment-owned Emby/Jellyfin profile, durable connection/targeted-refresh operations, and an evidence-led qualification view
@@ -29,4 +29,4 @@ This execution may prove local manifest/tree behavior and fake or mocked Emby/Je
 
 ## Deferred
 
-0054 remains open after phase A: a separately frozen 0054-B must address mockable scan-completion progress and provider/path item lookup before the roadmap may call media-server linkage complete. Playback-evidence mutation waits for operator authentication. Browser-writable settings, multiple profiles, destructive cleanup, retention, orphan repair, forced overwrite, and access control remain 0055 work; final legacy-console removal remains 0056 work.
+0054 remains open after phase A: a separately frozen 0054-B must address mockable scan-completion progress and provider/path item lookup before the roadmap may call media-server linkage complete. Playback-evidence mutation waits for operator authentication and remains 0055 work. Browser-writable settings, multiple profiles, destructive cleanup, retention, orphan repair, forced overwrite, and access control also remain 0055 work; final legacy-console removal remains 0056 work. Automatic post-export scanning is future scope whose execution assignment has not been frozen.

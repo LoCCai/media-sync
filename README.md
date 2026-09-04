@@ -6,15 +6,15 @@
 
 ## Current status
 
-The single source of truth is [`docs/status.md`](docs/status.md). Summary at the execution 0050 boundary:
+The single source of truth is [`docs/status.md`](docs/status.md). Summary at the execution 0054-A boundary:
 
 | Dimension | State |
 | --- | --- |
-| Offline implementation | Frozen platform shapes through 0039, plus the 0040/0044 API operations and the 0050 Web Console v2 foundation; danmaku/subtitles remain deferred |
-| Offline verification | Complete suite on the authoring workstation: see [`docs/status.md`](docs/status.md); Python 3.11/3.12/3.13 matrix ran |
-| REST API + web console | SvelteKit 5 SPA delivered with dashboard, accounts, subscriptions, jobs, content, assets, library, diagnostics and settings; `/legacy` remains available for rollback |
-| Docker packaging | Multi-stage frontend build and runtime packaging delivered; **the 0050 image build/run still requires verification on the operator's Linux host** |
-| Live qualification | **Every platform/CDN/Emby row `NOT_RUN`** — execution 0047 is the operator-assisted final gate |
+| Offline implementation | Frozen platform shapes through 0039 plus API/operations, Console v2, content/archive browsing and 0054-A safe managed-tree/media-server controls; danmaku/subtitles and 0054-B scan completion/item lookup remain open |
+| Offline verification | Execution 0054-A frozen suite: **2620 passed, 3 skipped, 1 existing warning**; see [`docs/status.md`](docs/status.md) |
+| REST API + web console | SvelteKit 5 SPA includes safe managed-tree paging, redacted media-server posture, durable probe/targeted-refresh actions and qualification evidence; `/legacy` remains available for rollback |
+| Docker packaging | Multi-stage frontend/runtime packaging and repaired-image preflight pass; 0047 Linux restart/restore/process evidence remains `NOT_RUN` |
+| Live qualification | **Every implemented live platform/CDN/media-server row remains `NOT_RUN`**; capabilities absent from 0054-A are `NOT_IMPLEMENTED`, not unexecuted live rows |
 | Release blockers | Linux baseline (Phase B) + zero live rows; see [`docs/status.md`](docs/status.md) |
 
 Per-execution detail, evidence and exact commands live in [`docs/executions/`](docs/README.md) — this README intentionally does not stack execution narratives.

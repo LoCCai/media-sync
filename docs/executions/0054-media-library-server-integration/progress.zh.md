@@ -2,38 +2,39 @@
 
 # 执行 0054 推进结果
 
-- 状态：进行中；阶段 A 范围已在独立审查后修正，尚未开始实现
-- 开始时间：2026-09-05 02:45 +08:00
+- 状态：阶段 A 已交付并完成冻结验证；执行 0054 继续为阶段 B 保持开启
+- 收尾日期：2026-09-05
 - 基线：`22b5864`
-- 计划数据库 revision：`0007_media_server_operations`
+- 计划与加固提交：`793d33b`、`d913537`
+- 实现提交：`554277c`、`efdb27c`、`2ad051c`、`1b34632`
+- 数据库 revision：`0007_media_server_operations`
 
-## 已完成
+## 已交付
 
-- 以 `--ff-only` 拉取 `origin/main`；本地 `HEAD` 与 `origin/main` 都是 `22b58646e79b17b2d49ff803df34e976466999c3`。
-- 阅读了总需求、路线图/状态、执行 0053 收尾及内容/媒体库/Emby 联动计划；确认 0054 是下一切片，鉴权、删除、保留与孤儿清理仍属于 0055。
-- 完成独立只读领域与 API/Web 盘点；确认当前 Library 只是数据库聚合，导出器已经具备严格发布原语，整树权威来自 Job 前驱链，且仓库没有媒体服务器客户端/配置。
-- 冻结了不依赖真实媒体服务器、也不会把离线证据静默升级成真人资格的实现顺序。
-- 运行了 `verification.md` / `verification.zh.md` 中记录的变更前 Python 与 Web 专项基线。
-- 独立审查没有发现 P0 或双语分叉，但发现七项 P1 契约缺口。计划现已冻结 existing-only 锁、有界分页校验、绑定 manifest 的 cursor、正常 `blocked` 新鲜度、绝不回退全库的明确定向 endpoint、dispatch 后 `acceptance_unknown`、准确 `NOT_IMPLEMENTED` 标签、probe/scan 共用门与互斥域，以及保留审计行的 forward-only migration 行为。
+1. 恢复推进前先 fetch `origin/main`；本地与远端 `main` 均为 `d913537`，没有待合并的远端变化，也没有覆盖保留中的实现工作树。
+2. 新增按作者 UUID 寻址的受管媒体树检查，权威来源是数据库成功发布链加严格 manifest。它使用 existing-only 锁、进程级 single-flight、绑定 manifest 的 HMAC cursor、最多 128 文件的分页、字节/截止时间预算，以及彼此独立的新鲜度/完整性状态，不暴露宿主路径或非受管名称。
+3. 加固跨平台文件身份：POSIX 使用稳定目录描述符与 `O_NOFOLLOW`，Windows 持有禁止 delete-share 的句柄。Manifest 与受管文件都要求描述符/名称身份一致及单硬链接；非零末页也不再把局部检查升级为整树 `complete`。
+4. 新增全有或全无、由环境变量托管的单个 Emby/Jellyfin 配置，提供安全摘要与默认关闭的操作门。启动校验会规范化 origin/网络策略并隐藏被拒绝的配置输入。
+5. 新增 provider-neutral connector：强制全部 DNS 答案符合 CIDR、固定连接 IP、保留 Host/TLS SNI、禁用代理和重定向、固定 probe/定向刷新路由，并实行绝对截止时间与 connector single-flight。API key 只在请求边界解析；动态 `httpx`/`httpcore.*` 日志在请求作用域脱敏，并精确恢复先前 LogRecord factory。
+6. 新增持久 `media-server-probe`、`media-server-scan` Operation 及 revision `0007`。Probe/scan 共用配置互斥域；scan 绝不回退 `/Library/Refresh`。取消只能在 dispatch 前胜出；dispatch 后 timeout、取消、断连、清理或响应歧义统一成为 terminal、不可重试的 `media_server_scan_acceptance_unknown`。
+7. 完成最终 scan 持久化与取消的线性化。权威最终读取会保留 SQLite writer，并编译为 PostgreSQL `SELECT ... FOR UPDATE`：cancel-first 转为 acceptance-unknown，final-lock-first 则保留成功，后到取消不能改写。重启对账继续保守标为 `interrupted`，且 scan 的中断不可重试。
+8. 新增 `GET /api/v1/library/{author_id}`、`GET /api/v1/media-server`、`POST /api/v1/media-server/probe`、`POST /api/v1/media-server/scan` 与 `GET /api/v1/qualifications`。状态和证据只取当前配置作用域，并使用封闭白名单 payload。
+9. 升级 Library、Settings 与 Jobs 页面，支持媒体树分页、脱敏配置、资格证据及持久 probe/scan 活动。请求代际阻止迟到响应覆盖当前状态；Settings 使用独立故障域；Jobs 在上一轮请求仍 active 时跳过轮询。
+10. 更新部署、架构、运维、安全与能力文档。浏览器 smoke 覆盖未配置服务器时的 Library、Settings、Jobs、禁用 probe/scan、准确 `NOT_RUN`/`NOT_IMPLEMENTED` 标签，以及请求体覆盖远端目标时的 422 拒绝。
 
-## 决策与风险
+## 审查加固
 
-- 在操作者鉴权存在前只使用一个环境变量托管配置；本执行不创建浏览器可写连接设置。
-- 把 probe 与 scan 都建模为持久 Operation。由于应用与 ORM/数据库词汇封闭，需要 revision `0007_media_server_operations`。
-- 扫描成功只表示精确定向刷新已接受；dispatch 后不确定性不可重试，进程崩溃时对账为 `interrupted`；已实现功能的真人使用保持 `NOT_RUN`，阶段 A 缺失能力标为 `NOT_IMPLEMENTED`。
-- 只检查 manifest 受管逻辑节点；不得把文件系统枚举当作浏览权威，也不得暴露非受管名称。
-- 保护已修改文件并报告固定漂移状态；禁止 repair/delete/reset 快捷路径。
-- 最高风险是未鉴权远端副作用、请求可控 SSRF、key 泄露、脱离 DB 发布链盲信磁盘 manifest，以及虚报资格；冻结契约逐一约束了这些风险。
+多轮独立审查发现并关闭了分页范围虚高、祖先/manifest 替换竞态、配置错误泄密、反射服务器字段、非绝对 timeout、POST 取消/清理歧义、旧配置证据串用、重启 scan 可重试、动态 logger 泄密、遗留 worker 增长、Web 迟到响应覆盖、Settings 故障域耦合及 Jobs 轮询自我饿死。最终跨数据库审查又发现取消/成功收尾窗口，并通过上述锁定权威读取关闭。Connector 与 CAS 复核在阶段 A 交付范围内没有发现剩余 P0/P1/P2。
 
-## 待完成
+首次完整套件暴露了依赖 logger 捕获测试中一个与顺序有关的测试夹具失败：`1 failed, 2617 passed, 3 skipped, 1 warning in 505.38s`；敏感值始终正确脱敏。测试现会保存、显式控制并精确恢复 logger 与全局 logging 状态，定向重跑通过。最终 CAS 加固后，冻结完整套件通过 `2620 passed, 3 skipped, 1 warning in 505.44s`。
 
-- 提交并推送计划/基线日志。
-- 实现并审查媒体库检查器和详情 API。
-- 实现并审查媒体服务器配置与 connector。
-- 实现 migration、Operation 契约、带强制门的 probe/scan API、保守重启对账与 schema-v1 资格投影。
-- 升级 Web Library/Settings/Jobs，随后运行浏览器交互检查。
-- 运行完整冻结门禁，记录精确结果，完成独立审查，更新全局状态/路线图，提交、推送并与 GitHub 对账。
+## 验证
 
-## 外部门
+- Python：Ruff 与格式检查覆盖 213 个文件并通过；strict mypy 通过 101 个源码文件；compileall 干净；完整套件通过 2620 项，3 项为 Windows 不适用 skip，另有一个既有 Starlette/httpx 弃用 warning。
+- Web：Prettier 通过；Vitest 的 7 个文件、58 项测试通过；Svelte check 为 0 errors、0 warnings；生产静态构建通过。
+- 打包与仓库：wheel/sdist 构建通过；双语文档与两个锁定上游 checkout 通过；tracked-output、宿主路径、secret 模式及空白审计通过。
+- Git：四个中英双语实现提交已经推送到 `origin/main`；收尾文档提交就是包含本记录的提交，按约定不嵌入自身 SHA。
 
-已经实现的 Emby/Jellyfin 连接、library 发现和定向刷新接受，其真人使用为 `NOT_RUN`。扫描完成轮询、项目查找、播放证据和自动联动在阶段 A 为 `NOT_IMPLEMENTED`。七平台授权登录、作者扫描、增量运行、CDN 获取，以及 Linux 持久性/恢复证据继续在执行 0047 下保持 `NOT_RUN`。
+## 待实现与外部门
+
+阶段 A 没有剩余实现工作。执行 0054 继续为需另行冻结的 0054-B 保持开启；该阶段必须实现可 mock 的扫描完成进度及 provider/path 项目查找。已经实现的连接探测、Library 发现及定向刷新接受，其真人使用在执行 0047 下仍为 `NOT_RUN`。扫描完成和项目查找在 0054-B 落地前仍为 `NOT_IMPLEMENTED`。播放证据写入、浏览器可写设置、多配置、鉴权及破坏性/保留运维继续归 0055。导出后自动扫描是 `NOT_IMPLEMENTED`，且尚无已冻结后续归属。七平台全部真人账户、作者、增量、CDN 及 Linux 持久性/恢复行也继续为 `NOT_RUN`。

@@ -139,10 +139,16 @@ Scheduled creator child 把 manifest/Subscription `max_items` 传给有界回答
 
 执行 0007 已为七个平台标识提供自动化离线证据：“订阅 → tick → manifest-v3 写入/读取 → 真实本地 fake child 写入版本化 JSONL → receipt-v2 写入/读取 → 受保护导入 → 重试/重启 → 幂等重放”。这只证明 media-sync/子进程文件系统协议与持久身份；没有使用浏览器、平台账户、作者端点、CDN 或媒体服务器，也不证明上游分页有界或真人兼容。
 
-仍未使用真人账户或交互挑战。七个平台的真人二维码/Cookie/保存会话登录、作者流量及定时运行全部保持 `NOT_RUN`；手机号登录仍属于不支持，而不是仅未测试。没有运行真实签名 locator 刷新/CDN 获取或真实 Emby/Jellyfin 扫描/播放。执行 0007 自身的 AC6/AC13 记录继续作为历史 `PARTIAL` 证据。
+仍未使用真人账户或交互挑战。七个平台的真人二维码/Cookie/保存会话登录、作者流量及定时运行全部保持 `NOT_RUN`；手机号登录仍属于不支持，而不是仅未测试。没有运行真实签名 locator 刷新/CDN 获取，也没有在获授权真实服务器上运行连接探测、Library 发现或定向刷新接受。执行 0007 自身的 AC6/AC13 记录继续作为历史 `PARTIAL` 证据。
+
+### 执行 0054-A 媒体服务器真值
+
+执行 0054-A 暴露三个相互独立的维度，不会从本地记录推导真人资格。`automated_evidence` 只包含有界数据库计数及最新白名单 probe/scan Operation 事实，绝不会授予真人 PASS。`connection_probe`、`library_discovery` 与 `targeted_scan_acceptance` 的实现状态为 `IMPLEMENTED`，在当前工作区的真人状态为 `NOT_RUN`。`scan_completion`、`item_lookup`、`playback_evidence` 与 `automatic_post_export_scan` 的实现状态为 `NOT_IMPLEMENTED`，真人状态为空，因为尚不存在的能力不可能已经运行。成功的 `media-server-scan` 只证明固定定向刷新已接受，不证明扫描完成或样本可播放。
+
+执行 0054 继续为另行冻结的阶段 B 保持开启；该阶段覆盖可 mock 的扫描完成进度及 provider/path 项目查找。经鉴权的播放证据写入继续与浏览器可写设置、多配置、保留/破坏性维护及访问控制一起属于执行 0055。导出后自动扫描仍未实现，且没有已冻结的后续归属；文档不得把它静默分配给任一阶段。
 
 执行 0011 本地提交 `8bb16f6` 建立了显式 QR 登录、已过期 saved-session 重认证及非交互 saved-session 复用的历史离线状态与正常进程边界。执行 0012 提交 `28655f8` 现已增加有界请求/结果 framing、持续父进程控制、结果 guardian、父进程硬终止时的完整树收容，以及在同一账户锁下受截止时间 fencing 保护的遗留会话回收。登录启动、脱敏状态查询和常驻 sweep 使恢复路径可达；轮转游标避免早期 busy 候选饿死后续账户。0012 专项门禁通过 283 项并有 1 项 Windows 不适用的跳过，完整套件通过 1156 项并跳过同一项。上游 saved-session 探测为 false 仍可能包含网络异常歧义，因此 `auth_expired` 继续是保守动作而非精确远端原因诊断。这些证据不会改变任何真人资格行。
 
-执行 0009 刷新 MVP、执行 0010 显式有界下游 pipeline、执行 0012 本地前台监督器及截至执行 0024 建立的十二个冻结媒体形状均已完成各自冻结离线范围；执行 0025–0026 增加有序备用可靠性，执行 0027 增加显式单段 FLV→MP4 衍生。Execution 0027 专项回归通过 394 项，完整套件通过 1848 项且仅跳过一项 Windows 不适用用例，Bilibili 兼容/生产组合及全部质量/审计门通过。当前证据覆盖全部七个平台的十二个冻结媒体形状，但不证明任何真人平台/CDN/媒体服务器行。生产 pipeline handler 为同步函数并通过 `asyncio.to_thread` 运行，因此监督器会在 heartbeat 下等待一项已经 active 的尝试，而不是取消它。底层线程强制终止与多 worker HA 尚未验收。
+执行 0009 刷新 MVP、执行 0010 显式有界下游 pipeline、执行 0012 本地前台监督器及截至执行 0024 建立的十二个冻结媒体形状均已完成各自冻结离线范围；执行 0025–0026 增加有序备用可靠性，执行 0027 增加显式单段 FLV→MP4 衍生。Execution 0027 专项回归通过 394 项，完整套件通过 1848 项且仅跳过一项 Windows 不适用用例，Bilibili 兼容/生产组合及全部质量/审计门通过。在该历史边界，证据覆盖全部七个平台的十二个冻结媒体形状，但不证明任何真人平台/CDN/媒体服务器行。生产 pipeline handler 当时是通过 `asyncio.to_thread` 运行的同步函数，因此监督器会在 heartbeat 下等待一项已经 active 的尝试，而不是取消它。底层线程强制终止与多 worker HA 当时尚未验收。
 
-微博视频/有效 `page_info`、GIF/动图语义、长图专用处理、有界 creator 分页、直连新浪 request profile、同 ID 媒体替换检测及注入清理失败 quarantine 仍不可用或延期。更大的产品仍缺贴吧超过 64 张的 gallery、混合/富内容/回复媒体与替换语义、知乎多图/文章/zvideo 媒体、七平台完整媒体形状覆盖、小红书扩展媒体/权限过期恢复、Bilibili 多分段 progressive 与 FLV 拼接/转码、超过 64 个分 P、字幕/弹幕、CDN 排序/竞速/跨运行缓存及混合/非鉴权穷尽后的新详情刷新、其他平台衍生物、逐 HTTP 请求间隔、同步线程强制取消/多 worker HA、REST 运维、Docker 与生产服务集成。这些是实现差距，不是 `NOT_RUN` 结果；全部真人验收行继续保持 `NOT_RUN`。已交付的监督器是显式单主机前台进程，不是生产服务。
+在同一历史边界，微博视频/有效 `page_info`、GIF/动图语义、长图专用处理、有界 creator 分页、直连新浪 request profile、同 ID 媒体替换检测及注入清理失败 quarantine 尚不可用或延期。更大的产品还缺贴吧超过 64 张的 gallery、混合/富内容/回复媒体与替换语义、知乎多图/文章/zvideo 媒体、七平台完整媒体形状覆盖、小红书扩展媒体/权限过期恢复、Bilibili 多分段 progressive 与 FLV 拼接/转码、超过 64 个分 P、字幕/弹幕、CDN 排序/竞速/跨运行缓存及混合/非鉴权穷尽后的新详情刷新、其他平台衍生物、逐 HTTP 请求间隔，以及同步线程强制取消/多 worker HA。这些是实现差距，不是 `NOT_RUN` 结果；该边界的全部真人验收行保持 `NOT_RUN`。当时交付的监督器是显式单主机前台进程，不是生产服务。
