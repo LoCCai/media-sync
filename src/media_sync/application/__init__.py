@@ -65,6 +65,14 @@ from media_sync.application.media_server import (
     MediaServerScanResult,
     MediaServerService,
 )
+from media_sync.application.media_server_publication import (
+    MediaServerPathStyle,
+    MediaServerPublicationExporterPort,
+    MediaServerPublicationResolver,
+    MediaServerPublicationTarget,
+    media_server_publication_fingerprint,
+    media_server_selector_fingerprint,
+)
 from media_sync.application.mediacrawler import (
     MediaCrawlerOutputRejected,
     NormalizedMediaCrawlerOutput,
@@ -221,7 +229,11 @@ __all__ = [
     "MediaCrawlerOutputRejected",
     "MediaCrawlerQrLoginService",
     "MediaServerError",
+    "MediaServerPathStyle",
     "MediaServerProbeResult",
+    "MediaServerPublicationExporterPort",
+    "MediaServerPublicationResolver",
+    "MediaServerPublicationTarget",
     "MediaServerScanResult",
     "MediaServerService",
     "NormalizedMediaCrawlerOutput",
@@ -265,6 +277,8 @@ __all__ = [
     "emby_export_natural_key",
     "export_error_is_retryable",
     "load_normalized_output",
+    "media_server_publication_fingerprint",
+    "media_server_selector_fingerprint",
     "operation_event_context",
     "operation_idempotency_key_digest",
     "operation_request_fingerprint",

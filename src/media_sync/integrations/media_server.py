@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
 import ipaddress
 import json
 import logging
+import re
 import socket
 import ssl
 import threading
@@ -14,6 +16,7 @@ from contextlib import contextmanager, suppress
 from contextvars import ContextVar
 from dataclasses import dataclass
 from queue import SimpleQueue
+from types import TracebackType
 from typing import Literal, Protocol, TypeAlias, cast
 from urllib.parse import urlsplit
 
@@ -21,41 +24,80 @@ import httpcore
 import httpx
 
 from media_sync.config import MediaServerProfile, MediaServerSafeSummary
-from media_sync.ports.media_server import MediaServerError, MediaServerProbeResult, MediaServerScanResult
+from media_sync.ports.media_server import (
+    MediaServerError,
+    MediaServerItemLookupResult,
+    MediaServerLookupTarget,
+    MediaServerProbeResult,
+    MediaServerScanResult,
+)
 from media_sync.security.secrets import SecretError, SecretReference, SecretValue
 
 SocketOption: TypeAlias = tuple[int, int, int] | tuple[int, int, bytes | bytearray] | tuple[int, int, None, int]
 
 _REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
 _TARGETED_SCAN_UNSUPPORTED = frozenset({404, 405, 501})
-_SCAN_QUERY: tuple[tuple[str, str], ...] = (
+_EMBY_SCAN_QUERY: tuple[tuple[str, str], ...] = (
     ("Recursive", "true"),
     ("MetadataRefreshMode", "Default"),
     ("ImageRefreshMode", "Default"),
     ("ReplaceAllMetadata", "false"),
     ("ReplaceAllImages", "false"),
 )
+_JELLYFIN_SCAN_QUERY: tuple[tuple[str, str], ...] = (
+    ("metadataRefreshMode", "Default"),
+    ("imageRefreshMode", "Default"),
+    ("replaceAllMetadata", "false"),
+    ("replaceAllImages", "false"),
+)
+_EMBY_LOOKUP_LIMIT = 2
+_WIRE_FIXED_MESSAGE = "[REDACTED MEDIA-SERVER WIRE EVENT]"
 _WIRE_LOGGER_ROOTS = ("httpcore", "httpx")
 _MIN_SENSITIVE_SUBSTRING_CHARS = 8
+_LOOKUP_INCOMPLETE_CODES = frozenset(
+    {
+        "media_server_timeout",
+        "media_server_header_limit",
+        "media_server_body_limit",
+        "media_server_response_invalid",
+        "media_server_schema_invalid",
+    }
+)
 _LogRecordFactory: TypeAlias = Callable[..., logging.LogRecord]
+_LoggerMakeRecord: TypeAlias = Callable[..., logging.LogRecord]
+_STANDARD_LOG_RECORD_FIELDS = frozenset(
+    {
+        *logging.LogRecord("", 0, "", 0, "", (), None).__dict__,
+        "asctime",
+        "message",
+    }
+)
 
 
 class _SensitiveWireLogFilter(logging.Filter):
-    def __init__(self, values: Sequence[str]) -> None:
+    def __init__(self, values: Sequence[str], *, replace_message: bool) -> None:
         super().__init__()
         self._values = tuple(sorted({value for value in values if value}, key=len, reverse=True))
+        self._replace_message = replace_message
 
     def filter(self, record: logging.LogRecord) -> bool:
-        try:
-            message = record.getMessage()
-        except BaseException:
-            message = "[REDACTED MEDIA-SERVER WIRE EVENT]"
-        for value in self._values:
-            message = message.replace(value, "[REDACTED]")
+        if self._replace_message:
+            message = _WIRE_FIXED_MESSAGE
+        else:
+            try:
+                message = record.getMessage()
+            except BaseException:
+                message = _WIRE_FIXED_MESSAGE
+            for value in self._values:
+                message = message.replace(value, "[REDACTED]")
         record.msg = message
         record.args = ()
         record.exc_info = None
         record.exc_text = None
+        record.stack_info = None
+        for key in tuple(record.__dict__):
+            if key not in _STANDARD_LOG_RECORD_FIELDS:
+                record.__dict__[key] = "[REDACTED]"
         return True
 
 
@@ -67,12 +109,20 @@ _wire_log_redactors: ContextVar[tuple[_SensitiveWireLogFilter, ...]] = ContextVa
 _wire_log_factory_users = 0
 _wire_log_factory: _LogRecordFactory | None = None
 _wire_log_previous_factory: _LogRecordFactory | None = None
+_wire_log_make_record: _LoggerMakeRecord | None = None
+_wire_log_previous_make_record: _LoggerMakeRecord | None = None
+
+
+def _set_logger_make_record(value: _LoggerMakeRecord) -> None:
+    logging.Logger.makeRecord = value  # type: ignore[method-assign]
 
 
 def _install_wire_log_factory() -> None:
     global _wire_log_factory
     global _wire_log_factory_users
     global _wire_log_previous_factory
+    global _wire_log_make_record
+    global _wire_log_previous_make_record
 
     with _wire_log_factory_lock:
         if _wire_log_factory_users == 0:
@@ -89,6 +139,45 @@ def _install_wire_log_factory() -> None:
             _wire_log_previous_factory = previous
             _wire_log_factory = factory
             logging.setLogRecordFactory(factory)
+            previous_make_record = logging.Logger.makeRecord
+
+            def make_record(
+                logger: logging.Logger,
+                name: str,
+                level: int,
+                filename: str,
+                line_number: int,
+                message: object,
+                args: tuple[object, ...] | Mapping[str, object],
+                exception_info: (
+                    tuple[type[BaseException], BaseException, TracebackType | None] | tuple[None, None, None] | None
+                ),
+                function_name: str | None = None,
+                extra: Mapping[str, object] | None = None,
+                stack_info: str | None = None,
+            ) -> logging.LogRecord:
+                record = previous_make_record(
+                    logger,
+                    name,
+                    level,
+                    filename,
+                    line_number,
+                    message,
+                    args,
+                    exception_info,
+                    function_name,
+                    extra,
+                    stack_info,
+                )
+                record_name = record.name or ""
+                if any(record_name == root or record_name.startswith(f"{root}.") for root in _WIRE_LOGGER_ROOTS):
+                    for active_redaction in _wire_log_redactors.get():
+                        active_redaction.filter(record)
+                return record
+
+            _wire_log_previous_make_record = previous_make_record
+            _wire_log_make_record = make_record
+            _set_logger_make_record(make_record)
         _wire_log_factory_users += 1
 
 
@@ -96,6 +185,8 @@ def _remove_wire_log_factory() -> None:
     global _wire_log_factory
     global _wire_log_factory_users
     global _wire_log_previous_factory
+    global _wire_log_make_record
+    global _wire_log_previous_make_record
 
     with _wire_log_factory_lock:
         _wire_log_factory_users -= 1
@@ -105,15 +196,21 @@ def _remove_wire_log_factory() -> None:
         previous = _wire_log_previous_factory
         if factory is not None and previous is not None and logging.getLogRecordFactory() is factory:
             logging.setLogRecordFactory(previous)
+        make_record = _wire_log_make_record
+        previous_make_record = _wire_log_previous_make_record
+        if make_record is not None and previous_make_record is not None and logging.Logger.makeRecord is make_record:
+            _set_logger_make_record(previous_make_record)
         _wire_log_factory = None
         _wire_log_previous_factory = None
+        _wire_log_make_record = None
+        _wire_log_previous_make_record = None
 
 
 @contextmanager
-def _redact_wire_logs(*values: str) -> Iterator[None]:
+def _redact_wire_logs(*values: str, replace_message: bool = False) -> Iterator[None]:
     """Redact this request's selectors without changing process logger policy."""
 
-    redaction = _SensitiveWireLogFilter(values)
+    redaction = _SensitiveWireLogFilter(values, replace_message=replace_message)
     token = _wire_log_redactors.set((*_wire_log_redactors.get(), redaction))
     _install_wire_log_factory()
     try:
@@ -181,6 +278,10 @@ class MediaServerLimits:
     max_string_chars: int = 4_096
     max_virtual_folders: int = 256
     max_locations_per_folder: int = 64
+    jellyfin_lookup_page_size: int = 128
+    max_lookup_pages: int = 32
+    max_lookup_items: int = 4_096
+    max_lookup_bytes: int = 8_388_608
 
     def __post_init__(self) -> None:
         for value in (
@@ -193,9 +294,21 @@ class MediaServerLimits:
             self.max_string_chars,
             self.max_virtual_folders,
             self.max_locations_per_folder,
+            self.jellyfin_lookup_page_size,
+            self.max_lookup_pages,
+            self.max_lookup_items,
+            self.max_lookup_bytes,
         ):
             if isinstance(value, bool) or not isinstance(value, int) or value < 1:
                 raise ValueError("media-server limits must be positive integers")
+        if self.jellyfin_lookup_page_size > 128:
+            raise ValueError("Jellyfin lookup page size cannot exceed 128")
+        if self.max_lookup_pages > 32:
+            raise ValueError("media-server lookup page limit cannot exceed 32")
+        if self.max_lookup_items > 4_096:
+            raise ValueError("media-server lookup item limit cannot exceed 4096")
+        if self.max_lookup_bytes > 8_388_608:
+            raise ValueError("media-server lookup byte limit cannot exceed 8 MiB")
 
 
 class _PinnedNetworkBackend(httpcore.NetworkBackend):
@@ -314,6 +427,15 @@ def _reject_json_constant(_value: str) -> object:
     raise ValueError("non-finite JSON number")
 
 
+def _reject_duplicate_json_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    decoded: dict[str, object] = {}
+    for key, value in pairs:
+        if key in decoded:
+            raise ValueError("duplicate JSON object key")
+        decoded[key] = value
+    return decoded
+
+
 class _JsonBudget:
     def __init__(self, limits: MediaServerLimits) -> None:
         self._limits = limits
@@ -324,7 +446,9 @@ class _JsonBudget:
         if depth > self._limits.max_json_depth or self._items > self._limits.max_json_items:
             raise MediaServerError("media_server_schema_invalid")
         if isinstance(value, str):
-            if len(value) > self._limits.max_string_chars:
+            if len(value) > self._limits.max_string_chars or any(
+                0xD800 <= ord(character) <= 0xDFFF for character in value
+            ):
                 raise MediaServerError("media_server_schema_invalid")
             return
         if value is None or isinstance(value, bool | int | float):
@@ -351,12 +475,54 @@ class _Discovery:
 
 
 @dataclass(frozen=True, slots=True)
+class _JsonResponse:
+    payload: object
+    body_byte_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class _LookupMatch:
+    item_id: str
+    etag: str | None
+
+
+class _LookupPassBudget:
+    def __init__(self, limits: MediaServerLimits) -> None:
+        self._limits = limits
+        self.page_count = 0
+        self.item_count = 0
+        self.response_byte_count = 0
+
+    @property
+    def remaining_bytes(self) -> int:
+        return self._limits.max_lookup_bytes - self.response_byte_count
+
+    def start_page(self) -> None:
+        if self.page_count >= self._limits.max_lookup_pages or self.remaining_bytes < 1:
+            raise MediaServerError("media_server_item_lookup_incomplete")
+        self.page_count += 1
+
+    def finish_page(self, *, item_count: int, response_byte_count: int) -> None:
+        if (
+            isinstance(item_count, bool)
+            or not isinstance(item_count, int)
+            or item_count < 0
+            or self.item_count + item_count > self._limits.max_lookup_items
+            or response_byte_count < 0
+            or self.response_byte_count + response_byte_count > self._limits.max_lookup_bytes
+        ):
+            raise MediaServerError("media_server_item_lookup_incomplete")
+        self.item_count += item_count
+        self.response_byte_count += response_byte_count
+
+
+@dataclass(frozen=True, slots=True)
 class _WorkerFailure:
     code: str
     retryable: bool
 
 
-_ConnectorResult: TypeAlias = MediaServerProbeResult | MediaServerScanResult
+_ConnectorResult: TypeAlias = MediaServerProbeResult | MediaServerScanResult | MediaServerItemLookupResult
 _WorkerOutcome: TypeAlias = _ConnectorResult | _WorkerFailure
 
 
@@ -560,6 +726,274 @@ class MediaServerConnector:
             library_id_digest=self._profile.library_id_digest,
         )
 
+    def lookup_item(self, target: MediaServerLookupTarget) -> MediaServerItemLookupResult:
+        """Return complete exact-match evidence without exposing remote selectors."""
+
+        if not isinstance(target, MediaServerLookupTarget):
+            raise TypeError("target must be a MediaServerLookupTarget")
+        deadline = self._monotonic() + self._profile.timeout_seconds
+        state = _DeadlineState()
+        return cast(
+            MediaServerItemLookupResult,
+            self._run_until_deadline(
+                lambda: self._lookup_item(target, deadline, state),
+                deadline=deadline,
+                state=state,
+                timeout_code="media_server_item_lookup_incomplete",
+            ),
+        )
+
+    def _lookup_item(
+        self,
+        target: MediaServerLookupTarget,
+        deadline: float,
+        state: _DeadlineState,
+    ) -> MediaServerItemLookupResult:
+        try:
+            self._check_deadline(deadline, state)
+            if self._profile.provider == "emby":
+                return self._lookup_emby_item(target, deadline, state)
+            return self._lookup_jellyfin_item(target, deadline, state)
+        except MediaServerError as error:
+            if error.code in _LOOKUP_INCOMPLETE_CODES:
+                raise MediaServerError("media_server_item_lookup_incomplete") from None
+            raise
+
+    def _lookup_emby_item(
+        self,
+        target: MediaServerLookupTarget,
+        deadline: float,
+        state: _DeadlineState,
+    ) -> MediaServerItemLookupResult:
+        provider_filter = self._emby_provider_filter(target)
+        query_items: list[tuple[str, str]] = [("Path", target.server_path)]
+        if provider_filter is not None:
+            query_items.append(("AnyProviderIdEquals", provider_filter))
+        query_items.extend(
+            (
+                ("ParentId", self._profile.library_id),
+                ("Recursive", "true"),
+                ("Fields", "Path,ProviderIds"),
+                ("EnableImages", "false"),
+                ("EnableUserData", "false"),
+                ("StartIndex", "0"),
+                ("Limit", str(_EMBY_LOOKUP_LIMIT)),
+            )
+        )
+        budget = _LookupPassBudget(self._limits)
+        budget.start_page()
+        response = self._request(
+            "GET",
+            "/Items",
+            query=tuple(query_items),
+            deadline=deadline,
+            state=state,
+            expect_json=True,
+            lookup_request=True,
+            body_byte_limit=budget.remaining_bytes,
+            sensitive_selectors=(target.provider_key, target.provider_value, target.server_path),
+        )
+        if not isinstance(response, _JsonResponse):  # pragma: no cover - closed internal call contract
+            raise MediaServerError("media_server_item_lookup_incomplete")
+        payload = response.payload
+        if not isinstance(payload, dict):
+            raise MediaServerError("media_server_item_lookup_incomplete")
+        raw_items = payload.get("Items")
+        if not isinstance(raw_items, list) or len(raw_items) > _EMBY_LOOKUP_LIMIT:
+            raise MediaServerError("media_server_item_lookup_incomplete")
+        budget.finish_page(item_count=len(raw_items), response_byte_count=response.body_byte_count)
+
+        start_index = payload.get("StartIndex")
+        if start_index is not None and (
+            isinstance(start_index, bool) or not isinstance(start_index, int) or start_index != 0
+        ):
+            raise MediaServerError("media_server_item_lookup_incomplete")
+        total = payload.get("TotalRecordCount")
+        if total is not None and (isinstance(total, bool) or not isinstance(total, int) or total < 0):
+            raise MediaServerError("media_server_item_lookup_incomplete")
+        if total is not None and total != len(raw_items):
+            raise MediaServerError("media_server_item_lookup_incomplete")
+
+        seen_ids: set[str] = set()
+        matches: list[_LookupMatch] = []
+        for raw_item in raw_items:
+            item_id, path, provider_value, etag = self._validated_lookup_row(raw_item, target.provider_key)
+            if item_id in seen_ids or path != target.server_path:
+                raise MediaServerError("media_server_item_lookup_incomplete")
+            seen_ids.add(item_id)
+            if provider_filter is not None and provider_value != target.provider_value:
+                raise MediaServerError("media_server_item_lookup_incomplete")
+            if provider_value == target.provider_value:
+                matches.append(_LookupMatch(item_id=item_id, etag=etag))
+        if len(matches) > 1:
+            raise MediaServerError("media_server_item_lookup_ambiguous")
+        if total is None and len(raw_items) == _EMBY_LOOKUP_LIMIT and len(matches) < _EMBY_LOOKUP_LIMIT:
+            raise MediaServerError("media_server_item_lookup_incomplete")
+        return self._completed_lookup_result(target, matches, seen_ids, budget)
+
+    def _lookup_jellyfin_item(
+        self,
+        target: MediaServerLookupTarget,
+        deadline: float,
+        state: _DeadlineState,
+    ) -> MediaServerItemLookupResult:
+        budget = _LookupPassBudget(self._limits)
+        seen_ids: set[str] = set()
+        matches: list[_LookupMatch] = []
+        expected_total: int | None = None
+        start_index = 0
+        page_size = self._limits.jellyfin_lookup_page_size
+
+        while expected_total is None or len(seen_ids) < expected_total:
+            budget.start_page()
+            query = (
+                ("parentId", self._profile.library_id),
+                ("recursive", "true"),
+                ("fields", "Path,ProviderIds,Etag"),
+                ("enableImages", "false"),
+                ("enableUserData", "false"),
+                ("enableTotalRecordCount", "true"),
+                ("startIndex", str(start_index)),
+                ("limit", str(page_size)),
+            )
+            response = self._request(
+                "GET",
+                "/Items",
+                query=query,
+                deadline=deadline,
+                state=state,
+                expect_json=True,
+                lookup_request=True,
+                body_byte_limit=budget.remaining_bytes,
+                sensitive_selectors=(target.provider_key, target.provider_value, target.server_path),
+            )
+            if not isinstance(response, _JsonResponse):  # pragma: no cover - closed internal call contract
+                raise MediaServerError("media_server_item_lookup_incomplete")
+            payload = response.payload
+            if not isinstance(payload, dict):
+                raise MediaServerError("media_server_item_lookup_incomplete")
+            raw_items = payload.get("Items")
+            total = payload.get("TotalRecordCount")
+            returned_start = payload.get("StartIndex")
+            if (
+                not isinstance(raw_items, list)
+                or len(raw_items) > page_size
+                or isinstance(total, bool)
+                or not isinstance(total, int)
+                or total < 0
+                or isinstance(returned_start, bool)
+                or not isinstance(returned_start, int)
+                or returned_start != start_index
+            ):
+                raise MediaServerError("media_server_item_lookup_incomplete")
+            budget.finish_page(item_count=len(raw_items), response_byte_count=response.body_byte_count)
+            if (
+                total > self._limits.max_lookup_items
+                or (total + page_size - 1) // page_size > self._limits.max_lookup_pages
+                or (expected_total is not None and total != expected_total)
+                or start_index + len(raw_items) > total
+                or (not raw_items and start_index < total)
+            ):
+                raise MediaServerError("media_server_item_lookup_incomplete")
+            expected_total = total
+
+            for raw_item in raw_items:
+                item_id, path, provider_value, etag = self._validated_lookup_row(raw_item, target.provider_key)
+                if item_id in seen_ids:
+                    raise MediaServerError("media_server_item_lookup_incomplete")
+                seen_ids.add(item_id)
+                if path == target.server_path and provider_value == target.provider_value:
+                    matches.append(_LookupMatch(item_id=item_id, etag=etag))
+                    if len(matches) > 1:
+                        raise MediaServerError("media_server_item_lookup_ambiguous")
+            start_index += len(raw_items)
+
+        if expected_total is None or len(seen_ids) != expected_total:
+            raise MediaServerError("media_server_item_lookup_incomplete")
+        return self._completed_lookup_result(target, matches, seen_ids, budget)
+
+    @staticmethod
+    def _emby_provider_filter(target: MediaServerLookupTarget) -> str | None:
+        provider_value = target.provider_value
+        if re.fullmatch(r"[A-Za-z0-9_-]{1,512}", provider_value) is None:
+            return None
+        return f"{target.provider_key}.{provider_value}"
+
+    @staticmethod
+    def _validated_lookup_row(raw_item: object, provider_key: str) -> tuple[str, str, str | None, str | None]:
+        if not isinstance(raw_item, dict):
+            raise MediaServerError("media_server_item_lookup_incomplete")
+        item_id = raw_item.get("Id")
+        path = raw_item.get("Path")
+        provider_ids = raw_item.get("ProviderIds")
+        etag = raw_item.get("Etag")
+        if (
+            not isinstance(item_id, str)
+            or not 1 <= len(item_id) <= 128
+            or any(
+                ord(character) < 0x20 or ord(character) == 0x7F or 0xD800 <= ord(character) <= 0xDFFF
+                for character in item_id
+            )
+            or not isinstance(path, str)
+            or not path
+            or any(
+                ord(character) < 0x20 or ord(character) == 0x7F or 0xD800 <= ord(character) <= 0xDFFF
+                for character in path
+            )
+            or not isinstance(provider_ids, dict)
+            or any(
+                not isinstance(key, str)
+                or not isinstance(value, str)
+                or any(0xD800 <= ord(character) <= 0xDFFF for character in key)
+                or any(0xD800 <= ord(character) <= 0xDFFF for character in value)
+                for key, value in provider_ids.items()
+            )
+            or (
+                etag is not None
+                and (
+                    not isinstance(etag, str)
+                    or not etag
+                    or any(
+                        ord(character) < 0x20 or ord(character) == 0x7F or 0xD800 <= ord(character) <= 0xDFFF
+                        for character in etag
+                    )
+                )
+            )
+        ):
+            raise MediaServerError("media_server_item_lookup_incomplete")
+        raw_provider_value = provider_ids.get(provider_key)
+        provider_value = raw_provider_value if isinstance(raw_provider_value, str) else None
+        return item_id, path, provider_value, etag
+
+    def _completed_lookup_result(
+        self,
+        target: MediaServerLookupTarget,
+        matches: Sequence[_LookupMatch],
+        seen_ids: set[str],
+        budget: _LookupPassBudget,
+    ) -> MediaServerItemLookupResult:
+        fingerprint = hashlib.sha256(b"media-sync:media-server-item-id-set:v1\0")
+        for value in (
+            self._profile.profile_fingerprint,
+            target.provider_key,
+            target.provider_value,
+            target.server_path,
+            *sorted(seen_ids),
+        ):
+            encoded = value.encode("utf-8")
+            fingerprint.update(len(encoded).to_bytes(4, "big"))
+            fingerprint.update(encoded)
+        match = matches[0] if matches else None
+        return MediaServerItemLookupResult(
+            lookup_state="matched" if match is not None else "not_found",
+            inspected_item_count=budget.item_count,
+            page_count=budget.page_count,
+            response_byte_count=budget.response_byte_count,
+            item_id_set_fingerprint=fingerprint.hexdigest(),
+            item_id=None if match is None else match.item_id,
+            etag=None if match is None else match.etag,
+        )
+
     def scan(self, cancel_requested: Callable[[], bool]) -> MediaServerScanResult:
         """Dispatch the fixed targeted refresh once and never retry it."""
 
@@ -589,10 +1023,11 @@ class MediaServerConnector:
         self._check_deadline(deadline, state)
         if self._cancel_requested(cancel_requested):
             raise MediaServerError("media_server_scan_cancelled")
+        scan_query = _EMBY_SCAN_QUERY if self._profile.provider == "emby" else _JELLYFIN_SCAN_QUERY
         self._request(
             "POST",
             f"/Items/{self._profile.library_id}/Refresh",
-            query=_SCAN_QUERY,
+            query=scan_query,
             deadline=deadline,
             state=state,
             mutation=True,
@@ -614,6 +1049,7 @@ class MediaServerConnector:
         *,
         deadline: float,
         state: _DeadlineState,
+        timeout_code: str = "media_server_timeout",
     ) -> _ConnectorResult:
         if not self._claim_execution():
             raise MediaServerError("media_server_transport", retryable=True)
@@ -655,10 +1091,10 @@ class MediaServerConnector:
         remaining = max(0.0, deadline - self._monotonic())
         completed = done.wait(remaining)
         if not completed:
-            raise self._expire_deadline(state) from None
+            raise self._expire_deadline(state, timeout_code=timeout_code) from None
         completion = outcomes.get_nowait()
         if completion.completed_at >= deadline:
-            raise self._expire_deadline(state) from None
+            raise self._expire_deadline(state, timeout_code=timeout_code) from None
         outcome = completion.outcome
         if isinstance(outcome, _WorkerFailure):
             raise MediaServerError(outcome.code, retryable=outcome.retryable) from None
@@ -682,11 +1118,11 @@ class MediaServerConnector:
         return _WorkerFailure("media_server_transport", True)
 
     @staticmethod
-    def _expire_deadline(state: _DeadlineState) -> MediaServerError:
+    def _expire_deadline(state: _DeadlineState, *, timeout_code: str = "media_server_timeout") -> MediaServerError:
         post_entered = state.expire()
         if post_entered:
             return MediaServerError("media_server_scan_acceptance_unknown")
-        return MediaServerError("media_server_timeout", retryable=True)
+        return MediaServerError(timeout_code, retryable=timeout_code == "media_server_timeout")
 
     def _check_deadline(self, deadline: float, state: _DeadlineState) -> None:
         if state.active(now=self._monotonic(), deadline=deadline):
@@ -703,7 +1139,7 @@ class MediaServerConnector:
         return value is True
 
     def _discover(self, deadline: float, state: _DeadlineState) -> _Discovery:
-        system_info = self._request(
+        system_response = self._request(
             "GET",
             "/System/Info",
             deadline=deadline,
@@ -711,6 +1147,9 @@ class MediaServerConnector:
             expect_json=True,
         )
         self._check_deadline(deadline, state)
+        if not isinstance(system_response, _JsonResponse):  # pragma: no cover - closed internal call contract
+            raise MediaServerError("media_server_schema_invalid")
+        system_info = system_response.payload
         if not isinstance(system_info, dict):
             raise MediaServerError("media_server_schema_invalid")
         version = system_info.get("Version")
@@ -733,7 +1172,7 @@ class MediaServerConnector:
             raise MediaServerError("media_server_schema_invalid") from None
 
         self._check_deadline(deadline, state)
-        folders = self._request(
+        folders_response = self._request(
             "GET",
             "/Library/VirtualFolders",
             deadline=deadline,
@@ -741,7 +1180,9 @@ class MediaServerConnector:
             expect_json=True,
         )
         self._check_deadline(deadline, state)
-        self._validate_library(folders)
+        if not isinstance(folders_response, _JsonResponse):  # pragma: no cover - closed internal call contract
+            raise MediaServerError("media_server_schema_invalid")
+        self._validate_library(folders_response.payload)
         return _Discovery(server_version=validated_version)
 
     def _validate_library(self, payload: object) -> None:
@@ -856,14 +1297,26 @@ class MediaServerConnector:
         mutation: bool = False,
         expect_json: bool = False,
         cancel_requested: Callable[[], bool] | None = None,
-    ) -> object:
+        lookup_request: bool = False,
+        body_byte_limit: int | None = None,
+        sensitive_selectors: tuple[str, ...] = (),
+    ) -> _JsonResponse | None:
+        scan_query = _EMBY_SCAN_QUERY if self._profile.provider == "emby" else _JELLYFIN_SCAN_QUERY
         allowed = {
             ("GET", "/System/Info", ()),
             ("GET", "/Library/VirtualFolders", ()),
-            ("POST", f"/Items/{self._profile.library_id}/Refresh", _SCAN_QUERY),
+            ("POST", f"/Items/{self._profile.library_id}/Refresh", scan_query),
         }
-        if (method, path, query) not in allowed:
+        if lookup_request:
+            request_allowed = method == "GET" and path == "/Items" and self._lookup_query_is_allowlisted(query)
+        else:
+            request_allowed = (method, path, query) in allowed
+        if not request_allowed:
             raise ValueError("media-server route is not allowlisted")
+        if body_byte_limit is not None and (
+            isinstance(body_byte_limit, bool) or not isinstance(body_byte_limit, int) or body_byte_limit < 1
+        ):
+            raise ValueError("body_byte_limit must be a positive integer")
         self._check_deadline(deadline, state)
         target = self._validated_target()
         self._check_deadline(deadline, state)
@@ -892,7 +1345,12 @@ class MediaServerConnector:
             timeout=httpx.Timeout(remaining),
         )
         response: httpx.Response | None = None
-        with _redact_wire_logs(api_key, self._profile.library_id):
+        with _redact_wire_logs(
+            api_key,
+            self._profile.library_id,
+            *sensitive_selectors,
+            replace_message=lookup_request,
+        ):
             try:
                 headers = {
                     "Accept": "application/json",
@@ -919,7 +1377,16 @@ class MediaServerConnector:
                 if response.status_code in _REDIRECT_STATUSES:
                     raise MediaServerError("media_server_redirect_forbidden")
                 self._check_status(response.status_code, mutation=mutation)
-                body = self._read_body(response, deadline=deadline, state=state)
+                body = self._read_body(
+                    response,
+                    deadline=deadline,
+                    state=state,
+                    max_body_bytes=(
+                        self._limits.max_body_bytes
+                        if body_byte_limit is None
+                        else min(self._limits.max_body_bytes, body_byte_limit)
+                    ),
+                )
                 if not expect_json:
                     return None
                 content_types = response.headers.get_list("content-type")
@@ -930,14 +1397,18 @@ class MediaServerConnector:
                     raise MediaServerError("media_server_response_invalid")
                 try:
                     decoded = body.decode("utf-8")
-                    payload = json.loads(decoded, parse_constant=_reject_json_constant)
+                    payload = json.loads(
+                        decoded,
+                        parse_constant=_reject_json_constant,
+                        object_pairs_hook=_reject_duplicate_json_keys,
+                    )
                 except (UnicodeError, TypeError, ValueError):
                     raise MediaServerError("media_server_response_invalid") from None
                 self._check_deadline(deadline, state)
                 _JsonBudget(self._limits).check(payload)
                 self._reject_sensitive_version(path, payload, api_key)
                 self._check_deadline(deadline, state)
-                return payload
+                return _JsonResponse(payload=payload, body_byte_count=len(body))
             except _PreDispatchCancelled:
                 raise MediaServerError("media_server_scan_cancelled") from None
             except _PreDispatchDeadline:
@@ -978,7 +1449,75 @@ class MediaServerConnector:
                         raise MediaServerError("media_server_scan_acceptance_unknown") from None
                     raise MediaServerError("media_server_transport", retryable=True) from None
 
-    def _read_body(self, response: httpx.Response, *, deadline: float, state: _DeadlineState) -> bytes:
+    def _lookup_query_is_allowlisted(self, query: tuple[tuple[str, str], ...]) -> bool:
+        if self._profile.provider == "emby":
+            names = tuple(name for name, _value in query)
+            expected_without_provider = (
+                "Path",
+                "ParentId",
+                "Recursive",
+                "Fields",
+                "EnableImages",
+                "EnableUserData",
+                "StartIndex",
+                "Limit",
+            )
+            expected_with_provider = (
+                "Path",
+                "AnyProviderIdEquals",
+                *expected_without_provider[1:],
+            )
+            if names not in {expected_without_provider, expected_with_provider}:
+                return False
+            values = dict(query)
+            return (
+                bool(values["Path"])
+                and values["ParentId"] == self._profile.library_id
+                and values["Recursive"] == "true"
+                and values["Fields"] == "Path,ProviderIds"
+                and values["EnableImages"] == "false"
+                and values["EnableUserData"] == "false"
+                and values["StartIndex"] == "0"
+                and values["Limit"] == str(_EMBY_LOOKUP_LIMIT)
+                and ("AnyProviderIdEquals" not in values or bool(values["AnyProviderIdEquals"]))
+            )
+        names = tuple(name for name, _value in query)
+        if names != (
+            "parentId",
+            "recursive",
+            "fields",
+            "enableImages",
+            "enableUserData",
+            "enableTotalRecordCount",
+            "startIndex",
+            "limit",
+        ):
+            return False
+        values = dict(query)
+        try:
+            start_index = int(values["startIndex"])
+            limit = int(values["limit"])
+        except (KeyError, ValueError):
+            return False
+        return (
+            values["parentId"] == self._profile.library_id
+            and values["recursive"] == "true"
+            and values["fields"] == "Path,ProviderIds,Etag"
+            and values["enableImages"] == "false"
+            and values["enableUserData"] == "false"
+            and values["enableTotalRecordCount"] == "true"
+            and start_index >= 0
+            and limit == self._limits.jellyfin_lookup_page_size
+        )
+
+    def _read_body(
+        self,
+        response: httpx.Response,
+        *,
+        deadline: float,
+        state: _DeadlineState,
+        max_body_bytes: int,
+    ) -> bytes:
         self._check_deadline(deadline, state)
         content_encodings = response.headers.get_list("content-encoding")
         if content_encodings and any(value.strip().casefold() != "identity" for value in content_encodings):
@@ -993,11 +1532,11 @@ class MediaServerConnector:
                 raise MediaServerError("media_server_response_invalid") from None
             if declared < 0:
                 raise MediaServerError("media_server_response_invalid")
-            if declared > self._limits.max_body_bytes:
+            if declared > max_body_bytes:
                 raise MediaServerError("media_server_body_limit")
         if response.is_stream_consumed:
             body = response.content
-            if len(body) > self._limits.max_body_bytes:
+            if len(body) > max_body_bytes:
                 raise MediaServerError("media_server_body_limit")
             self._check_deadline(deadline, state)
             return body
@@ -1006,7 +1545,7 @@ class MediaServerConnector:
         for chunk in response.iter_raw():
             self._check_deadline(deadline, state)
             total += len(chunk)
-            if total > self._limits.max_body_bytes:
+            if total > max_body_bytes:
                 raise MediaServerError("media_server_body_limit")
             chunks.append(chunk)
         self._check_deadline(deadline, state)

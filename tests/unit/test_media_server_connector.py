@@ -5,6 +5,7 @@ import logging
 import threading
 import time
 from collections.abc import Callable, Sequence
+from urllib.parse import quote
 
 import httpx
 import pytest
@@ -16,7 +17,13 @@ from media_sync.integrations.media_server import (
     MediaServerLimits,
     MediaServerTarget,
 )
-from media_sync.ports.media_server import MediaServerError, MediaServerProbeResult, MediaServerScanResult
+from media_sync.ports.media_server import (
+    MediaServerError,
+    MediaServerItemLookupResult,
+    MediaServerLookupTarget,
+    MediaServerProbeResult,
+    MediaServerScanResult,
+)
 from media_sync.security.secrets import SecretReference, SecretResolutionError, SecretValue
 
 
@@ -135,6 +142,16 @@ def _connector(
         secrets or _Secrets(),  # type: ignore[arg-type]
         **kwargs,  # type: ignore[arg-type]
     )
+
+
+def _lookup_target(**overrides: str) -> MediaServerLookupTarget:
+    values = {
+        "provider_key": "media-sync-bili-creator",
+        "provider_value": "creator-private-id-42",
+        "server_path": "/srv/media/private-path-sentinel/bili-author-private-dir",
+    }
+    values.update(overrides)
+    return MediaServerLookupTarget(**values)
 
 
 def test_probe_uses_only_fixed_gets_with_pinned_host_and_final_auth_header() -> None:
@@ -326,6 +343,432 @@ def test_provider_mismatch_and_unsafe_version_fail_with_fixed_safe_errors() -> N
     assert remote_sentinel not in repr(caught.value)
 
 
+def test_lookup_contracts_are_strict_and_repr_safe() -> None:
+    target = _lookup_target()
+    target_repr = repr(target)
+    assert target.provider_key in target_repr
+    assert target.provider_value not in target_repr
+    assert target.server_path not in target_repr
+
+    result = MediaServerItemLookupResult(
+        lookup_state="matched",
+        inspected_item_count=1,
+        page_count=1,
+        response_byte_count=128,
+        item_id_set_fingerprint="a" * 64,
+        item_id="remote-private-item-id",
+        etag="remote-private-etag",
+    )
+    result_repr = repr(result)
+    assert "remote-private-item-id" not in result_repr
+    assert "remote-private-etag" not in result_repr
+    with pytest.raises(ValueError):
+        MediaServerItemLookupResult(
+            lookup_state="not_found",
+            inspected_item_count=0,
+            page_count=1,
+            response_byte_count=2,
+            item_id_set_fingerprint="a" * 64,
+            item_id="must-not-be-retained",
+        )
+    with pytest.raises(ValueError):
+        _lookup_target(provider_key="imdb")
+
+
+def test_emby_lookup_uses_exact_bounded_filters_and_local_dual_verification() -> None:
+    target = _lookup_target()
+    requests: list[httpx.Request] = []
+    body = json.dumps(
+        {
+            "Items": [
+                {
+                    "Id": "remote-private-item-id",
+                    "Path": target.server_path,
+                    "ProviderIds": {target.provider_key: target.provider_value},
+                    "Etag": "remote-private-etag",
+                }
+            ],
+            "TotalRecordCount": 1,
+            "StartIndex": 0,
+        },
+        separators=(",", ":"),
+    ).encode()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, headers={"Content-Type": "application/json"}, content=body)
+
+    result = _connector(handler).lookup_item(target)
+
+    assert result.lookup_state == "matched"
+    assert result.item_id == "remote-private-item-id"
+    assert result.etag == "remote-private-etag"
+    assert result.inspected_item_count == 1
+    assert result.page_count == 1
+    assert result.response_byte_count == len(body)
+    assert len(result.item_id_set_fingerprint) == 64
+    assert result.item_id_set_fingerprint not in repr(result)
+    assert len(requests) == 1
+    assert requests[0].method == "GET"
+    assert requests[0].url.path == "/Items"
+    assert tuple(requests[0].url.params.multi_items()) == (
+        ("Path", target.server_path),
+        ("AnyProviderIdEquals", f"{target.provider_key}.{target.provider_value}"),
+        ("ParentId", "library_123"),
+        ("Recursive", "true"),
+        ("Fields", "Path,ProviderIds"),
+        ("EnableImages", "false"),
+        ("EnableUserData", "false"),
+        ("StartIndex", "0"),
+        ("Limit", "2"),
+    )
+
+
+def test_emby_lookup_omits_lossy_provider_filter_but_still_checks_provider_locally() -> None:
+    target = _lookup_target(provider_value="creator,value")
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "Items": [
+                    {
+                        "Id": "other-private-item",
+                        "Path": target.server_path,
+                        "ProviderIds": {target.provider_key: "different-creator"},
+                    }
+                ],
+                "TotalRecordCount": 1,
+                "StartIndex": 0,
+            },
+        )
+
+    result = _connector(handler).lookup_item(target)
+
+    assert result.lookup_state == "not_found"
+    assert result.item_id is None
+    assert "AnyProviderIdEquals" not in requests[0].url.params
+    assert requests[0].url.params["Path"] == target.server_path
+
+
+def test_emby_lookup_distinguishes_ambiguous_from_incomplete() -> None:
+    target = _lookup_target()
+
+    def response(*, path: str = target.server_path, total: int = 2) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "Items": [
+                    {
+                        "Id": "remote-item-one",
+                        "Path": path,
+                        "ProviderIds": {target.provider_key: target.provider_value},
+                    },
+                    {
+                        "Id": "remote-item-two",
+                        "Path": target.server_path,
+                        "ProviderIds": {target.provider_key: target.provider_value},
+                    },
+                ],
+                "TotalRecordCount": total,
+                "StartIndex": 0,
+            },
+        )
+
+    with pytest.raises(MediaServerError) as ambiguous:
+        _connector(lambda _request: response()).lookup_item(target)
+    assert ambiguous.value.code == "media_server_item_lookup_ambiguous"
+    assert ambiguous.value.retryable is False
+
+    with pytest.raises(MediaServerError) as incomplete:
+        _connector(lambda _request: response(total=3)).lookup_item(target)
+    assert incomplete.value.code == "media_server_item_lookup_incomplete"
+    assert incomplete.value.retryable is False
+
+    with pytest.raises(MediaServerError) as filter_violation:
+        _connector(lambda _request: response(path="/server-returned/wrong-private-path")).lookup_item(target)
+    assert filter_violation.value.code == "media_server_item_lookup_incomplete"
+
+
+def test_jellyfin_lookup_exhaustively_pages_without_remote_selectors() -> None:
+    target = _lookup_target()
+    requests: list[httpx.Request] = []
+    rows = [
+        {
+            "Id": f"remote-item-{index:03d}",
+            "Path": f"/srv/media/other/item-{index:03d}",
+            "ProviderIds": {},
+        }
+        for index in range(130)
+    ]
+    rows[-1] = {
+        "Id": "remote-private-item-id",
+        "Path": target.server_path,
+        "ProviderIds": {target.provider_key: target.provider_value},
+        "Etag": "remote-private-etag",
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        start = int(request.url.params["startIndex"])
+        limit = int(request.url.params["limit"])
+        page = rows[start : start + limit]
+        return httpx.Response(
+            200,
+            json={"Items": page, "TotalRecordCount": len(rows), "StartIndex": start},
+        )
+
+    result = _connector(handler, profile=_profile(provider="jellyfin")).lookup_item(target)
+
+    assert result.lookup_state == "matched"
+    assert result.item_id == "remote-private-item-id"
+    assert result.inspected_item_count == 130
+    assert result.page_count == 2
+    assert [request.url.params["startIndex"] for request in requests] == ["0", "128"]
+    for request in requests:
+        assert tuple(request.url.params.keys()) == (
+            "parentId",
+            "recursive",
+            "fields",
+            "enableImages",
+            "enableUserData",
+            "enableTotalRecordCount",
+            "startIndex",
+            "limit",
+        )
+        assert request.url.params["parentId"] == "library_123"
+        assert request.url.params["recursive"] == "true"
+        assert request.url.params["fields"] == "Path,ProviderIds,Etag"
+        assert "Path" not in request.url.params
+        assert "AnyProviderIdEquals" not in request.url.params
+        assert "SearchTerm" not in request.url.params
+
+
+@pytest.mark.parametrize(
+    ("path_matches", "provider_matches", "expected_state"),
+    [
+        (False, False, "not_found"),
+        (True, False, "not_found"),
+        (False, True, "not_found"),
+        (True, True, "matched"),
+    ],
+)
+def test_jellyfin_lookup_requires_an_exact_path_and_provider_match(
+    path_matches: bool,
+    provider_matches: bool,
+    expected_state: str,
+) -> None:
+    target = _lookup_target()
+    row = {
+        "Id": "remote-private-item-id",
+        "Path": target.server_path if path_matches else "/srv/media/near-match",
+        "ProviderIds": {target.provider_key: target.provider_value if provider_matches else "other-private-creator"},
+    }
+
+    result = _connector(
+        lambda _request: httpx.Response(
+            200,
+            json={"Items": [row], "TotalRecordCount": 1, "StartIndex": 0},
+        ),
+        profile=_profile(provider="jellyfin"),
+    ).lookup_item(target)
+
+    assert result.lookup_state == expected_state
+    assert (result.item_id is not None) is (expected_state == "matched")
+
+
+@pytest.mark.parametrize("failure", ["duplicate_id", "unstable_total", "wrong_start"])
+def test_jellyfin_lookup_fails_closed_on_inconsistent_pagination(failure: str) -> None:
+    target = _lookup_target()
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        start = int(request.url.params["startIndex"])
+        if start == 0:
+            rows = [{"Id": f"item-{index}", "Path": f"/other/{index}", "ProviderIds": {}} for index in range(128)]
+            return httpx.Response(200, json={"Items": rows, "TotalRecordCount": 129, "StartIndex": 0})
+        row_id = "item-0" if failure == "duplicate_id" else "item-128"
+        total = 130 if failure == "unstable_total" else 129
+        returned_start = 0 if failure == "wrong_start" else 128
+        return httpx.Response(
+            200,
+            json={
+                "Items": [{"Id": row_id, "Path": "/other/128", "ProviderIds": {}}],
+                "TotalRecordCount": total,
+                "StartIndex": returned_start,
+            },
+        )
+
+    with pytest.raises(MediaServerError) as caught:
+        _connector(handler, profile=_profile(provider="jellyfin")).lookup_item(target)
+
+    assert caught.value.code == "media_server_item_lookup_incomplete"
+    assert calls == 2
+
+
+def test_jellyfin_lookup_stops_before_exceeding_page_budget() -> None:
+    target = _lookup_target()
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(
+            200,
+            json={
+                "Items": [{"Id": "item-0", "Path": "/other/0", "ProviderIds": {}}],
+                "TotalRecordCount": 2,
+                "StartIndex": int(request.url.params["startIndex"]),
+            },
+        )
+
+    with pytest.raises(MediaServerError) as caught:
+        _connector(
+            handler,
+            profile=_profile(provider="jellyfin"),
+            limits=MediaServerLimits(jellyfin_lookup_page_size=1, max_lookup_pages=1),
+        ).lookup_item(target)
+
+    assert caught.value.code == "media_server_item_lookup_incomplete"
+    assert calls == 1
+
+
+def test_lookup_counts_true_response_bytes_and_enforces_aggregate_byte_budget() -> None:
+    target = _lookup_target()
+    body = json.dumps({"Items": [], "TotalRecordCount": 0, "StartIndex": 0}).encode()
+
+    successful = _connector(
+        lambda _request: httpx.Response(200, headers={"Content-Type": "application/json"}, content=body)
+    ).lookup_item(target)
+    assert successful.response_byte_count == len(body)
+
+    with pytest.raises(MediaServerError) as caught:
+        _connector(
+            lambda _request: httpx.Response(200, headers={"Content-Type": "application/json"}, content=body),
+            limits=MediaServerLimits(max_lookup_bytes=len(body) - 1),
+        ).lookup_item(target)
+    assert caught.value.code == "media_server_item_lookup_incomplete"
+
+
+def test_item_id_set_fingerprint_is_deterministic_context_bound_and_repr_hidden() -> None:
+    target = _lookup_target()
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"Items": [], "TotalRecordCount": 0, "StartIndex": 0})
+
+    first = _connector(handler).lookup_item(target)
+    repeated = _connector(handler).lookup_item(target)
+    other_profile = _connector(handler, profile=_profile(library_id="other_library")).lookup_item(target)
+    other_selector = _connector(handler).lookup_item(_lookup_target(provider_value="other-creator"))
+
+    assert first.item_id_set_fingerprint == repeated.item_id_set_fingerprint
+    assert first.item_id_set_fingerprint != other_profile.item_id_set_fingerprint
+    assert first.item_id_set_fingerprint != other_selector.item_id_set_fingerprint
+    assert first.item_id_set_fingerprint not in repr(first)
+
+
+def test_duplicate_json_keys_are_rejected_including_nested_provider_ids() -> None:
+    with pytest.raises(MediaServerError) as probe_failure:
+        _connector(
+            lambda _request: httpx.Response(
+                200,
+                headers={"Content-Type": "application/json"},
+                content=b'{"ProductName":"Emby Server","Version":"4.8.10.0","Version":"9.9.9"}',
+            )
+        ).probe()
+    assert probe_failure.value.code == "media_server_response_invalid"
+
+    target = _lookup_target()
+    duplicate_provider = (
+        '{"Items":[{"Id":"item-1","Path":'
+        + json.dumps(target.server_path)
+        + ',"ProviderIds":{"media-sync-bili-creator":"first","media-sync-bili-creator":"second"}}],'
+        '"TotalRecordCount":1,"StartIndex":0}'
+    ).encode()
+    with pytest.raises(MediaServerError) as lookup_failure:
+        _connector(
+            lambda _request: httpx.Response(
+                200,
+                headers={"Content-Type": "application/json"},
+                content=duplicate_provider,
+            )
+        ).lookup_item(target)
+    assert lookup_failure.value.code == "media_server_item_lookup_incomplete"
+
+
+def test_lookup_replaces_entire_dependency_wire_record_for_encoded_selectors(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    target = _lookup_target(
+        provider_value="creator/value with space",
+        server_path="/srv/media/private path/作者目录",
+    )
+    caplog.set_level(logging.DEBUG)
+    original_make_record = logging.Logger.makeRecord
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        logging.getLogger("httpcore.lookup").warning(
+            "selector url=%s encoded_path=%s",
+            request.url,
+            quote(target.server_path, safe=""),
+            exc_info=RuntimeError(target.provider_value),
+            extra={
+                "request_url": str(request.url),
+                "selector_context": {"path": target.server_path, "provider": target.provider_value},
+            },
+        )
+        return httpx.Response(200, json={"Items": [], "TotalRecordCount": 0, "StartIndex": 0})
+
+    result = _connector(handler).lookup_item(target)
+
+    assert result.lookup_state == "not_found"
+    wire_records = [
+        record
+        for record in caplog.records
+        if record.name == "httpx" or record.name.startswith("httpx.") or record.name.startswith("httpcore")
+    ]
+    assert wire_records
+    assert {record.getMessage() for record in wire_records} == {"[REDACTED MEDIA-SERVER WIRE EVENT]"}
+    rendered = "\n".join(record.getMessage() for record in wire_records)
+    assert target.provider_value not in rendered
+    assert target.server_path not in rendered
+    assert quote(target.server_path, safe="") not in rendered
+    assert all(record.args == () and record.exc_info is None and record.exc_text is None for record in wire_records)
+    retained_records = "\n".join(repr(record.__dict__) for record in wire_records)
+    assert target.provider_value not in retained_records
+    assert target.server_path not in retained_records
+    assert quote(target.server_path, safe="") not in retained_records
+    assert all(record.__dict__.get("request_url") in {None, "[REDACTED]"} for record in wire_records)
+    assert logging.Logger.makeRecord is original_make_record
+
+
+def test_lookup_rejects_unpaired_unicode_surrogates_as_incomplete() -> None:
+    target = _lookup_target()
+    body = (
+        '{"Items":[{"Id":"\\ud800","Path":'
+        + json.dumps(target.server_path)
+        + ',"ProviderIds":'
+        + json.dumps({target.provider_key: target.provider_value})
+        + '}],"TotalRecordCount":1,"StartIndex":0}'
+    ).encode()
+
+    with pytest.raises(MediaServerError) as caught:
+        _connector(
+            lambda _request: httpx.Response(
+                200,
+                headers={"Content-Type": "application/json"},
+                content=body,
+            )
+        ).lookup_item(target)
+
+    assert caught.value.code == "media_server_item_lookup_incomplete"
+    assert caught.value.retryable is False
+
+
 def test_scan_discovers_then_dispatches_only_the_exact_fixed_post_once() -> None:
     requests: list[httpx.Request] = []
     cancellation_checks = 0
@@ -362,6 +805,30 @@ def test_scan_discovers_then_dispatches_only_the_exact_fixed_post_once() -> None
     )
     assert all(request.url.path != "/Library/Refresh" for request in requests)
     assert cancellation_checks >= 5
+
+
+def test_jellyfin_refresh_uses_only_its_documented_provider_specific_query() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path == "/System/Info":
+            return _system("jellyfin", "10.10.7")
+        if request.url.path == "/Library/VirtualFolders":
+            return _folders()
+        return httpx.Response(204)
+
+    result = _connector(handler, profile=_profile(provider="jellyfin")).scan(lambda: False)
+
+    assert result.provider == "jellyfin"
+    assert tuple(requests[-1].url.params.multi_items()) == (
+        ("metadataRefreshMode", "Default"),
+        ("imageRefreshMode", "Default"),
+        ("replaceAllMetadata", "false"),
+        ("replaceAllImages", "false"),
+    )
+    assert "Recursive" not in requests[-1].url.params
+    assert "recursive" not in requests[-1].url.params
 
 
 def test_scan_pre_dispatch_cancellation_never_reaches_the_post() -> None:

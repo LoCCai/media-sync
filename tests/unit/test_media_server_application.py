@@ -7,7 +7,13 @@ import pytest
 
 from media_sync.application.media_server import MediaServerService
 from media_sync.config import Settings
-from media_sync.ports.media_server import MediaServerError, MediaServerProbeResult, MediaServerScanResult
+from media_sync.ports.media_server import (
+    MediaServerError,
+    MediaServerItemLookupResult,
+    MediaServerLookupTarget,
+    MediaServerProbeResult,
+    MediaServerScanResult,
+)
 from media_sync.security.secrets import SecretReference, SecretValue
 
 
@@ -17,6 +23,7 @@ class _Connector:
     def __init__(self) -> None:
         self.probe_calls = 0
         self.scan_calls = 0
+        self.lookup_calls = 0
 
     def probe(self) -> MediaServerProbeResult:
         self.probe_calls += 1
@@ -26,6 +33,17 @@ class _Connector:
         self.scan_calls += 1
         assert cancel_requested() is False
         return MediaServerScanResult("emby", "4.8.0", "a" * 64)
+
+    def lookup_item(self, target: MediaServerLookupTarget) -> MediaServerItemLookupResult:
+        self.lookup_calls += 1
+        assert target.provider_key == "media-sync-xhs-creator"
+        return MediaServerItemLookupResult(
+            "not_found",
+            inspected_item_count=0,
+            page_count=1,
+            response_byte_count=2,
+            item_id_set_fingerprint="b" * 64,
+        )
 
 
 class _Resolver:
@@ -68,18 +86,25 @@ def test_service_operation_gate_is_default_off_and_precedes_connector_calls() ->
     with pytest.raises(MediaServerError) as caught:
         service.scan(lambda: False)
     assert caught.value.code == "media_server_operations_disabled"
+    with pytest.raises(MediaServerError) as caught:
+        service.lookup_item(MediaServerLookupTarget("media-sync-xhs-creator", "remote", "/srv/media/author"))
+    assert caught.value.code == "media_server_operations_disabled"
     assert connector.probe_calls == 0
     assert connector.scan_calls == 0
+    assert connector.lookup_calls == 0
 
 
-def test_service_delegates_probe_and_scan_when_gate_is_open() -> None:
+def test_service_delegates_probe_scan_and_lookup_when_gate_is_open() -> None:
     connector = _Connector()
     service = MediaServerService(connector, operations_enabled=True)
 
     assert service.probe() == MediaServerProbeResult("emby", "4.8.0", "a" * 64)
     assert service.scan(lambda: False) == MediaServerScanResult("emby", "4.8.0", "a" * 64)
+    target = MediaServerLookupTarget("media-sync-xhs-creator", "remote", "/srv/media/author")
+    assert service.lookup_item(target).lookup_state == "not_found"
     assert connector.probe_calls == 1
     assert connector.scan_calls == 1
+    assert connector.lookup_calls == 1
 
 
 def test_unconfigured_service_fails_before_operation_gate() -> None:
@@ -89,6 +114,9 @@ def test_unconfigured_service_fails_before_operation_gate() -> None:
     assert service.profile_fingerprint is None
     with pytest.raises(MediaServerError) as caught:
         service.probe()
+    assert caught.value.code == "media_server_not_configured"
+    with pytest.raises(MediaServerError) as caught:
+        service.lookup_item(MediaServerLookupTarget("media-sync-xhs-creator", "remote", "/srv/media/author"))
     assert caught.value.code == "media_server_not_configured"
 
 

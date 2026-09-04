@@ -16,6 +16,9 @@ from media_sync.integrations.media_server import (
 )
 from media_sync.ports.media_server import (
     MediaServerError,
+    MediaServerItemLookupResult,
+    MediaServerLookupPort,
+    MediaServerLookupTarget,
     MediaServerPort,
     MediaServerProbeResult,
     MediaServerScanResult,
@@ -116,6 +119,16 @@ class MediaServerService:
             raise TypeError("cancel_requested must be callable")
         return self._require_connector().scan(cancel_requested)
 
+    def lookup_item(self, target: MediaServerLookupTarget) -> MediaServerItemLookupResult:
+        """Return one bounded, process-local read-only item snapshot."""
+
+        if not isinstance(target, MediaServerLookupTarget):
+            raise TypeError("target must be a MediaServerLookupTarget")
+        connector = self._require_connector()
+        if not isinstance(connector, MediaServerLookupPort):
+            raise MediaServerError("media_server_item_lookup_incomplete")
+        return connector.lookup_item(target)
+
     def _require_connector(self) -> MediaServerPort:
         if self._connector is None:
             raise MediaServerError("media_server_not_configured")
@@ -126,6 +139,8 @@ class MediaServerService:
 
 __all__ = [
     "MediaServerError",
+    "MediaServerItemLookupResult",
+    "MediaServerLookupTarget",
     "MediaServerProbeResult",
     "MediaServerScanResult",
     "MediaServerService",

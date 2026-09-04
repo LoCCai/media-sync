@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal, Protocol, runtime_checkable
 
 MediaServerProvider = Literal["emby", "jellyfin"]
 
 _SAFE_CODE = re.compile(r"media_server_[a-z0-9_]+\Z")
 _SERVER_VERSION = re.compile(r"(?=.{1,64}\Z)[0-9]+(?:\.[0-9]+){0,7}\Z")
+_PROVIDER_KEY = re.compile(r"media-sync-[a-z0-9](?:[a-z0-9_-]{0,62}[a-z0-9])?-creator\Z")
 _ERROR_MESSAGES: dict[str, str] = {
     "media_server_not_configured": "media server is not configured",
     "media_server_operations_disabled": "media-server operations are disabled",
@@ -35,6 +36,10 @@ _ERROR_MESSAGES: dict[str, str] = {
     "media_server_targeted_scan_unsupported": "media server does not support targeted library refresh",
     "media_server_scan_rejected": "media server rejected the targeted library refresh",
     "media_server_scan_acceptance_unknown": "targeted library refresh acceptance is unknown",
+    "media_server_item_lookup_ambiguous": "media-server item lookup found multiple exact matches",
+    "media_server_item_lookup_incomplete": "media-server item lookup could not prove a complete result",
+    "media_server_publication_not_ready": "current media-server publication is not ready",
+    "media_server_publication_changed": "media-server publication changed during validation",
 }
 
 
@@ -75,6 +80,82 @@ def _validated_digest(value: object) -> str:
     return value
 
 
+def _validated_bounded_text(value: object, *, name: str, max_chars: int) -> str:
+    if (
+        not isinstance(value, str)
+        or not 1 <= len(value) <= max_chars
+        or any(
+            ord(character) < 0x20 or ord(character) == 0x7F or 0xD800 <= ord(character) <= 0xDFFF for character in value
+        )
+    ):
+        raise ValueError(f"{name} must be bounded non-control text")
+    return value
+
+
+@dataclass(frozen=True, slots=True)
+class MediaServerLookupTarget:
+    """In-memory exact selector derived from one validated publication."""
+
+    provider_key: str
+    provider_value: str = field(repr=False)
+    server_path: str = field(repr=False)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.provider_key, str) or _PROVIDER_KEY.fullmatch(self.provider_key) is None:
+            raise ValueError("provider_key must use the managed creator-provider format")
+        object.__setattr__(
+            self,
+            "provider_value",
+            _validated_bounded_text(self.provider_value, name="provider_value", max_chars=4_096),
+        )
+        object.__setattr__(
+            self,
+            "server_path",
+            _validated_bounded_text(self.server_path, name="server_path", max_chars=1_024),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class MediaServerItemLookupResult:
+    """Complete lookup evidence with remote item material retained in memory only."""
+
+    lookup_state: Literal["not_found", "matched"]
+    inspected_item_count: int
+    page_count: int
+    response_byte_count: int
+    item_id_set_fingerprint: str = field(repr=False)
+    item_id: str | None = field(default=None, repr=False)
+    etag: str | None = field(default=None, repr=False)
+
+    def __post_init__(self) -> None:
+        if self.lookup_state not in {"not_found", "matched"}:
+            raise ValueError("lookup_state must be not_found or matched")
+        for name, value in (
+            ("inspected_item_count", self.inspected_item_count),
+            ("page_count", self.page_count),
+            ("response_byte_count", self.response_byte_count),
+        ):
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError(f"{name} must be a non-negative integer")
+        if self.page_count < 1:
+            raise ValueError("page_count must be positive")
+        object.__setattr__(self, "item_id_set_fingerprint", _validated_digest(self.item_id_set_fingerprint))
+        if self.lookup_state == "matched":
+            object.__setattr__(
+                self,
+                "item_id",
+                _validated_bounded_text(self.item_id, name="item_id", max_chars=128),
+            )
+            if self.etag is not None:
+                object.__setattr__(
+                    self,
+                    "etag",
+                    _validated_bounded_text(self.etag, name="etag", max_chars=4_096),
+                )
+        elif self.item_id is not None or self.etag is not None:
+            raise ValueError("not_found lookup results cannot retain an item identity")
+
+
 @dataclass(frozen=True, slots=True)
 class MediaServerProbeResult:
     """Allowlisted evidence from server identity and exact library discovery."""
@@ -113,8 +194,17 @@ class MediaServerScanResult:
 
 
 @runtime_checkable
+class MediaServerLookupPort(Protocol):
+    """Optional read-only exact item lookup boundary."""
+
+    def lookup_item(self, target: MediaServerLookupTarget) -> MediaServerItemLookupResult:
+        """Return only a complete absence or complete unique exact match."""
+        ...
+
+
+@runtime_checkable
 class MediaServerPort(Protocol):
-    """Connection boundary consumed by the application service."""
+    """0054-A connection boundary retained for compatibility."""
 
     @property
     def profile_fingerprint(self) -> str:
@@ -132,6 +222,9 @@ class MediaServerPort(Protocol):
 
 __all__ = [
     "MediaServerError",
+    "MediaServerItemLookupResult",
+    "MediaServerLookupPort",
+    "MediaServerLookupTarget",
     "MediaServerPort",
     "MediaServerProbeResult",
     "MediaServerProvider",

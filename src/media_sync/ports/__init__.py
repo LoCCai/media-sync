@@ -5,6 +5,9 @@ from media_sync.ports.auth import AuthPort, InteractionPort
 from media_sync.ports.catalog import CatalogPort
 from media_sync.ports.media_server import (
     MediaServerError,
+    MediaServerItemLookupResult,
+    MediaServerLookupPort,
+    MediaServerLookupTarget,
     MediaServerPort,
     MediaServerProbeResult,
     MediaServerProvider,
@@ -20,6 +23,9 @@ __all__ = [
     "CatalogPort",
     "InteractionPort",
     "MediaServerError",
+    "MediaServerItemLookupResult",
+    "MediaServerLookupPort",
+    "MediaServerLookupTarget",
     "MediaServerPort",
     "MediaServerProbeResult",
     "MediaServerProvider",
