@@ -1,6 +1,6 @@
 # Web Console v2 技术架构与迁移计划
 
-> 状态校准（2026-09-05）：0050-A/B/C 已由 Console v2 基础交付，原称 0050-D 的范围由 Execution 0052 交付为持久 Operation/Event、单一提交有序 SSE、跨 coordinator 两阶段取消、任务中心与有界轮询回退；冻结完整套件 2315 passed、3 skipped，全部仓库门通过。原称 0050-E 的 legacy 移除仍归 Execution 0056。独立 Logs 路由、通用文件日志与真实 Jobs 路由浏览器 interaction/E2E 未在 0052 交付，章节编号保留为历史设计索引。
+> 状态校准（2026-09-05）：0050-A/B/C 已由 Console v2 基础交付，原称 0050-D 的范围由 Execution 0052 交付为持久 Operation/Event、单一提交有序 SSE、跨 coordinator 两阶段取消、任务中心与有界轮询回退；冻结完整套件 2315 passed、3 skipped，全部仓库门通过。Execution 0053 已从 `be26cc7` 启动，冻结兼容筛选、安全详情、同描述符归档预览及 Contents/Assets/Library 升级。原称 0050-E 的 legacy 移除仍归 Execution 0056；独立 Logs、通用文件日志与真实 Jobs 路由浏览器 interaction/E2E 仍是后续质量债。
 
 ## 1. 推荐方案
 
