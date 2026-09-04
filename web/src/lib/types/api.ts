@@ -1,5 +1,49 @@
 export type Platform = 'bili' | 'xhs' | 'dy' | 'ks' | 'wb' | 'tieba' | 'zhihu';
 export type CheckState = 'pass' | 'fail' | 'not_run';
+export type LoginMethod = 'qr' | 'cookie' | 'saved_session';
+export type AccountLoginMethod = LoginMethod | 'phone';
+export type CreatorInputKind = 'profile_id' | 'sec_user_id' | 'user_id' | 'uid' | 'portrait_id' | 'url_token';
+
+export interface PlatformCapability {
+  platform: Platform;
+  display_name: string;
+  login_methods: LoginMethod[];
+  qr_login: boolean;
+  creator_input: {
+    kind: CreatorInputKind;
+    label: string;
+    placeholder: string;
+    examples: string[];
+    allows_secret_reference: boolean;
+  };
+  requires_full_history_acknowledgement: boolean;
+  offline_shapes: string[];
+  limitations: string[];
+  live_qualification: 'NOT_RUN';
+}
+
+export interface PlatformCapabilities {
+  version: number;
+  platforms: PlatformCapability[];
+}
+
+export interface LoginPreflightCheck {
+  name: string;
+  status: CheckState;
+  required: boolean;
+  detail_code: string | null;
+}
+
+export interface LoginPreflight {
+  ok: boolean;
+  status: string;
+  code: string;
+  retryable: boolean;
+  account_id: string;
+  platform: Platform | null;
+  checks: LoginPreflightCheck[];
+  live_qualification: 'NOT_RUN';
+}
 
 export interface Settings {
   version: string;
@@ -16,7 +60,7 @@ export interface Account {
   platform: Platform;
   adapter: string;
   display_name: string;
-  login_method: string | null;
+  login_method: AccountLoginMethod | null;
   auth_status: string;
   created_at: string | null;
   created?: boolean;
@@ -48,6 +92,7 @@ export interface Subscription {
   watermarked_at: string | null;
   last_success_at: string | null;
   next_run_at: string | null;
+  policy_summary?: SubscriptionPolicySummary;
   created?: boolean;
 }
 
@@ -62,6 +107,7 @@ export interface SubscriptionDetail extends Subscription {
     schedule_revision: number;
     consecutive_failures: number;
   };
+  checkpoint_summary?: SubscriptionCheckpointSummary;
   recent_runs: Array<{
     run_id: string;
     status: string;
@@ -73,6 +119,38 @@ export interface SubscriptionDetail extends Subscription {
     finished_at: string | null;
   }>;
   recent_jobs: Job[];
+}
+
+export interface SubscriptionPolicySummary extends Record<string, unknown> {
+  adapter: string;
+  schema_version?: number | null;
+  allow_full_history?: boolean | null;
+  request_delay_seconds?: number | null;
+  headless?: boolean | null;
+  creator_reference_configured?: boolean;
+}
+
+export interface SubscriptionCheckpointSummary extends Record<string, unknown> {
+  has_checkpoint: boolean;
+  has_forward_cursor: boolean;
+  has_backfill_cursor: boolean;
+  revision: number;
+  cursor_version: number;
+  watermarked_at: string | null;
+  watermark_count: number;
+  last_success_at: string | null;
+}
+
+export interface SubscriptionPreview {
+  account_id: string;
+  platform: Platform;
+  account_display_name: string;
+  creator_remote_id: string;
+  creator_display_name: string;
+  interval_seconds: number;
+  max_items: number;
+  policy_summary: SubscriptionPolicySummary;
+  exists: boolean;
 }
 
 export interface Job {
