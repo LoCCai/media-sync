@@ -2,31 +2,34 @@
 
 # Execution 0051 goal
 
-- Status: Planned; implementation not started
+- Status: Implemented and offline-verified; live qualification remains `NOT_RUN`
 - Date: 2026-09-04
 - Predecessor: `38e0ebe` (green Linux runtime preflight after Console v2)
 - Scope: capability-driven account login and creator-subscription workbench
 - Database migration: None
-- Plan commit: the commit containing this record (self SHA not embedded)
+- Implementation commits: backend `6ed7ab3`; Web `178e557`
+- Closeout commit: the commit containing the final record (self SHA not embedded)
 
 ## Outcome
 
-1. Establish one bounded seven-platform capability contract for login methods, creator-input rules, required full-history acknowledgement, qualified offline media shapes, known limitations and honest live-qualification state.
-2. Move account/subscription draft validation and creation into a shared application service used by both CLI and REST API. Reject invalid or unacknowledged drafts before any Account, Author or Subscription row is written, and never return credential or creator-secret reference values.
-3. Add an account-scoped login preflight that checks only login prerequisites. Missing ffmpeg/ffprobe must not block login, while database, license, checkout, runtime, browser/profile and account-lock failures must stop before an Operation or child process starts.
-4. Bind QR retrieval to the exact `LoginSession` while retaining the account-scoped endpoint for compatibility. Preserve the explicit `202` pending, `200` image, `410` terminal and `404` unknown lifecycle.
-5. Upgrade the accounts and subscriptions routes into a capability-driven workbench: explain composite account state and preflight failures, then guide subscription creation through account/platform selection, validated creator preview and policy confirmation.
-6. Expose safe subscription-policy and checkpoint summaries in detail views without returning raw cursor values, signed creator URLs, credential references, profile paths or private runtime paths.
+1. Deliver one static, bounded and versioned seven-platform MediaCrawler capability contract. It describes the stable platform order, login methods, QR availability, creator-input guidance, secret-reference eligibility, full-history acknowledgement, qualified offline media shapes, limitations and honest `NOT_RUN` live state.
+2. Put account/subscription validation and idempotent creation behind one application workbench used by both CLI and REST. Invalid or unacknowledged MediaCrawler drafts fail before Account, Author or Subscription mutation; safe previews and results never return credential or creator-authority references.
+3. Add an account-scoped login preflight limited to login prerequisites. Database, account eligibility, licence, checkout, Python runtime, browser, profile writability and account-lock failures stop before a new process-local Operation or child launch; ffmpeg and ffprobe are deliberately irrelevant to login.
+4. Bind QR retrieval to an exact active QR `LoginSession`, retain the account route as a compatibility resolver, remove stale QR material under the account lock before publishing a new session and preserve the `202` pending, `200` image, `410` terminal and `404` unknown/ineligible lifecycle.
+5. Upgrade the account and subscription pages into a capability-driven workbench: composite account state and preflight diagnostics gate login, while account selection, creator/policy input, server preview and explicit confirmation gate subscription creation.
+6. Expose allowlisted subscription-policy and checkpoint summaries without raw cursor values, signed creator URLs, credential references, QR material, profile paths or runtime paths.
 
-## Acceptance boundaries
+## Acceptance result
 
-- All seven MediaCrawler platform identifiers have one server-owned capability description and frontend rendering consumes that description instead of duplicating platform rules.
-- Bilibili, Douyin, Kuaishou and Weibo subscription drafts require explicit full-history acknowledgement before any persistent mutation; CLI and API produce the same policy payload for an equivalent accepted draft.
-- Login preflight and login start use the same evaluator. A failed mandatory check cannot allocate an in-memory Operation, create a `LoginSession`, or launch a child.
-- QR responses are tied to an exact session identity; compatibility behavior cannot return an image for a different attempt.
-- Sentinel tests prove secrets, signed URLs, raw cursors and local paths do not appear in capability, preview, account, subscription or QR metadata responses.
-- Offline tests do not qualify a real platform. Every live login/crawl/CDN and real Emby/Jellyfin row remains `NOT_RUN` until Execution 0047 operator evidence exists.
+- The server-owned v1 capability endpoint covers `xhs`, `dy`, `ks`, `bili`, `wb`, `tieba` and `zhihu` in stable order. Only XHS permits an opaque creator secret reference; Bilibili and Weibo recommend numeric IDs without narrowing the compatibility validator.
+- MediaCrawler creator IDs share the conservative `[A-Za-z0-9._-]{1,255}` validator. Bilibili, Douyin, Kuaishou and Weibo require `allow_full_history=true` before any Author or Subscription write; equivalent CLI and API drafts use the same policy builder.
+- SQLite same-draft concurrent creates converge to one Account or Subscription through a workbench-scoped immediate writer reservation; no schema or migration changed.
+- Login start invokes the same preflight evaluator immediately before allocating its process-local Operation. Failed mandatory checks allocate no new Operation, LoginSession or child.
+- Exact-session QR tests cover active-session ownership, non-QR rejection, abandoned-session reconciliation, bounded regular-file reads, post-read session revalidation and terminal non-disclosure.
+- The complete Python suite passes with `2135 passed, 3 skipped`; all frontend and static/package gates pass. No offline test is treated as real platform qualification.
 
-## Explicitly deferred
+## Accepted deviation and deferred boundaries
 
-Durable Operation/Event storage, SSE, structured logs, generic cancellation, restart-surviving operation history, subscription deletion/audit and support bundles remain Execution 0052. Rich content recovery remains 0053, media-server control/qualification remains 0054, operator authentication remains 0055, and final migration/release remains 0056.
+The successful preflight snapshot and the later process-local Operation/background login service are not one cross-process atomic transaction. Two API processes can therefore pass preflight concurrently before the durable login boundary selects a winner. Existing `LoginSession` compare-and-set rules and the account OS lock remain authoritative and make the losing attempt fail closed, so this is a non-blocking coordination/UX residual rather than a credential or QR-authority bypass. Durable Operations, cross-process idempotency, Event storage, SSE, structured logs, cancellation, restart-surviving history, subscription audit/deletion and support bundles remain Execution 0052.
+
+Rich content recovery remains 0053, media-server control/qualification remains 0054, operator authentication remains 0055, and final migration/release remains 0056. Execution 0047 still owns Linux persistence/backup/process evidence, all seven real-account rows and real Emby/Jellyfin rescan/playback.

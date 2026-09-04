@@ -2,14 +2,14 @@
 
 # Unified project status (single source of truth)
 
-Boundary: execution 0051 planning and pre-change baseline are complete, but implementation is not yet claimed; 0050 remains the latest delivered product boundary. This table is the canonical status view; per-execution detail lives in [`executions/`](README.md) and evidence in each verification record. Update this page at every closeout.
+Boundary: execution 0051 is implemented and verified for the offline/API/frontend scope and is now the latest delivered product boundary; execution 0052 is next. Execution 0047 remains the open P0 operator gate, and its Linux persistence/recovery/process checks plus every live login/crawl/CDN and real Emby/Jellyfin row remain `NOT_RUN`. This table is the canonical status view; per-execution detail lives in [`executions/`](README.md) and evidence in each verification record. Update this page at every closeout.
 
 ## Milestone status
 
 | Milestone | Status |
 | --- | --- |
 | Offline feature work | Platform shapes frozen at the 0039 boundary plus 0040/0044 operations and the 0050 Console v2 control-plane foundation; 0043 (danmaku/subtitles) remains deferred |
-| REST API + web console | SvelteKit 5 Console v2 foundation implemented (0050): nine routed surfaces, real existing operations, content/library projections, one-time acknowledgement and `/legacy` rollback; the capability-driven account/subscription workbench is active in 0051, while persistence/SSE/logs remain 0052 |
+| REST API + web console | SvelteKit 5 Console v2 foundation implemented (0050); capability-driven account/subscription workbench implemented and verified (0051), including the seven-platform capability contract, shared draft validation, login-only preflight, exact LoginSession QR, three-step subscription wizard and safe policy/checkpoint summaries; persistent Operation/Event storage, SSE, structured logs, cancellation and restart recovery are the next execution, 0052 |
 | Docker packaging | Candidate image plus reproducibility hardening and the Node-free multi-stage Console v2 build delivered (0041, 0048–0050); the repaired operator image built/started with green doctor, deep readiness and Chromium launch |
 | Operations docs / security review / release checklist | Delivered (0045, 0046) |
 | Live qualification (final gate) | Open — execution 0047, operator-assisted on Linux |
