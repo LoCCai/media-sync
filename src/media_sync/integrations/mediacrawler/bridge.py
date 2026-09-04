@@ -25,6 +25,7 @@ from .checkout import (
     MEDIACRAWLER_LICENSE_SHA256,
     VerifiedCheckout,
     VerifiedPython,
+    normalize_python_executable,
     verify_mediacrawler_checkout,
     verify_mediacrawler_python,
 )
@@ -559,7 +560,7 @@ class RunnerManifest:
         return cls(
             checkout_root=Path(text_value("checkout_root")).expanduser().resolve(),
             lock_path=Path(text_value("lock_path")).expanduser().resolve(),
-            python_executable=Path(text_value("python_executable")).expanduser().resolve(),
+            python_executable=normalize_python_executable(Path(text_value("python_executable"))),
             integration_root=integration_root,
             account_id=account_id,
             subscription_id=subscription_id,

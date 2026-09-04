@@ -291,10 +291,20 @@ def _qualified_license_sha256(license_bytes: bytes) -> str:
     return hashlib.sha256(canonical).hexdigest()
 
 
+def normalize_python_executable(python_executable: Path) -> Path:
+    """Return an absolute launch path without dereferencing a venv symlink."""
+
+    # POSIX virtual environments normally expose ``bin/python`` as a symlink.
+    # Resolving that final component changes the launch path to the base Python,
+    # which bypasses the venv's ``pyvenv.cfg`` and therefore its site-packages.
+    expanded = python_executable.expanduser()
+    return expanded.parent.resolve() / expanded.name
+
+
 def verify_mediacrawler_python(python_executable: Path) -> VerifiedPython:
     """Doctor an explicitly configured Python without importing upstream source."""
 
-    executable = python_executable.expanduser().resolve()
+    executable = normalize_python_executable(python_executable)
     if not executable.is_file() or not os.access(executable, os.X_OK):
         raise CheckoutValidationError(
             "MediaCrawler Python executable is unavailable", CheckoutValidationCode.RUNTIME_UNAVAILABLE
@@ -330,7 +340,7 @@ def verify_mediacrawler_python(python_executable: Path) -> VerifiedPython:
 def verify_mediacrawler_browser(python_executable: Path) -> str:
     """Launch the configured Playwright Chromium once and return its version."""
 
-    executable = python_executable.expanduser().resolve()
+    executable = normalize_python_executable(python_executable)
     if not executable.is_file() or not os.access(executable, os.X_OK):
         raise CheckoutValidationError(
             "MediaCrawler Python executable is unavailable", CheckoutValidationCode.RUNTIME_UNAVAILABLE
@@ -448,6 +458,7 @@ __all__ = [
     "VerifiedCheckout",
     "VerifiedPython",
     "load_mediacrawler_lock",
+    "normalize_python_executable",
     "verify_mediacrawler_browser",
     "verify_mediacrawler_checkout",
     "verify_mediacrawler_python",

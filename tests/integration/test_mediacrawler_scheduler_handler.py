@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import os
 import subprocess
 import sys
 import textwrap
@@ -692,6 +693,22 @@ def _handler(
         checkout_verifier=checkout_verifier,
         ingestion_factory=ingestion_factory,  # type: ignore[arg-type]
     )
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX venv launchers use symlinks")
+def test_handler_preserves_posix_venv_launcher_symlink(database: Database, tmp_path: Path) -> None:
+    base_python = tmp_path / "base" / "python3"
+    base_python.parent.mkdir()
+    base_python.write_text("#!/bin/sh\n", encoding="utf-8")
+    base_python.chmod(0o700)
+    launcher = tmp_path / "venv" / "bin" / "python"
+    launcher.parent.mkdir(parents=True)
+    launcher.symlink_to(base_python)
+
+    handler = _handler(database, tmp_path, python_executable=launcher)
+
+    assert handler.python_executable == launcher.absolute()
+    assert handler.python_executable != launcher.resolve()
 
 
 async def _run_worker(

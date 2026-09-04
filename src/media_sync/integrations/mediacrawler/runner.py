@@ -1396,13 +1396,14 @@ async def _execute_child(
     cleanup_seconds = min(5.0, max(0.05, manifest.watchdogs.max_seconds * 0.1))
     try:
         from media_sync.integrations.mediacrawler.bridge import verify_manifest_checkout
+        from media_sync.integrations.mediacrawler.checkout import normalize_python_executable
 
         if cancellation is not None and cancellation.is_set():
             return EXIT_CANCELLED
         if manifest.request_delay_seconds is None:
             return EXIT_CONFIGURATION
         verified = verify_manifest_checkout(manifest)
-        if Path(sys.executable).resolve() != manifest.python_executable:
+        if normalize_python_executable(Path(sys.executable)) != manifest.python_executable:
             return EXIT_CONFIGURATION
         os.chdir(verified.root)
         if str(verified.root) not in sys.path:

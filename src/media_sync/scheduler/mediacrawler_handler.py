@@ -47,6 +47,7 @@ from media_sync.integrations.mediacrawler.bridge import (
 from media_sync.integrations.mediacrawler.checkout import (
     CheckoutValidationError,
     LicenseAcknowledgementRequired,
+    normalize_python_executable,
 )
 from media_sync.integrations.mediacrawler.normalizers import NormalizedMediaRecord
 from media_sync.integrations.mediacrawler.policies import (
@@ -309,7 +310,9 @@ class MediaCrawlerScheduledHandler:
         self.database = database
         self.lock_path = lock_path.expanduser().resolve()
         self.integration_root = integration_root.expanduser().resolve()
-        self.python_executable = python_executable.expanduser().resolve() if python_executable is not None else None
+        self.python_executable = (
+            normalize_python_executable(python_executable) if python_executable is not None else None
+        )
         self.secret_resolver = secret_resolver
         self.enabled = enabled
         self.license_acknowledged = license_acknowledged

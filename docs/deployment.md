@@ -30,6 +30,8 @@ docker compose build --no-cache
 The compose template passes `BASE_IMAGE` through as a build arg and the build
 manifest records the resolved value.
 
+The final image stage also runs `media-sync mediacrawler doctor --accept-license --json` as the unprivileged `mediasync` user. A checkout mismatch or missing MediaCrawler Python import now fails the build instead of producing an image that can only fail later at login time. Chromium launch remains a separate runtime/deep-preflight gate.
+
 The image contains two layers:
 
 | Layer | Location | Purpose |
@@ -98,6 +100,8 @@ checkout in the image before trying QR login; failed preflight keeps QR login an
 MediaCrawler-enabled workers disabled.
 
 `license_digest_mismatch` on an older image means it still contains the pre-0050 qualification digest. Pull this revision, rerun the prefetch, and rebuild the image without cache. The current verifier compares the canonical LF content identity (accepting Git's LF/CRLF checkout forms) while still requiring the exact tracked blob, locked commit and clean worktree.
+
+`runtime_invalid / runtime_imports_missing` on the first `4c6d0bf` image was caused by dereferencing the normal venv launcher symlink to the base Python. Pull the launcher repair and rebuild without cache. Keep `MEDIA_SYNC_MEDIACRAWLER_PYTHON_EXECUTABLE=/opt/mediacrawler-venv/bin/python`; do not replace it with the resolved base interpreter path.
 
 ## 3. QR login through the console
 

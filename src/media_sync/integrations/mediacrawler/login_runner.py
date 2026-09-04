@@ -28,6 +28,7 @@ from media_sync.domain import Platform
 from media_sync.integrations.mediacrawler.checkout import (
     VerifiedCheckout,
     VerifiedPython,
+    normalize_python_executable,
     verify_mediacrawler_checkout,
     verify_mediacrawler_python,
 )
@@ -158,7 +159,7 @@ class MediaCrawlerLoginProcessRunner:
             raise TypeError("MediaCrawler gates must be booleans")
         self._lock_path = lock_path.expanduser().resolve()
         self._integration_root = integration_root.expanduser().resolve()
-        self._python_executable = python_executable.expanduser().resolve()
+        self._python_executable = normalize_python_executable(python_executable)
         self._enabled = enabled
         self._license_acknowledged = license_acknowledged
         self._checkout_verifier = checkout_verifier

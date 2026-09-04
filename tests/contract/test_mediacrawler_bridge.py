@@ -39,6 +39,7 @@ from media_sync.integrations.mediacrawler.checkout import (
     LicenseAcknowledgementRequired,
     VerifiedPython,
     _qualified_license_sha256,
+    verify_mediacrawler_browser,
     verify_mediacrawler_checkout,
     verify_mediacrawler_python,
 )
@@ -685,6 +686,41 @@ def test_runtime_doctor_rejects_version_or_import_probe(monkeypatch: pytest.Monk
     )
     with pytest.raises(CheckoutValidationError):
         verify_mediacrawler_python(Path(sys.executable))
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX venv launchers use symlinks")
+def test_runtime_preserves_posix_venv_launcher_symlink(
+    fake_project: FakeProject,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    base_python = tmp_path / "base" / "python3"
+    base_python.parent.mkdir()
+    base_python.write_text("#!/bin/sh\n", encoding="utf-8")
+    base_python.chmod(0o700)
+    launcher = tmp_path / "venv" / "bin" / "python"
+    launcher.parent.mkdir(parents=True)
+    launcher.symlink_to(base_python)
+    launch_path = launcher.absolute()
+    commands: list[tuple[str, ...]] = []
+
+    def completed(command: tuple[str, ...], **_kwargs: object) -> SimpleNamespace:
+        commands.append(command)
+        return SimpleNamespace(returncode=0, stdout="151.0.7922.34\n")
+
+    monkeypatch.setattr("media_sync.integrations.mediacrawler.checkout.subprocess.run", completed)
+
+    verified = verify_mediacrawler_python(launcher)
+    assert verified.executable == launch_path
+    assert verify_mediacrawler_browser(launcher) == "151.0.7922.34"
+    assert [command[0] for command in commands] == [str(launch_path), str(launch_path)]
+    assert launch_path != launcher.resolve()
+
+    bridge = MediaCrawlerBridge(lambda _path: VerifiedPython(launch_path))
+    spec = bridge.prepare(_request(fake_project, tmp_path / "runs"))
+    loaded = RunnerManifest.load(spec.paths.manifest_path)
+    assert spec.command[0] == str(launch_path)
+    assert loaded.python_executable == launch_path
 
 
 @pytest.mark.parametrize("platform", list(Platform))

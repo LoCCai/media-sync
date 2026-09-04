@@ -46,6 +46,7 @@ from media_sync.integrations.mediacrawler.bilibili_media import (
 from media_sync.integrations.mediacrawler.checkout import (
     VerifiedCheckout,
     VerifiedPython,
+    normalize_python_executable,
     verify_mediacrawler_checkout,
     verify_mediacrawler_python,
 )
@@ -369,7 +370,7 @@ class MediaCrawlerDetailProcessRunner:
     ) -> None:
         self._lock_path = lock_path.expanduser().resolve()
         self._integration_root = integration_root.expanduser().resolve()
-        self._python_executable = python_executable.expanduser().resolve()
+        self._python_executable = normalize_python_executable(python_executable)
         self._license_acknowledged = license_acknowledged
         self._checkout_verifier = checkout_verifier
         self._python_verifier = python_verifier

@@ -192,8 +192,13 @@ ENV MEDIA_SYNC_STATE_DIR=/data/state \
 
 COPY upstreams.lock.json /app/upstreams.lock.json
 COPY docker/entrypoint.sh /usr/local/bin/media-sync-entrypoint
+# Exercise the exact configured venv launcher through the application verifier.
+# This catches dependency drift and accidental symlink dereferencing while the
+# image is still being built.
 RUN chmod +x /usr/local/bin/media-sync-entrypoint \
-    && chown mediasync:mediasync /app/upstreams.lock.json /usr/local/bin/media-sync-entrypoint
+    && chown mediasync:mediasync /app/upstreams.lock.json /usr/local/bin/media-sync-entrypoint \
+    && su mediasync -s /bin/sh -c \
+      '/app/.venv/bin/media-sync mediacrawler doctor --accept-license --json'
 
 USER mediasync
 WORKDIR /app
