@@ -37,6 +37,65 @@ const DISPLAY_CONTEXT_KEYS = new Set([
   'total_count'
 ]);
 
+const LOGIN_RUNNER_STATUSES = new Set([
+  'authenticated',
+  'expired',
+  'failed',
+  'timed_out',
+  'cancelled',
+  'account_busy',
+  'configuration_invalid',
+  'start_failed',
+  'result_invalid'
+]);
+const LOGIN_SESSION_STATUSES = new Set([
+  'pending',
+  'waiting_user',
+  'succeeded',
+  'expired',
+  'failed',
+  'cancelled'
+]);
+const AUTH_STATUSES = new Set([
+  'unknown',
+  'required',
+  'authenticating',
+  'authenticated',
+  'expired',
+  'failed'
+]);
+const ASSET_STATUSES = new Set([
+  'blocked',
+  'failed',
+  'discovered',
+  'queued',
+  'downloading',
+  'downloaded',
+  'verified',
+  'exported',
+  'failed_retryable',
+  'failed_terminal'
+]);
+const ASSET_DISPOSITIONS = new Set(['not_started', 'downloaded', 'already_verified']);
+const BATCH_STATUSES = new Set([
+  'idle',
+  'fenced',
+  'queued',
+  'claimed',
+  'running',
+  'retry_wait',
+  'waiting_auth',
+  'waiting_user',
+  'succeeded',
+  'failed_retryable',
+  'failed_terminal',
+  'cancelled'
+]);
+const MEDIA_SERVER_PROVIDERS = new Set(['emby', 'jellyfin']);
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const SHA256 = /^[0-9a-f]{64}$/;
+const SERVER_VERSION = /^\d+(?:\.\d+){0,3}$/;
+
 export interface OperationFilter {
   state?: OperationState | 'all';
   kind?: Operation['kind'] | 'all';
@@ -63,6 +122,211 @@ export interface OperationStreamHealth {
   mode: OperationStreamMode;
   failureCount: number;
   pollDelayMs: number;
+}
+
+export interface OperationTruthNotice {
+  tone: 'success' | 'warning' | 'danger' | 'info';
+  title: string;
+  detail: string;
+}
+
+export type SafeOperationResult = Record<string, string | number | boolean | Record<string, number>>;
+
+export function operationIsMediaServerObservation(operation: Operation): boolean {
+  return operation.kind === 'media-server-scan' && operation.target?.type === 'author';
+}
+
+export function operationDisplayLabel(operation: Operation): string {
+  if (operation.kind !== 'media-server-scan') return operation.kind;
+  return operationIsMediaServerObservation(operation) ? '媒体库刷新并核验' : '媒体库定向刷新（仅确认接受）';
+}
+
+function record(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function copyString(
+  source: Record<string, unknown>,
+  target: SafeOperationResult,
+  key: string,
+  allowed: Set<string> | RegExp
+): void {
+  const value = source[key];
+  if (typeof value !== 'string') return;
+  if (allowed instanceof RegExp ? allowed.test(value) : allowed.has(value)) target[key] = value;
+}
+
+function copyCount(source: Record<string, unknown>, target: SafeOperationResult, key: string): void {
+  const value = source[key];
+  if (isNonNegativeInteger(value)) target[key] = value;
+}
+
+function copyBoolean(source: Record<string, unknown>, target: SafeOperationResult, key: string): void {
+  const value = source[key];
+  if (typeof value === 'boolean') target[key] = value;
+}
+
+function copyBatchCounts(source: Record<string, unknown>, target: SafeOperationResult): void {
+  const values = record(source.status_counts);
+  if (!values) return;
+  const safe = Object.entries(values)
+    .filter(([key, value]) => BATCH_STATUSES.has(key) && isNonNegativeInteger(value))
+    .sort(([left], [right]) => left.localeCompare(right));
+  if (safe.length > 0) target.status_counts = Object.fromEntries(safe) as Record<string, number>;
+}
+
+/**
+ * Project an unchecked API/SSE result through the same closed vocabulary used by the backend.
+ * Unknown fields are deliberately discarded so the Jobs page never reflects remote detail.
+ */
+export function safeOperationResult(operation: Operation): SafeOperationResult | null {
+  const source = record(operation.result);
+  if (!source) return null;
+  const result: SafeOperationResult = {};
+
+  if (operation.kind === 'account-login') {
+    copyString(source, result, 'account_id', UUID);
+    copyString(source, result, 'login_session_id', UUID);
+    copyString(source, result, 'runner_status', LOGIN_RUNNER_STATUSES);
+    copyString(source, result, 'login_session_status', LOGIN_SESSION_STATUSES);
+    copyString(source, result, 'auth_status', AUTH_STATUSES);
+  } else if (operation.kind === 'asset-download') {
+    copyString(source, result, 'asset_id', UUID);
+    copyString(source, result, 'job_id', UUID);
+    copyBoolean(source, result, 'ok');
+    copyString(source, result, 'status', ASSET_STATUSES);
+    copyString(source, result, 'disposition', ASSET_DISPOSITIONS);
+    copyCount(source, result, 'generation');
+    copyCount(source, result, 'size_bytes');
+  } else if (operation.kind === 'scheduler-run' || operation.kind === 'pipeline-run') {
+    copyCount(source, result, 'processed_count');
+    copyBatchCounts(source, result);
+  } else if (operation.kind === 'emby-export') {
+    copyString(source, result, 'author_id', UUID);
+    copyString(source, result, 'job_id', UUID);
+    copyBoolean(source, result, 'already_exported');
+    copyCount(source, result, 'managed_file_count');
+  } else if (operation.kind === 'media-server-probe') {
+    copyString(source, result, 'provider', MEDIA_SERVER_PROVIDERS);
+    copyString(source, result, 'server_version', SERVER_VERSION);
+    copyString(source, result, 'library_id_digest', SHA256);
+    copyBoolean(source, result, 'library_present');
+  } else if (operationIsMediaServerObservation(operation)) {
+    if (source.schema_version !== 2 || source.mode !== 'post_refresh_item_observation') return null;
+    result.schema_version = 2;
+    result.mode = 'post_refresh_item_observation';
+    copyString(source, result, 'provider', MEDIA_SERVER_PROVIDERS);
+    copyString(source, result, 'server_version', SERVER_VERSION);
+    copyString(source, result, 'profile_fingerprint', SHA256);
+    copyString(source, result, 'library_id_digest', SHA256);
+    copyString(source, result, 'scan_state', new Set(['accepted']));
+    copyString(source, result, 'publication_fingerprint', SHA256);
+    copyString(source, result, 'selector_fingerprint', SHA256);
+    copyString(source, result, 'baseline_state', new Set(['not_found']));
+    copyString(source, result, 'observation_state', new Set(['pending', 'observed']));
+    copyCount(source, result, 'match_count');
+    copyCount(source, result, 'verification_count');
+    copyString(source, result, 'item_fingerprint', SHA256);
+  } else if (source.schema_version !== 2) {
+    copyString(source, result, 'provider', MEDIA_SERVER_PROVIDERS);
+    copyString(source, result, 'server_version', SERVER_VERSION);
+    copyString(source, result, 'library_id_digest', SHA256);
+    copyString(source, result, 'scan_state', new Set(['accepted']));
+  }
+
+  return Object.keys(result).length > 0 ? result : null;
+}
+
+/** Merge a detail/cancel response without allowing it to roll back a newer SSE snapshot. */
+export function mergeSelectedOperation(current: Operation | null, incoming: Operation): Operation {
+  if (!current || current.id !== incoming.id) return incoming;
+  return mergeOperationSnapshot([current], incoming, 1)[0] ?? current;
+}
+
+function isProgressCount(value: number | null | undefined): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+}
+
+export function operationProgressLabel(operation: Operation): string {
+  const progress = operation.progress;
+  if (!progress || !isProgressCount(progress.current)) return '—';
+  if (operationIsMediaServerObservation(operation)) return `核验 ${progress.current} 次`;
+  const unit = progress.unit ? ` ${progress.unit}` : '';
+  return progress.total === null
+    ? `${progress.current}${unit}`
+    : `${progress.current} / ${progress.total}${unit}`;
+}
+
+export function operationProgressPercent(operation: Operation): number | null {
+  if (operationIsMediaServerObservation(operation)) return null;
+  const current = operation.progress?.current;
+  const total = operation.progress?.total;
+  if (!isProgressCount(current) || !isProgressCount(total) || total <= 0) return null;
+  return Math.max(0, Math.min(100, (current / total) * 100));
+}
+
+export function operationTruthNotice(operation: Operation): OperationTruthNotice | null {
+  if (!operationIsMediaServerObservation(operation)) return null;
+  if (operation.error_code === 'media_server_scan_observation_precondition_failed') {
+    return {
+      tone: 'info',
+      title: '刷新前项目已存在',
+      detail: '严格观察模式未发送刷新；如只需请求刷新，请使用“定向刷新（仅确认接受）”。'
+    };
+  }
+  if (operation.error_code === 'media_server_scan_acceptance_unknown') {
+    return {
+      tone: 'danger',
+      title: '刷新接受状态未知',
+      detail: '请求已进入传输，但无法确认服务器是否接受；该操作不可安全重试。'
+    };
+  }
+  if (operation.error_code === 'media_server_scan_completion_unknown') {
+    return {
+      tone: 'warning',
+      title: '刷新已接受，观察结果未知',
+      detail: '已保留接受证据，但未能证明刷新后项目观察；请勿视为 provider task completion 或可播放。'
+    };
+  }
+
+  const result = safeOperationResult(operation);
+  const hasObservedEvidence =
+    operation.phase === 'observed' &&
+    result?.schema_version === 2 &&
+    result.mode === 'post_refresh_item_observation' &&
+    MEDIA_SERVER_PROVIDERS.has(String(result.provider)) &&
+    result.scan_state === 'accepted' &&
+    result.baseline_state === 'not_found' &&
+    result.observation_state === 'observed' &&
+    result.match_count === 1 &&
+    typeof result.verification_count === 'number' &&
+    result.verification_count >= 2 &&
+    typeof result.profile_fingerprint === 'string' &&
+    typeof result.library_id_digest === 'string' &&
+    typeof result.publication_fingerprint === 'string' &&
+    typeof result.selector_fingerprint === 'string' &&
+    typeof result.item_fingerprint === 'string';
+  if (hasObservedEvidence) {
+    return {
+      tone: 'success',
+      title: '已观察到唯一媒体项目',
+      detail: '连续两次核验观察到同一唯一项目；“已观察”不等于 provider task completion，也不等于可播放。'
+    };
+  }
+  if (operation.phase === 'accepted' || operation.phase === 'polling') {
+    return {
+      tone: 'warning',
+      title: '刷新已接受，等待观察',
+      detail: '“已接受”不等于“已观察”，也不证明 provider task completion 或可播放。'
+    };
+  }
+  return {
+    tone: 'info',
+    title: '刷新并核验状态',
+    detail: '仅显示后端返回的受控阶段和安全摘要；不据此推断 provider task completion 或可播放。'
+  };
 }
 
 export function operationIsActive(state: OperationState): boolean {

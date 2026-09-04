@@ -40,14 +40,20 @@
     mergeOperationSnapshot,
     mergeOperationSnapshots,
     mergeOperationTimeline,
+    mergeSelectedOperation,
     operationCanCancel,
+    operationDisplayLabel,
     operationIsActive,
     operationMatches,
+    operationProgressLabel,
+    operationProgressPercent,
     operationStreamConnected,
     operationStreamFailed,
+    operationTruthNotice,
     parseOperationStreamMessage,
     reduceOperationStreamMessage,
-    safeOperationContextRows
+    safeOperationContextRows,
+    safeOperationResult
   } from '$lib/utils/operations';
 
   let jobs: Job[] = [];
@@ -95,24 +101,9 @@
   $: failedCount = jobs.filter((item) => item.status.startsWith('failed')).length;
   $: activeOperationCount = operations.filter((item) => operationIsActive(item.state)).length;
   $: streamCopy = streamStatusCopy();
-
-  function progressPercent(operation: Operation): number {
-    const current = operation.progress?.current;
-    const total = operation.progress?.total;
-    if (current === null || current === undefined || total === null || total === undefined || total <= 0) {
-      return 0;
-    }
-    return Math.max(0, Math.min(100, (current / total) * 100));
-  }
-
-  function progressLabel(operation: Operation): string {
-    const progress = operation.progress;
-    if (!progress || progress.current === null) return '—';
-    const unit = progress.unit ? ` ${progress.unit}` : '';
-    return progress.total === null
-      ? `${progress.current}${unit}`
-      : `${progress.current} / ${progress.total}${unit}`;
-  }
+  $: selectedTruthNotice = selectedOperation ? operationTruthNotice(selectedOperation) : null;
+  $: selectedProgressPercent = selectedOperation ? operationProgressPercent(selectedOperation) : null;
+  $: selectedSafeResult = selectedOperation ? safeOperationResult(selectedOperation) : null;
 
   function eventLabel(code: string): string {
     return (
@@ -261,7 +252,7 @@
         api<OperationEvent[]>(`/api/v1/operations/${operationId}/events?after=0&limit=200`)
       ]);
       if (request !== detailRequest || !detailOpen) return;
-      selectedOperation = operation;
+      selectedOperation = mergeSelectedOperation(selectedOperation, operation);
       operations = mergeOperationSnapshot(operations, operation, 200);
       let mergedEvents = operationEvents.filter((event) => event.operation_id === operationId);
       for (const event of events) mergedEvents = mergeOperationTimeline(mergedEvents, event, 200);
@@ -293,7 +284,9 @@
         method: 'POST'
       });
       operations = mergeOperationSnapshot(operations, cancelled, 200);
-      if (selectedOperation?.id === cancelled.id) selectedOperation = cancelled;
+      if (selectedOperation?.id === cancelled.id) {
+        selectedOperation = mergeSelectedOperation(selectedOperation, cancelled);
+      }
       toast(`已请求安全取消 · ${shortId(operation.id)}`);
       if (detailOpen && selectedOperation?.id === operation.id) {
         await loadOperationDetail(operation.id, true);
@@ -594,25 +587,33 @@
               ></tr
             ></thead
           ><tbody
-            >{#each filteredOperations as operation}<tr
+            >{#each filteredOperations as operation}{@const truthNotice =
+                operationTruthNotice(operation)}{@const progressPercent =
+                operationProgressPercent(operation)}{@const safeResult = safeOperationResult(operation)}<tr
                 ><td
-                  ><span class="cell-main">{operationLabel(operation.kind)}</span><span class="cell-sub mono"
-                    >{shortId(operation.id)}</span
-                  ></td
+                  ><span class="cell-main"
+                    >{operationDisplayLabel(operation) === operation.kind
+                      ? operationLabel(operation.kind)
+                      : operationDisplayLabel(operation)}</span
+                  ><span class="cell-sub mono">{shortId(operation.id)}</span></td
                 ><td
                   ><StatusBadge status={operation.state} />{#if operation.cancel_requested_at}<span
                       class="cell-sub cancel-copy">取消处理中</span
                     >{/if}</td
                 ><td><span class="phase-code mono">{operation.phase ?? '—'}</span></td><td
-                  ><span class="progress-copy">{progressLabel(operation)}</span
-                  >{#if operation.progress?.total}
-                    <div class="progress-track compact-progress" aria-label={progressLabel(operation)}>
-                      <div class="progress-bar" style={`width: ${progressPercent(operation)}%`}></div>
+                  ><span class="progress-copy">{operationProgressLabel(operation)}</span
+                  >{#if progressPercent !== null}
+                    <div
+                      class="progress-track compact-progress"
+                      aria-label={operationProgressLabel(operation)}
+                    >
+                      <div class="progress-bar" style={`width: ${progressPercent}%`}></div>
                     </div>{/if}</td
                 ><td>{formatDate(operation.requested_at)}</td><td
                   >{#if operation.error_code}<span class="error-code mono">{operation.error_code}</span
-                    >{:else if operation.result}<span class="success-copy">已有安全摘要</span
-                    >{:else}—{/if}</td
+                    >{#if truthNotice}<span class="cell-sub truth-copy">{truthNotice.title}</span>{/if}
+                    >{:else if truthNotice}<span class="success-copy">{truthNotice.title}</span
+                    >{:else if safeResult}<span class="success-copy">已有白名单摘要</span>{:else}—{/if}</td
                 ><td class="actions operation-actions"
                   >{#if operationCanCancel(operation)}<button
                       class="button ghost danger-text small"
@@ -656,19 +657,35 @@
     <div class="operation-detail-heading">
       <div>
         <span class="eyebrow mono">{shortId(selectedOperation.id)}</span>
-        <h3>{operationLabel(selectedOperation.kind)}</h3>
+        <h3>
+          {operationDisplayLabel(selectedOperation) === selectedOperation.kind
+            ? operationLabel(selectedOperation.kind)
+            : operationDisplayLabel(selectedOperation)}
+        </h3>
       </div>
       <StatusBadge status={selectedOperation.state} />
     </div>
 
     {#if selectedOperation.progress}
       <div class="detail-progress">
-        <div><span>执行进度</span><strong>{progressLabel(selectedOperation)}</strong></div>
-        {#if selectedOperation.progress.total}
+        <div><span>执行进度</span><strong>{operationProgressLabel(selectedOperation)}</strong></div>
+        {#if selectedProgressPercent !== null}
           <div class="progress-track">
-            <div class="progress-bar" style={`width: ${progressPercent(selectedOperation)}%`}></div>
+            <div class="progress-bar" style={`width: ${selectedProgressPercent}%`}></div>
           </div>
         {/if}
+      </div>
+    {/if}
+
+    {#if selectedTruthNotice}
+      <div
+        class="notice observation-truth"
+        class:warning={selectedTruthNotice.tone === 'warning'}
+        class:danger={selectedTruthNotice.tone === 'danger'}
+        class:success={selectedTruthNotice.tone === 'success'}
+      >
+        <strong>{selectedTruthNotice.title}</strong>
+        <span>{selectedTruthNotice.detail}</span>
       </div>
     {/if}
 
@@ -720,10 +737,10 @@
       </section>
     {/if}
 
-    {#if selectedOperation.result}
+    {#if selectedSafeResult}
       <section class="detail-section">
-        <h3>安全结果摘要</h3>
-        <pre>{JSON.stringify(selectedOperation.result, null, 2)}</pre>
+        <h3>白名单结果摘要</h3>
+        <pre>{JSON.stringify(selectedSafeResult, null, 2)}</pre>
       </section>
     {/if}
 
@@ -895,6 +912,10 @@
     font-size: 11px;
   }
 
+  .truth-copy {
+    margin-top: 3px;
+  }
+
   .phase-code,
   .progress-copy {
     color: var(--text-secondary);
@@ -971,6 +992,21 @@
     border-radius: var(--radius);
     padding: 12px;
     background: #f8fafc;
+  }
+
+  .observation-truth {
+    display: grid;
+    gap: 4px;
+    margin-top: 12px;
+  }
+
+  .observation-truth strong {
+    font-size: 12px;
+  }
+
+  .observation-truth span {
+    font-size: 11px;
+    line-height: 1.55;
   }
 
   .detail-progress span {

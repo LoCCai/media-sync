@@ -5,6 +5,7 @@ import type {
   LibraryIntegrity,
   ManagedLibraryFile,
   MediaServerAction,
+  MediaServerAuthorLookup,
   MediaServerStatus
 } from '$lib/types/api';
 
@@ -82,6 +83,42 @@ export function mergeLibraryInspectionPage(
 
 export function mediaServerAllows(status: MediaServerStatus | null, action: MediaServerAction): boolean {
   return status?.allowed_actions.includes(action) ?? false;
+}
+
+export function emptyMediaServerOperationRequest(): RequestInit {
+  return { method: 'POST', body: JSON.stringify({}) };
+}
+
+export function authorObservationOperationRequest(authorId: string): RequestInit {
+  return { method: 'POST', body: JSON.stringify({ author_id: authorId }) };
+}
+
+export function authorAllowsRefreshAndVerify(
+  inspection: LibraryInspection | null,
+  status: MediaServerStatus | null
+): boolean {
+  return (
+    (inspection?.allowed_actions.includes('refresh_and_verify') ?? false) && mediaServerAllows(status, 'scan')
+  );
+}
+
+export function mediaServerLookupPresentation(result: MediaServerAuthorLookup): {
+  label: string;
+  tone: 'success' | 'info';
+  detail: string;
+} {
+  if (result.lookup_state === 'matched') {
+    return {
+      label: '已观察到唯一项目',
+      tone: 'success',
+      detail: '本次完整查找观察到一个唯一精确受管项目；这不代表 provider 任务完成或媒体可播放。'
+    };
+  }
+  return {
+    label: '未观察到项目',
+    tone: 'info',
+    detail: '本次完整查找没有发现精确受管项目；这是独立只读快照，不是刷新完成证据。'
+  };
 }
 
 export function mediaServerPosture(status: MediaServerStatus | null): {

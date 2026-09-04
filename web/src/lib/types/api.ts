@@ -361,7 +361,7 @@ export type LibraryIntegrity =
   | 'budget_exhausted'
   | 'drifted'
   | 'inconsistent';
-export type LibraryAction = 'export_author';
+export type LibraryAction = 'export_author' | 'refresh_and_verify';
 
 export interface ManagedLibraryFile {
   relative_path: string;
@@ -370,7 +370,7 @@ export interface ManagedLibraryFile {
 }
 
 export interface LibraryInspection {
-  schema_version: 1;
+  schema_version: 2;
   author_id: string;
   publication: {
     layout_version: string;
@@ -425,6 +425,31 @@ export interface MediaServerStatus {
   allowed_actions: MediaServerAction[];
 }
 
+export interface MediaServerAuthorLookupBase {
+  schema_version: 1;
+  author_id: string;
+  provider: MediaServerProvider;
+  library_id_digest: string;
+  publication_fingerprint: string;
+  selector_fingerprint: string;
+  observed_at: string;
+  complete: true;
+}
+
+export type MediaServerAuthorLookup = MediaServerAuthorLookupBase &
+  (
+    | {
+        lookup_state: 'not_found';
+        match_count: 0;
+        item_fingerprint?: never;
+      }
+    | {
+        lookup_state: 'matched';
+        match_count: 1;
+        item_fingerprint: string;
+      }
+  );
+
 export type HumanQualificationStatus = 'PASS' | 'FAIL' | 'NOT_RUN' | 'BLOCKED_EXTERNAL';
 export type ImplementationStatus = 'IMPLEMENTED' | 'NOT_IMPLEMENTED';
 
@@ -432,10 +457,11 @@ export interface HumanQualificationCapability {
   capability: string;
   implementation_status: ImplementationStatus;
   human_status: HumanQualificationStatus | null;
+  reason?: 'provider_api_unsupported';
 }
 
 export interface Qualifications {
-  schema_version: 1;
+  schema_version: 2;
   generated_at: string;
   policy: {
     automated_evidence_confers_human_pass: false;

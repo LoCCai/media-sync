@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { api, LatestRequestGate, type LatestRequestResult } from './client';
+import { api, ApiError, LatestRequestGate, type LatestRequestResult } from './client';
 
 interface Deferred<T> {
   promise: Promise<T>;
@@ -44,6 +44,28 @@ describe('latest request gate', () => {
     await firstApply;
 
     expect(value).toBe('latest');
+  });
+
+  it('invalidates a late response when its owning catalogue snapshot is replaced', async () => {
+    const gate = new LatestRequestGate();
+    const inspection = deferred<string>();
+    let inspectionSignal = new AbortController().signal;
+    let grantedAuthorization: string | null = null;
+    const applyInspection = (async (): Promise<void> => {
+      const result = await gate.run((signal) => {
+        inspectionSignal = signal;
+        return inspection.promise;
+      });
+      if (result.status === 'fulfilled') grantedAuthorization = result.value;
+    })();
+
+    gate.cancel();
+    grantedAuthorization = null;
+    expect(inspectionSignal.aborted).toBe(true);
+
+    inspection.resolve('refresh_and_verify');
+    await applyInspection;
+    expect(grantedAuthorization).toBeNull();
   });
 
   it('keeps independently loaded resource outcomes separate', async () => {
@@ -135,5 +157,25 @@ describe('api cancellation', () => {
       status: 408,
       code: 'request_timeout'
     });
+  });
+});
+
+describe('media-server error copy', () => {
+  it('keeps lookup incompleteness distinct from not found', () => {
+    const error = new ApiError(503, 'media_server_item_lookup_incomplete', {
+      detail: 'media_server_item_lookup_incomplete'
+    });
+
+    expect(error.message).toContain('未能证明结果完整');
+    expect(error.message).toContain('不会把它当作“未找到”');
+  });
+
+  it('states that accepted-but-unobserved completion is unknown and must not be retried', () => {
+    const error = new ApiError(503, 'media_server_scan_completion_unknown', {
+      detail: 'media_server_scan_completion_unknown'
+    });
+
+    expect(error.message).toContain('刷新已接受');
+    expect(error.message).toContain('勿自动重试');
   });
 });

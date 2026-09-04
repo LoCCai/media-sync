@@ -1,20 +1,24 @@
 import { describe, expect, it } from 'vitest';
 
-import type { LibraryInspection, MediaServerStatus } from '$lib/types/api';
+import type { LibraryInspection, MediaServerAuthorLookup, MediaServerStatus } from '$lib/types/api';
 
 import {
+  authorAllowsRefreshAndVerify,
+  authorObservationOperationRequest,
+  emptyMediaServerOperationRequest,
   libraryAllows,
   libraryFreshnessLabel,
   libraryIntegrityLabel,
   libraryStateTone,
   mediaServerAllows,
+  mediaServerLookupPresentation,
   mediaServerPosture,
   mergeLibraryInspectionPage
 } from './library';
 
 function inspection(overrides: Partial<LibraryInspection> = {}): LibraryInspection {
   return {
-    schema_version: 1,
+    schema_version: 2,
     author_id: 'author-1',
     publication: {
       layout_version: '1',
@@ -120,5 +124,62 @@ describe('library console derivations', () => {
       )
     ).toEqual({ label: '连接已验证', tone: 'success' });
     expect(mediaServerAllows(mediaServer({ allowed_actions: [] }), 'probe')).toBe(false);
+  });
+
+  it('requires both server-provided action grants for refresh and verify', () => {
+    const complete = inspection({
+      freshness: 'current',
+      integrity: 'complete',
+      allowed_actions: ['refresh_and_verify']
+    });
+    expect(authorAllowsRefreshAndVerify(complete, mediaServer())).toBe(true);
+    expect(authorAllowsRefreshAndVerify({ ...complete, allowed_actions: [] }, mediaServer())).toBe(false);
+    expect(authorAllowsRefreshAndVerify(complete, mediaServer({ allowed_actions: ['probe'] }))).toBe(false);
+    expect(
+      authorAllowsRefreshAndVerify(
+        inspection({ freshness: 'current', integrity: 'complete', allowed_actions: [] }),
+        mediaServer()
+      )
+    ).toBe(false);
+  });
+
+  it('keeps legacy and author observation scan bodies as two exact shapes', () => {
+    const authorId = '11111111-1111-4111-8111-111111111111';
+    expect(emptyMediaServerOperationRequest()).toEqual({ method: 'POST', body: '{}' });
+    expect(authorObservationOperationRequest(authorId)).toEqual({
+      method: 'POST',
+      body: JSON.stringify({ author_id: authorId })
+    });
+  });
+
+  it('describes a direct lookup as an observation rather than completion or playback evidence', () => {
+    const base = {
+      schema_version: 1 as const,
+      author_id: '11111111-1111-4111-8111-111111111111',
+      provider: 'emby' as const,
+      library_id_digest: '1'.repeat(64),
+      publication_fingerprint: '2'.repeat(64),
+      selector_fingerprint: '3'.repeat(64),
+      observed_at: '2026-09-05T08:00:00+00:00',
+      complete: true as const
+    };
+    const missing: MediaServerAuthorLookup = { ...base, lookup_state: 'not_found', match_count: 0 };
+    const matched: MediaServerAuthorLookup = {
+      ...base,
+      lookup_state: 'matched',
+      match_count: 1,
+      item_fingerprint: '4'.repeat(64)
+    };
+
+    expect(mediaServerLookupPresentation(missing)).toMatchObject({
+      label: '未观察到项目',
+      tone: 'info'
+    });
+    expect(mediaServerLookupPresentation(matched)).toMatchObject({
+      label: '已观察到唯一项目',
+      tone: 'success'
+    });
+    expect(mediaServerLookupPresentation(matched).detail).toContain('不代表 provider 任务完成');
+    expect(mediaServerLookupPresentation(matched).detail).toContain('媒体可播放');
   });
 });

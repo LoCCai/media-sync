@@ -11,15 +11,22 @@ import {
   mergeOperationSnapshot,
   mergeOperationSnapshots,
   mergeOperationTimeline,
+  mergeSelectedOperation,
   operationCanCancel,
+  operationDisplayLabel,
   operationIsActive,
+  operationIsMediaServerObservation,
   operationIsTerminal,
   operationMatches,
+  operationProgressLabel,
+  operationProgressPercent,
   operationStreamConnected,
   operationStreamFailed,
+  operationTruthNotice,
   parseOperationStreamMessage,
   reduceOperationStreamMessage,
-  safeOperationContextRows
+  safeOperationContextRows,
+  safeOperationResult
 } from './operations';
 
 const operation: Operation = {
@@ -70,6 +77,164 @@ describe('persistent operation state', () => {
     expect(operationCanCancel(operation)).toBe(true);
     expect(operationCanCancel({ ...operation, cancel_requested_at: operation.requested_at })).toBe(false);
     expect(operationCanCancel({ ...operation, state: 'succeeded', allowed_actions: [] })).toBe(false);
+  });
+
+  it('presents author observation separately from acceptance-only refresh', () => {
+    const acceptanceOnly = { ...operation, kind: 'media-server-scan' as const };
+    const observation = {
+      ...acceptanceOnly,
+      phase: 'polling',
+      target: { type: 'author', id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' },
+      progress: { current: 1, total: null, unit: 'steps' },
+      result: { observation_state: 'pending' }
+    };
+
+    expect(operationIsMediaServerObservation(acceptanceOnly)).toBe(false);
+    expect(operationDisplayLabel(acceptanceOnly)).toBe('媒体库定向刷新（仅确认接受）');
+    expect(operationIsMediaServerObservation(observation)).toBe(true);
+    expect(operationDisplayLabel(observation)).toBe('媒体库刷新并核验');
+    expect(operationProgressLabel(observation)).toBe('核验 1 次');
+    expect(operationProgressPercent(observation)).toBeNull();
+    expect(
+      operationProgressPercent({
+        ...observation,
+        progress: { current: 1, total: 2, unit: 'steps' }
+      })
+    ).toBeNull();
+  });
+
+  it('keeps observation truth copy fixed and ignores unknown result details', () => {
+    const observation = {
+      ...operation,
+      kind: 'media-server-scan' as const,
+      phase: 'polling',
+      target: { type: 'author', id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' },
+      progress: { current: 1, total: null, unit: 'steps' },
+      result: {
+        observation_state: 'pending',
+        remote_error: 'https://private.invalid/item?token=do-not-render'
+      }
+    };
+    const accepted = operationTruthNotice(observation);
+    expect(accepted?.title).toBe('刷新已接受，等待观察');
+    expect(JSON.stringify(accepted)).not.toContain('private.invalid');
+    expect(JSON.stringify(accepted)).not.toContain('do-not-render');
+    expect(safeOperationResult(observation)).toBeNull();
+
+    const observed = operationTruthNotice({
+      ...observation,
+      state: 'succeeded',
+      phase: 'observed',
+      progress: { current: 2, total: null, unit: 'steps' },
+      result: {
+        schema_version: 2,
+        mode: 'post_refresh_item_observation',
+        provider: 'emby',
+        profile_fingerprint: 'a'.repeat(64),
+        library_id_digest: 'b'.repeat(64),
+        scan_state: 'accepted',
+        publication_fingerprint: 'c'.repeat(64),
+        selector_fingerprint: 'd'.repeat(64),
+        baseline_state: 'not_found',
+        observation_state: 'observed',
+        match_count: 1,
+        verification_count: 2,
+        item_fingerprint: 'e'.repeat(64)
+      }
+    });
+    expect(observed?.title).toBe('已观察到唯一媒体项目');
+    expect(observed?.detail).toContain('不等于 provider task completion');
+    expect(observed?.detail).toContain('不等于可播放');
+    expect(
+      operationTruthNotice({
+        ...observation,
+        state: 'succeeded',
+        phase: 'observed',
+        result: { observation_state: 'observed', remote_error: 'do-not-render' }
+      })?.title
+    ).toBe('刷新并核验状态');
+
+    expect(
+      operationTruthNotice({
+        ...observation,
+        state: 'failed_terminal',
+        error_code: 'media_server_scan_completion_unknown'
+      })?.title
+    ).toBe('刷新已接受，观察结果未知');
+    expect(
+      operationTruthNotice({
+        ...observation,
+        state: 'failed_terminal',
+        error_code: 'media_server_scan_acceptance_unknown'
+      })?.title
+    ).toBe('刷新接受状态未知');
+  });
+
+  it('projects result payloads through a kind and schema allowlist', () => {
+    const observation: Operation = {
+      ...operation,
+      kind: 'media-server-scan',
+      target: { type: 'author', id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' },
+      result: {
+        schema_version: 2,
+        mode: 'post_refresh_item_observation',
+        provider: 'jellyfin',
+        server_version: '10.11.11',
+        profile_fingerprint: 'a'.repeat(64),
+        library_id_digest: 'b'.repeat(64),
+        scan_state: 'accepted',
+        publication_fingerprint: 'c'.repeat(64),
+        selector_fingerprint: 'd'.repeat(64),
+        baseline_state: 'not_found',
+        observation_state: 'observed',
+        match_count: 1,
+        verification_count: 2,
+        item_fingerprint: 'e'.repeat(64),
+        remote_error: 'https://private.invalid/item?token=do-not-render',
+        Etag: 'private-etag'
+      }
+    };
+
+    const projected = safeOperationResult(observation);
+    expect(projected).toMatchObject({
+      schema_version: 2,
+      mode: 'post_refresh_item_observation',
+      provider: 'jellyfin',
+      observation_state: 'observed',
+      match_count: 1,
+      verification_count: 2,
+      item_fingerprint: 'e'.repeat(64)
+    });
+    expect(JSON.stringify(projected)).not.toContain('private.invalid');
+    expect(JSON.stringify(projected)).not.toContain('do-not-render');
+    expect(JSON.stringify(projected)).not.toContain('private-etag');
+  });
+
+  it('keeps the newest selected operation across stale detail and cancel responses', () => {
+    const stale = { ...operation, state: 'queued' as const, event_sequence: 2 };
+    const streamed = {
+      ...operation,
+      state: 'running' as const,
+      phase: 'polling',
+      event_sequence: 5,
+      subjects: [
+        {
+          type: 'author',
+          id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+          role: 'target',
+          created_at: operation.requested_at
+        }
+      ]
+    };
+
+    expect(mergeSelectedOperation(streamed, stale)).toEqual(streamed);
+    expect(mergeSelectedOperation(stale, streamed)).toEqual(streamed);
+    expect(mergeSelectedOperation(streamed, { ...streamed, subjects: undefined })).toEqual(streamed);
+  });
+
+  it('keeps ordinary bounded progress behavior unchanged', () => {
+    expect(operationProgressLabel(operation)).toBe('1 / 3 jobs');
+    expect(operationProgressPercent(operation)).toBeCloseTo(100 / 3);
   });
 
   it('filters by state, kind, identifiers, and fixed error code', () => {

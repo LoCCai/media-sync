@@ -27,6 +27,7 @@
     LibraryAuthor,
     LibraryInspection,
     MediaServerAction,
+    MediaServerAuthorLookup,
     MediaServerStatus,
     Platform,
     StartedOperation
@@ -34,10 +35,14 @@
   import { buildExplorerQuery, EXPLORER_RESULT_LIMIT } from '$lib/utils/explorer';
   import { formatBytes, formatDate, PLATFORM_META, shortId } from '$lib/utils/format';
   import {
+    authorAllowsRefreshAndVerify,
+    authorObservationOperationRequest,
+    emptyMediaServerOperationRequest,
     libraryAllows,
     libraryFreshnessLabel,
     libraryIntegrityLabel,
     mediaServerAllows,
+    mediaServerLookupPresentation,
     mediaServerPosture,
     mergeLibraryInspectionPage,
     type LibraryInspectionView
@@ -52,15 +57,22 @@
   let mediaServer: MediaServerStatus | null = null;
   let mediaServerError = '';
   let serverActing: MediaServerAction | '' = '';
+  let authorScanActing = '';
+  let inspectedAuthors: Record<string, LibraryInspection | undefined> = {};
   let selectedAuthor: LibraryAuthor | null = null;
   let inspectionView: LibraryInspectionView | null = null;
   let inspectionOpen = false;
   let inspectionLoading = false;
   let inspectionError = '';
+  let lookupResult: MediaServerAuthorLookup | null = null;
+  let lookupLoading = false;
+  let lookupError = '';
   let mounted = false;
   let listRequest = 0;
-  let inspectionRequest = 0;
+  let lookupRequest = 0;
+  const inspectionRequest = new LatestRequestGate();
   const mediaServerRequest = new LatestRequestGate();
+  const mediaServerLookupRequest = new LatestRequestGate();
   let searchTimer: number | undefined;
 
   $: totalContent = authors.reduce((sum, item) => sum + item.content_count, 0);
@@ -69,6 +81,8 @@
   $: exportedContent = authors.reduce((sum, item) => sum + item.exported_count, 0);
   $: hasFilters = Boolean(search.trim()) || platform !== 'all';
   $: serverPosture = mediaServerPosture(mediaServer);
+  $: lookupPresentation = lookupResult ? mediaServerLookupPresentation(lookupResult) : null;
+  $: serverBusy = Boolean(serverActing || authorScanActing || lookupLoading);
 
   async function load(): Promise<void> {
     if (!mounted) return;
@@ -84,7 +98,22 @@
           limit: EXPLORER_RESULT_LIMIT
         })
       );
-      if (request === listRequest) authors = result;
+      if (request === listRequest) {
+        authors = result;
+        // A new catalogue snapshot cannot inherit or be overwritten by an older inspection.
+        inspectionRequest.cancel();
+        inspectionLoading = false;
+        inspectionView = null;
+        inspectionError = '';
+        inspectedAuthors = {};
+        lookupRequest += 1;
+        mediaServerLookupRequest.cancel();
+        lookupLoading = false;
+        lookupResult = null;
+        lookupError = '';
+        inspectionOpen = false;
+        selectedAuthor = null;
+      }
     } catch (caught) {
       if (request === listRequest) error = apiMessage(caught);
     } finally {
@@ -127,30 +156,38 @@
   }
 
   async function inspectAuthor(author: LibraryAuthor): Promise<void> {
+    if (inspectionLoading) return;
+    lookupRequest += 1;
+    mediaServerLookupRequest.cancel();
     selectedAuthor = author;
     inspectionView = null;
     inspectionError = '';
+    lookupResult = null;
+    lookupError = '';
+    lookupLoading = false;
+    inspectedAuthors = { ...inspectedAuthors, [author.author_id]: undefined };
     inspectionOpen = true;
     await loadInspectionPage(author, null);
   }
 
   async function loadInspectionPage(author: LibraryAuthor, cursor: string | null): Promise<void> {
-    const request = ++inspectionRequest;
     inspectionLoading = true;
     inspectionError = '';
-    try {
+    const result = await inspectionRequest.run((signal) => {
       const query = new URLSearchParams({ limit: '64' });
       if (cursor) query.set('cursor', cursor);
-      const incoming = await api<LibraryInspection>(
-        `/api/v1/library/${encodeURIComponent(author.author_id)}?${query.toString()}`
+      return api<LibraryInspection>(
+        `/api/v1/library/${encodeURIComponent(author.author_id)}?${query.toString()}`,
+        { signal }
       );
-      if (request === inspectionRequest) {
-        inspectionView = mergeLibraryInspectionPage(cursor ? inspectionView : null, incoming);
-      }
-    } catch (caught) {
-      if (request === inspectionRequest) inspectionError = apiMessage(caught);
-    } finally {
-      if (request === inspectionRequest) inspectionLoading = false;
+    });
+    if (result.status === 'fulfilled') {
+      inspectionView = mergeLibraryInspectionPage(cursor ? inspectionView : null, result.value);
+      inspectedAuthors = { ...inspectedAuthors, [author.author_id]: inspectionView.inspection };
+      inspectionLoading = false;
+    } else if (result.status === 'rejected') {
+      inspectionError = apiMessage(result.reason);
+      inspectionLoading = false;
     }
   }
 
@@ -161,15 +198,14 @@
   }
 
   async function runMediaServerAction(action: MediaServerAction): Promise<void> {
-    if (!mediaServerAllows(mediaServer, action)) return;
+    if (serverBusy || !mediaServerAllows(mediaServer, action)) return;
     serverActing = action;
     try {
       const started = await api<StartedOperation>(`/api/v1/media-server/${action}`, {
-        method: 'POST',
-        body: JSON.stringify({})
+        ...emptyMediaServerOperationRequest()
       });
       toast(
-        `${action === 'probe' ? '媒体服务器探测' : '媒体库定向刷新'}已启动 · ${shortId(started.operation_id)}`
+        `${action === 'probe' ? '媒体服务器探测' : '只确认接受的定向刷新'}已启动 · ${shortId(started.operation_id)}`
       );
       await loadMediaServer();
     } catch (caught) {
@@ -177,6 +213,65 @@
       await loadMediaServer();
     } finally {
       serverActing = '';
+    }
+  }
+
+  function canRefreshAndVerify(authorId: string): boolean {
+    const inspection = inspectedAuthors[authorId] ?? null;
+    return authorAllowsRefreshAndVerify(inspection, mediaServer);
+  }
+
+  async function refreshAndVerify(author: LibraryAuthor): Promise<void> {
+    if (serverBusy || !canRefreshAndVerify(author.author_id)) return;
+
+    authorScanActing = author.author_id;
+    // A late inspection page must not restore authorization after this mutation is accepted.
+    inspectionRequest.cancel();
+    inspectionLoading = false;
+    lookupRequest += 1;
+    mediaServerLookupRequest.cancel();
+    lookupLoading = false;
+    lookupResult = null;
+    lookupError = '';
+    try {
+      const started = await api<StartedOperation>('/api/v1/media-server/scan', {
+        ...authorObservationOperationRequest(author.author_id)
+      });
+      inspectedAuthors = { ...inspectedAuthors, [author.author_id]: undefined };
+      toast(`刷新并核验已启动 · ${shortId(started.operation_id)}；请在任务中心跟踪独立观察证据。`);
+      await loadMediaServer();
+    } catch (caught) {
+      toast(`${apiMessage(caught)} 未自动重试；请先到任务中心核对是否已有对应操作。`, 'danger');
+      await loadMediaServer();
+    } finally {
+      authorScanActing = '';
+    }
+  }
+
+  async function lookupMediaServerItem(author: LibraryAuthor): Promise<void> {
+    if (
+      serverBusy ||
+      !mediaServer?.configuration.configured ||
+      !mediaServer.configuration.operations_enabled
+    ) {
+      return;
+    }
+    const request = ++lookupRequest;
+    lookupLoading = true;
+    lookupError = '';
+    lookupResult = null;
+    const result = await mediaServerLookupRequest.run((signal) =>
+      api<MediaServerAuthorLookup>(
+        `/api/v1/media-server/items/by-author/${encodeURIComponent(author.author_id)}`,
+        { signal },
+        75_000
+      )
+    );
+    if (request === lookupRequest) {
+      lookupLoading = false;
+      if (selectedAuthor?.author_id !== author.author_id) return;
+      if (result.status === 'fulfilled') lookupResult = result.value;
+      else if (result.status === 'rejected') lookupError = apiMessage(result.reason);
     }
   }
 
@@ -206,8 +301,10 @@
 
   onDestroy(() => {
     listRequest += 1;
-    inspectionRequest += 1;
+    inspectionRequest.cancel();
+    lookupRequest += 1;
     mediaServerRequest.cancel();
+    mediaServerLookupRequest.cancel();
     if (searchTimer !== undefined) window.clearTimeout(searchTimer);
   });
 </script>
@@ -262,7 +359,7 @@
           <StatusBadge status={mediaServer.latest_probe?.state ?? 'not_run'} />
         </div>
         <div class="server-evidence">
-          <span>最近刷新请求</span>
+          <span>最近刷新 Operation</span>
           <StatusBadge status={mediaServer.latest_scan?.state ?? 'not_run'} />
         </div>
         <div class="server-actions">
@@ -270,7 +367,7 @@
             class="button secondary small"
             type="button"
             on:click={() => runMediaServerAction('probe')}
-            disabled={!!serverActing || !mediaServerAllows(mediaServer, 'probe')}
+            disabled={serverBusy || !mediaServerAllows(mediaServer, 'probe')}
           >
             <ShieldCheck size={14} />{serverActing === 'probe' ? '启动中…' : '测试连接'}
           </button>
@@ -278,11 +375,11 @@
             class="button secondary small"
             type="button"
             on:click={() => runMediaServerAction('scan')}
-            disabled={!!serverActing || !mediaServerAllows(mediaServer, 'scan')}
+            disabled={serverBusy || !mediaServerAllows(mediaServer, 'scan')}
           >
             <RefreshCw class={serverActing === 'scan' ? 'spin' : ''} size={14} />{serverActing === 'scan'
               ? '启动中…'
-              : '定向刷新'}
+              : '定向刷新（只确认接受）'}
           </button>
         </div>
       </div>
@@ -294,7 +391,7 @@
         </div>
       {:else}
         <div class="notice server-note">
-          刷新只调用已配置 Library 的定向接口；“已接受”不代表扫描完成或媒体已经可播放。
+          顶部刷新只证明服务器接受请求，不证明项目已出现、provider 任务完成或媒体可播放。
         </div>
       {/if}
     {/if}
@@ -409,6 +506,19 @@
                       on:click={() => inspectAuthor(author)}
                       disabled={inspectionLoading}><Eye size={14} />检查媒体树</button
                     >
+                    {#if canRefreshAndVerify(author.author_id)}
+                      <button
+                        class="button secondary small"
+                        type="button"
+                        on:click={() => refreshAndVerify(author)}
+                        disabled={serverBusy}
+                      >
+                        <RefreshCw
+                          class={authorScanActing === author.author_id ? 'spin' : ''}
+                          size={14}
+                        />刷新并核验
+                      </button>
+                    {/if}
                   </div>
                 </td>
               </tr>
@@ -420,8 +530,8 @@
   </Panel>
 
   <div class="notice deferred-note">
-    <FolderCheck size={17} />定向刷新完成轮询、媒体项目查找与播放证据仍标记为
-    NOT_IMPLEMENTED；本页不会把离线测试或请求已接受显示为真人通过。
+    <FolderCheck size={17} />“已接受”不等于“已观察”；“已观察”不等于 provider task completion，也不等于
+    playable。本页只呈现完整精确查找与持久观察证据，不会把离线测试显示为真人通过。
   </div>
 </div>
 
@@ -487,6 +597,29 @@
       </dl>
     {/if}
 
+    {#if lookupError}
+      <div class="notice danger inspection-reason">{lookupError}</div>
+    {:else if lookupLoading}
+      <div class="inspection-loading"><RefreshCw class="spin" size={18} />正在执行有界精确查找…</div>
+    {:else if lookupResult && lookupPresentation}
+      <section class="server-lookup-evidence">
+        <div class="section-heading">
+          <div>
+            <span>媒体服务器项目快照</span>
+            <strong>{lookupResult.provider.toUpperCase()} · {formatDate(lookupResult.observed_at)}</strong>
+          </div>
+          <StatusBadge status={lookupPresentation.tone} label={lookupPresentation.label} />
+        </div>
+        <p>{lookupPresentation.detail}</p>
+        {#if lookupResult.lookup_state === 'matched'}
+          <div class="notice warning">
+            项目在当前快照中已经存在，因此严格的 absent-to-unique-match
+            验证可能在发送刷新前停止；如只需手动刷新，请使用页面顶部“只确认接受”的动作。
+          </div>
+        {/if}
+      </section>
+    {/if}
+
     {#if inspectionView.files.length === 0}
       <EmptyState
         title={inspection.publication ? '本页没有可显示文件' : '作者尚未发布'}
@@ -519,6 +652,26 @@
   {/if}
 
   <svelte:fragment slot="footer">
+    {#if selectedAuthor && inspectionView?.inspection.publication && mediaServer?.configuration.configured}
+      <button
+        class="button secondary"
+        type="button"
+        on:click={() => lookupMediaServerItem(selectedAuthor!)}
+        disabled={serverBusy || !mediaServer.configuration.operations_enabled}
+      >
+        <ShieldCheck size={14} />{lookupLoading ? '查找中…' : '检查服务器项目'}
+      </button>
+    {/if}
+    {#if selectedAuthor && canRefreshAndVerify(selectedAuthor.author_id)}
+      <button
+        class="button"
+        type="button"
+        on:click={() => refreshAndVerify(selectedAuthor!)}
+        disabled={serverBusy}
+      >
+        <RefreshCw class={authorScanActing === selectedAuthor.author_id ? 'spin' : ''} size={14} />刷新并核验
+      </button>
+    {/if}
     {#if selectedAuthor && inspectionView && libraryAllows(inspectionView.inspection, 'export_author')}
       <button class="button" type="button" on:click={() => exportAuthor(selectedAuthor!)} disabled={!!acting}
         ><Send size={14} />{acting === selectedAuthor.author_id ? '启动中…' : '导出 / 更新'}</button
@@ -745,6 +898,39 @@
     margin: 4px 0 0;
     color: var(--text-secondary);
     font-size: 11px;
+  }
+
+  .server-lookup-evidence {
+    display: grid;
+    gap: 10px;
+    margin: 12px 0;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px;
+    background: #fafbfd;
+  }
+
+  .server-lookup-evidence .section-heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
+
+  .server-lookup-evidence .section-heading > div {
+    display: grid;
+    gap: 3px;
+  }
+
+  .server-lookup-evidence .section-heading span,
+  .server-lookup-evidence p {
+    color: var(--text-muted);
+    font-size: 11px;
+  }
+
+  .server-lookup-evidence p {
+    margin: 0;
+    line-height: 1.65;
   }
 
   .inspection-files-wrap {
