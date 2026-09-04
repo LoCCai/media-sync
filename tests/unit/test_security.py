@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+import media_sync.security.paths as path_security_module
 from media_sync.security import (
     REDACTED,
     EnvironmentSecretProvider,
@@ -24,8 +25,63 @@ from media_sync.security import (
     redact_text,
     secret_url_components,
 )
+from media_sync.security.paths import (
+    PathSecurityError,
+    assert_existing_regular_file,
+    assert_existing_secure_root,
+    open_existing_regular_read_file,
+)
 
 SENTINEL = "sentinel-secret-value"
+
+
+def test_existing_root_primitives_never_create_a_missing_root(tmp_path: Path) -> None:
+    root = tmp_path / "missing-root"
+    candidate = root / "blob.bin"
+
+    with pytest.raises(PathSecurityError):
+        assert_existing_secure_root(root)
+    with pytest.raises(PathSecurityError):
+        assert_existing_regular_file(candidate, root=root)
+    with pytest.raises(PathSecurityError):
+        open_existing_regular_read_file(candidate, root=root)
+
+    assert not root.exists()
+
+
+def test_existing_root_read_open_is_bounded_to_the_existing_plain_tree(tmp_path: Path) -> None:
+    root = tmp_path / "archive"
+    root.mkdir()
+    candidate = root / "blob.bin"
+    candidate.write_bytes(b"verified")
+
+    assert assert_existing_secure_root(root) == root.absolute()
+    assert assert_existing_regular_file(candidate, root=root).st_size == 8
+    with open_existing_regular_read_file(candidate, root=root) as handle:
+        assert handle.read() == b"verified"
+
+
+def test_existing_root_open_race_does_not_recreate_a_removed_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "archive"
+    root.mkdir()
+    candidate = root / "blob.bin"
+    candidate.write_bytes(b"verified")
+    real_open = path_security_module.os.open
+
+    def remove_root_before_open(path: Path, flags: int) -> int:
+        candidate.unlink()
+        root.rmdir()
+        return real_open(path, flags)
+
+    monkeypatch.setattr(path_security_module.os, "open", remove_root_before_open)
+
+    with pytest.raises(PathSecurityError):
+        open_existing_regular_read_file(candidate, root=root)
+
+    assert not root.exists()
 
 
 @pytest.mark.parametrize(

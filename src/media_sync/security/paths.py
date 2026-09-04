@@ -107,6 +107,14 @@ def ensure_secure_root(root: Path) -> Path:
     return absolute
 
 
+def assert_existing_secure_root(root: Path) -> Path:
+    """Validate an existing plain root without creating filesystem objects."""
+
+    absolute = root.absolute()
+    _assert_plain_directory(absolute)
+    return absolute
+
+
 def ensure_secure_directory(root: Path, relative: str | PurePath) -> Path:
     """Create a directory below *root*, rejecting links and reparse points."""
 
@@ -199,10 +207,12 @@ def exclusive_file_lock(root: Path, relative: str | PurePath) -> Iterator[None]:
         local.release()
 
 
-def assert_regular_file(path: Path, *, root: Path, single_link: bool = True) -> os.stat_result:
-    """Validate a regular, non-link file confined beneath *root*."""
-
-    safe_root = ensure_secure_root(root)
+def _assert_regular_file_below(
+    path: Path,
+    *,
+    safe_root: Path,
+    single_link: bool,
+) -> os.stat_result:
     absolute = path.absolute()
     try:
         relative = absolute.relative_to(safe_root)
@@ -225,6 +235,26 @@ def assert_regular_file(path: Path, *, root: Path, single_link: bool = True) -> 
     ):
         raise PathSecurityError
     return details
+
+
+def assert_regular_file(path: Path, *, root: Path, single_link: bool = True) -> os.stat_result:
+    """Validate a regular, non-link file confined beneath *root*."""
+
+    return _assert_regular_file_below(
+        path,
+        safe_root=ensure_secure_root(root),
+        single_link=single_link,
+    )
+
+
+def assert_existing_regular_file(path: Path, *, root: Path, single_link: bool = True) -> os.stat_result:
+    """Validate a confined file beneath an existing root without creating it."""
+
+    return _assert_regular_file_below(
+        path,
+        safe_root=assert_existing_secure_root(root),
+        single_link=single_link,
+    )
 
 
 def open_regular_file(path: Path, *, root: Path, append: bool = False) -> BinaryIO:
@@ -262,6 +292,30 @@ def open_regular_read_file(path: Path, *, root: Path) -> BinaryIO:
         raise
     except OSError as exc:
         raise PathSecurityError from exc
+
+
+def open_existing_regular_read_file(path: Path, *, root: Path) -> BinaryIO:
+    """Open a confined file for reading without creating a missing root."""
+
+    assert_existing_regular_file(path, root=root)
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor: int | None = None
+    try:
+        descriptor = os.open(path, flags)
+        details = os.fstat(descriptor)
+        if not stat.S_ISREG(details.st_mode) or details.st_nlink != 1:
+            raise PathSecurityError
+        handle = cast(BinaryIO, os.fdopen(descriptor, "rb"))
+        descriptor = None
+        return handle
+    except PathSecurityError:
+        raise
+    except (OSError, ValueError) as exc:
+        raise PathSecurityError from exc
+    finally:
+        if descriptor is not None:
+            with contextlib.suppress(OSError):
+                os.close(descriptor)
 
 
 def read_regular_file_bytes(path: Path, *, root: Path, max_bytes: int) -> bytes:
@@ -376,6 +430,8 @@ def atomic_write_bytes(root: Path, relative: str | PurePath, payload: bytes) -> 
 __all__ = [
     "PathLockBusyError",
     "PathSecurityError",
+    "assert_existing_regular_file",
+    "assert_existing_secure_root",
     "assert_regular_file",
     "atomic_write_bytes",
     "confined_file",
@@ -383,6 +439,7 @@ __all__ = [
     "ensure_secure_directory",
     "ensure_secure_root",
     "exclusive_file_lock",
+    "open_existing_regular_read_file",
     "open_regular_file",
     "open_regular_read_file",
     "read_regular_file_bytes",

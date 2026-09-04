@@ -22,22 +22,29 @@ import stat
 import threading
 import time
 from collections.abc import AsyncIterator, Mapping, Sequence
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from uuid import UUID
 
-from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi import FastAPI, HTTPException, Query, Request, Response
+from fastapi.exception_handlers import http_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
+from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.types import Receive, Scope, Send
 
 from media_sync import __version__
 from media_sync.application import (
     AccountDraft,
+    ArchivePreview,
+    ArchivePreviewError,
+    ArchivePreviewService,
+    ArchivePreviewSource,
     MediaCrawlerLoginSessionReconciler,
     OperationCoordinator,
     OperationCoordinatorError,
@@ -52,6 +59,7 @@ from media_sync.application import (
     collect_account_login_preflight,
     operation_idempotency_key_digest,
     operation_request_fingerprint,
+    parse_single_byte_range,
 )
 from media_sync.application.authentication import (
     AccountLoginError,
@@ -59,18 +67,16 @@ from media_sync.application.authentication import (
     MediaCrawlerQrLoginService,
 )
 from media_sync.application.emby import EmbyExportRequest, EmbyExportService, export_error_is_retryable
+from media_sync.application.explorer import CatalogExplorerError, ContentAssetExplorer
 from media_sync.application.support_bundle import SupportBundleError, SupportBundleService
 from media_sync.config import Settings, get_settings
-from media_sync.domain import AssetStatus, ContentKind, JobStatus, LoginMethod, Platform
+from media_sync.domain import AssetKind, AssetStatus, ContentKind, JobStatus, LoginMethod, Platform
 from media_sync.exporters.emby import EmbyExporter, ExportError
 from media_sync.infrastructure.db import (
     AccountLoginConflictError,
     AccountRepository,
     Asset,
-    Author,
-    Content,
     Database,
-    ExportRecord,
     LoginSession,
     LoginSessionRepository,
     NotFoundError,
@@ -102,7 +108,6 @@ from media_sync.interfaces.cli import (
     _account_login_outcome_payload,
     _account_login_status_payload,
     _account_payload,
-    _asset_payload,
     _build_pipeline_worker,
     _build_subscription_worker,
     _credential_reference,
@@ -164,6 +169,37 @@ def _static_response(web_root: Path, relative_path: str = "index.html") -> FileR
             "Cache-Control": "public, max-age=31536000, immutable" if immutable else "no-cache",
         },
     )
+
+
+class _ArchiveStreamingResponse(StreamingResponse):
+    """Close the archive descriptor even when ASGI send or disconnect fails."""
+
+    def __init__(
+        self,
+        preview: ArchivePreview,
+        *,
+        status_code: int,
+        headers: Mapping[str, str],
+    ) -> None:
+        self._archive_preview = preview
+        try:
+            super().__init__(
+                preview.iter_bytes(),
+                status_code=status_code,
+                headers=headers,
+                media_type=preview.media_type,
+            )
+        except BaseException:
+            with suppress(ArchivePreviewError):
+                preview.close()
+            raise
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            with suppress(ArchivePreviewError):
+                self._archive_preview.close()
 
 
 # ------------------------------------------------------------------ operations
@@ -495,14 +531,22 @@ def create_api_app(settings: Settings | None = None) -> FastAPI:
     deep_readiness_lock = threading.Lock()
     web_root = _resolve_web_root()
 
+    @app.exception_handler(StarletteHTTPException)
+    async def head_safe_http_exception(request: Request, error: StarletteHTTPException) -> Response:
+        """Preserve standard error headers while never emitting a HEAD body."""
+
+        response = await http_exception_handler(request, error)
+        if request.method == "HEAD":
+            return Response(status_code=response.status_code, headers=dict(response.headers))
+        return response
+
     @app.exception_handler(RequestValidationError)
     async def safe_request_validation_error(
         request: Request,
         error: RequestValidationError,
-    ) -> JSONResponse:
+    ) -> Response:
         """Keep rejected request values out of FastAPI's default 422 body."""
 
-        del request
         errors: list[dict[str, object]] = []
         for item in error.errors():
             location = [part for part in item.get("loc", ()) if isinstance(part, str | int)]
@@ -513,11 +557,14 @@ def create_api_app(settings: Settings | None = None) -> FastAPI:
                     "code": error_type if isinstance(error_type, str) else "validation_error",
                 }
             )
-        return JSONResponse(
+        response = JSONResponse(
             status_code=422,
             content={"detail": "request_validation_failed", "errors": errors},
             headers={"Cache-Control": "no-store"},
         )
+        if request.method == "HEAD":
+            return Response(status_code=response.status_code, headers=dict(response.headers))
+        return response
 
     @app.middleware("http")
     async def security_headers(request: Request, call_next: Any) -> Response:
@@ -546,6 +593,36 @@ def create_api_app(settings: Settings | None = None) -> FastAPI:
     def _workbench_error(error: WorkbenchError) -> HTTPException:
         status_code = 404 if error.code == "account_not_found" else 400
         return HTTPException(status_code=status_code, detail=error.code)
+
+    def _catalog_error(error: CatalogExplorerError) -> HTTPException:
+        status_code = 404 if error.code in {"catalog_content_not_found", "catalog_asset_not_found"} else 400
+        return HTTPException(status_code=status_code, detail=error.code)
+
+    def _archive_error_response(
+        error: ArchivePreviewError,
+        *,
+        asset_id: str,
+        request_method: str,
+        size_bytes: object,
+    ) -> Response:
+        status_code = 416 if error.code == "asset_archive_range_unsatisfiable" else 409
+        content: dict[str, object] = {"detail": error.code}
+        if status_code != 416:
+            content["recovery"] = {
+                "operation_kind": "asset-download",
+                "method": "POST",
+                "url": f"/api/v1/assets/{asset_id}/download",
+            }
+        headers = {
+            "Accept-Ranges": "bytes",
+            "Cache-Control": "private, no-store",
+        }
+        if status_code == 416 and type(size_bytes) is int and size_bytes >= 0:
+            headers["Content-Range"] = f"bytes */{size_bytes}"
+        response = JSONResponse(status_code=status_code, content=content, headers=headers)
+        if request_method == "HEAD":
+            return Response(status_code=status_code, headers=dict(response.headers))
+        return response
 
     def _safe_credential_reference(value: str | None) -> str | None:
         import typer
@@ -1540,173 +1617,203 @@ def create_api_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/api/v1/assets")
     def list_assets(
         author_id: UUID | None = None,
+        content_id: UUID | None = None,
+        platform: Platform | None = None,
+        kind: AssetKind | None = None,
         status: AssetStatus | None = None,
+        archived: bool | None = None,
+        q: str | None = Query(default=None, max_length=200),
         limit: int = 200,
     ) -> list[dict[str, object]]:
         database = _database()
         try:
-            with database.session() as session:
-                statement = select(Asset, Content.author_id).join(Content, Asset.content_id == Content.id)
-                if author_id is not None:
-                    statement = statement.where(Content.author_id == str(author_id))
-                if status is not None:
-                    statement = statement.where(Asset.status == status.value)
-                statement = statement.order_by(
-                    Content.author_id,
-                    Asset.content_id,
-                    Asset.kind,
-                    Asset.position,
-                    Asset.id,
-                ).limit(max(1, min(limit, 1_000)))
-                return [
-                    _asset_payload(asset, author_id=row_author_id)
-                    for asset, row_author_id in session.execute(statement).all()
-                ]
+            return ContentAssetExplorer(database).list_assets(
+                author_id=str(author_id) if author_id is not None else None,
+                content_id=str(content_id) if content_id is not None else None,
+                platform=platform.value if platform is not None else None,
+                kind=kind.value if kind is not None else None,
+                status=status.value if status is not None else None,
+                archived=archived,
+                query=q,
+                limit=max(1, min(limit, 1_000)),
+            )
+        except CatalogExplorerError as error:
+            raise _catalog_error(error) from None
         except SQLAlchemyError:
             raise _bad_request("database_operation_failed") from None
         finally:
             database.dispose()
 
+    @app.get("/api/v1/assets/{asset_id}")
+    def get_asset(asset_id: UUID) -> dict[str, object]:
+        database = _database()
+        try:
+            return ContentAssetExplorer(database).get_asset(str(asset_id))
+        except CatalogExplorerError as error:
+            raise _catalog_error(error) from None
+        except SQLAlchemyError:
+            raise _bad_request("database_operation_failed") from None
+        finally:
+            database.dispose()
+
+    @app.api_route("/api/v1/assets/{asset_id}/archive", methods=["GET", "HEAD"])
+    def preview_asset_archive(asset_id: UUID, request: Request) -> Response:
+        """Serve one verified archive blob without exposing or reopening its path."""
+
+        canonical_asset_id = str(asset_id)
+        database = _database()
+        try:
+            with database.session() as session:
+                asset = session.get(Asset, canonical_asset_id)
+                if asset is None:
+                    raise HTTPException(status_code=404, detail="catalog_asset_not_found")
+                source = ArchivePreviewSource(
+                    status=asset.status,
+                    local_path=asset.local_path,
+                    checksum_sha256=asset.checksum_sha256,
+                    size_bytes=asset.size_bytes,
+                    mime_type=asset.mime_type,
+                )
+        except HTTPException:
+            raise
+        except SQLAlchemyError:
+            raise _bad_request("database_operation_failed") from None
+        finally:
+            database.dispose()
+
+        try:
+            # A Range is meaningful only after the representation has passed
+            # every status, path, size and digest gate that would yield 200.
+            preview = ArchivePreviewService(resolved.archive_dir).open(source)
+        except ArchivePreviewError as error:
+            return _archive_error_response(
+                error,
+                asset_id=canonical_asset_id,
+                request_method=request.method,
+                size_bytes=source.size_bytes,
+            )
+
+        representation_size = preview.content_length
+        range_values = request.headers.getlist("range")
+        if_range_values = request.headers.getlist("if-range")
+        if (
+            request.method == "GET"
+            and range_values
+            and (not if_range_values or (len(if_range_values) == 1 and if_range_values[0] == preview.etag))
+        ):
+            try:
+                if len(range_values) != 1:
+                    raise ArchivePreviewError("asset_archive_range_unsatisfiable")
+                start, end = parse_single_byte_range(range_values[0], representation_size)
+                preview.select_range(start, end)
+            except ArchivePreviewError as error:
+                with suppress(ArchivePreviewError):
+                    preview.close()
+                return _archive_error_response(
+                    error,
+                    asset_id=canonical_asset_id,
+                    request_method=request.method,
+                    size_bytes=representation_size,
+                )
+
+        status_code = 206 if preview.partial else 200
+        headers = {
+            "Accept-Ranges": "bytes",
+            "Cache-Control": "private, no-store",
+            "Content-Disposition": f'inline; filename="asset-{canonical_asset_id}"',
+            "Content-Length": str(preview.content_length),
+            "Content-Security-Policy": "sandbox; default-src 'none'",
+            "Cross-Origin-Resource-Policy": "same-origin",
+            "ETag": preview.etag,
+        }
+        if preview.partial:
+            headers["Content-Range"] = f"bytes {preview.start}-{preview.end}/{representation_size}"
+        if request.method == "HEAD":
+            try:
+                preview.close()
+            except ArchivePreviewError as error:
+                return _archive_error_response(
+                    error,
+                    asset_id=canonical_asset_id,
+                    request_method=request.method,
+                    size_bytes=source.size_bytes,
+                )
+            return Response(
+                status_code=status_code,
+                headers=headers,
+                media_type=preview.media_type,
+            )
+
+        try:
+            return _ArchiveStreamingResponse(
+                preview,
+                status_code=status_code,
+                headers=headers,
+            )
+        except Exception:
+            with suppress(ArchivePreviewError):
+                preview.close()
+            raise
+
     @app.get("/api/v1/contents")
     def list_contents(
         platform: Platform | None = None,
         kind: ContentKind | None = None,
+        author_id: UUID | None = None,
+        archived: bool | None = None,
+        exported: bool | None = None,
+        q: str | None = Query(default=None, max_length=200),
         limit: int = 200,
     ) -> list[dict[str, object]]:
         """Return a bounded, redaction-safe content catalogue projection."""
 
-        asset_count = (
-            select(func.count(Asset.id)).where(Asset.content_id == Content.id).correlate(Content).scalar_subquery()
-        )
-        archived_count = (
-            select(func.count(Asset.id))
-            .where(Asset.content_id == Content.id, Asset.status.in_(("verified", "exported")))
-            .correlate(Content)
-            .scalar_subquery()
-        )
-        export_count = (
-            select(func.count(ExportRecord.id))
-            .where(ExportRecord.content_id == Content.id, ExportRecord.status == "succeeded")
-            .correlate(Content)
-            .scalar_subquery()
-        )
         database = _database()
         try:
-            with database.session() as session:
-                statement = (
-                    select(
-                        Content,
-                        Author.display_name,
-                        asset_count.label("asset_count"),
-                        archived_count.label("archived_count"),
-                        export_count.label("export_count"),
-                    )
-                    .join(Author, Content.author_id == Author.id)
-                    .order_by(Content.published_at.desc(), Content.created_at.desc(), Content.id.desc())
-                    .limit(max(1, min(limit, 1_000)))
-                )
-                if platform is not None:
-                    statement = statement.where(Content.platform == platform.value)
-                if kind is not None:
-                    statement = statement.where(Content.kind == kind.value)
-                rows = session.execute(statement).all()
-                return [
-                    {
-                        "id": content.id,
-                        "author_id": content.author_id,
-                        "author_display_name": author_display_name,
-                        "platform": content.platform,
-                        "remote_type": content.remote_type,
-                        "remote_id": content.remote_id,
-                        "kind": content.kind,
-                        "title": content.title,
-                        "body_excerpt": content.body[:280] if content.body else None,
-                        "canonical_url": content.canonical_url,
-                        "published_at": content.published_at.isoformat() if content.published_at else None,
-                        "asset_count": row_asset_count,
-                        "archived_count": row_archived_count,
-                        "export_count": row_export_count,
-                    }
-                    for content, author_display_name, row_asset_count, row_archived_count, row_export_count in rows
-                ]
+            return ContentAssetExplorer(database).list_contents(
+                platform=platform.value if platform is not None else None,
+                kind=kind.value if kind is not None else None,
+                author_id=str(author_id) if author_id is not None else None,
+                archived=archived,
+                exported=exported,
+                query=q,
+                limit=max(1, min(limit, 1_000)),
+            )
+        except CatalogExplorerError as error:
+            raise _catalog_error(error) from None
+        except SQLAlchemyError:
+            raise _bad_request("database_operation_failed") from None
+        finally:
+            database.dispose()
+
+    @app.get("/api/v1/contents/{content_id}")
+    def get_content(content_id: UUID) -> dict[str, object]:
+        database = _database()
+        try:
+            return ContentAssetExplorer(database).get_content(str(content_id))
+        except CatalogExplorerError as error:
+            raise _catalog_error(error) from None
         except SQLAlchemyError:
             raise _bad_request("database_operation_failed") from None
         finally:
             database.dispose()
 
     @app.get("/api/v1/library")
-    def list_library(limit: int = 200) -> list[dict[str, object]]:
+    def list_library(
+        platform: Platform | None = None,
+        q: str | None = Query(default=None, max_length=200),
+        limit: int = 200,
+    ) -> list[dict[str, object]]:
         """Summarize the media library per author without exposing host paths."""
 
-        content_count = (
-            select(func.count(Content.id)).where(Content.author_id == Author.id).correlate(Author).scalar_subquery()
-        )
-        asset_count = (
-            select(func.count(Asset.id))
-            .select_from(Asset)
-            .join(Content, Asset.content_id == Content.id)
-            .where(Content.author_id == Author.id)
-            .correlate(Author)
-            .scalar_subquery()
-        )
-        archived_count = (
-            select(func.count(Asset.id))
-            .select_from(Asset)
-            .join(Content, Asset.content_id == Content.id)
-            .where(Content.author_id == Author.id, Asset.status.in_(("verified", "exported")))
-            .correlate(Author)
-            .scalar_subquery()
-        )
-        exported_count = (
-            select(func.count(ExportRecord.id))
-            .select_from(ExportRecord)
-            .join(Content, ExportRecord.content_id == Content.id)
-            .where(Content.author_id == Author.id, ExportRecord.status == "succeeded")
-            .correlate(Author)
-            .scalar_subquery()
-        )
-        last_published_at = (
-            select(func.max(Content.published_at))
-            .where(Content.author_id == Author.id)
-            .correlate(Author)
-            .scalar_subquery()
-        )
         database = _database()
         try:
-            with database.session() as session:
-                rows = session.execute(
-                    select(
-                        Author,
-                        content_count.label("content_count"),
-                        asset_count.label("asset_count"),
-                        archived_count.label("archived_count"),
-                        exported_count.label("exported_count"),
-                        last_published_at.label("last_published_at"),
-                    )
-                    .order_by(Author.display_name, Author.id)
-                    .limit(max(1, min(limit, 1_000)))
-                ).all()
-                return [
-                    {
-                        "author_id": author.id,
-                        "platform": author.platform,
-                        "display_name": author.display_name,
-                        "remote_id": author.remote_id,
-                        "content_count": row_content_count,
-                        "asset_count": row_asset_count,
-                        "archived_count": row_archived_count,
-                        "exported_count": row_exported_count,
-                        "last_published_at": last_published.isoformat() if last_published else None,
-                    }
-                    for (
-                        author,
-                        row_content_count,
-                        row_asset_count,
-                        row_archived_count,
-                        row_exported_count,
-                        last_published,
-                    ) in rows
-                ]
+            return ContentAssetExplorer(database).list_library(
+                platform=platform.value if platform is not None else None,
+                query=q,
+                limit=max(1, min(limit, 1_000)),
+            )
+        except CatalogExplorerError as error:
+            raise _catalog_error(error) from None
         except SQLAlchemyError:
             raise _bad_request("database_operation_failed") from None
         finally:

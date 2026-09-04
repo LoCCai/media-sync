@@ -253,6 +253,7 @@ def test_subscription_and_scheduler_surface(tmp_path: Path) -> None:
             "archived_count": 0,
             "exported_count": 0,
             "last_published_at": None,
+            "archive_state": "empty",
         }
     ]
 
