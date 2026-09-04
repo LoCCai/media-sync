@@ -8,6 +8,7 @@ import random
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from threading import Event
 from typing import Literal
 from uuid import UUID
 
@@ -650,11 +651,18 @@ class SubscriptionWorker:
         lease_seconds: int = 60,
         scan_limit: int = 100,
         heartbeat_interval_seconds: float | None = None,
+        cancellation: Event | None = None,
     ) -> tuple[SchedulerWorkerResult, ...]:
+        """Run a bounded batch, observing cooperative cancellation between Jobs."""
+
         if isinstance(max_jobs, bool) or not isinstance(max_jobs, int) or not 1 <= max_jobs <= 1_000:
             raise ValueError("max_jobs must be an integer between 1 and 1000")
+        if cancellation is not None and not isinstance(cancellation, Event):
+            raise TypeError("cancellation must be a threading.Event")
         results: list[SchedulerWorkerResult] = []
         for _ in range(max_jobs):
+            if cancellation is not None and cancellation.is_set():
+                break
             result = await self.run_once(
                 worker_id=worker_id,
                 global_capacity=global_capacity,

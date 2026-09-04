@@ -8,6 +8,7 @@ import math
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from threading import Event
 from types import MappingProxyType
 from typing import Literal, Protocol, cast
 
@@ -570,13 +571,18 @@ class PipelineSubscriptionWorker:
         lease_seconds: int = 300,
         scan_limit: int = 100,
         heartbeat_interval_seconds: float | None = None,
+        cancellation: Event | None = None,
     ) -> tuple[PipelineWorkerResult, ...]:
-        """Run no more than ``max_jobs`` available coordinators."""
+        """Run no more than ``max_jobs``, stopping safely between coordinators."""
 
         if type(max_jobs) is not int or not 1 <= max_jobs <= _MAX_JOBS:
             raise ValueError("max_jobs must be an integer between 1 and 1000")
+        if cancellation is not None and not isinstance(cancellation, Event):
+            raise TypeError("cancellation must be a threading.Event")
         results: list[PipelineWorkerResult] = []
         for _ in range(max_jobs):
+            if cancellation is not None and cancellation.is_set():
+                break
             result = await self.run_once(
                 worker_id=worker_id,
                 lease_seconds=lease_seconds,

@@ -171,6 +171,18 @@ class _SuccessHandler:
         return SubscriptionHandlerResult.success()
 
 
+class _CancellingSuccessHandler:
+    def __init__(self, cancellation: ThreadEvent) -> None:
+        self.cancellation = cancellation
+        self.calls = 0
+
+    async def run(self, context: SubscriptionJobContext) -> SubscriptionHandlerResult:
+        del context
+        self.calls += 1
+        self.cancellation.set()
+        return SubscriptionHandlerResult.success()
+
+
 class _ResultHandler:
     def __init__(self, result: SubscriptionHandlerResult) -> None:
         self.result = result
@@ -1052,6 +1064,29 @@ async def test_run_bounded_processes_one_job_then_stops_on_idle(database: Databa
 
     assert len(results) == 1
     assert results[0].status == "succeeded"
+
+
+@pytest.mark.asyncio
+async def test_run_bounded_observes_cooperative_cancellation_before_next_job(database: Database) -> None:
+    _seed(database, remote_id="bounded-cancel-first")
+    _seed(database, remote_id="bounded-cancel-second")
+    clock = _Clock()
+    assert DurableSchedulerService(database, clock=clock).tick(limit=2).materialized_count == 2
+    cancellation = ThreadEvent()
+    handler = _CancellingSuccessHandler(cancellation)
+    worker = SubscriptionWorker(database, SubscriptionHandlerRegistry({"fake": handler}), clock=clock)
+
+    results = await worker.run_bounded(
+        worker_id="bounded-cancel-worker",
+        max_jobs=2,
+        cancellation=cancellation,
+    )
+
+    assert len(results) == 1
+    assert results[0].status == "succeeded"
+    assert handler.calls == 1
+    with database.session() as session:
+        assert session.scalar(select(func.count()).select_from(Job).where(Job.status == "queued")) == 1
 
 
 @pytest.mark.asyncio

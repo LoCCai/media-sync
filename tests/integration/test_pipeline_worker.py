@@ -6,9 +6,11 @@ import asyncio
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from threading import Event as ThreadEvent
 from typing import cast
 
 import pytest
+from sqlalchemy import func, select
 
 from media_sync.infrastructure.db import (
     AccountRepository,
@@ -305,6 +307,33 @@ async def test_bounded_worker_stops_after_available_coordinators(database: Datab
     assert {result.job_id for result in results} == {first_id, second_id}
     assert all(result.status == "succeeded" for result in results)
     assert set(calls) == {first_id, second_id}
+
+
+@pytest.mark.asyncio
+async def test_bounded_worker_observes_cooperative_cancellation_before_next_coordinator(
+    database: Database,
+) -> None:
+    first_id, *_first_scope = _seed_pipeline(database, remote_id="bounded-cancel-one")
+    second_id, *_second_scope = _seed_pipeline(database, remote_id="bounded-cancel-two")
+    cancellation = ThreadEvent()
+    calls: list[str] = []
+
+    def handler(claim: PipelineSubscriptionClaim) -> PipelineHandlerResult:
+        calls.append(claim.job_id)
+        cancellation.set()
+        return PipelineHandlerResult.success()
+
+    results = await PipelineSubscriptionWorker(database, handler, clock=_Clock()).run_bounded(
+        worker_id="pipeline-bounded-cancel-worker",
+        max_jobs=2,
+        cancellation=cancellation,
+    )
+
+    assert len(results) == 1
+    assert results[0].status == "succeeded"
+    assert calls in ([first_id], [second_id])
+    with database.session() as session:
+        assert session.scalar(select(func.count()).select_from(Job).where(Job.status == "queued")) == 1
 
 
 @pytest.mark.asyncio
