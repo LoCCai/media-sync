@@ -63,6 +63,8 @@ _KIND_TARGET_TYPES: Mapping[str, str | None] = {
     "scheduler-run": None,
     "pipeline-run": None,
     "emby-export": "author",
+    "media-server-probe": None,
+    "media-server-scan": None,
 }
 
 
@@ -466,6 +468,7 @@ class OperationCoordinator:
         *,
         kind: str | None = None,
         state: str | None = None,
+        exclusive_key: str | None = None,
         target_type: str | None = None,
         target_id: str | None = None,
         correlation_id: str | None = None,
@@ -476,6 +479,7 @@ class OperationCoordinator:
             return OperationRepository(session).list(
                 kind=kind,
                 state=state,
+                exclusive_key=exclusive_key,
                 target_type=target_type,
                 target_id=target_id,
                 correlation_id=correlation_id,
@@ -727,10 +731,21 @@ class OperationCoordinator:
     ) -> bool:
         def finish(session: Session) -> OperationSnapshot:
             repository = OperationRepository(session)
-            snapshot = repository.require(operation_id)
+            snapshot = repository.require_for_update(operation_id)
             if snapshot.state != "running":
                 return snapshot
             if intent.state == "succeeded":
+                if snapshot.kind == "media-server-scan" and snapshot.cancel_requested_at is not None:
+                    return repository.finish_failed(
+                        operation_id,
+                        expected_revision=snapshot.revision,
+                        lease_owner=handle.lease_owner,
+                        lease_token=handle.lease_token,
+                        retryable=False,
+                        error_code="media_server_scan_acceptance_unknown",
+                        result_summary={},
+                        at=self._now(),
+                    )
                 return repository.finish_succeeded(
                     operation_id,
                     expected_revision=snapshot.revision,
@@ -1001,6 +1016,11 @@ class OperationCoordinator:
         candidate: OperationRecoveryCandidate,
         subjects: Sequence[OperationSubjectSnapshot],
     ) -> _ReconciliationDecision:
+        if candidate.kind in {"media-server-probe", "media-server-scan"}:
+            # Phase A deliberately persists no remote task identity.  An
+            # expired process lease therefore cannot establish acceptance or
+            # safe retry and must terminate conservatively.
+            return self._interrupted("job", "missing")
         if candidate.kind in {"scheduler-run", "pipeline-run"}:
             return self._interrupted("job", "incomplete")
         if candidate.kind == "account-login":

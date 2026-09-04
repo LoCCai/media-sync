@@ -344,8 +344,7 @@ def test_db_init_runs_packaged_migrations_idempotently(tmp_path: Path, monkeypat
             assert "alembic_version" in inspect(database.engine).get_table_names()
             with database.engine.connect() as connection:
                 assert (
-                    connection.scalar(text("SELECT version_num FROM alembic_version"))
-                    == "0006_operations_observability"
+                    connection.scalar(text("SELECT version_num FROM alembic_version")) == "0007_media_server_operations"
                 )
         finally:
             database.dispose()
@@ -395,8 +394,8 @@ def test_db_status_reports_current_complete_schema_without_exposing_target(
         "ok": True,
         "database_driver": "sqlite+pysqlite",
         "reachable": True,
-        "revision": "0006_operations_observability",
-        "expected_revision": "0006_operations_observability",
+        "revision": "0007_media_server_operations",
+        "expected_revision": "0007_media_server_operations",
         "revision_current": True,
         "required_table_count": 16,
         "present_table_count": 16,
@@ -405,7 +404,7 @@ def test_db_status_reports_current_complete_schema_without_exposing_target(
     }
     assert text_result.exit_code == 0
     assert "Database ready:" in text_result.output
-    assert "revision=0006_operations_observability" in text_result.output
+    assert "revision=0007_media_server_operations" in text_result.output
     assert "tables=16/16" in text_result.output
     for output in (json_result.output, text_result.output):
         assert initialized_cli_database not in output

@@ -7,10 +7,12 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import Barrier
+from unittest.mock import patch
 from uuid import UUID
 
 import pytest
 from sqlalchemy import func, insert, select, update
+from sqlalchemy.dialects import postgresql
 from sqlalchemy.exc import IntegrityError
 
 from media_sync.application.operation_payloads import operation_result_summary
@@ -29,6 +31,7 @@ from media_sync.infrastructure.db import (
     OperationSubject,
     OperationSubjectInput,
 )
+from media_sync.infrastructure.db.database import SQLITE_IMMEDIATE_OPTION
 
 NOW = datetime(2026, 9, 4, 1, tzinfo=UTC)
 FINGERPRINT = "a" * 64
@@ -74,6 +77,22 @@ def _create_claimed(
             at=at,
         )
     return started.operation_id, lease
+
+
+def test_locked_authoritative_read_reserves_sqlite_writer_and_postgresql_row_lock(
+    database: Database,
+) -> None:
+    operation_id, _lease = _create_claimed(database, suffix=90, kind="media-server-scan")
+
+    with database.session() as session:
+        with patch.object(session, "scalar", wraps=session.scalar) as scalar:
+            snapshot = OperationRepository(session).require_for_update(operation_id)
+
+        statement = scalar.call_args.args[0]
+        postgresql_sql = str(statement.compile(dialect=postgresql.dialect()))
+        assert postgresql_sql.rstrip().endswith("FOR UPDATE")
+        assert session.connection().get_execution_options()[SQLITE_IMMEDIATE_OPTION] is True
+        assert snapshot.id == operation_id
 
 
 def test_create_replay_fingerprint_conflict_and_active_exclusion(database: Database) -> None:
@@ -184,6 +203,99 @@ def test_terminal_operation_releases_exclusive_scope_but_idempotency_still_repla
         )
         assert replay.operation_id == started.operation_id and replay.replayed
         assert replacement.operation_id != started.operation_id
+
+
+def test_media_server_probe_and_scan_share_one_active_profile_exclusion(database: Database) -> None:
+    exclusive_key = f"media-server:{FINGERPRINT}"
+    with database.session() as session:
+        repository = OperationRepository(session)
+        probe = repository.create_or_replay(
+            kind="media-server-probe",
+            request_fingerprint=FINGERPRINT,
+            exclusive_key=exclusive_key,
+            at=NOW,
+        )
+
+        with pytest.raises(OperationConflictError) as conflict:
+            repository.create_or_replay(
+                kind="media-server-scan",
+                request_fingerprint=OTHER_FINGERPRINT,
+                exclusive_key=exclusive_key,
+                at=NOW,
+            )
+
+        assert conflict.value.code == "operation_already_running"
+        assert conflict.value.operation_id == probe.operation_id
+
+
+def test_list_filters_exact_exclusive_scope_and_preserves_other_filters(database: Database) -> None:
+    current_scope = f"media-server:{FINGERPRINT}"
+    other_scope = f"media-server:{OTHER_FINGERPRINT}"
+    with database.session() as session:
+        repository = OperationRepository(session)
+        current_probe = repository.create_or_replay(
+            kind="media-server-probe",
+            request_fingerprint=FINGERPRINT,
+            exclusive_key=current_scope,
+            at=NOW,
+        )
+        lease = repository.claim(
+            current_probe.operation_id,
+            expected_revision=current_probe.revision,
+            lease_owner="current-profile-probe",
+            lease_seconds=30,
+            at=NOW,
+        )
+        repository.finish_succeeded(
+            current_probe.operation_id,
+            expected_revision=lease.revision,
+            lease_owner=lease.lease_owner,
+            lease_token=lease.lease_token,
+            result_summary=operation_result_summary(
+                "media-server-probe",
+                {
+                    "provider": "emby",
+                    "server_version": "4.9.0",
+                    "library_id_digest": "d" * 64,
+                    "library_present": True,
+                },
+            ),
+            at=NOW + timedelta(microseconds=1),
+        )
+        other_probe = repository.create_or_replay(
+            kind="media-server-probe",
+            request_fingerprint=OTHER_FINGERPRINT,
+            exclusive_key=other_scope,
+            at=NOW + timedelta(minutes=1),
+        )
+        current_scan = repository.create_or_replay(
+            kind="media-server-scan",
+            request_fingerprint=IDEMPOTENCY_HASH,
+            exclusive_key=current_scope,
+            at=NOW + timedelta(minutes=2),
+        )
+
+        assert [item.id for item in repository.list(exclusive_key=current_scope)] == [
+            current_scan.operation_id,
+            current_probe.operation_id,
+        ]
+        assert [
+            item.id
+            for item in repository.list(
+                kind="media-server-probe",
+                exclusive_key=current_scope,
+            )
+        ] == [current_probe.operation_id]
+        assert [
+            item.id
+            for item in repository.list(
+                exclusive_key=current_scope,
+                before=(NOW + timedelta(minutes=2), current_scan.operation_id),
+            )
+        ] == [current_probe.operation_id]
+        assert other_probe.operation_id not in {item.id for item in repository.list(exclusive_key=current_scope)}
+        with pytest.raises(ValueError, match="exclusive_key is invalid"):
+            repository.list(exclusive_key="")
 
 
 def test_sqlite_concurrent_idempotency_replays_one_identity(database: Database) -> None:
@@ -759,9 +871,29 @@ def test_safe_payload_boundary_rejects_secrets_urls_paths_and_bytes(
                 "managed_file_count": 3,
             },
         ),
+        (
+            65,
+            "media-server-probe",
+            {
+                "provider": "emby",
+                "server_version": "4.8.11.0",
+                "library_id_digest": "d" * 64,
+                "library_present": True,
+            },
+        ),
+        (
+            66,
+            "media-server-scan",
+            {
+                "provider": "jellyfin",
+                "server_version": "10.10.7",
+                "library_id_digest": "e" * 64,
+                "scan_state": "accepted",
+            },
+        ),
     ],
 )
-def test_five_kind_projected_results_compose_with_repository_safety_boundary(
+def test_seven_kind_projected_results_compose_with_repository_safety_boundary(
     database: Database,
     suffix: int,
     kind: str,

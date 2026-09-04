@@ -174,6 +174,191 @@ def test_cancel_observed_once_and_domain_success_wins_race(database: Database) -
     coordinator.shutdown()
 
 
+def test_media_server_scan_cancel_before_success_cas_becomes_acceptance_unknown(
+    database: Database,
+) -> None:
+    finalization_entered = threading.Event()
+    finalization_release = threading.Event()
+
+    def execute(_context: OperationExecutionContext) -> OperationOutcome:
+        return OperationOutcome.success(
+            {
+                "provider": "emby",
+                "server_version": "4.9.0",
+                "library_id_digest": "d" * 64,
+                "scan_state": "accepted",
+            }
+        )
+
+    owner = OperationCoordinator(
+        Database(database.url),
+        lease_seconds=120,
+        heartbeat_interval_seconds=60,
+    )
+    canceller = OperationCoordinator(
+        Database(database.url),
+        lease_seconds=120,
+        heartbeat_interval_seconds=60,
+    )
+    original_run_write = owner._run_write
+
+    def gated_run_write(action: object) -> object:
+        if getattr(action, "__name__", "") == "finish":
+            finalization_entered.set()
+            assert finalization_release.wait(5)
+        assert callable(action)
+        return original_run_write(action)
+
+    owner._run_write = gated_run_write  # type: ignore[method-assign]
+    try:
+        submission = owner.submit(
+            OperationExecution(
+                kind="media-server-scan",
+                request_fingerprint=f"{33:064x}",
+                exclusive_key=f"media-server:{33:064x}",
+                execute=execute,
+            )
+        )
+        assert finalization_entered.wait(5)
+
+        requested = canceller.request_cancel(submission.operation_id)
+        assert requested.state == "running"
+        assert requested.cancel_requested_at is not None
+
+        finalization_release.set()
+        terminal = _wait_terminal(owner, submission.operation_id)
+        assert terminal.state == "failed_terminal"
+        assert terminal.error_code == "media_server_scan_acceptance_unknown"
+        assert owner.get(submission.operation_id).retryable is False
+        assert terminal.result_summary == {}
+        assert terminal.cancel_requested_at == requested.cancel_requested_at
+
+        events = owner.events_for_operation(submission.operation_id)
+        assert [event.event_code for event in events[-2:]] == [
+            "operation_cancel_requested",
+            "operation_failed",
+        ]
+        assert events[-1].safe_context == {
+            "error_code": "media_server_scan_acceptance_unknown",
+            "retryable": False,
+        }
+    finally:
+        finalization_release.set()
+        owner.shutdown()
+        canceller.shutdown()
+        owner._database.dispose()
+        canceller._database.dispose()
+
+
+def test_media_server_scan_final_lock_before_cancel_preserves_success(
+    database: Database,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    final_lock_entered = threading.Event()
+    final_lock_release = threading.Event()
+    cancel_write_entered = threading.Event()
+    cancel_finished = threading.Event()
+    cancel_results: list[tuple[str, datetime | None]] = []
+    cancel_errors: list[BaseException] = []
+
+    def execute(_context: OperationExecutionContext) -> OperationOutcome:
+        return OperationOutcome.success(
+            {
+                "provider": "emby",
+                "server_version": "4.9.0",
+                "library_id_digest": "e" * 64,
+                "scan_state": "accepted",
+            }
+        )
+
+    original_require_for_update = OperationRepository.require_for_update
+
+    def gated_require_for_update(
+        repository: OperationRepository,
+        operation_id: str,
+    ) -> object:
+        snapshot = original_require_for_update(repository, operation_id)
+        if snapshot.kind == "media-server-scan":
+            final_lock_entered.set()
+            assert final_lock_release.wait(5)
+        return snapshot
+
+    monkeypatch.setattr(OperationRepository, "require_for_update", gated_require_for_update)
+    owner = OperationCoordinator(
+        Database(database.url),
+        lease_seconds=120,
+        heartbeat_interval_seconds=60,
+    )
+    canceller = OperationCoordinator(
+        Database(database.url),
+        lease_seconds=120,
+        heartbeat_interval_seconds=60,
+    )
+    original_cancel_run_write = canceller._run_write
+
+    def tracked_cancel_run_write(action: object) -> object:
+        cancel_write_entered.set()
+        assert callable(action)
+        return original_cancel_run_write(action)
+
+    canceller._run_write = tracked_cancel_run_write  # type: ignore[method-assign]
+    cancellation_thread: threading.Thread | None = None
+    try:
+        submission = owner.submit(
+            OperationExecution(
+                kind="media-server-scan",
+                request_fingerprint=f"{34:064x}",
+                exclusive_key=f"media-server:{34:064x}",
+                execute=execute,
+            )
+        )
+        assert final_lock_entered.wait(5)
+
+        def request_cancel() -> None:
+            try:
+                snapshot = canceller.request_cancel(submission.operation_id)
+                cancel_results.append((snapshot.state, snapshot.cancel_requested_at))
+            except BaseException as error:  # pragma: no cover - asserted below
+                cancel_errors.append(error)
+            finally:
+                cancel_finished.set()
+
+        cancellation_thread = threading.Thread(target=request_cancel, daemon=True)
+        cancellation_thread.start()
+        assert cancel_write_entered.wait(5)
+        assert cancel_finished.is_set() is False
+
+        final_lock_release.set()
+        terminal = _wait_terminal(owner, submission.operation_id)
+        assert cancel_finished.wait(5)
+        cancellation_thread.join(5)
+
+        assert cancel_errors == []
+        assert cancel_results == [("succeeded", None)]
+        assert terminal.state == "succeeded"
+        assert terminal.cancel_requested_at is None
+        assert terminal.error_code is None
+        assert terminal.result_summary == {
+            "provider": "emby",
+            "server_version": "4.9.0",
+            "library_id_digest": "e" * 64,
+            "scan_state": "accepted",
+        }
+        assert [event.event_code for event in owner.events_for_operation(submission.operation_id)] == [
+            "operation_requested",
+            "operation_started",
+            "operation_succeeded",
+        ]
+    finally:
+        final_lock_release.set()
+        if cancellation_thread is not None:
+            cancellation_thread.join(5)
+        owner.shutdown()
+        canceller.shutdown()
+        owner._database.dispose()
+        canceller._database.dispose()
+
+
 def test_phase_waits_for_existing_cancel_observer_before_terminal(
     database: Database,
     monkeypatch: pytest.MonkeyPatch,
@@ -720,7 +905,9 @@ def test_restart_reconciliation_uses_exact_login_truth_and_interrupts_batches(da
     login_operation = coordinator.get(started.operation_id)
     assert login_operation.state == "succeeded"
     assert login_operation.result_summary["login_session_id"] == finished_login.id
-    assert coordinator.get(batch.operation_id).state == "interrupted"
+    interrupted_batch = coordinator.get(batch.operation_id)
+    assert interrupted_batch.state == "interrupted"
+    assert interrupted_batch.retryable is True
     with database.session() as session:
         assert session.scalar(select(func.count()).select_from(OperationEvent)) == 7
     coordinator.shutdown()
@@ -747,6 +934,46 @@ def test_restart_reconciliation_preserves_unexpired_foreign_lease(database: Data
 
     assert summary.scanned == 0
     assert coordinator.get(started.operation_id).state == "running"
+    coordinator.shutdown()
+
+
+def test_restart_reconciliation_interrupts_media_server_work_without_remote_subject(
+    database: Database,
+) -> None:
+    operation_ids: dict[str, str] = {}
+    with database.session() as session:
+        repository = OperationRepository(session)
+        for index, kind in enumerate(("media-server-probe", "media-server-scan"), start=12):
+            started = repository.create_or_replay(
+                kind=kind,
+                request_fingerprint=f"{index:064x}",
+                phase="remote_request",
+                at=NOW,
+            )
+            repository.claim(
+                started.operation_id,
+                expected_revision=started.revision,
+                lease_owner=f"expired-media-server-{index}",
+                lease_seconds=1,
+                at=NOW,
+            )
+            operation_ids[kind] = started.operation_id
+
+    coordinator = OperationCoordinator(database, heartbeat_interval_seconds=0.05)
+    summary = coordinator.reconcile_expired(at=NOW + timedelta(seconds=2))
+
+    assert summary.scanned == 2
+    assert summary.interrupted == 2
+    for kind, operation_id in operation_ids.items():
+        operation = coordinator.get(operation_id)
+        assert operation.state == "interrupted"
+        assert operation.retryable is (kind == "media-server-probe")
+        assert operation.error_code == "operation_interrupted"
+        assert operation.result_summary == {}
+        assert coordinator.list_subjects(operation_id) == []
+        event = coordinator.events_for_operation(operation_id)[-1]
+        assert event.event_code == "operation_reconciled"
+        assert event.safe_context == {"subject_type": "job", "subject_state": "missing"}
     coordinator.shutdown()
 
 

@@ -20,12 +20,16 @@ from types import MappingProxyType
 from typing import Final, Literal, TypeAlias, cast
 from uuid import UUID
 
+from media_sync.ports.media_server import validate_media_server_version
+
 OperationKind: TypeAlias = Literal[
     "account-login",
     "asset-download",
     "scheduler-run",
     "pipeline-run",
     "emby-export",
+    "media-server-probe",
+    "media-server-scan",
 ]
 OperationEventCode: TypeAlias = Literal[
     "operation_requested",
@@ -61,6 +65,8 @@ OPERATION_KINDS: Final = frozenset(
         "scheduler-run",
         "pipeline-run",
         "emby-export",
+        "media-server-probe",
+        "media-server-scan",
     }
 )
 OPERATION_EVENT_CODES: Final = frozenset(
@@ -87,6 +93,8 @@ _KIND_TARGET_TYPES: Final = MappingProxyType(
         "scheduler-run": None,
         "pipeline-run": None,
         "emby-export": "author",
+        "media-server-probe": None,
+        "media-server-scan": None,
     }
 )
 _KIND_ROUTES: Final = MappingProxyType(
@@ -96,6 +104,8 @@ _KIND_ROUTES: Final = MappingProxyType(
         "scheduler-run": "/api/v1/scheduler/run",
         "pipeline-run": "/api/v1/pipeline/run",
         "emby-export": "/api/v1/emby/export",
+        "media-server-probe": "/api/v1/media-server/probe",
+        "media-server-scan": "/api/v1/media-server/scan",
     }
 )
 _LOGIN_RUNNER_STATUSES: Final = frozenset(
@@ -128,6 +138,8 @@ _ASSET_SUMMARY_STATUSES: Final = frozenset(
     }
 )
 _ASSET_DISPOSITIONS: Final = frozenset({"not_started", "downloaded", "already_verified"})
+_MEDIA_SERVER_PROVIDERS: Final = frozenset({"emby", "jellyfin"})
+_MEDIA_SERVER_SCAN_STATES: Final = frozenset({"accepted"})
 _BATCH_RESULT_STATUSES: Final = frozenset(
     {
         "idle",
@@ -197,6 +209,8 @@ _REQUEST_PARAMETER_FIELDS: Final = MappingProxyType(
             }
         ),
         "emby-export": frozenset({"lease_seconds", "max_attempts"}),
+        "media-server-probe": frozenset({"profile_fingerprint"}),
+        "media-server-scan": frozenset({"profile_fingerprint"}),
     }
 )
 
@@ -369,6 +383,13 @@ def _sha256(value: object, *, error_code: str) -> str:
     return value
 
 
+def _media_server_version(value: object, *, error_code: str) -> str:
+    try:
+        return validate_media_server_version(value)
+    except ValueError:
+        raise _fail(error_code) from None
+
+
 def _optional_sha256(value: object, *, error_code: str) -> str | None:
     return None if value is None else _sha256(value, error_code=error_code)
 
@@ -491,8 +512,39 @@ def _emby_export_summary(payload: Mapping[str, object]) -> dict[str, object]:
     }
 
 
+def _media_server_summary(
+    kind: Literal["media-server-probe", "media-server-scan"],
+    payload: Mapping[str, object],
+) -> dict[str, object]:
+    error_code = "operation_result_invalid"
+    terminal_field = "library_present" if kind == "media-server-probe" else "scan_state"
+    _exact_fields(
+        payload,
+        {"provider", "server_version", "library_id_digest", terminal_field},
+        error_code=error_code,
+    )
+    result: dict[str, object] = {
+        "provider": _stable_code(
+            payload["provider"],
+            error_code=error_code,
+            allowed=_MEDIA_SERVER_PROVIDERS,
+        ),
+        "server_version": _media_server_version(payload["server_version"], error_code=error_code),
+        "library_id_digest": _sha256(payload["library_id_digest"], error_code=error_code),
+    }
+    if kind == "media-server-probe":
+        result["library_present"] = _bool(payload["library_present"], error_code=error_code)
+    else:
+        result["scan_state"] = _stable_code(
+            payload["scan_state"],
+            error_code=error_code,
+            allowed=_MEDIA_SERVER_SCAN_STATES,
+        )
+    return result
+
+
 def operation_result_summary(kind: object, payload: object) -> dict[str, object]:
-    """Return the sole durable result shape for one of the five operation kinds."""
+    """Return the sole durable result shape for one of the seven operation kinds."""
 
     normalized_kind = _kind(kind)
     normalized_payload = _mapping(payload, error_code="operation_result_invalid")
@@ -502,8 +554,12 @@ def operation_result_summary(kind: object, payload: object) -> dict[str, object]
         result = _asset_download_summary(normalized_payload)
     elif normalized_kind in {"scheduler-run", "pipeline-run"}:
         result = _batch_summary(normalized_payload)
-    else:
+    elif normalized_kind == "emby-export":
         result = _emby_export_summary(normalized_payload)
+    elif normalized_kind == "media-server-probe":
+        result = _media_server_summary("media-server-probe", normalized_payload)
+    else:
+        result = _media_server_summary("media-server-scan", normalized_payload)
     _assert_bounded_shape(
         result,
         maximum_bytes=MAX_OPERATION_RESULT_BYTES,
@@ -640,6 +696,10 @@ def _request_parameters(kind: OperationKind, parameters: object) -> dict[str, ob
             "xhs_detail_reference_digest": _optional_sha256(
                 payload["xhs_detail_reference_digest"], error_code=error_code
             ),
+        }
+    if kind in {"media-server-probe", "media-server-scan"}:
+        return {
+            "profile_fingerprint": _sha256(payload["profile_fingerprint"], error_code=error_code),
         }
     return {
         "lease_seconds": _count(payload["lease_seconds"], error_code=error_code, minimum=1, maximum=86_400),

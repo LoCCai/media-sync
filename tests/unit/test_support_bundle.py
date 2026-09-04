@@ -32,7 +32,7 @@ from media_sync.infrastructure.db.models import (
 )
 
 NOW = datetime(2026, 9, 4, 1, 2, 3, tzinfo=UTC)
-REVISION = "0006_operations_observability"
+REVISION = "0007_media_server_operations"
 
 
 def _database_url(path: Path) -> str:
@@ -174,6 +174,8 @@ def test_bundle_has_only_closed_keys_and_aggregate_counts(database: Database) ->
         "account-login": 0,
         "asset-download": 1,
         "emby-export": 1,
+        "media-server-probe": 0,
+        "media-server-scan": 0,
         "pipeline-run": 2,
         "scheduler-run": 0,
     }

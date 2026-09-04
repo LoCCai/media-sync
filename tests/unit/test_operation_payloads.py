@@ -27,12 +27,16 @@ JOB_ID = "44444444-4444-4444-8444-444444444444"
 AUTHOR_ID = "55555555-5555-4555-8555-555555555555"
 SUBJECT_ID = "66666666-6666-4666-8666-666666666666"
 REFERENCE_DIGEST = "a" * 64
+PROFILE_FINGERPRINT = "b" * 64
+LIBRARY_ID_DIGEST = "c" * 64
 KIND_ROUTES = {
     "account-login": "/api/v1/accounts/{account_id}/login",
     "asset-download": "/api/v1/assets/{asset_id}/download",
     "scheduler-run": "/api/v1/scheduler/run",
     "pipeline-run": "/api/v1/pipeline/run",
     "emby-export": "/api/v1/emby/export",
+    "media-server-probe": "/api/v1/media-server/probe",
+    "media-server-scan": "/api/v1/media-server/scan",
 }
 KIND_TARGET_TYPES = {
     "account-login": "account",
@@ -40,6 +44,8 @@ KIND_TARGET_TYPES = {
     "scheduler-run": None,
     "pipeline-run": None,
     "emby-export": "author",
+    "media-server-probe": None,
+    "media-server-scan": None,
 }
 
 
@@ -76,6 +82,8 @@ def _request_parameters(kind: str) -> dict[str, object]:
         }
     if kind == "emby-export":
         return {"lease_seconds": 60, "max_attempts": 3}
+    if kind in {"media-server-probe", "media-server-scan"}:
+        return {"profile_fingerprint": PROFILE_FINGERPRINT}
     raise AssertionError(f"unexpected test kind: {kind}")
 
 
@@ -147,6 +155,36 @@ def _request_parameters(kind: str) -> dict[str, object]:
                 "job_id": JOB_ID,
                 "already_exported": False,
                 "managed_file_count": 7,
+            },
+        ),
+        (
+            "media-server-probe",
+            {
+                "provider": "emby",
+                "server_version": "4.8.11.0",
+                "library_id_digest": LIBRARY_ID_DIGEST,
+                "library_present": True,
+            },
+            {
+                "provider": "emby",
+                "server_version": "4.8.11.0",
+                "library_id_digest": LIBRARY_ID_DIGEST,
+                "library_present": True,
+            },
+        ),
+        (
+            "media-server-scan",
+            {
+                "provider": "jellyfin",
+                "server_version": "10.10.7",
+                "library_id_digest": LIBRARY_ID_DIGEST,
+                "scan_state": "accepted",
+            },
+            {
+                "provider": "jellyfin",
+                "server_version": "10.10.7",
+                "library_id_digest": LIBRARY_ID_DIGEST,
+                "scan_state": "accepted",
             },
         ),
     ],
@@ -246,6 +284,49 @@ def test_result_time_requires_timezone_and_normalizes_to_utc() -> None:
     base["expires_at"] = datetime(2026, 9, 4, 10)
     with pytest.raises(OperationPayloadError, match="operation_result_invalid"):
         operation_result_summary("account-login", base)
+
+
+@pytest.mark.parametrize(
+    ("kind", "mutation"),
+    [
+        ("media-server-probe", {"provider": "plex"}),
+        ("media-server-probe", {"server_version": "10.10.7 private build"}),
+        ("media-server-probe", {"server_version": "api-key-private-sentinel"}),
+        ("media-server-probe", {"server_version": "v" * 65}),
+        ("media-server-probe", {"library_id_digest": "A" * 64}),
+        ("media-server-probe", {"library_present": 1}),
+        ("media-server-scan", {"scan_state": "completed"}),
+        ("media-server-scan", {"server_version": "10.10.7+private-sentinel"}),
+        ("media-server-scan", {"server_origin": "https://private-sentinel.invalid"}),
+    ],
+)
+def test_media_server_result_summary_is_closed_and_redaction_safe(
+    kind: str,
+    mutation: dict[str, object],
+) -> None:
+    payload: dict[str, object]
+    if kind == "media-server-probe":
+        payload = {
+            "provider": "emby",
+            "server_version": "4.8.11.0",
+            "library_id_digest": LIBRARY_ID_DIGEST,
+            "library_present": True,
+        }
+    else:
+        payload = {
+            "provider": "jellyfin",
+            "server_version": "10.10.7",
+            "library_id_digest": LIBRARY_ID_DIGEST,
+            "scan_state": "accepted",
+        }
+    payload.update(mutation)
+
+    with pytest.raises(OperationPayloadError) as captured:
+        operation_result_summary(kind, payload)
+
+    assert captured.value.code == "operation_result_invalid"
+    assert "private-sentinel" not in str(captured.value)
+    assert "private-sentinel" not in repr(captured.value)
 
 
 @pytest.mark.parametrize(
@@ -375,7 +456,7 @@ def test_fixed_safe_error_code_may_describe_secret_boundary_without_secret_mater
 @pytest.mark.parametrize("kind", sorted(OPERATION_KINDS))
 def test_request_fingerprint_is_stable_for_mapping_order(kind: str) -> None:
     parameters = _request_parameters(kind)
-    target_id = None if kind in {"scheduler-run", "pipeline-run"} else ACCOUNT_ID
+    target_id = None if KIND_TARGET_TYPES[kind] is None else ACCOUNT_ID
 
     first = operation_request_fingerprint(kind, target_id=target_id, parameters=parameters)
     second = operation_request_fingerprint(
@@ -392,7 +473,7 @@ def test_request_fingerprint_is_stable_for_mapping_order(kind: str) -> None:
 @pytest.mark.parametrize("kind", sorted(OPERATION_KINDS))
 def test_request_fingerprint_binds_the_fixed_post_route(kind: str) -> None:
     parameters = _request_parameters(kind)
-    target_id = None if kind in {"scheduler-run", "pipeline-run"} else ACCOUNT_ID
+    target_id = None if KIND_TARGET_TYPES[kind] is None else ACCOUNT_ID
     normalized = {
         "schema_version": OPERATION_PAYLOAD_SCHEMA_VERSION,
         "method": "POST",
@@ -468,6 +549,16 @@ def test_request_fingerprint_changes_with_kind_target_or_parameter() -> None:
             AUTHOR_ID,
             {**_request_parameters("emby-export"), "output_path": r"C:\\private-sentinel"},
         ),
+        (
+            "media-server-probe",
+            None,
+            {**_request_parameters("media-server-probe"), "server_url": "https://private-sentinel.invalid"},
+        ),
+        (
+            "media-server-scan",
+            None,
+            {"profile_fingerprint": "raw-secret-reference"},
+        ),
     ],
 )
 def test_request_fingerprint_rejects_owner_secret_body_url_and_path(
@@ -486,6 +577,8 @@ def test_request_fingerprint_rejects_owner_secret_body_url_and_path(
     ("kind", "target_id"),
     [
         ("scheduler-run", ACCOUNT_ID),
+        ("media-server-probe", ACCOUNT_ID),
+        ("media-server-scan", ACCOUNT_ID),
         ("account-login", None),
         ("account-login", "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA"),
     ],

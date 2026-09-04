@@ -199,7 +199,13 @@ class OperationSnapshot:
 
     @property
     def retryable(self) -> bool:
-        return self.state in {"failed_retryable", "interrupted"}
+        if self.state == "failed_retryable":
+            return True
+        if self.state != "interrupted":
+            return False
+        # A restarted targeted scan has no durable remote task identity.  Its
+        # POST may already have been accepted, so resubmission is never safe.
+        return self.kind != "media-server-scan"
 
     @property
     def allowed_actions(self) -> tuple[str, ...]:
@@ -665,11 +671,22 @@ class OperationRepository:
             raise NotFoundError("operation not found")
         return operation
 
+    def require_for_update(self, operation_id: str) -> OperationSnapshot:
+        """Lock one operation for an authoritative read followed by a write."""
+
+        normalized_id = _canonical_uuid(operation_id, "operation_id")
+        _reserve_sqlite_writer(self.session)
+        operation = self.session.scalar(select(Operation).where(Operation.id == normalized_id).with_for_update())
+        if operation is None:
+            raise NotFoundError("operation not found")
+        return self._snapshot(operation)
+
     def list(
         self,
         *,
         kind: str | None = None,
         state: str | None = None,
+        exclusive_key: str | None = None,
         target_type: str | None = None,
         target_id: str | None = None,
         correlation_id: str | None = None,
@@ -682,6 +699,8 @@ class OperationRepository:
             statement = statement.where(Operation.kind == _choice(kind, OPERATION_KINDS, "operation kind"))
         if state is not None:
             statement = statement.where(Operation.state == _choice(state, OPERATION_STATES, "operation state"))
+        if exclusive_key is not None:
+            statement = statement.where(Operation.exclusive_key == _label(exclusive_key, "exclusive_key", 512))
         if (target_type is None) != (target_id is None):
             raise ValueError("target_type and target_id must be supplied together")
         if target_type is not None and target_id is not None:

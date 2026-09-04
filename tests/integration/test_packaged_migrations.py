@@ -23,6 +23,7 @@ from alembic import command
 from alembic.config import Config
 from sqlalchemy import create_engine, inspect, select, text
 from sqlalchemy.engine import Connection
+from sqlalchemy.exc import IntegrityError
 
 from media_sync.application.downloads import (
     ASSET_DOWNLOAD_JOB_TYPE,
@@ -44,6 +45,8 @@ from media_sync.infrastructure.db import (
     ExportRecord,
     Job,
     JobRepository,
+    OperationRepository,
+    OperationSubjectInput,
     SubscriptionRepository,
 )
 from media_sync.infrastructure.db.asset_identity import stable_asset_key
@@ -51,6 +54,7 @@ from media_sync.infrastructure.db.migration import MIGRATIONS_PACKAGE, upgrade_d
 from media_sync.media import AdapterRefreshLocator, SafeHttpClient, SecureMediaDownloader, ValidatedTarget
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+HEAD_REVISION = "0007_media_server_operations"
 
 
 class _PublicResolver:
@@ -100,6 +104,21 @@ def _offline_0006_sql(database_url: str) -> str:
     return output.getvalue()
 
 
+def _offline_0007_sql(database_url: str) -> str:
+    output = StringIO()
+    migrations = files(MIGRATIONS_PACKAGE)
+    with as_file(migrations) as migration_path:
+        configuration = Config(output_buffer=output)
+        configuration.set_main_option("script_location", str(migration_path))
+        configuration.set_main_option("sqlalchemy.url", database_url)
+        command.upgrade(
+            configuration,
+            "0006_operations_observability:0007_media_server_operations",
+            sql=True,
+        )
+    return output.getvalue()
+
+
 def _execution_0005_job_evidence(connection: Connection) -> dict[str, dict[str, object]]:
     rows = connection.execute(
         text(
@@ -139,7 +158,7 @@ def test_programmatic_upgrade_uses_packaged_resources_and_handles_percent_path(t
     try:
         assert "accounts" in inspect(engine).get_table_names()
         with engine.connect() as connection:
-            assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0006_operations_observability"
+            assert connection.scalar(text("SELECT version_num FROM alembic_version")) == HEAD_REVISION
     finally:
         engine.dispose()
 
@@ -173,6 +192,7 @@ def test_built_wheel_contains_and_runs_packaged_migrations(tmp_path: Path) -> No
             "media_sync/infrastructure/db/migrations/versions/0004_scheduler_control_plane.py",
             "media_sync/infrastructure/db/migrations/versions/0005_asset_refresh_sources.py",
             "media_sync/infrastructure/db/migrations/versions/0006_operations_observability.py",
+            "media_sync/infrastructure/db/migrations/versions/0007_media_server_operations.py",
         }
         assert required_resources <= wheel_names
         wheel.extractall(installed_root)
@@ -198,7 +218,7 @@ try:
     if "accounts" not in inspect(engine).get_table_names():
         raise AssertionError("packaged migration did not create accounts")
     with engine.connect() as connection:
-        if connection.scalar(text("SELECT version_num FROM alembic_version")) != "0006_operations_observability":
+        if connection.scalar(text("SELECT version_num FROM alembic_version")) != "0007_media_server_operations":
             raise AssertionError("unexpected migration revision")
 finally:
     engine.dispose()
@@ -263,6 +283,19 @@ def test_0006_offline_ddl_is_portable_and_uses_an_explicit_stream_clock(
         assert "id SERIAL" not in sql
 
 
+def test_0007_postgresql_offline_ddl_changes_only_the_operation_kind_constraint() -> None:
+    sql = _offline_0007_sql("postgresql://example.invalid/media_sync")
+
+    assert "DROP CONSTRAINT ck_operations_kind" in sql
+    assert "ADD CONSTRAINT ck_operations_kind CHECK" in sql
+    assert "'media-server-probe'" in sql
+    assert "'media-server-scan'" in sql
+    assert "CREATE TABLE" not in sql
+    assert "DROP TABLE" not in sql
+    assert "uq_operations_active_exclusive_key" not in sql
+    assert "uq_operations_kind_idempotency_key_hash" not in sql
+
+
 def test_0006_sqlite_roundtrip_creates_only_bounded_operation_control_plane(tmp_path: Path) -> None:
     database_path = tmp_path / "operations-observability.sqlite3"
     database_url = f"sqlite+pysqlite:///{database_path.as_posix()}"
@@ -306,10 +339,7 @@ def test_0006_sqlite_roundtrip_creates_only_bounded_operation_control_plane(tmp_
             assert event_foreign_keys == {("operation_id",): "CASCADE"}
             assert subject_foreign_keys == {("operation_id",): "CASCADE"}
             with current_engine.connect() as connection:
-                assert (
-                    connection.scalar(text("SELECT version_num FROM alembic_version"))
-                    == "0006_operations_observability"
-                )
+                assert connection.scalar(text("SELECT version_num FROM alembic_version")) == HEAD_REVISION
                 assert connection.execute(
                     text("SELECT id, last_sequence, pruned_through_sequence FROM operation_event_stream_state")
                 ).all() == [(1, 0, 0)]
@@ -330,6 +360,220 @@ def test_0006_sqlite_roundtrip_creates_only_bounded_operation_control_plane(tmp_
         downgraded.dispose()
     upgrade_database(database_url)
     assert_head()
+
+
+def test_0007_sqlite_upgrade_preserves_operation_audit_and_partial_indexes(tmp_path: Path) -> None:
+    database_path = tmp_path / "media-server-operation-upgrade.sqlite3"
+    database_url = f"sqlite+pysqlite:///{database_path.as_posix()}"
+    upgrade_database(database_url, "0006_operations_observability")
+
+    legacy_database = Database(database_url)
+    try:
+        with legacy_database.session() as session:
+            repository = OperationRepository(session)
+            started = repository.create_or_replay(
+                kind="pipeline-run",
+                request_fingerprint="1" * 64,
+                idempotency_key_hash="2" * 64,
+                exclusive_key="pipeline-run:fixture",
+                phase="running",
+                at=datetime(2026, 9, 5, tzinfo=UTC),
+            )
+            lease = repository.claim(
+                started.operation_id,
+                expected_revision=started.revision,
+                lease_owner="migration-fixture-owner",
+                lease_seconds=60,
+                at=datetime(2026, 9, 5, tzinfo=UTC),
+            )
+            repository.link_subject(
+                started.operation_id,
+                OperationSubjectInput(
+                    "job",
+                    "70000000-0000-4000-8000-000000000001",
+                    "execution",
+                ),
+                expected_revision=lease.revision,
+                lease_owner=lease.lease_owner,
+                lease_token=lease.lease_token,
+                at=datetime(2026, 9, 5, tzinfo=UTC),
+            )
+        with legacy_database.engine.connect() as connection:
+            before_operations = connection.execute(text("SELECT * FROM operations ORDER BY id")).mappings().all()
+            before_events = (
+                connection.execute(text("SELECT * FROM operation_events ORDER BY stream_sequence")).mappings().all()
+            )
+            before_subjects = (
+                connection.execute(
+                    text("SELECT * FROM operation_subjects ORDER BY operation_id, subject_type, subject_id, role")
+                )
+                .mappings()
+                .all()
+            )
+    finally:
+        legacy_database.dispose()
+
+    upgrade_database(database_url)
+
+    engine = create_engine(database_url)
+    try:
+        inspector = inspect(engine)
+        indexes = {index["name"]: index for index in inspector.get_indexes("operations")}
+        assert indexes["uq_operations_active_exclusive_key"]["unique"] == 1
+        assert indexes["uq_operations_kind_idempotency_key_hash"]["unique"] == 1
+        assert str(indexes["uq_operations_active_exclusive_key"]["dialect_options"]["sqlite_where"]) == (
+            "exclusive_key IS NOT NULL AND state IN ('queued', 'running')"
+        )
+        assert str(indexes["uq_operations_kind_idempotency_key_hash"]["dialect_options"]["sqlite_where"]) == (
+            "idempotency_key_hash IS NOT NULL"
+        )
+        with engine.connect() as connection:
+            assert connection.scalar(text("SELECT version_num FROM alembic_version")) == HEAD_REVISION
+            assert (
+                connection.execute(text("SELECT * FROM operations ORDER BY id")).mappings().all() == before_operations
+            )
+            assert (
+                connection.execute(text("SELECT * FROM operation_events ORDER BY stream_sequence")).mappings().all()
+                == before_events
+            )
+            assert (
+                connection.execute(
+                    text("SELECT * FROM operation_subjects ORDER BY operation_id, subject_type, subject_id, role")
+                )
+                .mappings()
+                .all()
+                == before_subjects
+            )
+            assert connection.execute(text("PRAGMA foreign_key_check")).all() == []
+    finally:
+        engine.dispose()
+
+    current_database = Database(database_url)
+    try:
+        with current_database.session() as session:
+            repository = OperationRepository(session)
+            for index, kind in enumerate(("media-server-probe", "media-server-scan"), start=3):
+                created = repository.create_or_replay(
+                    kind=kind,
+                    request_fingerprint=str(index) * 64,
+                    at=datetime(2026, 9, 5, tzinfo=UTC),
+                )
+                assert created.replayed is False
+        with pytest.raises(IntegrityError), current_database.session() as session:
+            session.execute(
+                text("UPDATE operations SET kind = 'media-server-unknown' WHERE id = :id"),
+                {"id": started.operation_id},
+            )
+    finally:
+        current_database.dispose()
+
+
+def test_0007_sqlite_downgrade_without_media_rows_restores_legacy_check(tmp_path: Path) -> None:
+    database_path = tmp_path / "media-server-operation-empty-downgrade.sqlite3"
+    database_url = f"sqlite+pysqlite:///{database_path.as_posix()}"
+    upgrade_database(database_url)
+
+    current_database = Database(database_url)
+    try:
+        with current_database.session() as session:
+            repository = OperationRepository(session)
+            legacy = repository.create_or_replay(
+                kind="scheduler-run",
+                request_fingerprint="4" * 64,
+                at=datetime(2026, 9, 5, tzinfo=UTC),
+            )
+        with current_database.engine.connect() as connection:
+            before_events = connection.scalar(text("SELECT COUNT(*) FROM operation_events"))
+    finally:
+        current_database.dispose()
+
+    _downgrade_packaged_database(database_url, "0006_operations_observability")
+
+    engine = create_engine(database_url)
+    try:
+        with engine.connect() as connection:
+            assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0006_operations_observability"
+            assert connection.scalar(text("SELECT COUNT(*) FROM operation_events")) == before_events
+            assert (
+                connection.scalar(
+                    text("SELECT kind FROM operations WHERE id = :id"),
+                    {"id": legacy.operation_id},
+                )
+                == "scheduler-run"
+            )
+            assert connection.execute(text("PRAGMA foreign_key_check")).all() == []
+        with pytest.raises(IntegrityError), engine.begin() as connection:
+            connection.execute(
+                text("UPDATE operations SET kind = 'media-server-probe' WHERE id = :id"),
+                {"id": legacy.operation_id},
+            )
+    finally:
+        engine.dispose()
+
+
+def test_0007_sqlite_downgrade_with_media_rows_fails_closed_without_audit_loss(tmp_path: Path) -> None:
+    database_path = tmp_path / "media-server-operation-guarded-downgrade.sqlite3"
+    database_url = f"sqlite+pysqlite:///{database_path.as_posix()}"
+    upgrade_database(database_url)
+
+    current_database = Database(database_url)
+    try:
+        with current_database.session() as session:
+            created = OperationRepository(session).create_or_replay(
+                kind="media-server-scan",
+                request_fingerprint="5" * 64,
+                exclusive_key="media-server:fixture-profile",
+                phase="queued",
+                at=datetime(2026, 9, 5, tzinfo=UTC),
+            )
+        with current_database.engine.connect() as connection:
+            before_operation = (
+                connection.execute(
+                    text("SELECT * FROM operations WHERE id = :id"),
+                    {"id": created.operation_id},
+                )
+                .mappings()
+                .one()
+            )
+            before_events = (
+                connection.execute(
+                    text("SELECT * FROM operation_events WHERE operation_id = :id ORDER BY stream_sequence"),
+                    {"id": created.operation_id},
+                )
+                .mappings()
+                .all()
+            )
+    finally:
+        current_database.dispose()
+
+    with pytest.raises(RuntimeError, match="media_server_operation_rows_prevent_downgrade"):
+        _downgrade_packaged_database(database_url, "0006_operations_observability")
+
+    engine = create_engine(database_url)
+    try:
+        with engine.connect() as connection:
+            assert connection.scalar(text("SELECT version_num FROM alembic_version")) == HEAD_REVISION
+            assert (
+                connection.execute(
+                    text("SELECT * FROM operations WHERE id = :id"),
+                    {"id": created.operation_id},
+                )
+                .mappings()
+                .one()
+                == before_operation
+            )
+            assert (
+                connection.execute(
+                    text("SELECT * FROM operation_events WHERE operation_id = :id ORDER BY stream_sequence"),
+                    {"id": created.operation_id},
+                )
+                .mappings()
+                .all()
+                == before_events
+            )
+            assert connection.execute(text("PRAGMA foreign_key_check")).all() == []
+    finally:
+        engine.dispose()
 
 
 def test_0005_roundtrip_conservatively_backfills_only_unique_mediacrawler_source(tmp_path: Path) -> None:
@@ -433,10 +677,7 @@ def test_0005_roundtrip_conservatively_backfills_only_unique_mediacrawler_source
                 ("last_run_id",): "SET NULL",
             }
             with engine.connect() as connection:
-                assert (
-                    connection.scalar(text("SELECT version_num FROM alembic_version"))
-                    == "0006_operations_observability"
-                )
+                assert connection.scalar(text("SELECT version_num FROM alembic_version")) == HEAD_REVISION
                 rows = connection.execute(
                     text(
                         "SELECT asset_id, subscription_id, last_run_id, observation_kind, observed_generation, "
@@ -1170,7 +1411,7 @@ def test_0004_real_0003_roundtrip_preserves_0005_evidence_and_releases_sync_iden
     upgraded_engine = create_engine(database_url)
     try:
         with upgraded_engine.begin() as connection:
-            assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0006_operations_observability"
+            assert connection.scalar(text("SELECT version_num FROM alembic_version")) == HEAD_REVISION
             assert _execution_0005_job_evidence(connection) == before_jobs
             assert _emby_record_evidence(connection) == before_records
             assert (
@@ -1284,7 +1525,7 @@ def test_0004_real_0003_roundtrip_preserves_0005_evidence_and_releases_sync_iden
     reupgraded_engine = create_engine(database_url)
     try:
         with reupgraded_engine.begin() as connection:
-            assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0006_operations_observability"
+            assert connection.scalar(text("SELECT version_num FROM alembic_version")) == HEAD_REVISION
             assert (
                 connection.scalar(
                     text("SELECT schedule_revision FROM subscriptions WHERE id = :id"),

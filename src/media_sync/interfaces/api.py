@@ -32,7 +32,7 @@ from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.exception_handlers import http_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -68,6 +68,9 @@ from media_sync.application.authentication import (
 )
 from media_sync.application.emby import EmbyExportRequest, EmbyExportService, export_error_is_retryable
 from media_sync.application.explorer import CatalogExplorerError, ContentAssetExplorer
+from media_sync.application.library import LibraryInspection, LibraryInspectionError, LibraryInspectionService
+from media_sync.application.media_server import MediaServerError, MediaServerService
+from media_sync.application.qualifications import QualificationError, QualificationService
 from media_sync.application.support_bundle import SupportBundleError, SupportBundleService
 from media_sync.config import Settings, get_settings
 from media_sync.domain import AssetKind, AssetStatus, ContentKind, JobStatus, LoginMethod, Platform
@@ -120,6 +123,7 @@ from media_sync.interfaces.cli import (
     collect_deep_readiness_report,
 )
 from media_sync.scheduler import DurableSchedulerService, SchedulerRepository, StaleLaneError
+from media_sync.security import SecretResolver
 
 _CONSOLE_PATH = Path(__file__).with_name("console.html")
 _PACKAGED_WEB_ROOT = Path(__file__).with_name("static") / "console-v2"
@@ -490,6 +494,12 @@ class AssetDownload(BaseModel):
     xhs_detail_reference_ref: str | None = None
 
 
+class MediaServerOperationRequest(BaseModel):
+    """An intentionally empty body: callers cannot override remote authority."""
+
+    model_config = ConfigDict(extra="forbid")
+
+
 # ------------------------------------------------------------------ app factory
 
 
@@ -504,6 +514,17 @@ def create_api_app(settings: Settings | None = None) -> FastAPI:
         operation_database,
         application_version=__version__,
         expected_revision=_EXPECTED_DATABASE_REVISION,
+    )
+    media_server_service = MediaServerService.from_settings(
+        resolved,
+        SecretResolver.local(file_root=resolved.resolved_secret_file_dir),
+    )
+    library_inspection_service = LibraryInspectionService(
+        operation_database,
+        EmbyExporter(
+            resolved.export_dir,
+            staging_root=resolved.job_dir / "emby-export",
+        ),
     )
 
     @asynccontextmanager
@@ -527,6 +548,8 @@ def create_api_app(settings: Settings | None = None) -> FastAPI:
     app = FastAPI(title="media-sync", version=__version__, docs_url="/api/docs", lifespan=lifespan)
     app.state.settings = resolved
     app.state.operations = operations
+    app.state.media_server_service = media_server_service
+    app.state.library_inspection_service = library_inspection_service
     deep_readiness_cache: dict[bool, tuple[float, dict[str, object]]] = {}
     deep_readiness_lock = threading.Lock()
     web_root = _resolve_web_root()
@@ -712,6 +735,106 @@ def create_api_app(settings: Settings | None = None) -> FastAPI:
     def _reconcile_operation_reads() -> None:
         operation_reconciliation.trigger()
 
+    def _latest_media_server_operation(
+        kind: str,
+        *,
+        profile_fingerprint: str | None,
+    ) -> OperationSnapshot | None:
+        if profile_fingerprint is None:
+            return None
+        snapshots = operations.list_operations(
+            kind=kind,
+            exclusive_key=f"media-server:{profile_fingerprint}",
+            limit=1,
+        )
+        return snapshots[0] if snapshots else None
+
+    def _media_server_status_payload() -> dict[str, object]:
+        """Project configuration and durable evidence without doing network I/O."""
+
+        summary = resolved.media_server_safe_summary
+        profile_fingerprint = summary.profile_fingerprint if summary.configured else None
+        latest_probe = _latest_media_server_operation(
+            "media-server-probe",
+            profile_fingerprint=profile_fingerprint,
+        )
+        latest_scan = _latest_media_server_operation(
+            "media-server-scan",
+            profile_fingerprint=profile_fingerprint,
+        )
+        busy = any(
+            operation is not None and operation.state in {"queued", "running"}
+            for operation in (latest_probe, latest_scan)
+        )
+        allowed_actions = ["probe", "scan"] if summary.configured and summary.operations_enabled and not busy else []
+        return {
+            "schema_version": 1,
+            "configuration": summary.as_dict(),
+            "latest_probe": _operation_payload(latest_probe) if latest_probe is not None else None,
+            "latest_scan": _operation_payload(latest_scan) if latest_scan is not None else None,
+            "allowed_actions": allowed_actions,
+        }
+
+    def _media_server_operation_identity(request: Request, kind: str) -> tuple[str, str | None, str]:
+        if not media_server_service.configured:
+            raise HTTPException(status_code=409, detail="media_server_not_configured")
+        if not media_server_service.operations_enabled:
+            raise HTTPException(status_code=403, detail="media_server_operations_disabled")
+        profile_fingerprint = media_server_service.profile_fingerprint
+        if profile_fingerprint is None:
+            raise HTTPException(status_code=409, detail="media_server_not_configured")
+        request_fingerprint, key_hash = _operation_identity(
+            request,
+            kind,
+            target_id=None,
+            parameters={"profile_fingerprint": profile_fingerprint},
+        )
+        return request_fingerprint, key_hash, profile_fingerprint
+
+    def _library_inspection_payload(inspection: LibraryInspection) -> dict[str, object]:
+        publication = inspection.publication
+        return {
+            "schema_version": 1,
+            "author_id": inspection.author_id,
+            "publication": (
+                {
+                    "layout_version": publication.layout_version,
+                    "publication_scope": publication.publication_scope,
+                    "job_id": publication.job_id,
+                    "source_fingerprint": publication.source_fingerprint,
+                    "tree_sha256": publication.tree_sha256,
+                    "manifest_sha256": publication.manifest_sha256,
+                    "managed_file_count": publication.managed_file_count,
+                }
+                if publication is not None
+                else None
+            ),
+            "freshness": inspection.freshness,
+            "freshness_reason_code": inspection.freshness_reason_code,
+            "integrity": inspection.integrity,
+            "integrity_reason_code": inspection.integrity_reason_code,
+            "user_changes_protected": inspection.user_changes_protected,
+            "files": [
+                {
+                    "relative_path": item.relative_path,
+                    "sha256": item.sha256,
+                    "size_bytes": item.size_bytes,
+                }
+                for item in inspection.files
+            ],
+            "page": {
+                "start_index": inspection.page.start_index,
+                "next_index": inspection.page.next_index,
+                "limit": inspection.page.limit,
+                "returned_count": inspection.page.returned_count,
+                "bytes_read": inspection.page.bytes_read,
+                "complete": inspection.page.complete,
+                "budget_exhausted": inspection.page.budget_exhausted,
+                "next_cursor": inspection.page.next_cursor,
+            },
+            "allowed_actions": list(inspection.allowed_actions),
+        }
+
     @app.get("/api/v1/health")
     def health() -> dict[str, str]:
         return {"status": "ok"}
@@ -783,11 +906,144 @@ def create_api_app(settings: Settings | None = None) -> FastAPI:
                 if resolved.mediacrawler_python_executable is not None
                 else None
             ),
+            "media_server": resolved.media_server_safe_summary.as_dict(),
         }
 
     @app.get("/api/v1/platform-capabilities")
     def platform_capabilities() -> dict[str, object]:
         return platform_capabilities_payload()
+
+    @app.get("/api/v1/media-server")
+    def media_server_status() -> dict[str, object]:
+        """Return only the redacted immutable profile and durable evidence."""
+
+        _reconcile_operation_reads()
+        try:
+            return _media_server_status_payload()
+        except (RepositoryError, SQLAlchemyError):
+            raise HTTPException(status_code=503, detail="operation_store_unavailable") from None
+
+    @app.post("/api/v1/media-server/probe", status_code=202)
+    def media_server_probe(_body: MediaServerOperationRequest, request: Request) -> dict[str, object]:
+        """Persist and start one bounded read-only connection probe."""
+
+        request_fingerprint, key_hash, profile_fingerprint = _media_server_operation_identity(
+            request,
+            "media-server-probe",
+        )
+        replay = _idempotent_replay(
+            "media-server-probe",
+            key_hash=key_hash,
+            request_fingerprint=request_fingerprint,
+        )
+        if replay is not None:
+            return _operation_start_payload(replay)
+
+        def run_probe(context: OperationExecutionContext) -> OperationOutcome:
+            phase = context.phase("probing")
+            if phase.cancel_requested_at is not None or context.cancel_requested:
+                return OperationOutcome.cancelled()
+            try:
+                result = media_server_service.probe()
+            except MediaServerError as error:
+                return OperationOutcome.failed(error.code, retryable=error.retryable)
+            return OperationOutcome.success(
+                {
+                    "provider": result.provider,
+                    "server_version": result.server_version,
+                    "library_id_digest": result.library_id_digest,
+                    "library_present": result.library_present,
+                }
+            )
+
+        submission = _submit_operation(
+            OperationExecution(
+                kind="media-server-probe",
+                request_fingerprint=request_fingerprint,
+                idempotency_key_hash=key_hash,
+                exclusive_key=f"media-server:{profile_fingerprint}",
+                target_type=None,
+                target_id=None,
+                phase="preparing",
+                execute=run_probe,
+            )
+        )
+        return _operation_start_payload(submission)
+
+    @app.post("/api/v1/media-server/scan", status_code=202)
+    def media_server_scan(_body: MediaServerOperationRequest, request: Request) -> dict[str, object]:
+        """Persist and dispatch only the configured targeted library refresh."""
+
+        request_fingerprint, key_hash, profile_fingerprint = _media_server_operation_identity(
+            request,
+            "media-server-scan",
+        )
+        replay = _idempotent_replay(
+            "media-server-scan",
+            key_hash=key_hash,
+            request_fingerprint=request_fingerprint,
+        )
+        if replay is not None:
+            return _operation_start_payload(replay)
+
+        def run_scan(context: OperationExecutionContext) -> OperationOutcome:
+            phase = context.phase("discovering")
+            if phase.cancel_requested_at is not None or context.cancel_requested:
+                return OperationOutcome.cancelled()
+            try:
+                result = media_server_service.scan(lambda: context.cancel_requested)
+            except MediaServerError as error:
+                if error.code == "media_server_scan_cancelled":
+                    return OperationOutcome.cancelled()
+                return OperationOutcome.failed(error.code, retryable=error.retryable)
+            return OperationOutcome.success(
+                {
+                    "provider": result.provider,
+                    "server_version": result.server_version,
+                    "library_id_digest": result.library_id_digest,
+                    "scan_state": result.scan_state,
+                }
+            )
+
+        submission = _submit_operation(
+            OperationExecution(
+                kind="media-server-scan",
+                request_fingerprint=request_fingerprint,
+                idempotency_key_hash=key_hash,
+                exclusive_key=f"media-server:{profile_fingerprint}",
+                target_type=None,
+                target_id=None,
+                phase="preparing",
+                execute=run_scan,
+            )
+        )
+        return _operation_start_payload(submission)
+
+    @app.get("/api/v1/qualifications")
+    def qualifications() -> dict[str, object]:
+        """Keep local automated evidence separate from live qualifications."""
+
+        _reconcile_operation_reads()
+        try:
+            profile_fingerprint = resolved.media_server_profile_fingerprint
+            evidence = {
+                "media-server-probe": _latest_media_server_operation(
+                    "media-server-probe",
+                    profile_fingerprint=profile_fingerprint,
+                ),
+                "media-server-scan": _latest_media_server_operation(
+                    "media-server-scan",
+                    profile_fingerprint=profile_fingerprint,
+                ),
+            }
+            return QualificationService(operation_database).snapshot(
+                media_server_configured=resolved.media_server_profile is not None,
+                media_server_operations=evidence,
+            )
+        except QualificationError as error:
+            raise HTTPException(status_code=503, detail=error.code) from None
+        except (RepositoryError, SQLAlchemyError):
+            raise HTTPException(status_code=503, detail="operation_store_unavailable") from None
 
     @app.get("/", include_in_schema=False)
     def console() -> Response:
@@ -1818,6 +2074,46 @@ def create_api_app(settings: Settings | None = None) -> FastAPI:
             raise _bad_request("database_operation_failed") from None
         finally:
             database.dispose()
+
+    @app.get("/api/v1/library/{author_id}")
+    def inspect_library_author(
+        author_id: str,
+        request: Request,
+        cursor: str | None = Query(default=None, max_length=4_096),
+        limit: int = Query(default=128, ge=1, le=128),
+    ) -> dict[str, object]:
+        """Verify one bounded manifest page without accepting a host path."""
+
+        query_keys = [key for key, _value in request.query_params.multi_items()]
+        if any(key not in {"cursor", "limit"} for key in query_keys) or any(
+            query_keys.count(key) > 1 for key in {"cursor", "limit"}
+        ):
+            raise _bad_request("library_inspection_invalid")
+        try:
+            inspection = library_inspection_service.inspect(
+                author_id,
+                cursor=cursor,
+                limit=limit,
+                max_bytes=resolved.library_inspection_max_bytes,
+                deadline_seconds=resolved.library_inspection_deadline_seconds,
+            )
+            return _library_inspection_payload(inspection)
+        except LibraryInspectionError as error:
+            if error.code in {"library_author_invalid", "library_author_not_found"}:
+                status_code = 404
+            elif error.code in {"library_cursor_stale", "library_publication_inconsistent"}:
+                status_code = 409
+            elif error.code == "library_inspection_busy":
+                raise HTTPException(
+                    status_code=429,
+                    detail=error.code,
+                    headers={"Retry-After": "1"},
+                ) from None
+            elif error.code == "library_inspection_failed":
+                status_code = 503
+            else:
+                status_code = 400
+            raise HTTPException(status_code=status_code, detail=error.code) from None
 
     @app.post("/api/v1/emby/export", status_code=202)
     def emby_export(body: EmbyExport, request: Request) -> dict[str, object]:

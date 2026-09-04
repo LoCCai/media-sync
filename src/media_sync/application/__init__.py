@@ -44,10 +44,26 @@ from media_sync.application.explorer import (
     CatalogExplorerError,
     ContentAssetExplorer,
 )
+from media_sync.application.library import (
+    LibraryExporterPort,
+    LibraryFreshness,
+    LibraryInspection,
+    LibraryInspectionError,
+    LibraryInspectionPage,
+    LibraryInspectionService,
+    LibraryIntegrity,
+    LibraryPublication,
+)
 from media_sync.application.login_preflight import (
     AccountLoginPreflight,
     LoginPreflightCheck,
     collect_account_login_preflight,
+)
+from media_sync.application.media_server import (
+    MediaServerError,
+    MediaServerProbeResult,
+    MediaServerScanResult,
+    MediaServerService,
 )
 from media_sync.application.mediacrawler import (
     MediaCrawlerOutputRejected,
@@ -106,6 +122,15 @@ from media_sync.application.pipeline_runtime import (
     LocalPipelineRuntimeConfig,
     SubscriptionPipelineExecutor,
 )
+from media_sync.application.qualifications import (
+    HUMAN_QUALIFICATION_STATUSES,
+    IMPLEMENTATION_STATUSES,
+    QUALIFICATION_SCHEMA_VERSION,
+    HumanQualificationStatus,
+    ImplementationStatus,
+    QualificationError,
+    QualificationService,
+)
 from media_sync.application.sync import SyncRequest, SyncResult, SyncService
 from media_sync.application.workbench import (
     FAKE_ADAPTER,
@@ -133,6 +158,8 @@ __all__ = [
     "EMBY_EXPORT_JOB_TYPE",
     "FAKE_ADAPTER",
     "FALLBACK_ARCHIVE_MEDIA_TYPE",
+    "HUMAN_QUALIFICATION_STATUSES",
+    "IMPLEMENTATION_STATUSES",
     "MAX_EXPLORER_LIMIT",
     "MAX_EXPLORER_QUERY_LENGTH",
     "MAX_IDEMPOTENCY_KEY_LENGTH",
@@ -149,6 +176,7 @@ __all__ = [
     "OPERATION_EVENT_CODES",
     "OPERATION_KINDS",
     "OPERATION_PAYLOAD_SCHEMA_VERSION",
+    "QUALIFICATION_SCHEMA_VERSION",
     "SAFE_ARCHIVE_MEDIA_TYPES",
     "SUPPORTED_WORKBENCH_ADAPTERS",
     "WORKBENCH_ERROR_CODES",
@@ -175,13 +203,27 @@ __all__ = [
     "EmbyExportOutcome",
     "EmbyExportRequest",
     "EmbyExportService",
+    "HumanQualificationStatus",
+    "ImplementationStatus",
     "LazyMediaCrawlerLocatorRefresher",
+    "LibraryExporterPort",
+    "LibraryFreshness",
+    "LibraryInspection",
+    "LibraryInspectionError",
+    "LibraryInspectionPage",
+    "LibraryInspectionService",
+    "LibraryIntegrity",
+    "LibraryPublication",
     "LocalPipelineRuntimeConfig",
     "LoginPreflightCheck",
     "LoginSessionReconciliationSummary",
     "MediaCrawlerLoginSessionReconciler",
     "MediaCrawlerOutputRejected",
     "MediaCrawlerQrLoginService",
+    "MediaServerError",
+    "MediaServerProbeResult",
+    "MediaServerScanResult",
+    "MediaServerService",
     "NormalizedMediaCrawlerOutput",
     "OperationCallable",
     "OperationCoordinator",
@@ -196,6 +238,8 @@ __all__ = [
     "OperationShutdownSummary",
     "OperationSubmission",
     "OperationTerminalState",
+    "QualificationError",
+    "QualificationService",
     "SelectedPipelineAsset",
     "SubscriptionAssetSelection",
     "SubscriptionAssetSelector",

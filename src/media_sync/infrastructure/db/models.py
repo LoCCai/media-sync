@@ -81,6 +81,8 @@ OPERATION_KINDS = frozenset(
         "account-login",
         "asset-download",
         "emby-export",
+        "media-server-probe",
+        "media-server-scan",
         "pipeline-run",
         "scheduler-run",
     }
