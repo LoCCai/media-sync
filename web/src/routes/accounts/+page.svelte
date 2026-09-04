@@ -22,6 +22,7 @@
     StartedOperation
   } from '$lib/types/api';
   import { formatDate, PLATFORM_META, shortId, statusLabel } from '$lib/utils/format';
+  import { operationIsTerminal } from '$lib/utils/operations';
   import {
     accountCompositeState,
     canStartQrLogin,
@@ -238,10 +239,10 @@
         stopPolling();
         toast(`${qrAccount.display_name} 登录成功。`);
         await load();
-      } else if (operation.state === 'failed') {
-        qrHint = `登录失败：${operation.error_code ?? 'unknown'}`;
+      } else if (operationIsTerminal(operation.state)) {
+        qrHint = `登录已结束（${statusLabel(operation.state)}）：${operation.error_code ?? '无错误码'}`;
         stopPolling();
-        toast(qrHint, 'danger');
+        toast(qrHint, operation.state === 'cancelled' ? 'info' : 'danger');
         await load();
       }
     } catch {

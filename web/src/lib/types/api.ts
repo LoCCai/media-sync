@@ -3,6 +3,21 @@ export type CheckState = 'pass' | 'fail' | 'not_run';
 export type LoginMethod = 'qr' | 'cookie' | 'saved_session';
 export type AccountLoginMethod = LoginMethod | 'phone';
 export type CreatorInputKind = 'profile_id' | 'sec_user_id' | 'user_id' | 'uid' | 'portrait_id' | 'url_token';
+export type OperationKind =
+  | 'account-login'
+  | 'asset-download'
+  | 'scheduler-run'
+  | 'pipeline-run'
+  | 'emby-export';
+export type OperationState =
+  | 'queued'
+  | 'running'
+  | 'succeeded'
+  | 'failed_retryable'
+  | 'failed_terminal'
+  | 'cancelled'
+  | 'interrupted';
+export type OperationAction = 'cancel' | 'retry';
 
 export interface PlatformCapability {
   platform: Platform;
@@ -172,13 +187,68 @@ export interface Job {
 
 export interface Operation {
   id: string;
-  kind: string;
-  state: string;
-  started_at: string;
+  kind: OperationKind;
+  state: OperationState;
+  requested_at: string;
+  started_at: string | null;
   finished_at: string | null;
+  phase: string | null;
+  progress: {
+    current: number | null;
+    total: number | null;
+    unit: string | null;
+  } | null;
+  target: {
+    type: string;
+    id: string;
+  } | null;
+  retryable: boolean;
   result: Record<string, unknown> | null;
   error_code: string | null;
+  correlation_id: string;
+  cancel_requested_at: string | null;
+  allowed_actions: OperationAction[];
+  event_sequence: number;
+  subjects?: OperationSubject[];
 }
+
+export interface OperationSubject {
+  type: string;
+  id: string;
+  role: string;
+  created_at: string;
+}
+
+export interface OperationEvent {
+  stream_sequence: number;
+  operation_id: string;
+  operation_sequence: number;
+  created_at: string;
+  level: 'info' | 'warning' | 'error';
+  event_code: string;
+  phase: string | null;
+  message_key: string | null;
+  from_state: OperationState | null;
+  to_state: OperationState | null;
+  subject: {
+    type: string;
+    id: string;
+  } | null;
+  context: Record<string, string | number | boolean | null>;
+  operation?: Operation;
+}
+
+export interface OperationStreamReady {
+  type: 'ready';
+  high_water: number;
+}
+
+export interface OperationStreamEvent {
+  type: 'operation';
+  event: OperationEvent;
+}
+
+export type OperationStreamMessage = OperationStreamReady | OperationStreamEvent;
 
 export interface Asset {
   id: string;
@@ -272,5 +342,7 @@ export interface DeepReadiness {
 
 export interface StartedOperation {
   operation_id: string;
-  state: string;
+  state: OperationState;
+  replayed?: boolean;
+  correlation_id?: string;
 }
