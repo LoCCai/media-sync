@@ -125,7 +125,34 @@ For an unattended chain, enable the resident supervisor service instead of click
 
 ## 5. Point Emby/Jellyfin at the library
 
-Mount or share the `media-sync-data` volume's `/data/library` path read-only to your media server and add it as a TV library. NFO, posters and episodes are deterministic per creator.
+Mount or share the `media-sync-data` volume's `/data/library` path read-only to your media server and add it as a TV library. NFO, posters and episodes are deterministic per creator. If the media server needs a host bind mount, follow the compose comment and mount the same `/srv/media-sync/data` into media-sync. `MEDIA_SYNC_MEDIA_SERVER_LIBRARY_PATH` must be the **server-side absolute path returned by the Emby/Jellyfin API**, not a browser path or an interchangeable local path.
+
+Stage 0054-A supports one immutable, environment-owned connection. Add the complete configuration below to `media-sync.environment` in your local `docker-compose.yml`; the six selectors must be either all present or all absent:
+
+| Environment variable | Meaning |
+| --- | --- |
+| `MEDIA_SYNC_MEDIA_SERVER_PROVIDER` | `emby` or `jellyfin` |
+| `MEDIA_SYNC_MEDIA_SERVER_BASE_URL` | Canonical HTTP(S) origin containing only scheme/host/port; no path, userinfo, query or fragment |
+| `MEDIA_SYNC_MEDIA_SERVER_LIBRARY_ID` | The fixed Virtual Folder `ItemId` |
+| `MEDIA_SYNC_MEDIA_SERVER_API_KEY_SECRET_REF` | An `env:`, confined relative `file:`, or `keyring:` reference, not the key value |
+| `MEDIA_SYNC_MEDIA_SERVER_LIBRARY_PATH` | The exact server-side absolute path for that Virtual Folder |
+| `MEDIA_SYNC_MEDIA_SERVER_ALLOWED_CIDRS` | Explicit IP/CIDR allowlist; every DNS answer must belong to it |
+| `MEDIA_SYNC_MEDIA_SERVER_VERIFY_TLS` | Defaults to `true`; keep it enabled in production |
+| `MEDIA_SYNC_MEDIA_SERVER_TIMEOUT_SECONDS` | 0.1–60 seconds; default 10 |
+| `MEDIA_SYNC_MEDIA_SERVER_OPERATIONS_ENABLED` | Shared server-side gate for probe/scan; defaults to `false` |
+
+Inject the API-key value through the environment variable or secret file named by the reference; never commit it. The configuration API returns a hand-built redacted summary and never echoes the key, full secret reference, Library ID, server path, or network ranges. The connector disables environment proxies and redirects, validates every DNS answer and pins the actual connection IP while retaining the original Host/TLS SNI.
+
+Start with `MEDIA_SYNC_MEDIA_SERVER_OPERATIONS_ENABLED=false` and inspect the summary in Settings. After checking the origin, TLS posture, network-rule count and Library digest, open the gate and restart. Then use Library:
+
+1. Select 检查媒体树 for an author to verify pages of the manifest authorized by the successful database publication chain. Inspection is read-only: it does not repair, delete, create an author lock, or expose a host path.
+2. Select 测试连接. The backend calls only `GET /System/Info` and `GET /Library/VirtualFolders`, requiring an exact unique Library ID and path match.
+3. Select 定向刷新. The backend calls only `POST /Items/{configured-library-id}/Refresh`; `404/405/501` fail closed and never fall back to global `/Library/Refresh`.
+4. Inspect `media-server-probe` / `media-server-scan` under 调度任务 → 持久操作. Scan success means request accepted only. Once the application dispatch gate has been crossed, a timeout, disconnect, cancellation, or unexpected transport/response failure becomes terminal, non-retryable `media_server_scan_acceptance_unknown`; never submit another refresh automatically—check the server manually first.
+
+If the service restarts after a remote Operation lost its lease, both an in-flight probe and an in-flight targeted scan are reconciled to `interrupted` because 0054-A persists no remote task identity. A probe may be retried manually; an interrupted targeted scan is exposed as non-retryable and requires server-side inspection before any new request.
+
+`GET /api/v1/qualifications` separates local automated counts, implementation status and human qualification. This workspace has no real server credentials, so the implemented connection probe, Library discovery and targeted-refresh acceptance rows remain human `NOT_RUN`. Scan-completion polling and provider/path item lookup are `NOT_IMPLEMENTED` until a separately frozen 0054-B; authenticated playback evidence is 0055 work. Automatic post-export scanning is also `NOT_IMPLEMENTED` but has no frozen follow-up assignment. Every `NOT_IMPLEMENTED` capability has `human_status: null`—it must not be reported as human `NOT_RUN`, `FAIL` or `PASS`.
 
 ## 6. Verification checklist (record honestly)
 
@@ -135,6 +162,10 @@ Mount or share the `media-sync-data` volume's `/data/library` path read-only to 
 | Creator crawl (which creator, item count) | scheduler job result + asset counts |
 | Real media download | asset rows reaching `verified`/`archived`; SHA-256 files under `/data/archive` |
 | Emby tree published | `/data/library` author directory listing |
-| Media server scan/playback | optional; mark `NOT_RUN` if not performed |
+| Real Emby/Jellyfin connection and Library discovery | successful `media-server-probe` record + server version; `NOT_RUN` if not exercised |
+| Targeted refresh accepted by a real server | successful `media-server-scan` record; not scan completion; `NOT_RUN` if not exercised |
+| Scan completion and provider/path item lookup | `NOT_IMPLEMENTED` in 0054-A; 0054-B remains to be frozen separately; no human status |
+| Authenticated playback evidence | `NOT_IMPLEMENTED` in 0054-A; deferred to 0055; no human status |
+| Automatic post-export scan | `NOT_IMPLEMENTED`; no frozen follow-up assignment and no human status |
 
 Live evidence is limited to what actually ran; anything not exercised stays `NOT_RUN` per the project's truth rules.

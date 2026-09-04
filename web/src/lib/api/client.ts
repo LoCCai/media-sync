@@ -16,8 +16,27 @@ const ERROR_MESSAGES: Record<string, string> = {
   license_acknowledgement_required: '需要先完成首次使用确认。',
   license_digest_mismatch: 'MediaCrawler 许可证摘要与锁定版本不一致。',
   license_requires_enable_mediacrawler: '许可证确认与 MediaCrawler 启用状态不一致。',
+  library_author_not_found: '作者不存在或已失效。',
+  library_cursor_invalid: '媒体树分页游标无效，请重新开始检查。',
+  library_cursor_stale: '发布版本已经变化，请重新开始检查。',
+  library_inspection_busy: '另一项媒体树检查正在进行，请稍后重试。',
+  library_inspection_failed: '媒体树检查暂时不可用。',
+  library_inspection_invalid: '媒体树检查请求无效。',
+  library_publication_inconsistent: '数据库发布记录与受管媒体树不一致。',
   login_qr_not_available: '二维码尚未生成。',
   mediacrawler_not_enabled: 'MediaCrawler 尚未启用。',
+  media_server_address_forbidden: '媒体服务器地址不在已配置的允许网络中。',
+  media_server_authentication_failed: '媒体服务器拒绝了已配置凭据。',
+  media_server_library_ambiguous: '媒体服务器返回了重复的 Library 身份。',
+  media_server_library_not_found: '媒体服务器中找不到已配置的 Library。',
+  media_server_library_path_mismatch: '媒体服务器 Library 路径与固定映射不一致。',
+  media_server_not_configured: '尚未配置媒体服务器。',
+  media_server_operations_disabled: '媒体服务器操作门尚未开启。',
+  media_server_scan_acceptance_unknown: '刷新请求是否被服务器接受无法确认；请人工核对，勿自动重试。',
+  media_server_scan_rejected: '媒体服务器拒绝了定向刷新请求。',
+  media_server_targeted_scan_unsupported: '服务器不支持定向 Library 刷新，且不会回退到全库刷新。',
+  media_server_timeout: '媒体服务器请求超时。',
+  media_server_transport: '无法安全连接媒体服务器。',
   operation_already_running: '相同操作正在运行，请等待完成。',
   platform_conflict: '账户平台与作者平台不一致。',
   request_validation_failed: '请求字段格式无效，请检查后重试。',
@@ -42,6 +61,45 @@ export class ApiError extends Error {
   }
 }
 
+export type LatestRequestResult<T> =
+  | { status: 'fulfilled'; value: T }
+  | { status: 'rejected'; reason: unknown }
+  | { status: 'superseded' };
+
+export type IdleRequestResult<T> = LatestRequestResult<T> | { status: 'busy' };
+
+export class LatestRequestGate {
+  private generation = 0;
+  private controller: AbortController | null = null;
+
+  async run<T>(request: (signal: AbortSignal) => Promise<T>): Promise<LatestRequestResult<T>> {
+    this.controller?.abort();
+    const generation = ++this.generation;
+    const controller = new AbortController();
+    this.controller = controller;
+
+    try {
+      const value = await request(controller.signal);
+      return generation === this.generation ? { status: 'fulfilled', value } : { status: 'superseded' };
+    } catch (reason) {
+      return generation === this.generation ? { status: 'rejected', reason } : { status: 'superseded' };
+    } finally {
+      if (generation === this.generation && this.controller === controller) this.controller = null;
+    }
+  }
+
+  runIfIdle<T>(request: (signal: AbortSignal) => Promise<T>): Promise<IdleRequestResult<T>> {
+    if (this.controller !== null) return Promise.resolve({ status: 'busy' });
+    return this.run(request);
+  }
+
+  cancel(): void {
+    this.generation += 1;
+    this.controller?.abort();
+    this.controller = null;
+  }
+}
+
 function errorCode(payload: unknown, status: number): string {
   if (payload && typeof payload === 'object') {
     const body = payload as Record<string, unknown>;
@@ -56,7 +114,16 @@ function errorCode(payload: unknown, status: number): string {
 
 export async function api<T>(path: string, init: RequestInit = {}, timeoutMs = 20_000): Promise<T> {
   const controller = new AbortController();
-  const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
+  const callerSignal = init.signal;
+  const abortFromCaller = (): void => controller.abort();
+  if (callerSignal?.aborted) abortFromCaller();
+  else callerSignal?.addEventListener('abort', abortFromCaller, { once: true });
+  let timedOut = false;
+  const timeout = window.setTimeout(() => {
+    if (controller.signal.aborted) return;
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
   try {
     const response = await fetch(path, {
       ...init,
@@ -76,12 +143,13 @@ export async function api<T>(path: string, init: RequestInit = {}, timeoutMs = 2
     if (!response.ok) throw new ApiError(response.status, errorCode(payload, response.status), payload);
     return payload as T;
   } catch (error) {
-    if (error instanceof DOMException && error.name === 'AbortError') {
+    if (timedOut && error instanceof DOMException && error.name === 'AbortError') {
       throw new ApiError(408, 'request_timeout', null);
     }
     throw error;
   } finally {
     window.clearTimeout(timeout);
+    callerSignal?.removeEventListener('abort', abortFromCaller);
   }
 }
 

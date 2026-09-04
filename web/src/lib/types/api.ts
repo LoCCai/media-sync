@@ -22,7 +22,9 @@ export type OperationKind =
   | 'asset-download'
   | 'scheduler-run'
   | 'pipeline-run'
-  | 'emby-export';
+  | 'emby-export'
+  | 'media-server-probe'
+  | 'media-server-scan';
 export type OperationState =
   | 'queued'
   | 'running'
@@ -82,6 +84,7 @@ export interface Settings {
   job_dir: string;
   api_bind: string;
   mediacrawler_python_executable: string | null;
+  media_server: MediaServerConfiguration;
 }
 
 export interface Account {
@@ -347,6 +350,111 @@ export interface LibraryAuthor {
   exported_count: number;
   last_published_at: string | null;
   archive_state: ArchiveState;
+}
+
+export type LibraryFreshness = 'not_published' | 'current' | 'outdated' | 'blocked';
+export type LibraryIntegrity =
+  | 'not_available'
+  | 'unchecked'
+  | 'page_verified'
+  | 'complete'
+  | 'budget_exhausted'
+  | 'drifted'
+  | 'inconsistent';
+export type LibraryAction = 'export_author';
+
+export interface ManagedLibraryFile {
+  relative_path: string;
+  sha256: string;
+  size_bytes: number;
+}
+
+export interface LibraryInspection {
+  schema_version: 1;
+  author_id: string;
+  publication: {
+    layout_version: string;
+    publication_scope: string;
+    job_id: string;
+    source_fingerprint: string;
+    tree_sha256: string;
+    manifest_sha256: string;
+    managed_file_count: number;
+  } | null;
+  freshness: LibraryFreshness;
+  freshness_reason_code: string | null;
+  integrity: LibraryIntegrity;
+  integrity_reason_code: string | null;
+  user_changes_protected: boolean;
+  files: ManagedLibraryFile[];
+  page: {
+    start_index: number;
+    next_index: number;
+    limit: number;
+    returned_count: number;
+    bytes_read: number;
+    complete: boolean;
+    budget_exhausted: boolean;
+    next_cursor: string | null;
+  };
+  allowed_actions: LibraryAction[];
+}
+
+export type MediaServerProvider = 'emby' | 'jellyfin';
+export type MediaServerAction = 'probe' | 'scan';
+
+export interface MediaServerConfiguration {
+  configured: boolean;
+  provider: MediaServerProvider | null;
+  origin: string | null;
+  library_id_digest: string | null;
+  profile_fingerprint: string | null;
+  verify_tls: boolean;
+  timeout_seconds: number;
+  operations_enabled: boolean;
+  allowed_network_count: number;
+  library_path_configured: boolean;
+  api_key_configured: boolean;
+}
+
+export interface MediaServerStatus {
+  schema_version: 1;
+  configuration: MediaServerConfiguration;
+  latest_probe: Operation | null;
+  latest_scan: Operation | null;
+  allowed_actions: MediaServerAction[];
+}
+
+export type HumanQualificationStatus = 'PASS' | 'FAIL' | 'NOT_RUN' | 'BLOCKED_EXTERNAL';
+export type ImplementationStatus = 'IMPLEMENTED' | 'NOT_IMPLEMENTED';
+
+export interface HumanQualificationCapability {
+  capability: string;
+  implementation_status: ImplementationStatus;
+  human_status: HumanQualificationStatus | null;
+}
+
+export interface Qualifications {
+  schema_version: 1;
+  generated_at: string;
+  policy: {
+    automated_evidence_confers_human_pass: false;
+    human_statuses: HumanQualificationStatus[];
+    implementation_statuses: ImplementationStatus[];
+  };
+  platforms: Array<{
+    platform: Platform;
+    automated_evidence: Record<string, number>;
+    human_qualification: HumanQualificationCapability[];
+  }>;
+  media_server: {
+    configured: boolean;
+    automated_evidence: {
+      latest_probe: Record<string, unknown> | null;
+      latest_targeted_scan: Record<string, unknown> | null;
+    };
+    human_qualification: HumanQualificationCapability[];
+  };
 }
 
 export interface ToolCheck {

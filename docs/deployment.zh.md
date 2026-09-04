@@ -120,7 +120,34 @@ checkout 的逐项状态、稳定 `detail_code`、实际 Chromium 版本和构�
 
 ## 5. 将媒体库接入 Emby/Jellyfin
 
-把 `media-sync-data` 卷的 `/data/library` 以只读方式挂给媒体服务器并添加为“剧集”媒体库。NFO、海报与剧集按创作者确定性生成。
+把 `media-sync-data` 卷的 `/data/library` 以只读方式挂给媒体服务器并添加为“剧集”媒体库。NFO、海报与剧集按创作者确定性生成。若媒体服务器需要看到宿主机 bind mount，按 compose 注释把同一个 `/srv/media-sync/data` 挂到 media-sync；`MEDIA_SYNC_MEDIA_SERVER_LIBRARY_PATH` 必须填写 **Emby/Jellyfin API 返回的那一侧绝对路径**，不能填写浏览器路径或任意替代路径。
+
+阶段 0054-A 支持一个不可变、环境变量托管的连接。把以下完整配置加到你本地 `docker-compose.yml` 的 `media-sync.environment`；六个选择器必须全部存在或全部省略：
+
+| 环境变量 | 含义 |
+| --- | --- |
+| `MEDIA_SYNC_MEDIA_SERVER_PROVIDER` | `emby` 或 `jellyfin` |
+| `MEDIA_SYNC_MEDIA_SERVER_BASE_URL` | 只有 scheme/host/port 的规范 HTTP(S) origin；不能带路径、userinfo、query 或 fragment |
+| `MEDIA_SYNC_MEDIA_SERVER_LIBRARY_ID` | 固定 Virtual Folder 的 `ItemId` |
+| `MEDIA_SYNC_MEDIA_SERVER_API_KEY_SECRET_REF` | `env:`、受限相对 `file:` 或 `keyring:` 引用；不是 key 值 |
+| `MEDIA_SYNC_MEDIA_SERVER_LIBRARY_PATH` | 该 Virtual Folder 的精确服务器侧绝对路径 |
+| `MEDIA_SYNC_MEDIA_SERVER_ALLOWED_CIDRS` | 显式允许的 IP/CIDR 列表；DNS 返回的每个地址都必须落在其中 |
+| `MEDIA_SYNC_MEDIA_SERVER_VERIFY_TLS` | 默认 `true`；生产环境保持开启 |
+| `MEDIA_SYNC_MEDIA_SERVER_TIMEOUT_SECONDS` | 0.1–60 秒，默认 10 |
+| `MEDIA_SYNC_MEDIA_SERVER_OPERATIONS_ENABLED` | probe/scan 共用服务端门，默认 `false` |
+
+API key 值应通过引用指向的环境变量或 secret 文件注入，不得写入仓库。配置 API 只返回脱敏摘要：不会回显 key、完整 secret reference、Library ID、服务器路径或网络范围。连接器禁止环境代理与重定向，校验全部 DNS 答案并绑定实际连接 IP，同时保留原始 Host/TLS SNI。
+
+先保持 `MEDIA_SYNC_MEDIA_SERVER_OPERATIONS_ENABLED=false` 启动并在「设置」检查摘要；核对 origin、TLS、网络规则数量与 Library 摘要后再打开门并重启。随后进入「媒体库」：
+
+1. 点作者行的「检查媒体树」，分页验证数据库成功发布链授权的 manifest；检查只读，不修复、删除、创建作者锁或泄露宿主路径。
+2. 点「测试连接」。后端只调用 `GET /System/Info` 与 `GET /Library/VirtualFolders`，并要求 Library ID 和路径精确唯一匹配。
+3. 点「定向刷新」。后端只调用 `POST /Items/{configured-library-id}/Refresh`；`404/405/501` 会关闭失败，绝不回退到全库 `/Library/Refresh`。
+4. 在「调度任务 → 持久操作」查看 `media-server-probe` / `media-server-scan`。scan 成功仅表示请求已接受；一旦越过应用层 dispatch gate，超时、断连、取消或未预期的传输/响应失败都会终结为不可重试的 `media_server_scan_acceptance_unknown`。不得自动再次提交刷新；必须先在服务器侧人工核对。
+
+若服务重启时远端 Operation 已丢失 lease，进行中的 probe 与定向 scan 都会收敛为 `interrupted`，因为 0054-A 不持久化远端任务标识。probe 可以人工重试；中断的定向 scan 会显示为不可重试，任何新请求前都必须先在服务器侧核对。
+
+`GET /api/v1/qualifications` 会把本地自动化计数、实现状态与真人资格分开。当前工作区没有真实服务器凭据，已实现的连接 probe、Library 发现与定向刷新接受三行真人状态仍为 `NOT_RUN`。扫描完成轮询与 provider/path 项目查找在另行冻结 0054-B 前保持 `NOT_IMPLEMENTED`；经鉴权的播放证据属于 0055。导出后自动扫描同样为 `NOT_IMPLEMENTED`，但尚无已冻结的后续归属。所有 `NOT_IMPLEMENTED` 能力的 `human_status` 都是 `null`，不得写成真人 `NOT_RUN`、`FAIL` 或 `PASS`。
 
 ## 6. 验收清单（如实记录）
 
@@ -130,6 +157,10 @@ checkout 的逐项状态、稳定 `detail_code`、实际 Chromium 版本和构�
 | 创作者抓取（哪个创作者、条数） | 调度任务结果 + 资产计数 |
 | 真实媒体下载 | 资产行达到 `verified`/`archived`；`/data/archive` 下出现 SHA-256 文件 |
 | Emby 目录发布 | `/data/library` 的作者目录列表 |
-| 媒体服务器扫描/播放 | 可选；未执行则记 `NOT_RUN` |
+| Emby/Jellyfin 真实连接与 Library 发现 | `media-server-probe` 成功记录 + 服务器版本；未执行记 `NOT_RUN` |
+| 定向刷新被真实服务器接受 | `media-server-scan` 成功记录；不等同扫描完成，未执行记 `NOT_RUN` |
+| 扫描完成与 provider/path 项目查找 | 0054-A 为 `NOT_IMPLEMENTED`；0054-B 尚待另行冻结；没有真人状态 |
+| 经鉴权的播放证据 | 0054-A 为 `NOT_IMPLEMENTED`；后移至 0055；没有真人状态 |
+| 导出后自动扫描 | `NOT_IMPLEMENTED`；尚无已冻结后续归属，也没有真人状态 |
 
 现网证据以实际运行为准；未执行的项一律保持 `NOT_RUN`，遵守项目真实性规则。

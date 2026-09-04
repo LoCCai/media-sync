@@ -16,6 +16,9 @@ const STATUS_LABELS: Record<string, string> = {
   awaiting_auth: '等待认证',
   cancelled: '已取消',
   claimed: '已领取',
+  complete: '完整',
+  current: '当前',
+  danger: '异常',
   discovered: '已发现',
   downloaded: '已下载',
   downloading: '下载中',
@@ -27,19 +30,31 @@ const STATUS_LABELS: Record<string, string> = {
   failed_retryable: '可重试',
   failed_terminal: '终止失败',
   interrupted: '已中断',
+  inconsistent: '不一致',
+  info: '信息',
+  not_available: '不可用',
+  not_published: '未发布',
   not_run: '未运行',
   paused: '已暂停',
   pass: '通过',
   pending: '准备中',
+  page_verified: '本页已校验',
   queued: '排队中',
   required: '需要认证',
   retry_wait: '等待重试',
   running: '运行中',
   succeeded: '成功',
+  success: '正常',
   unknown: '未认证',
   verified: '已校验',
   waiting_auth: '等待认证',
-  waiting_user: '等待扫码'
+  waiting_user: '等待扫码',
+  warning: '注意',
+  blocked: '已阻塞',
+  budget_exhausted: '预算已用尽',
+  drifted: '已漂移',
+  outdated: '已过期',
+  unchecked: '未检查'
 };
 
 export function statusLabel(status: string | null | undefined): string {
@@ -51,12 +66,62 @@ export function statusTone(
   status: string | null | undefined
 ): 'success' | 'warning' | 'danger' | 'info' | '' {
   if (!status) return '';
-  if (['authenticated', 'enabled', 'exported', 'succeeded', 'verified'].includes(status)) return 'success';
-  if (['failed', 'failed_retryable', 'failed_terminal', 'interrupted'].includes(status)) return 'danger';
-  if (['expired', 'required', 'retry_wait', 'unknown', 'waiting_auth', 'waiting_user'].includes(status)) {
+  if (
+    [
+      'authenticated',
+      'complete',
+      'current',
+      'enabled',
+      'exported',
+      'succeeded',
+      'success',
+      'verified'
+    ].includes(status)
+  )
+    return 'success';
+  if (
+    [
+      'danger',
+      'drifted',
+      'failed',
+      'failed_retryable',
+      'failed_terminal',
+      'inconsistent',
+      'interrupted'
+    ].includes(status)
+  )
+    return 'danger';
+  if (
+    [
+      'blocked',
+      'budget_exhausted',
+      'expired',
+      'outdated',
+      'required',
+      'retry_wait',
+      'unknown',
+      'waiting_auth',
+      'waiting_user',
+      'warning'
+    ].includes(status)
+  ) {
     return 'warning';
   }
-  if (['authenticating', 'claimed', 'downloading', 'pending', 'queued', 'running'].includes(status))
+  if (
+    [
+      'authenticating',
+      'claimed',
+      'downloading',
+      'info',
+      'not_available',
+      'not_published',
+      'page_verified',
+      'pending',
+      'queued',
+      'running',
+      'unchecked'
+    ].includes(status)
+  )
     return 'info';
   return '';
 }
@@ -120,6 +185,8 @@ export function operationLabel(kind: string): string {
       'account-login': '账户登录',
       'asset-download': '资产下载',
       'emby-export': '媒体库导出',
+      'media-server-probe': '媒体服务器探测',
+      'media-server-scan': '媒体库定向刷新',
       'pipeline-run': '下载 / 导出 Worker',
       'scheduler-run': '订阅同步 Worker'
     }[kind] ?? kind

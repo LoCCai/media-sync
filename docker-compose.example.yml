@@ -31,6 +31,21 @@ services:
     restart: unless-stopped
     ports:
       - "127.0.0.1:8632:8632"
+    environment:
+      MEDIA_SYNC_LIBRARY_INSPECTION_MAX_BYTES: 1073741824
+      MEDIA_SYNC_LIBRARY_INSPECTION_DEADLINE_SECONDS: 10
+      # Optional media-server control: uncomment ALL six selectors together,
+      # review every allowed DNS answer/CIDR, then explicitly open the gate.
+      # MEDIA_SYNC_MEDIA_SERVER_PROVIDER: emby
+      # MEDIA_SYNC_MEDIA_SERVER_BASE_URL: https://media.example.internal:8920
+      # MEDIA_SYNC_MEDIA_SERVER_LIBRARY_ID: replace-with-fixed-library-item-id
+      # MEDIA_SYNC_MEDIA_SERVER_API_KEY_SECRET_REF: env:MEDIA_SYNC_MEDIA_SERVER_API_KEY
+      # MEDIA_SYNC_MEDIA_SERVER_LIBRARY_PATH: /srv/media-sync/data/library
+      # MEDIA_SYNC_MEDIA_SERVER_ALLOWED_CIDRS: 10.20.0.0/16,fd00:20::/64
+      # MEDIA_SYNC_MEDIA_SERVER_VERIFY_TLS: "true"
+      # MEDIA_SYNC_MEDIA_SERVER_TIMEOUT_SECONDS: 10
+      # MEDIA_SYNC_MEDIA_SERVER_OPERATIONS_ENABLED: "false"
+      # MEDIA_SYNC_MEDIA_SERVER_API_KEY: ${MEDIA_SYNC_MEDIA_SERVER_API_KEY:?set-in-shell}
     volumes:
       - media-sync-data:/data
       # To hand /data/library to a host Emby/Jellyfin, prefer an explicit bind

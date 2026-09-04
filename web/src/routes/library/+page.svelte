@@ -1,17 +1,47 @@
 <script lang="ts">
   import { onDestroy, onMount } from 'svelte';
-  import { Archive, Database, Film, FolderCheck, Images, RefreshCw, Search, Send } from '@lucide/svelte';
+  import {
+    Archive,
+    ChevronDown,
+    Database,
+    Eye,
+    Film,
+    FolderCheck,
+    Images,
+    RefreshCw,
+    Search,
+    Send,
+    Server,
+    ShieldCheck
+  } from '@lucide/svelte';
 
-  import { api, apiMessage } from '$lib/api/client';
+  import { api, apiMessage, LatestRequestGate } from '$lib/api/client';
   import EmptyState from '$lib/components/EmptyState.svelte';
+  import Modal from '$lib/components/Modal.svelte';
   import PageHeader from '$lib/components/PageHeader.svelte';
   import Panel from '$lib/components/Panel.svelte';
   import PlatformMark from '$lib/components/PlatformMark.svelte';
   import StatusBadge from '$lib/components/StatusBadge.svelte';
   import { toast } from '$lib/stores/toast';
-  import type { LibraryAuthor, Platform, StartedOperation } from '$lib/types/api';
+  import type {
+    LibraryAuthor,
+    LibraryInspection,
+    MediaServerAction,
+    MediaServerStatus,
+    Platform,
+    StartedOperation
+  } from '$lib/types/api';
   import { buildExplorerQuery, EXPLORER_RESULT_LIMIT } from '$lib/utils/explorer';
-  import { formatDate, PLATFORM_META, shortId } from '$lib/utils/format';
+  import { formatBytes, formatDate, PLATFORM_META, shortId } from '$lib/utils/format';
+  import {
+    libraryAllows,
+    libraryFreshnessLabel,
+    libraryIntegrityLabel,
+    mediaServerAllows,
+    mediaServerPosture,
+    mergeLibraryInspectionPage,
+    type LibraryInspectionView
+  } from '$lib/utils/library';
 
   let authors: LibraryAuthor[] = [];
   let loading = true;
@@ -19,8 +49,18 @@
   let error = '';
   let search = '';
   let platform: Platform | 'all' = 'all';
+  let mediaServer: MediaServerStatus | null = null;
+  let mediaServerError = '';
+  let serverActing: MediaServerAction | '' = '';
+  let selectedAuthor: LibraryAuthor | null = null;
+  let inspectionView: LibraryInspectionView | null = null;
+  let inspectionOpen = false;
+  let inspectionLoading = false;
+  let inspectionError = '';
   let mounted = false;
   let listRequest = 0;
+  let inspectionRequest = 0;
+  const mediaServerRequest = new LatestRequestGate();
   let searchTimer: number | undefined;
 
   $: totalContent = authors.reduce((sum, item) => sum + item.content_count, 0);
@@ -28,6 +68,7 @@
   $: archivedAssets = authors.reduce((sum, item) => sum + item.archived_count, 0);
   $: exportedContent = authors.reduce((sum, item) => sum + item.exported_count, 0);
   $: hasFilters = Boolean(search.trim()) || platform !== 'all';
+  $: serverPosture = mediaServerPosture(mediaServer);
 
   async function load(): Promise<void> {
     if (!mounted) return;
@@ -51,6 +92,19 @@
     }
   }
 
+  async function loadMediaServer(): Promise<void> {
+    mediaServerError = '';
+    const result = await mediaServerRequest.run((signal) =>
+      api<MediaServerStatus>('/api/v1/media-server', { signal })
+    );
+    if (result.status === 'fulfilled') mediaServer = result.value;
+    else if (result.status === 'rejected') mediaServerError = apiMessage(result.reason);
+  }
+
+  async function refreshAll(): Promise<void> {
+    await Promise.all([load(), loadMediaServer()]);
+  }
+
   function scheduleLoad(): void {
     if (!mounted) return;
     if (searchTimer !== undefined) window.clearTimeout(searchTimer);
@@ -69,6 +123,60 @@
       toast(apiMessage(caught), 'danger');
     } finally {
       acting = '';
+    }
+  }
+
+  async function inspectAuthor(author: LibraryAuthor): Promise<void> {
+    selectedAuthor = author;
+    inspectionView = null;
+    inspectionError = '';
+    inspectionOpen = true;
+    await loadInspectionPage(author, null);
+  }
+
+  async function loadInspectionPage(author: LibraryAuthor, cursor: string | null): Promise<void> {
+    const request = ++inspectionRequest;
+    inspectionLoading = true;
+    inspectionError = '';
+    try {
+      const query = new URLSearchParams({ limit: '64' });
+      if (cursor) query.set('cursor', cursor);
+      const incoming = await api<LibraryInspection>(
+        `/api/v1/library/${encodeURIComponent(author.author_id)}?${query.toString()}`
+      );
+      if (request === inspectionRequest) {
+        inspectionView = mergeLibraryInspectionPage(cursor ? inspectionView : null, incoming);
+      }
+    } catch (caught) {
+      if (request === inspectionRequest) inspectionError = apiMessage(caught);
+    } finally {
+      if (request === inspectionRequest) inspectionLoading = false;
+    }
+  }
+
+  async function loadMoreInspection(): Promise<void> {
+    const cursor = inspectionView?.inspection.page.next_cursor;
+    if (!selectedAuthor || !cursor) return;
+    await loadInspectionPage(selectedAuthor, cursor);
+  }
+
+  async function runMediaServerAction(action: MediaServerAction): Promise<void> {
+    if (!mediaServerAllows(mediaServer, action)) return;
+    serverActing = action;
+    try {
+      const started = await api<StartedOperation>(`/api/v1/media-server/${action}`, {
+        method: 'POST',
+        body: JSON.stringify({})
+      });
+      toast(
+        `${action === 'probe' ? '媒体服务器探测' : '媒体库定向刷新'}已启动 · ${shortId(started.operation_id)}`
+      );
+      await loadMediaServer();
+    } catch (caught) {
+      toast(apiMessage(caught), 'danger');
+      await loadMediaServer();
+    } finally {
+      serverActing = '';
     }
   }
 
@@ -93,11 +201,13 @@
     const requestedPlatform = query.get('platform');
     if (requestedPlatform && requestedPlatform in PLATFORM_META) platform = requestedPlatform as Platform;
     mounted = true;
-    void load();
+    void refreshAll();
   });
 
   onDestroy(() => {
     listRequest += 1;
+    inspectionRequest += 1;
+    mediaServerRequest.cancel();
     if (searchTimer !== undefined) window.clearTimeout(searchTimer);
   });
 </script>
@@ -105,7 +215,7 @@
 <div class="page">
   <PageHeader title="媒体库" description="按作者搜索媒体目录，并下钻到对应内容与资产。">
     <svelte:fragment slot="actions">
-      <button class="button secondary" type="button" on:click={load} disabled={loading}>
+      <button class="button secondary" type="button" on:click={refreshAll} disabled={loading}>
         <RefreshCw class={loading ? 'spin' : ''} size={15} />刷新
       </button>
     </svelte:fragment>
@@ -133,6 +243,62 @@
       <span class="summary-hint">成功发布的内容</span>
     </div>
   </section>
+
+  <Panel title="Emby / Jellyfin 连接" description="只使用服务端环境变量中的固定目标与网络策略">
+    {#if mediaServerError}
+      <div class="notice danger">{mediaServerError}</div>
+    {:else if !mediaServer}
+      <div class="server-loading skeleton"></div>
+    {:else}
+      <div class="media-server-row">
+        <span class="server-icon"><Server size={21} /></span>
+        <div class="server-identity">
+          <strong>{mediaServer.configuration.provider?.toUpperCase() ?? '未配置媒体服务器'}</strong>
+          <span>{mediaServer.configuration.origin ?? '请在部署环境中配置固定服务器'}</span>
+        </div>
+        <StatusBadge status={serverPosture.tone} label={serverPosture.label} />
+        <div class="server-evidence">
+          <span>最近探测</span>
+          <StatusBadge status={mediaServer.latest_probe?.state ?? 'not_run'} />
+        </div>
+        <div class="server-evidence">
+          <span>最近刷新请求</span>
+          <StatusBadge status={mediaServer.latest_scan?.state ?? 'not_run'} />
+        </div>
+        <div class="server-actions">
+          <button
+            class="button secondary small"
+            type="button"
+            on:click={() => runMediaServerAction('probe')}
+            disabled={!!serverActing || !mediaServerAllows(mediaServer, 'probe')}
+          >
+            <ShieldCheck size={14} />{serverActing === 'probe' ? '启动中…' : '测试连接'}
+          </button>
+          <button
+            class="button secondary small"
+            type="button"
+            on:click={() => runMediaServerAction('scan')}
+            disabled={!!serverActing || !mediaServerAllows(mediaServer, 'scan')}
+          >
+            <RefreshCw class={serverActing === 'scan' ? 'spin' : ''} size={14} />{serverActing === 'scan'
+              ? '启动中…'
+              : '定向刷新'}
+          </button>
+        </div>
+      </div>
+      {#if !mediaServer.configuration.configured}
+        <div class="notice server-note">未配置时不会联网；请在设置页查看所需的只读配置姿态。</div>
+      {:else if !mediaServer.configuration.operations_enabled}
+        <div class="notice warning server-note">
+          服务端操作门默认关闭；启用前请确认固定目标、凭据与允许 CIDR。
+        </div>
+      {:else}
+        <div class="notice server-note">
+          刷新只调用已配置 Library 的定向接口；“已接受”不代表扫描完成或媒体已经可播放。
+        </div>
+      {/if}
+    {/if}
+  </Panel>
 
   <Panel title="作者媒体库" description={`${authors.length} 条服务端结果`} flush>
     <svelte:fragment slot="actions">
@@ -240,9 +406,8 @@
                     <button
                       class="button secondary small"
                       type="button"
-                      on:click={() => exportAuthor(author)}
-                      disabled={!!acting}
-                      ><Send size={14} />{acting === author.author_id ? '启动中…' : '导出 / 更新'}</button
+                      on:click={() => inspectAuthor(author)}
+                      disabled={inspectionLoading}><Eye size={14} />检查媒体树</button
                     >
                   </div>
                 </td>
@@ -255,12 +420,173 @@
   </Panel>
 
   <div class="notice deferred-note">
-    <FolderCheck size={17} />本页只展示安全目录与导出事实；Emby / Jellyfin
-    树浏览、扫描和播放控制将在后续版本提供。
+    <FolderCheck size={17} />定向刷新完成轮询、媒体项目查找与播放证据仍标记为
+    NOT_IMPLEMENTED；本页不会把离线测试或请求已接受显示为真人通过。
   </div>
 </div>
 
+<Modal
+  bind:open={inspectionOpen}
+  title={selectedAuthor ? `${selectedAuthor.display_name} · 受管媒体树` : '受管媒体树'}
+  description="数据库发布链授权、manifest 绑定且有界的只读检查；不显示宿主路径或来源 URL"
+  wide
+>
+  {#if inspectionError}
+    <div class="notice danger inspection-error">{inspectionError}</div>
+  {/if}
+  {#if inspectionLoading && !inspectionView}
+    <div class="inspection-loading"><RefreshCw class="spin" size={20} />正在校验受管文件…</div>
+  {:else if inspectionView}
+    {@const inspection = inspectionView.inspection}
+    <section class="inspection-status">
+      <div>
+        <span>新鲜度</span>
+        <StatusBadge status={inspection.freshness} label={libraryFreshnessLabel(inspection.freshness)} />
+      </div>
+      <div>
+        <span>完整性</span>
+        <StatusBadge status={inspection.integrity} label={libraryIntegrityLabel(inspection.integrity)} />
+      </div>
+      <div>
+        <span>受管文件</span>
+        <strong>{inspectionView.files.length} / {inspection.publication?.managed_file_count ?? 0}</strong>
+      </div>
+      <div>
+        <span>本页读取</span>
+        <strong>{formatBytes(inspection.page.bytes_read)}</strong>
+      </div>
+    </section>
+
+    {#if inspection.freshness_reason_code || inspection.integrity_reason_code}
+      <div
+        class:danger={['drifted', 'inconsistent'].includes(inspection.integrity)}
+        class="notice inspection-reason"
+      >
+        <span class="mono">{inspection.integrity_reason_code ?? inspection.freshness_reason_code}</span>
+      </div>
+    {/if}
+
+    {#if inspection.publication}
+      <dl class="publication-facts">
+        <div>
+          <dt>发布 Job</dt>
+          <dd class="mono">{shortId(inspection.publication.job_id)}</dd>
+        </div>
+        <div>
+          <dt>布局版本</dt>
+          <dd>{inspection.publication.layout_version}</dd>
+        </div>
+        <div>
+          <dt>Manifest</dt>
+          <dd class="mono">{shortId(inspection.publication.manifest_sha256)}</dd>
+        </div>
+        <div>
+          <dt>Tree</dt>
+          <dd class="mono">{shortId(inspection.publication.tree_sha256)}</dd>
+        </div>
+      </dl>
+    {/if}
+
+    {#if inspectionView.files.length === 0}
+      <EmptyState
+        title={inspection.publication ? '本页没有可显示文件' : '作者尚未发布'}
+        description={inspection.publication
+          ? '检查预算可能在读取首个文件前耗尽；可根据状态重新检查。'
+          : '只有后端允许时，才可从本窗口启动作者导出。'}
+      />
+    {:else}
+      <div class="table-wrap inspection-files-wrap">
+        <table class="data-table inspection-files">
+          <thead><tr><th>逻辑相对路径</th><th>大小</th><th>SHA-256</th></tr></thead>
+          <tbody>
+            {#each inspectionView.files as file}
+              <tr>
+                <td class="mono relative-path">{file.relative_path}</td>
+                <td>{formatBytes(file.size_bytes)}</td>
+                <td class="mono">{shortId(file.sha256)}</td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      </div>
+    {/if}
+
+    <div class="notice protected-note">
+      <ShieldCheck size={17} />{inspection.user_changes_protected
+        ? '用户修改保护已开启：检查不会修复、删除或覆盖文件。'
+        : '未确认用户修改保护。'}
+    </div>
+  {/if}
+
+  <svelte:fragment slot="footer">
+    {#if selectedAuthor && inspectionView && libraryAllows(inspectionView.inspection, 'export_author')}
+      <button class="button" type="button" on:click={() => exportAuthor(selectedAuthor!)} disabled={!!acting}
+        ><Send size={14} />{acting === selectedAuthor.author_id ? '启动中…' : '导出 / 更新'}</button
+      >
+    {/if}
+    {#if inspectionView?.inspection.page.next_cursor}
+      <button
+        class="button secondary"
+        type="button"
+        on:click={loadMoreInspection}
+        disabled={inspectionLoading}
+        ><ChevronDown size={14} />{inspectionLoading ? '校验中…' : '继续校验下一页'}</button
+      >
+    {/if}
+    <button class="button secondary" type="button" on:click={() => (inspectionOpen = false)}>关闭</button>
+  </svelte:fragment>
+</Modal>
+
 <style>
+  .server-loading {
+    height: 58px;
+  }
+
+  .media-server-row {
+    display: grid;
+    grid-template-columns: auto minmax(180px, 1fr) auto auto auto auto;
+    align-items: center;
+    gap: 13px;
+  }
+
+  .server-icon {
+    display: inline-flex;
+    width: 42px;
+    height: 42px;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid var(--border);
+    border-radius: 9px;
+    background: #f8fafc;
+    color: #536984;
+  }
+
+  .server-identity,
+  .server-evidence {
+    display: grid;
+    gap: 3px;
+  }
+
+  .server-identity strong {
+    color: var(--text);
+    font-size: 13px;
+  }
+
+  .server-identity span,
+  .server-evidence > span {
+    color: var(--text-muted);
+    font-size: 10.5px;
+  }
+
+  .server-actions {
+    display: flex;
+    gap: 5px;
+  }
+
+  .server-note {
+    margin-top: 13px;
+  }
+
   .library-filters {
     flex-wrap: nowrap;
   }
@@ -359,9 +685,94 @@
     align-items: center;
   }
 
+  .inspection-loading {
+    display: flex;
+    min-height: 180px;
+    align-items: center;
+    justify-content: center;
+    gap: 9px;
+    color: var(--text-muted);
+  }
+
+  .inspection-error {
+    margin-bottom: 12px;
+  }
+
+  .inspection-status {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  .inspection-status > div {
+    display: grid;
+    gap: 7px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px 11px;
+    background: #fafbfd;
+  }
+
+  .inspection-status span:first-child,
+  .publication-facts dt {
+    color: var(--text-muted);
+    font-size: 10.5px;
+  }
+
+  .inspection-status strong {
+    font-size: 12px;
+  }
+
+  .inspection-reason,
+  .protected-note {
+    margin-top: 12px;
+  }
+
+  .publication-facts {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 8px;
+    margin: 12px 0;
+  }
+
+  .publication-facts > div {
+    min-width: 0;
+    border-bottom: 1px solid var(--border);
+    padding: 8px 4px;
+  }
+
+  .publication-facts dd {
+    margin: 4px 0 0;
+    color: var(--text-secondary);
+    font-size: 11px;
+  }
+
+  .inspection-files-wrap {
+    max-height: 360px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+  }
+
+  .inspection-files {
+    min-width: 680px;
+  }
+
+  .relative-path {
+    max-width: 440px;
+    overflow-wrap: anywhere;
+  }
+
   @media (max-width: 980px) {
     .library-table {
       min-width: 960px;
+    }
+
+    .media-server-row {
+      grid-template-columns: auto minmax(180px, 1fr) auto auto;
+    }
+
+    .server-actions {
+      grid-column: 2 / -1;
     }
   }
 
@@ -374,6 +785,20 @@
 
     .library-filters {
       flex-wrap: wrap;
+    }
+
+    .media-server-row,
+    .inspection-status,
+    .publication-facts {
+      grid-template-columns: 1fr 1fr;
+    }
+
+    .server-icon {
+      display: none;
+    }
+
+    .server-actions {
+      grid-column: 1 / -1;
     }
   }
 </style>

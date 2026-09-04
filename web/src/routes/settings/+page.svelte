@@ -1,35 +1,57 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onDestroy, onMount } from 'svelte';
   import { ExternalLink, FolderCog, RefreshCw, RotateCcw, Server, ShieldCheck } from '@lucide/svelte';
 
-  import { api, apiMessage } from '$lib/api/client';
+  import { api, apiMessage, LatestRequestGate } from '$lib/api/client';
   import Modal from '$lib/components/Modal.svelte';
   import PageHeader from '$lib/components/PageHeader.svelte';
   import Panel from '$lib/components/Panel.svelte';
   import StatusBadge from '$lib/components/StatusBadge.svelte';
   import { onboardingAccepted, resetOnboarding } from '$lib/stores/onboarding';
   import { toast } from '$lib/stores/toast';
-  import type { Settings } from '$lib/types/api';
+  import type { Qualifications, Settings } from '$lib/types/api';
+  import { PLATFORM_META, shortId } from '$lib/utils/format';
 
   let settings: Settings | null = null;
-  let loading = true;
-  let error = '';
+  let qualifications: Qualifications | null = null;
+  let settingsLoading = true;
+  let qualificationsLoading = true;
+  let settingsError = '';
+  let qualificationsError = '';
   let resetOpen = false;
+  const settingsRequest = new LatestRequestGate();
+  const qualificationsRequest = new LatestRequestGate();
+
+  $: loading = settingsLoading || qualificationsLoading;
 
   $: nonLoopback = settings
     ? !settings.api_bind.startsWith('127.0.0.1:') && !settings.api_bind.startsWith('localhost:')
     : false;
 
+  async function loadSettings(): Promise<void> {
+    settingsLoading = true;
+    settingsError = '';
+    const result = await settingsRequest.run((signal) => api<Settings>('/api/v1/settings', { signal }));
+    if (result.status === 'superseded') return;
+    if (result.status === 'fulfilled') settings = result.value;
+    else settingsError = apiMessage(result.reason);
+    settingsLoading = false;
+  }
+
+  async function loadQualifications(): Promise<void> {
+    qualificationsLoading = true;
+    qualificationsError = '';
+    const result = await qualificationsRequest.run((signal) =>
+      api<Qualifications>('/api/v1/qualifications', { signal })
+    );
+    if (result.status === 'superseded') return;
+    if (result.status === 'fulfilled') qualifications = result.value;
+    else qualificationsError = apiMessage(result.reason);
+    qualificationsLoading = false;
+  }
+
   async function load(): Promise<void> {
-    loading = true;
-    error = '';
-    try {
-      settings = await api<Settings>('/api/v1/settings');
-    } catch (caught) {
-      error = apiMessage(caught);
-    } finally {
-      loading = false;
-    }
+    await Promise.all([loadSettings(), loadQualifications()]);
   }
 
   function confirmReset(): void {
@@ -39,6 +61,11 @@
   }
 
   onMount(() => void load());
+
+  onDestroy(() => {
+    settingsRequest.cancel();
+    qualificationsRequest.cancel();
+  });
 </script>
 
 <div class="page">
@@ -50,7 +77,7 @@
     >
   </PageHeader>
 
-  {#if error}<div class="notice danger">{error}</div>{/if}
+  {#if settingsError}<div class="notice danger">{settingsError}</div>{/if}
   {#if nonLoopback}
     <div class="notice warning">
       <ShieldCheck size={17} />
@@ -63,7 +90,7 @@
 
   <div class="settings-grid">
     <Panel title="运行配置" description="环境变量解析后的只读值">
-      {#if loading && !settings}
+      {#if settingsLoading && !settings}
         <div class="settings-skeleton">
           {#each Array(6) as _}<div class="skeleton"></div>{/each}
         </div>
@@ -101,6 +128,63 @@
       {/if}
     </Panel>
 
+    <Panel title="媒体服务器" description="环境变量托管的只读脱敏配置">
+      {#if settingsLoading && !settings}
+        <div class="settings-skeleton">
+          {#each Array(6) as _}<div class="skeleton"></div>{/each}
+        </div>
+      {:else if settings}
+        <div class="preference-row">
+          <span class="preference-icon"><Server size={19} /></span>
+          <div>
+            <strong>{settings.media_server.provider?.toUpperCase() ?? '未配置媒体服务器'}</strong>
+            <p>{settings.media_server.origin ?? '通过 MEDIA_SYNC_MEDIA_SERVER_* 环境变量配置'}</p>
+          </div>
+          <StatusBadge
+            status={settings.media_server.configured
+              ? settings.media_server.operations_enabled
+                ? 'enabled'
+                : 'required'
+              : 'not_run'}
+            label={settings.media_server.configured
+              ? settings.media_server.operations_enabled
+                ? '操作门已开启'
+                : '操作门已关闭'
+              : '未配置'}
+          />
+        </div>
+        <dl class="key-value-list server-facts">
+          <div class="key-value-row">
+            <dt>TLS 校验</dt>
+            <dd>{settings.media_server.verify_tls ? '开启' : '关闭（需人工复核）'}</dd>
+          </div>
+          <div class="key-value-row">
+            <dt>请求超时</dt>
+            <dd>{settings.media_server.timeout_seconds} 秒</dd>
+          </div>
+          <div class="key-value-row">
+            <dt>允许网络规则</dt>
+            <dd>{settings.media_server.allowed_network_count} 条（具体范围不回显）</dd>
+          </div>
+          <div class="key-value-row">
+            <dt>Library 身份</dt>
+            <dd class="mono">{shortId(settings.media_server.library_id_digest)}</dd>
+          </div>
+          <div class="key-value-row">
+            <dt>服务器路径映射</dt>
+            <dd>{settings.media_server.library_path_configured ? '已配置，不回显路径' : '未配置'}</dd>
+          </div>
+          <div class="key-value-row">
+            <dt>API Key</dt>
+            <dd>{settings.media_server.api_key_configured ? '已配置，不回显引用或值' : '未配置'}</dd>
+          </div>
+        </dl>
+        <div class="notice" style="margin-top:14px">
+          <ShieldCheck size={17} />本页不能修改 URL、Library、网络范围或凭据。修改环境变量并重启后才会生效。
+        </div>
+      {/if}
+    </Panel>
+
     <Panel title="首次使用确认" description="当前浏览器中的本地确认状态">
       <div class="preference-row">
         <span class="preference-icon"><ShieldCheck size={19} /></span>
@@ -124,6 +208,57 @@
       </div>
     </Panel>
   </div>
+
+  <Panel title="资格证据" description="本地自动化事实与真人验收严格分开">
+    {#if qualificationsError}<div class="notice danger qualification-error">{qualificationsError}</div>{/if}
+    {#if qualificationsLoading && !qualifications}
+      <div class="settings-skeleton">
+        {#each Array(4) as _}<div class="skeleton"></div>{/each}
+      </div>
+    {:else if qualifications}
+      <div class="notice qualification-policy">
+        <ShieldCheck size={17} />自动测试、数据库记录和 Operation 成功不会自动变成真人 PASS；当前真人行保持
+        NOT_RUN。
+      </div>
+      <div class="table-wrap qualification-table-wrap">
+        <table class="data-table qualification-table">
+          <thead>
+            <tr
+              ><th>平台</th><th>账户</th><th>订阅</th><th>内容</th><th>已验证资产</th><th>成功导出</th><th
+                >真人状态</th
+              ></tr
+            >
+          </thead>
+          <tbody>
+            {#each qualifications.platforms as row}
+              <tr>
+                <td>{PLATFORM_META[row.platform].name}</td>
+                <td>{row.automated_evidence.account_count ?? 0}</td>
+                <td>{row.automated_evidence.subscription_count ?? 0}</td>
+                <td>{row.automated_evidence.content_count ?? 0}</td>
+                <td>{row.automated_evidence.verified_asset_count ?? 0}</td>
+                <td>{row.automated_evidence.successful_export_count ?? 0}</td>
+                <td><StatusBadge status="not_run" label="真人 NOT_RUN" /></td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      </div>
+      <div class="capability-grid">
+        {#each qualifications.media_server.human_qualification as capability}
+          <div>
+            <span class="mono">{capability.capability}</span>
+            <StatusBadge
+              status={capability.implementation_status === 'IMPLEMENTED' ? 'not_run' : 'required'}
+              label={capability.implementation_status === 'IMPLEMENTED'
+                ? `真人 ${capability.human_status}`
+                : 'NOT_IMPLEMENTED'}
+            />
+          </div>
+        {/each}
+      </div>
+    {/if}
+  </Panel>
 
   <Panel title="迁移与维护" description="Web Console v2 与旧控制台并行一个发布周期">
     <div class="maintenance-list">
@@ -179,6 +314,37 @@
   .settings-skeleton {
     display: grid;
     gap: 10px;
+  }
+
+  .server-facts {
+    margin-top: 15px;
+  }
+
+  .qualification-policy {
+    margin-bottom: 14px;
+  }
+
+  .qualification-table {
+    min-width: 760px;
+  }
+
+  .capability-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+    margin-top: 14px;
+  }
+
+  .capability-grid > div {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    padding: 9px 11px;
+    background: #fafbfd;
+    font-size: 11px;
   }
 
   .settings-skeleton div {
@@ -258,6 +424,12 @@
 
   @media (max-width: 1050px) {
     .settings-grid {
+      grid-template-columns: 1fr;
+    }
+  }
+
+  @media (max-width: 720px) {
+    .capability-grid {
       grid-template-columns: 1fr;
     }
   }

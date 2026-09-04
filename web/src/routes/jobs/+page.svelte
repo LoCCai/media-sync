@@ -14,7 +14,7 @@
     Workflow
   } from '@lucide/svelte';
 
-  import { api, apiMessage } from '$lib/api/client';
+  import { api, apiMessage, LatestRequestGate } from '$lib/api/client';
   import EmptyState from '$lib/components/EmptyState.svelte';
   import Modal from '$lib/components/Modal.svelte';
   import PageHeader from '$lib/components/PageHeader.svelte';
@@ -69,6 +69,7 @@
   let detailLoading = false;
   let detailError = '';
   let detailRequest = 0;
+  const jobsRequest = new LatestRequestGate();
   let cancellingOperationId = '';
 
   let jobsRefreshTimer: number | null = null;
@@ -148,13 +149,18 @@
     return { title: '正在连接实时事件流', detail: '连接就绪后会先读取一次有界操作快照。' };
   }
 
-  async function loadJobs(): Promise<void> {
-    jobs = await api<Job[]>('/api/v1/scheduler/jobs?limit=200');
+  async function loadJobs(skipIfBusy = false): Promise<void> {
+    const request = (signal: AbortSignal): Promise<Job[]> =>
+      api<Job[]>('/api/v1/scheduler/jobs?limit=200', { signal });
+    const result = await (skipIfBusy ? jobsRequest.runIfIdle(request) : jobsRequest.run(request));
+    if (result.status === 'busy' || result.status === 'superseded') return;
+    if (result.status === 'rejected') throw result.reason;
+    jobs = result.value;
   }
 
   async function loadJobsSilently(): Promise<void> {
     try {
-      await loadJobs();
+      await loadJobs(true);
     } catch {
       // The operation stream remains independent; the next bounded Job refresh retries.
     }
@@ -172,14 +178,19 @@
   }
 
   async function load(silent = false): Promise<void> {
-    if (!silent) loading = true;
-    error = '';
-    const [jobResult, operationResult] = await Promise.allSettled([loadJobs(), loadOperationSnapshot()]);
+    if (!silent) {
+      loading = true;
+      error = '';
+    }
+    const [jobResult, operationResult] = await Promise.allSettled([
+      loadJobs(silent),
+      loadOperationSnapshot()
+    ]);
     const failures = [jobResult, operationResult].filter(
       (result): result is PromiseRejectedResult => result.status === 'rejected'
     );
-    if (failures.length > 0 && !silent)
-      error = failures.map((result) => apiMessage(result.reason)).join(' · ');
+    if (silent) return;
+    if (failures.length > 0) error = failures.map((result) => apiMessage(result.reason)).join(' · ');
     loading = false;
   }
 
@@ -399,6 +410,7 @@
 
   onDestroy(() => {
     operationStream?.close();
+    jobsRequest.cancel();
     if (jobsRefreshTimer !== null) window.clearInterval(jobsRefreshTimer);
     clearFallbackTimer();
     if (detailRefreshTimer !== null) window.clearTimeout(detailRefreshTimer);
@@ -506,6 +518,8 @@
             <option value="scheduler-run">订阅同步</option>
             <option value="pipeline-run">下载 / 导出</option>
             <option value="emby-export">媒体库导出</option>
+            <option value="media-server-probe">媒体服务器探测</option>
+            <option value="media-server-scan">媒体库定向刷新</option>
           </select>
         </label>
         <label>
@@ -566,7 +580,10 @@
         </div>
       {/if}
     {:else if filteredOperations.length === 0}
-      <EmptyState title="没有匹配操作" description="调整筛选，或启动同步、下载、登录及媒体库导出。" />
+      <EmptyState
+        title="没有匹配操作"
+        description="调整筛选，或启动同步、下载、登录、媒体库导出及服务器刷新。"
+      />
     {:else}
       <div class="table-wrap">
         <table class="data-table operations-table">
