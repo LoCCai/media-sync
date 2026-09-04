@@ -1,6 +1,6 @@
 # 内容、资产、媒体库与 Emby/Jellyfin 联动计划
 
-> 执行切片校准（2026-09-05）：Execution 0053 已从 `be26cc7` 启动，本轮只交付兼容服务端筛选、安全内容/资产详情、同描述符 GET/HEAD 单 Range 归档预览、既有持久 asset-download 恢复复用，以及 Contents/Assets/Library 目录升级。媒体库真实树、Emby/Jellyfin 连接/扫描/资格仍归 0054；鉴权、删除、保留与孤儿清理仍归 0055。
+> 执行切片校准（2026-09-05）：Execution 0053 已基于 `be26cc7` 与计划 `66e18ff` 交付兼容服务端筛选、安全内容/资产详情、官方域名 canonical 链接、同描述符 GET/HEAD 归档预览、既有持久 asset-download 恢复复用，以及 Contents/Assets/Library 目录升级。单 Range 只用于完整表示验证后的 GET，HEAD 忽略 Range，`If-Range` 只接受精确强 ETag。冻结套件通过 2456 项、跳过 3 项，本地 query/弹窗浏览器 smoke 通过。下一切片 0054 负责媒体库真实树、Emby/Jellyfin 连接/扫描/资格；鉴权、删除、保留与孤儿清理仍归 0055。
 
 ## 1. 目标
 

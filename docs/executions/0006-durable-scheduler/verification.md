@@ -50,7 +50,7 @@ Migration evidence is deliberately narrow. The real source round trip proves tha
 The final code tree generated evidence below `.media-sync/verification/0006-closeout-clean-sentinel-root`. It contains 58 files, 86 directories and 10,664,504 bytes: 40 test artifacts, 40 SQLite databases, archive/library output where applicable, and captured operator output. The complete procedure was:
 
 ```powershell
-$sentinelRoot = 'C:\Users\LoCCai\Documents\ChatGPT\media-sync\.media-sync\verification\0006-closeout-clean-sentinel-root'
+$sentinelRoot = Join-Path $PWD '.media-sync\verification\0006-closeout-clean-sentinel-root'
 if (Test-Path -LiteralPath $sentinelRoot) { throw "Verification root unexpectedly exists: $sentinelRoot" }
 New-Item -ItemType Directory -Path $sentinelRoot | Out-Null
 $sentinelPytestRoot = Join-Path $sentinelRoot 'pytest-artifacts'

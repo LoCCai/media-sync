@@ -49,7 +49,7 @@ The root closeout run executed the full suite and all focused gates below. Every
 The root closeout retained all generated evidence below `.media-sync/verification/0005-final-sentinel-root`. It contains six SQLite files, one immutable archive tree, one Emby `library` export tree and captured pytest/operator output. The directory contains 21 files, 29 directories and 1,326,956 bytes. No real platform, CDN or Emby service was contacted.
 
 ```powershell
-$verificationRoot = 'C:\Users\LoCCai\Documents\ChatGPT\media-sync\.media-sync\verification\0005-final-sentinel-root'
+$verificationRoot = Join-Path $PWD '.media-sync\verification\0005-final-sentinel-root'
 $pytestRoot = Join-Path $verificationRoot 'pytest-artifacts'
 $outputPath = Join-Path $verificationRoot 'pytest-output.txt'
 if (Test-Path -LiteralPath $verificationRoot) { throw "Verification root unexpectedly exists: $verificationRoot" }

@@ -2,14 +2,14 @@
 
 # Unified project status (single source of truth)
 
-Boundary: execution 0052 is delivered, frozen-verified and pushed at `be26cc7`; execution 0053 planning and pre-change baseline are complete and implementation is active. Execution 0047 remains the open P0 operator gate, and its Linux persistence/recovery/process checks plus every live login/crawl/CDN and real Emby/Jellyfin row remain `NOT_RUN`. This table is the canonical status view; per-execution detail lives in [`executions/`](README.md) and evidence in each verification record. Update this page at every closeout.
+Boundary: execution 0053 is delivered and frozen-verified from baseline `be26cc7` and plan `66e18ff`; execution 0054 is the next product slice. Execution 0047 remains the open P0 operator gate, and its Linux persistence/recovery/process checks plus every live login/crawl/CDN and real Emby/Jellyfin row remain `NOT_RUN`. This table is the canonical status view; per-execution detail lives in [`executions/`](README.md) and evidence in each verification record. Update this page at every closeout.
 
 ## Milestone status
 
 | Milestone | Status |
 | --- | --- |
 | Offline feature work | Platform shapes frozen at the 0039 boundary plus 0040/0044 operations and the 0050 Console v2 control-plane foundation; 0043 (danmaku/subtitles) remains deferred |
-| REST API + web console | SvelteKit 5 Console v2 foundation (0050), the capability-driven account/subscription workbench (0051), and the 0052 durable Operation/Event task center are delivered; 0053 is active for safe content/asset details, archive preview and catalogue routes |
+| REST API + web console | SvelteKit 5 Console v2 foundation (0050), the capability-driven account/subscription workbench (0051), the 0052 durable Operation/Event task center, and the 0053 safe content/asset explorer and archive preview are delivered; media-server tree/control is next in 0054 |
 | Docker packaging | Candidate image plus reproducibility hardening and the Node-free multi-stage Console v2 build delivered (0041, 0048–0050); the repaired operator image built/started with green doctor, deep readiness and Chromium launch |
 | Operations docs / security review / release checklist | Delivered (0045, 0046) |
 | Live qualification (final gate) | Open — execution 0047, operator-assisted on Linux |
@@ -19,9 +19,9 @@ Boundary: execution 0052 is delivered, frozen-verified and pushed at `be26cc7`; 
 | Dimension | State | Evidence / blocker |
 | --- | --- | --- |
 | Implementation (offline shapes) | 15+ frozen shapes across seven platforms | Executions 0013–0039 records |
-| Offline complete suite | Execution 0052 frozen suite: `2315 passed, 3 skipped, 1 warning in 555.05s`; skips are the three Windows-inapplicable POSIX venv/permission cases and the warning is the existing Starlette/httpx deprecation. Linux phase B remains authoritative | Execution 0052 verification |
-| API/console tests | Execution 0052 focused Operation/API integration `241 passed`; support service/HTTP `30 passed`; Web `17 passed`, Svelte check 0 errors/0 warnings and production build pass. Focused selections overlap; real Jobs-route browser interaction remains follow-up quality debt | Execution 0052 verification |
-| Static gates (ruff/format/mypy/compileall/docs/frontend check/build) | 0052 whole-repository Ruff, 662-file format check, strict mypy over 94 source files, compileall, sdist/wheel, 466-file docs check, Web format/check/test/build, two locked upstreams, 733-file tracked-output audit and `git diff --check` all pass | Execution 0052 verification |
+| Offline complete suite | Execution 0053 frozen suite: `2456 passed, 3 skipped, 1 warning in 479.63s`; skips are the three Windows-inapplicable POSIX venv/permission cases and the warning is the existing Starlette/httpx deprecation. Linux phase B remains authoritative | Execution 0053 verification |
+| API/console tests | Execution 0053 focused explorer/archive/API regression `228 passed`; 50 Web units, format, Svelte check, production build and local query/modal browser smoke pass. Focused selections overlap; real platform/media-server qualification remains external | Execution 0053 verification |
+| Static gates (ruff/format/mypy/compileall/docs/frontend check/build) | Execution 0053 whole-repository Ruff and 199-file Python format check, strict mypy over 96 source files, compileall, sdist/wheel, docs, Web format/check/test/build, two locked upstreams, tracked-output audit and `git diff --check` all pass | Execution 0053 verification |
 | Docker image build | `PASS` for build/runtime preflight: repaired image started; doctor and deep readiness are `ready`; runtime Chromium `151.0.7922.34` matches the build manifest | Executions 0050 and 0047 verification |
 | Container readiness / restart persistence / backup-restore drill | Deep readiness `PASS`; restart persistence and backup/restore `NOT_RUN` | Execution 0047; docs/operations.md procedures ready |
 | Live login (any platform) | `NOT_RUN` — operator (Phase C canary: Bilibili + XHS) | Execution 0047 |

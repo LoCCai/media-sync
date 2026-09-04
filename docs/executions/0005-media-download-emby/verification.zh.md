@@ -49,7 +49,7 @@
 根任务收尾把全部生成证据保留在 `.media-sync/verification/0005-final-sentinel-root` 下，其中包含 6 个 SQLite、1 个不可变归档树、1 个 Emby `library` 导出树及捕获的 pytest/运维输出，共 21 个文件、29 个目录、1,326,956 字节。未访问真实平台、CDN 或 Emby 服务。
 
 ```powershell
-$verificationRoot = 'C:\Users\LoCCai\Documents\ChatGPT\media-sync\.media-sync\verification\0005-final-sentinel-root'
+$verificationRoot = Join-Path $PWD '.media-sync\verification\0005-final-sentinel-root'
 $pytestRoot = Join-Path $verificationRoot 'pytest-artifacts'
 $outputPath = Join-Path $verificationRoot 'pytest-output.txt'
 if (Test-Path -LiteralPath $verificationRoot) { throw "Verification root unexpectedly exists: $verificationRoot" }

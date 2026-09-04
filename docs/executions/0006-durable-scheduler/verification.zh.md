@@ -50,7 +50,7 @@
 最终代码树在 `.media-sync/verification/0006-closeout-clean-sentinel-root` 下生成证据，共 58 个文件、86 个目录、10,664,504 字节，包含 40 项测试产物、40 个 SQLite 数据库、适用时的归档/媒体库输出及捕获的运维输出。完整过程为：
 
 ```powershell
-$sentinelRoot = 'C:\Users\LoCCai\Documents\ChatGPT\media-sync\.media-sync\verification\0006-closeout-clean-sentinel-root'
+$sentinelRoot = Join-Path $PWD '.media-sync\verification\0006-closeout-clean-sentinel-root'
 if (Test-Path -LiteralPath $sentinelRoot) { throw "Verification root unexpectedly exists: $sentinelRoot" }
 New-Item -ItemType Directory -Path $sentinelRoot | Out-Null
 $sentinelPytestRoot = Join-Path $sentinelRoot 'pytest-artifacts'
