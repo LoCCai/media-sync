@@ -6,6 +6,7 @@ import hashlib
 import ipaddress
 import json
 import logging
+import math
 import re
 import socket
 import ssl
@@ -611,6 +612,7 @@ class _GatedTransport(httpx.BaseTransport):
         monotonic: Callable[[], float],
         mutation: bool,
         cancel_requested: Callable[[], bool] | None,
+        before_transport_entry: Callable[[], bool] | None,
     ) -> None:
         self._delegate = delegate
         self._state = state
@@ -618,6 +620,7 @@ class _GatedTransport(httpx.BaseTransport):
         self._monotonic = monotonic
         self._mutation = mutation
         self._cancel_requested = cancel_requested
+        self._before_transport_entry = before_transport_entry
 
     def _cancellation_requested(self) -> bool:
         callback = self._cancel_requested
@@ -630,6 +633,10 @@ class _GatedTransport(httpx.BaseTransport):
 
     def handle_request(self, request: httpx.Request) -> httpx.Response:
         if self._mutation:
+            callback = self._before_transport_entry
+            if callback is not None and callback() is not True:
+                self._state.observe_cancellation()
+                raise _PreDispatchCancelled
             decision = self._state.enter_post(
                 deadline=self._deadline,
                 monotonic=self._monotonic,
@@ -726,18 +733,23 @@ class MediaServerConnector:
             library_id_digest=self._profile.library_id_digest,
         )
 
-    def lookup_item(self, target: MediaServerLookupTarget) -> MediaServerItemLookupResult:
+    def lookup_item(
+        self,
+        target: MediaServerLookupTarget,
+        *,
+        deadline: float | None = None,
+    ) -> MediaServerItemLookupResult:
         """Return complete exact-match evidence without exposing remote selectors."""
 
         if not isinstance(target, MediaServerLookupTarget):
             raise TypeError("target must be a MediaServerLookupTarget")
-        deadline = self._monotonic() + self._profile.timeout_seconds
+        effective_deadline = self._bounded_caller_deadline(deadline)
         state = _DeadlineState()
         return cast(
             MediaServerItemLookupResult,
             self._run_until_deadline(
-                lambda: self._lookup_item(target, deadline, state),
-                deadline=deadline,
+                lambda: self._lookup_item(target, effective_deadline, state),
+                deadline=effective_deadline,
                 state=state,
                 timeout_code="media_server_item_lookup_incomplete",
             ),
@@ -1004,17 +1016,57 @@ class MediaServerConnector:
         return cast(
             MediaServerScanResult,
             self._run_until_deadline(
-                lambda: self._scan(cancel_requested, deadline, state),
+                lambda: self._scan(cancel_requested, deadline, state, before_transport_entry=None),
                 deadline=deadline,
                 state=state,
             ),
         )
+
+    def scan_observation(
+        self,
+        cancel_requested: Callable[[], bool],
+        before_transport_entry: Callable[[], bool],
+        *,
+        deadline: float | None = None,
+    ) -> MediaServerScanResult:
+        """Dispatch once after a final caller-owned publication/lease fence."""
+
+        if not callable(cancel_requested):
+            raise TypeError("cancel_requested must be callable")
+        if not callable(before_transport_entry):
+            raise TypeError("before_transport_entry must be callable")
+        effective_deadline = self._bounded_caller_deadline(deadline)
+        state = _DeadlineState()
+        return cast(
+            MediaServerScanResult,
+            self._run_until_deadline(
+                lambda: self._scan(
+                    cancel_requested,
+                    effective_deadline,
+                    state,
+                    before_transport_entry=before_transport_entry,
+                ),
+                deadline=effective_deadline,
+                state=state,
+            ),
+        )
+
+    def _bounded_caller_deadline(self, deadline: float | None) -> float:
+        now = self._monotonic()
+        local_deadline = now + self._profile.timeout_seconds
+        if deadline is None:
+            return local_deadline
+        if isinstance(deadline, bool) or not isinstance(deadline, int | float) or not math.isfinite(deadline):
+            raise ValueError("deadline must be finite monotonic time")
+        return min(local_deadline, float(deadline))
 
     def _scan(
         self,
         cancel_requested: Callable[[], bool],
         deadline: float,
         state: _DeadlineState,
+        *,
+        before_transport_entry: Callable[[], bool] | None,
     ) -> MediaServerScanResult:
         self._check_deadline(deadline, state)
         if self._cancel_requested(cancel_requested):
@@ -1032,6 +1084,7 @@ class MediaServerConnector:
             state=state,
             mutation=True,
             cancel_requested=cancel_requested,
+            before_transport_entry=before_transport_entry,
         )
         self._check_deadline(deadline, state)
         if self._cancel_requested(cancel_requested):
@@ -1300,6 +1353,7 @@ class MediaServerConnector:
         lookup_request: bool = False,
         body_byte_limit: int | None = None,
         sensitive_selectors: tuple[str, ...] = (),
+        before_transport_entry: Callable[[], bool] | None = None,
     ) -> _JsonResponse | None:
         scan_query = _EMBY_SCAN_QUERY if self._profile.provider == "emby" else _JELLYFIN_SCAN_QUERY
         allowed = {
@@ -1313,6 +1367,8 @@ class MediaServerConnector:
             request_allowed = (method, path, query) in allowed
         if not request_allowed:
             raise ValueError("media-server route is not allowlisted")
+        if before_transport_entry is not None and (not mutation or not callable(before_transport_entry)):
+            raise ValueError("pre-transport hook is valid only for mutation requests")
         if body_byte_limit is not None and (
             isinstance(body_byte_limit, bool) or not isinstance(body_byte_limit, int) or body_byte_limit < 1
         ):
@@ -1337,6 +1393,7 @@ class MediaServerConnector:
             monotonic=self._monotonic,
             mutation=mutation,
             cancel_requested=cancel_requested,
+            before_transport_entry=before_transport_entry,
         )
         client = httpx.Client(
             transport=transport,

@@ -19,6 +19,7 @@ from media_sync.ports.media_server import (
     MediaServerItemLookupResult,
     MediaServerLookupPort,
     MediaServerLookupTarget,
+    MediaServerObservationScanPort,
     MediaServerPort,
     MediaServerProbeResult,
     MediaServerScanResult,
@@ -119,7 +120,12 @@ class MediaServerService:
             raise TypeError("cancel_requested must be callable")
         return self._require_connector().scan(cancel_requested)
 
-    def lookup_item(self, target: MediaServerLookupTarget) -> MediaServerItemLookupResult:
+    def lookup_item(
+        self,
+        target: MediaServerLookupTarget,
+        *,
+        deadline: float | None = None,
+    ) -> MediaServerItemLookupResult:
         """Return one bounded, process-local read-only item snapshot."""
 
         if not isinstance(target, MediaServerLookupTarget):
@@ -127,7 +133,33 @@ class MediaServerService:
         connector = self._require_connector()
         if not isinstance(connector, MediaServerLookupPort):
             raise MediaServerError("media_server_item_lookup_incomplete")
-        return connector.lookup_item(target)
+        if deadline is None:
+            return connector.lookup_item(target)
+        return connector.lookup_item(target, deadline=deadline)
+
+    def scan_observation(
+        self,
+        cancel_requested: Callable[[], bool],
+        before_transport_entry: Callable[[], bool],
+        *,
+        deadline: float | None = None,
+    ) -> MediaServerScanResult:
+        """Dispatch once with the final authority fence at transport entry."""
+
+        if not callable(cancel_requested):
+            raise TypeError("cancel_requested must be callable")
+        if not callable(before_transport_entry):
+            raise TypeError("before_transport_entry must be callable")
+        connector = self._require_connector()
+        if not isinstance(connector, MediaServerObservationScanPort):
+            raise MediaServerError("media_server_targeted_scan_unsupported")
+        if deadline is None:
+            return connector.scan_observation(cancel_requested, before_transport_entry)
+        return connector.scan_observation(
+            cancel_requested,
+            before_transport_entry,
+            deadline=deadline,
+        )
 
     def _require_connector(self) -> MediaServerPort:
         if self._connector is None:

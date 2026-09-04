@@ -32,7 +32,7 @@ from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.exception_handlers import http_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -70,6 +70,8 @@ from media_sync.application.emby import EmbyExportRequest, EmbyExportService, ex
 from media_sync.application.explorer import CatalogExplorerError, ContentAssetExplorer
 from media_sync.application.library import LibraryInspection, LibraryInspectionError, LibraryInspectionService
 from media_sync.application.media_server import MediaServerError, MediaServerService
+from media_sync.application.media_server_observation import MediaServerObservationService
+from media_sync.application.media_server_publication import MediaServerPublicationResolver
 from media_sync.application.qualifications import QualificationError, QualificationService
 from media_sync.application.support_bundle import SupportBundleError, SupportBundleService
 from media_sync.config import Settings, get_settings
@@ -89,6 +91,7 @@ from media_sync.infrastructure.db import (
     OperationEventSnapshot,
     OperationSnapshot,
     OperationStateConflictError,
+    OperationSubjectInput,
     OperationSubjectSnapshot,
     RepositoryError,
     Subscription,
@@ -497,7 +500,26 @@ class AssetDownload(BaseModel):
 class MediaServerOperationRequest(BaseModel):
     """An intentionally empty body: callers cannot override remote authority."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+
+class MediaServerAuthorOperationRequest(BaseModel):
+    """The sole author-scoped scan request; every remote selector stays server-owned."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    author_id: str = Field(min_length=36, max_length=36)
+
+    @field_validator("author_id")
+    @classmethod
+    def canonical_author_id(cls, value: str) -> str:
+        try:
+            canonical = str(UUID(value))
+        except (AttributeError, TypeError, ValueError):
+            raise ValueError("author_id must be a canonical UUID") from None
+        if canonical != value:
+            raise ValueError("author_id must be a canonical UUID")
+        return value
 
 
 # ------------------------------------------------------------------ app factory
@@ -519,12 +541,19 @@ def create_api_app(settings: Settings | None = None) -> FastAPI:
         resolved,
         SecretResolver.local(file_root=resolved.resolved_secret_file_dir),
     )
-    library_inspection_service = LibraryInspectionService(
-        operation_database,
-        EmbyExporter(
-            resolved.export_dir,
-            staging_root=resolved.job_dir / "emby-export",
-        ),
+    emby_exporter = EmbyExporter(
+        resolved.export_dir,
+        staging_root=resolved.job_dir / "emby-export",
+    )
+    library_inspection_service = LibraryInspectionService(operation_database, emby_exporter)
+    media_server_profile = resolved.media_server_profile
+    media_server_observation_service = (
+        MediaServerObservationService(
+            MediaServerPublicationResolver(operation_database, emby_exporter, media_server_profile),
+            media_server_service,
+        )
+        if media_server_profile is not None
+        else None
     )
 
     @asynccontextmanager
@@ -549,6 +578,7 @@ def create_api_app(settings: Settings | None = None) -> FastAPI:
     app.state.settings = resolved
     app.state.operations = operations
     app.state.media_server_service = media_server_service
+    app.state.media_server_observation_service = media_server_observation_service
     app.state.library_inspection_service = library_inspection_service
     deep_readiness_cache: dict[bool, tuple[float, dict[str, object]]] = {}
     deep_readiness_lock = threading.Lock()
@@ -775,14 +805,30 @@ def create_api_app(settings: Settings | None = None) -> FastAPI:
             "allowed_actions": allowed_actions,
         }
 
-    def _media_server_operation_identity(request: Request, kind: str) -> tuple[str, str | None, str]:
+    def _media_server_profile_identity() -> str:
         if not media_server_service.configured:
-            raise HTTPException(status_code=409, detail="media_server_not_configured")
+            raise HTTPException(
+                status_code=409,
+                detail="media_server_not_configured",
+                headers={"Cache-Control": "no-store"},
+            )
         if not media_server_service.operations_enabled:
-            raise HTTPException(status_code=403, detail="media_server_operations_disabled")
+            raise HTTPException(
+                status_code=403,
+                detail="media_server_operations_disabled",
+                headers={"Cache-Control": "no-store"},
+            )
         profile_fingerprint = media_server_service.profile_fingerprint
         if profile_fingerprint is None:
-            raise HTTPException(status_code=409, detail="media_server_not_configured")
+            raise HTTPException(
+                status_code=409,
+                detail="media_server_not_configured",
+                headers={"Cache-Control": "no-store"},
+            )
+        return profile_fingerprint
+
+    def _media_server_operation_identity(request: Request, kind: str) -> tuple[str, str | None, str]:
+        profile_fingerprint = _media_server_profile_identity()
         request_fingerprint, key_hash = _operation_identity(
             request,
             kind,
@@ -790,6 +836,52 @@ def create_api_app(settings: Settings | None = None) -> FastAPI:
             parameters={"profile_fingerprint": profile_fingerprint},
         )
         return request_fingerprint, key_hash, profile_fingerprint
+
+    def _media_server_observation() -> MediaServerObservationService:
+        _media_server_profile_identity()
+        if media_server_observation_service is None:
+            raise HTTPException(
+                status_code=409,
+                detail="media_server_not_configured",
+                headers={"Cache-Control": "no-store"},
+            )
+        return media_server_observation_service
+
+    def _media_server_error(error: MediaServerError) -> HTTPException:
+        if error.code == "media_server_operations_disabled":
+            status_code = 403
+        elif error.code in {
+            "media_server_not_configured",
+            "media_server_item_lookup_ambiguous",
+            "media_server_provider_mismatch",
+            "media_server_publication_changed",
+            "media_server_publication_not_ready",
+        }:
+            status_code = 409
+        else:
+            status_code = 503
+        return HTTPException(
+            status_code=status_code,
+            detail=error.code,
+            headers={"Cache-Control": "no-store"},
+        )
+
+    def _canonical_media_server_author_id(author_id: str) -> str:
+        try:
+            canonical = str(UUID(author_id))
+        except (AttributeError, TypeError, ValueError):
+            raise HTTPException(
+                status_code=409,
+                detail="media_server_publication_not_ready",
+                headers={"Cache-Control": "no-store"},
+            ) from None
+        if canonical != author_id:
+            raise HTTPException(
+                status_code=409,
+                detail="media_server_publication_not_ready",
+                headers={"Cache-Control": "no-store"},
+            )
+        return author_id
 
     def _library_inspection_payload(inspection: LibraryInspection) -> dict[str, object]:
         publication = inspection.publication
@@ -923,6 +1015,18 @@ def create_api_app(settings: Settings | None = None) -> FastAPI:
         except (RepositoryError, SQLAlchemyError):
             raise HTTPException(status_code=503, detail="operation_store_unavailable") from None
 
+    @app.get("/api/v1/media-server/items/by-author/{author_id}")
+    def media_server_item_by_author(author_id: str, response: Response) -> dict[str, object]:
+        """Return one bounded complete item observation without exposing selectors."""
+
+        response.headers["Cache-Control"] = "no-store"
+        canonical_author_id = _canonical_media_server_author_id(author_id)
+        service = _media_server_observation()
+        try:
+            return service.lookup_author(canonical_author_id).as_dict()
+        except MediaServerError as error:
+            raise _media_server_error(error) from None
+
     @app.post("/api/v1/media-server/probe", status_code=202)
     def media_server_probe(_body: MediaServerOperationRequest, request: Request) -> dict[str, object]:
         """Persist and start one bounded read-only connection probe."""
@@ -971,8 +1075,65 @@ def create_api_app(settings: Settings | None = None) -> FastAPI:
         return _operation_start_payload(submission)
 
     @app.post("/api/v1/media-server/scan", status_code=202)
-    def media_server_scan(_body: MediaServerOperationRequest, request: Request) -> dict[str, object]:
+    def media_server_scan(
+        body: MediaServerOperationRequest | MediaServerAuthorOperationRequest,
+        request: Request,
+    ) -> dict[str, object]:
         """Persist and dispatch only the configured targeted library refresh."""
+
+        if isinstance(body, MediaServerAuthorOperationRequest):
+            profile_fingerprint = _media_server_profile_identity()
+            observation = _media_server_observation()
+            try:
+                target = observation.resolve_target(body.author_id)
+            except MediaServerError as error:
+                raise _media_server_error(error) from None
+            request_fingerprint, key_hash = _operation_identity(
+                request,
+                "media-server-scan",
+                target_id=target.author_id,
+                parameters={
+                    "profile_fingerprint": profile_fingerprint,
+                    "mode": "post_refresh_item_observation",
+                    "publication_fingerprint": target.publication_fingerprint,
+                },
+            )
+            replay = _idempotent_replay(
+                "media-server-scan",
+                key_hash=key_hash,
+                request_fingerprint=request_fingerprint,
+            )
+            if replay is not None:
+                return _operation_start_payload(replay)
+
+            def run_observation(context: OperationExecutionContext) -> OperationOutcome:
+                try:
+                    return observation.observe_author(target, context)
+                except MediaServerError as error:
+                    if error.code == "media_server_scan_cancelled":
+                        return OperationOutcome.cancelled()
+                    return OperationOutcome.failed(error.code, retryable=error.retryable)
+
+            submission = _submit_operation(
+                OperationExecution(
+                    kind="media-server-scan",
+                    request_fingerprint=request_fingerprint,
+                    idempotency_key_hash=key_hash,
+                    exclusive_key=f"media-server:{profile_fingerprint}",
+                    target_type="author",
+                    target_id=target.author_id,
+                    phase="preparing",
+                    subjects=(
+                        OperationSubjectInput(
+                            "job",
+                            target.publication_job_id,
+                            "related",
+                        ),
+                    ),
+                    execute=run_observation,
+                )
+            )
+            return _operation_start_payload(submission)
 
         request_fingerprint, key_hash, profile_fingerprint = _media_server_operation_identity(
             request,

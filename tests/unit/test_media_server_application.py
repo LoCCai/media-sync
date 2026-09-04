@@ -23,7 +23,10 @@ class _Connector:
     def __init__(self) -> None:
         self.probe_calls = 0
         self.scan_calls = 0
+        self.observation_scan_calls = 0
+        self.observation_deadlines: list[float] = []
         self.lookup_calls = 0
+        self.lookup_deadlines: list[float] = []
 
     def probe(self) -> MediaServerProbeResult:
         self.probe_calls += 1
@@ -34,8 +37,15 @@ class _Connector:
         assert cancel_requested() is False
         return MediaServerScanResult("emby", "4.8.0", "a" * 64)
 
-    def lookup_item(self, target: MediaServerLookupTarget) -> MediaServerItemLookupResult:
+    def lookup_item(
+        self,
+        target: MediaServerLookupTarget,
+        *,
+        deadline: float | None = None,
+    ) -> MediaServerItemLookupResult:
         self.lookup_calls += 1
+        if deadline is not None:
+            self.lookup_deadlines.append(deadline)
         assert target.provider_key == "media-sync-xhs-creator"
         return MediaServerItemLookupResult(
             "not_found",
@@ -44,6 +54,20 @@ class _Connector:
             response_byte_count=2,
             item_id_set_fingerprint="b" * 64,
         )
+
+    def scan_observation(
+        self,
+        cancel_requested: Callable[[], bool],
+        before_transport_entry: Callable[[], bool],
+        *,
+        deadline: float | None = None,
+    ) -> MediaServerScanResult:
+        self.observation_scan_calls += 1
+        if deadline is not None:
+            self.observation_deadlines.append(deadline)
+        assert cancel_requested() is False
+        assert before_transport_entry() is True
+        return MediaServerScanResult("emby", "4.8.0", "a" * 64)
 
 
 class _Resolver:
@@ -89,12 +113,15 @@ def test_service_operation_gate_is_default_off_and_precedes_connector_calls() ->
     with pytest.raises(MediaServerError) as caught:
         service.lookup_item(MediaServerLookupTarget("media-sync-xhs-creator", "remote", "/srv/media/author"))
     assert caught.value.code == "media_server_operations_disabled"
+    with pytest.raises(MediaServerError) as caught:
+        service.scan_observation(lambda: False, lambda: True)
+    assert caught.value.code == "media_server_operations_disabled"
     assert connector.probe_calls == 0
     assert connector.scan_calls == 0
     assert connector.lookup_calls == 0
 
 
-def test_service_delegates_probe_scan_and_lookup_when_gate_is_open() -> None:
+def test_service_delegates_probe_scan_lookup_and_observation_when_gate_is_open() -> None:
     connector = _Connector()
     service = MediaServerService(connector, operations_enabled=True)
 
@@ -102,9 +129,15 @@ def test_service_delegates_probe_scan_and_lookup_when_gate_is_open() -> None:
     assert service.scan(lambda: False) == MediaServerScanResult("emby", "4.8.0", "a" * 64)
     target = MediaServerLookupTarget("media-sync-xhs-creator", "remote", "/srv/media/author")
     assert service.lookup_item(target).lookup_state == "not_found"
+    assert service.scan_observation(lambda: False, lambda: True).scan_state == "accepted"
+    assert service.lookup_item(target, deadline=123.0).lookup_state == "not_found"
+    assert service.scan_observation(lambda: False, lambda: True, deadline=456.0).scan_state == "accepted"
     assert connector.probe_calls == 1
     assert connector.scan_calls == 1
-    assert connector.lookup_calls == 1
+    assert connector.lookup_calls == 2
+    assert connector.lookup_deadlines == [123.0]
+    assert connector.observation_scan_calls == 2
+    assert connector.observation_deadlines == [456.0]
 
 
 def test_unconfigured_service_fails_before_operation_gate() -> None:
@@ -117,6 +150,9 @@ def test_unconfigured_service_fails_before_operation_gate() -> None:
     assert caught.value.code == "media_server_not_configured"
     with pytest.raises(MediaServerError) as caught:
         service.lookup_item(MediaServerLookupTarget("media-sync-xhs-creator", "remote", "/srv/media/author"))
+    assert caught.value.code == "media_server_not_configured"
+    with pytest.raises(MediaServerError) as caught:
+        service.scan_observation(lambda: False, lambda: True)
     assert caught.value.code == "media_server_not_configured"
 
 

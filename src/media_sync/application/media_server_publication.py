@@ -336,11 +336,19 @@ class MediaServerPublicationResolver:
         self._inspection_timeout_seconds = float(inspection_timeout_seconds)
         self._monotonic = monotonic
 
-    def resolve(self, author_id: str) -> MediaServerPublicationTarget:
+    def resolve(
+        self,
+        author_id: str,
+        *,
+        deadline: float | None = None,
+    ) -> MediaServerPublicationTarget:
         """Resolve only a local author UUID; no caller-controlled remote selector is accepted."""
 
         normalized_author_id = _normalized_author_id(author_id)
+        inspection_deadline = self._deadline(deadline)
         initial = self._load_authority(normalized_author_id, changed=False)
+        if self._time() >= inspection_deadline:
+            raise MediaServerError("media_server_publication_not_ready")
         try:
             path_style, server_path = _join_server_path(self._profile.library_path, initial.output_path)
             lookup_target = MediaServerLookupTarget(
@@ -370,28 +378,37 @@ class MediaServerPublicationResolver:
         except (TypeError, ValueError):
             raise MediaServerError("media_server_publication_not_ready") from None
 
-        deadline = self._deadline()
-        self._inspect_complete(initial, deadline)
+        self._inspect_complete(initial, inspection_deadline)
         final = self._load_authority(normalized_author_id, changed=True)
+        if self._time() >= inspection_deadline:
+            raise MediaServerError("media_server_publication_not_ready")
         if final != initial:
             raise MediaServerError("media_server_publication_changed")
 
         return target
 
-    def _deadline(self) -> float:
+    def _deadline(self, caller_deadline: float | None) -> float:
         try:
             started = self._monotonic()
-            deadline = started + self._inspection_timeout_seconds
+            local_deadline = started + self._inspection_timeout_seconds
         except (TypeError, ValueError, OverflowError):
             raise MediaServerError("media_server_publication_not_ready") from None
         if (
             isinstance(started, bool)
             or not isinstance(started, int | float)
             or not math.isfinite(started)
-            or not math.isfinite(deadline)
+            or not math.isfinite(local_deadline)
         ):
             raise MediaServerError("media_server_publication_not_ready")
-        return deadline
+        if caller_deadline is None:
+            return local_deadline
+        if (
+            isinstance(caller_deadline, bool)
+            or not isinstance(caller_deadline, int | float)
+            or not math.isfinite(caller_deadline)
+        ):
+            raise ValueError("deadline must be finite monotonic time")
+        return min(local_deadline, float(caller_deadline))
 
     def _load_authority(self, author_id: str, *, changed: bool) -> _PublicationAuthority:
         code = "media_server_publication_changed" if changed else "media_server_publication_not_ready"

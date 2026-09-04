@@ -334,3 +334,25 @@ def test_resolver_rejects_mixed_server_path_before_filesystem_inspection(
 
     assert raised.value.code == "media_server_publication_not_ready"
     assert recording.starts == []
+
+
+def test_resolver_honors_a_caller_absolute_deadline_before_inspection(
+    database: Database,
+    tmp_path: Path,
+) -> None:
+    author_id = _seed_author(database)
+    exporter = _exporter(tmp_path)
+    _publish(database, exporter, author_id)
+    recording = _RecordingExporter(exporter)
+    resolver = MediaServerPublicationResolver(
+        database,
+        recording,
+        _profile("/srv/media"),
+        monotonic=lambda: 10.0,
+    )
+
+    with pytest.raises(MediaServerError) as raised:
+        resolver.resolve(author_id, deadline=9.0)
+
+    assert raised.value.code == "media_server_publication_not_ready"
+    assert recording.starts == []

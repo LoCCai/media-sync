@@ -807,6 +807,110 @@ def test_scan_discovers_then_dispatches_only_the_exact_fixed_post_once() -> None
     assert cancellation_checks >= 5
 
 
+def test_observation_scan_runs_the_authority_hook_once_at_transport_entry() -> None:
+    requests: list[httpx.Request] = []
+    hook_request_counts: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path == "/System/Info":
+            return _system()
+        if request.url.path == "/Library/VirtualFolders":
+            return _folders()
+        assert request.url.path == "/Items/library_123/Refresh"
+        return httpx.Response(204)
+
+    def before_transport_entry() -> bool:
+        hook_request_counts.append(len(requests))
+        return True
+
+    result = _connector(handler).scan_observation(lambda: False, before_transport_entry)
+
+    assert result.scan_state == "accepted"
+    assert hook_request_counts == [2]
+    assert [request.method for request in requests] == ["GET", "GET", "POST"]
+
+
+@pytest.mark.parametrize("disposition", ["cancel", "changed"])
+def test_observation_scan_hook_failure_never_enters_the_post(disposition: str) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return _system() if request.url.path == "/System/Info" else _folders()
+
+    def before_transport_entry() -> bool:
+        if disposition == "changed":
+            raise MediaServerError("media_server_publication_changed")
+        return False
+
+    with pytest.raises(MediaServerError) as caught:
+        _connector(handler).scan_observation(lambda: False, before_transport_entry)
+
+    assert caught.value.code == (
+        "media_server_publication_changed" if disposition == "changed" else "media_server_scan_cancelled"
+    )
+    assert [request.method for request in requests] == ["GET", "GET"]
+
+
+def test_caller_deadline_bounds_a_blocking_lookup() -> None:
+    entered = threading.Event()
+    release = threading.Event()
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        entered.set()
+        release.wait(5)
+        return httpx.Response(200, json={"Items": [], "TotalRecordCount": 0, "StartIndex": 0})
+
+    started = time.monotonic()
+    try:
+        with pytest.raises(MediaServerError) as caught:
+            _connector(handler).lookup_item(
+                _lookup_target(),
+                deadline=time.monotonic() + 0.1,
+            )
+        elapsed = time.monotonic() - started
+    finally:
+        release.set()
+
+    assert entered.wait(1)
+    assert caught.value.code == "media_server_item_lookup_incomplete"
+    assert elapsed < 0.75
+
+
+def test_caller_deadline_expires_a_blocking_observation_fence_before_post() -> None:
+    hook_entered = threading.Event()
+    release_hook = threading.Event()
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return _system() if request.url.path == "/System/Info" else _folders()
+
+    def before_transport_entry() -> bool:
+        hook_entered.set()
+        release_hook.wait(5)
+        return True
+
+    started = time.monotonic()
+    try:
+        with pytest.raises(MediaServerError) as caught:
+            _connector(handler).scan_observation(
+                lambda: False,
+                before_transport_entry,
+                deadline=time.monotonic() + 0.1,
+            )
+        elapsed = time.monotonic() - started
+    finally:
+        release_hook.set()
+
+    assert hook_entered.wait(1)
+    assert caught.value.code == "media_server_timeout"
+    assert elapsed < 0.75
+    time.sleep(0.05)
+    assert [request.method for request in requests] == ["GET", "GET"]
+
+
 def test_jellyfin_refresh_uses_only_its_documented_provider_specific_query() -> None:
     requests: list[httpx.Request] = []
 

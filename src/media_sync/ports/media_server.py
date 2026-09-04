@@ -197,8 +197,28 @@ class MediaServerScanResult:
 class MediaServerLookupPort(Protocol):
     """Optional read-only exact item lookup boundary."""
 
-    def lookup_item(self, target: MediaServerLookupTarget) -> MediaServerItemLookupResult:
+    def lookup_item(
+        self,
+        target: MediaServerLookupTarget,
+        *,
+        deadline: float | None = None,
+    ) -> MediaServerItemLookupResult:
         """Return only a complete absence or complete unique exact match."""
+        ...
+
+
+@runtime_checkable
+class MediaServerObservationScanPort(Protocol):
+    """Optional one-shot refresh boundary with a pre-transport fence."""
+
+    def scan_observation(
+        self,
+        cancel_requested: Callable[[], bool],
+        before_transport_entry: Callable[[], bool],
+        *,
+        deadline: float | None = None,
+    ) -> MediaServerScanResult:
+        """Dispatch once only after the caller's final authority fence passes."""
         ...
 
 
@@ -225,6 +245,7 @@ __all__ = [
     "MediaServerItemLookupResult",
     "MediaServerLookupPort",
     "MediaServerLookupTarget",
+    "MediaServerObservationScanPort",
     "MediaServerPort",
     "MediaServerProbeResult",
     "MediaServerProvider",
