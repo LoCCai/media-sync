@@ -2,7 +2,7 @@
 
 # 执行 0055 阶段 A 验证
 
-- 状态：后端鉴权与观察身份/持久账本检查点均已发布；确认 service/API 尚未实现
+- 状态：后端鉴权与观察身份/持久账本检查点均已发布；确认 service 与仅浏览器 POST 已实现，正在完成发布前验证
 - 日期：2026-09-05
 - 规划基线：`d0a8cc2`；鉴权实现基线：`4564b2a`
 - 已发布鉴权提交：`f19bfaa`
@@ -11,7 +11,7 @@
 
 ## 证据政策
 
-规划检查只能证明切片范围明确且基于当前代码。下方已发布证据证明 `f19bfaa` 的后端鉴权契约；较新的专项证据只证明已在 `1d5b448` 发布的 observation identity 与持久化原语。它尚不能证明 confirmation service/API、Web 登录/确认表面、qualification schema v3、真实服务器兼容或获授权真人播放。实现证据与真人资格继续分开。
+规划检查只能证明切片范围明确且基于当前代码。下方已发布证据证明 `f19bfaa` 的后端鉴权契约与 `1d5b448` 的 observation identity/持久化原语；当前专项证据证明本工作树中的 confirmation service 与仅浏览器 POST。它不能证明仍缺失的安全读取投影、qualification schema v3、Web 登录/确认表面、真实服务器兼容或获授权真人播放。实现证据与真人资格继续分开。
 
 ## 规划基线证据
 
@@ -70,7 +70,27 @@
 | 当前 Web 回归与构建 | 在 `web/` 运行 `npm run format:check`、`npm test -- --run`、`npm run check`、`npm run build` | `PASS`——格式干净，7 个文件/69 项测试通过，Svelte 为 0 error/0 warning，production build 完成；不声明尚未实现的登录/确认表面 |
 | 当前代码质量 | `uv run --frozen ruff check .`、`ruff format --check .`、`uv run --frozen mypy --strict src/media_sync`、`python -m compileall -q src tests` | `PASS`——Ruff check 通过，修正 1 个纯格式差异后 727 个文件全部通过 format，strict mypy 对 105 个源文件通过，字节编译干净 |
 | 当前 Distribution | 在系统临时目录隔离执行 `uv build`；用 `zipfile`/`tarfile` 检查 wheel/sdist | `PASS`——精确生成 1 个含 123 项的 wheel 与 1 个含 837 项的 sdist；两者均包含 `playback_evidence_repository.py` 和 `0008_playback_evidence.py`，且 `.env` 或 SQLite 输出为零 |
-| 端到端能力边界 | 检查当前 service/API/qualification/Web 表面 | `NOT_IMPLEMENTED`——confirmation service/API、双重 resolve TOCTOU 封闭、qualification schema v3、Web 登录生命周期与只允许 matched 的 Web 确认均尚不存在；真人播放仍为 `NOT_RUN` |
+| 端到端能力边界 | 检查当前 service/API/qualification/Web 表面 | `PARTIAL`——confirmation service/API 与双重 resolve TOCTOU 封闭已经存在，但有界按作者投影、qualification schema v3、Web 登录生命周期与只允许 matched 的 Web 确认尚不存在。因此 schema v2 仍把整体 `playback_evidence` 报为 `NOT_IMPLEMENTED`；真人播放仍为 `NOT_RUN` |
+
+## 确认 service 与仅浏览器 POST 检查点证据
+
+本检查点有意拆分冻结 commit boundary 4，使安全敏感的写入路径可以独立接受审查。它完成交付项 10 与交付项 11 的 POST 半项；按作者投影与 qualification schema v3 仍是范围不变的下一检查点。
+
+| 检查 | 命令或来源 | 状态 |
+| --- | --- | --- |
+| 确认权威 | `PlaybackEvidenceService.confirm`；service 单元与组合回归 | `PASS`——强制规范请求身份、一个不超过 120 秒的绝对 deadline、resolve A → 一次完整唯一 lookup → resolve B、精确 target/profile/observation 重校验与失败零写入 |
+| 锁与事务顺序 | 确定性 event/lock 测试；service 只读审查 | `PASS`——外部工作完成后总是先释放 authority lock，再打开短数据库事务；create/replay 提交后才发送成功审计 |
+| 仅浏览器端点 | `POST /api/v1/media-server/playback-evidence`；API/auth 测试 | `PASS`——要求精确 Cookie/Origin/CSRF；Bearer-only 与 Cookie 搭配任意 Authorization 均在 handler/读取 body 前固定 403 拒绝 |
+| 严格请求与最小响应 | endpoint/parser/OpenAPI 测试 | `PASS`——唯一 JSON Content-Type、最大 1 KiB、member 唯一、精确规范 UUID/小写 digest 字段且禁止 `Idempotency-Key`；create/replay 都返回 201 与精确六个安全字段，不含 fingerprint/context selector |
+| 固定失败边界 | service/API 失败矩阵 | `PASS`——invalid、not-confirmable、identity-conflict、confirmation-unavailable 与 store-unavailable 路径只使用固定且不反射的 code；authority/store 失败不发送成功审计 |
+| Service/API 专项门 | 专用测试选择 | `PASS`——service 单元 18、SQLite 组合 2、endpoint 51、service/API/auth 并集 108、media-server API 47，以及较宽并集 289 项通过、8 项 PostgreSQL 预期跳过 |
+| 路由清单 | 精确 `app.routes` 枚举 | `PASS`——58 个 route object；匿名 allowlist 不变，新 mutation 只允许浏览器 |
+| 独立审查 | service/transaction、API/auth 与最终发布门审查 | `PASS`——前两次审查未发现 P0/P1/P2；最终门发现 1 个默认运行时审计可见性 P2，现已通过复制 Uvicorn 应用日志配置及无 socket subprocess 回归关闭。没有遗留审查问题 |
+| 应用与 migration 日志 | 复制 Uvicorn log config；无 socket 审计 subprocess；embedded-Alembic root 继承 subprocess | `PASS`——默认 `serve` 会为 `media_sync` 配置 stderr handler，同时保留 Uvicorn 默认配置；固定 playback 与 operator-auth INFO 码可见且不反射私有 sentinel。Programmatic Alembic INI 运行不会替换调用方 root level/handler 或继承 INFO logging |
+| 当前 Web 与静态门 | `pnpm format:check`；`pnpm test`；`pnpm check`；`pnpm build`；Ruff/format；strict mypy；compileall | `PASS`——Web 7 文件/69 项测试、Svelte 0 error/0 warning 与 production build；731 个格式文件、106 个类型检查源文件及字节编译通过 |
+| 文档/上游/Distribution | docs/upstream 检查；隔离 `uv build` 检查 | `PASS`——498 份 Markdown 与两个干净锁定上游通过；显式忽略 `.mimosa/` 后，一个 124 项 wheel 与一个 810 项 sdist 包含 service/repository/revision，且不含运行时/工具历史/数据库输出 |
+| Docker 与 PostgreSQL 执行 | executable/environment 检查 | `NOT_RUN`——Docker executable 不可用且未设置 `MEDIA_SYNC_TEST_POSTGRESQL_URL`；源码/测试不能替代执行 |
+| 全部日志修复后的完整 Python 回归 | `uv run --frozen pytest -q` | `PASS`——594.72 秒（`0:09:54`）内 2941 项通过、22 项跳过、1 个既有 Starlette/httpx warning。3 项 skip 为 Windows/POSIX 差异；11 项 Operation 与 8 项 PlaybackEvidence PostgreSQL 用例因未设置测试 URL 继续为 `NOT_RUN` |
 
 ## 验证尝试记录
 
@@ -82,6 +102,12 @@
 6. 当前 commit-3 工作树的完整 Python 套件在 558.19 秒（`0:09:18`）内完成：2868 项通过、22 项跳过、1 个既有 warning。该结果与历史 `f19bfaa` 的 2811 项通过分开记录。3 项 Windows/POSIX skip 与两组未配置 PostgreSQL 用例——11 项既有 Operation 加 8 项新增 PlaybackEvidence 竞态——均被显式保留；不声明 PostgreSQL 已执行。
 7. 当前 Ruff format 首次检查发现 1 个纯格式差异。格式化该源码后，复跑对 727 个文件通过；Ruff check、105 个源文件 strict mypy 与 compileall 也均通过。不从这次纯格式修正推导额外行为通过声明。
 8. 首次 distribution wrapper 在当前 PowerShell 环境中向 `New-Item` 传入了不支持的 `-LiteralPath` 参数。`uv build` 仍自行创建隔离输出目录并成功；修正后的内容检查验证精确 1 个 wheel 与 1 个 sdist，且产物和文档均未嵌入工作站路径。
+9. 首轮确认检查点完整套件达到 2938 项通过与 22 项预期跳过，但一项审计日志断言失败。该失败与顺序相关：较早的 Alembic INI migration 使用标准库默认值禁用了已创建的 logger。持久 service 结果正确，但静默丢失固定审计事件不可接受。
+10. 第一版缓解保留了既有命名 logger，并得到一次完整的 `2940 passed, 22 skipped, 1 warning in 578.68s` 运行。独立复审随后发现嵌入式 Alembic 仍可能把调用方 root logger 降到 `WARNING`；该通过结果作为中间证据保留，不作为发布结果。
+11. 确认残余 root-logger 风险后，后续完整套件在约 7% 处被主动中止，避免让过时实现继续消耗完整门禁。Alembic 日志配置现仅用于 standalone CLI（存在 `cmd_opts`）；嵌入式 programmatic `Config(alembic.ini)` 会保留调用方日志。Subprocess 回归证明 root handler identity、继承 INFO enablement 与实际固定审计记录，且不污染父测试进程。随后 frozen-environment 复跑在 588.32 秒（`0:09:48`）内完成 2940 项通过、22 项预期跳过与 1 个既有 warning；它是下一版发布候选，后来由第 14 项结果取代。
+12. 第一版新制品内容断言把有意随附的 `.env.example` 错当成 secret `.env`。修正后的精确文件名检查通过，同时继续拒绝真实 `.env`、SQLite 文件与运行时根目录。
+13. 扩展 package denylist 随后发现 Hatch 因 `.mimosa/` 未被忽略而把这棵未跟踪 finding/history 树收入 sdist。`.mimosa/` 现已明确写入 `.gitignore` 与 `.dockerignore`；全新隔离构建把 sdist 从 841 项降至 810 项，严格 wheel/sdist 扫描与 ignore 检查证明工具历史根目录不会进入 distribution 或 build context。
+14. 最终发布审查随后证明默认 Uvicorn 日志不会让 `media_sync.*` INFO 审计可见。`serve` 现会传入复制后的日志配置，按已校验级别为该命名空间增加独立 stderr handler，同时保留 Uvicorn 默认配置并继续关闭 access log。无 socket 审计回归通过；修复后的最终完整套件在 594.72 秒（`0:09:54`）内通过 2941 项、按预期跳过 22 项，并保留 1 个既有 warning。这一次才是发布结果。
 
 ## 已关闭审查问题
 
@@ -90,18 +116,18 @@
 3. Login 会捕获有界深层 JSON 递归并返回固定 400；手工解析的请求在 OpenAPI 中保留为一个 required、禁止额外字段且 write-only 的 credential 字段。
 4. 最外层边界清空所有 downstream HEAD body 并保留 representation header；自身拒绝的 HEAD 保留对应 GET representation 长度且不发 body。Health、readiness 与 archive 的 GET/HEAD 分离注册，不再产生重复 OpenAPI operation ID。
 5. 共享 authenticated client 不再给安全方法附加 CSRF header，消除了无法设置自定义 header 的浏览器原语上的假证据。
+6. 最终发布审查证明 Uvicorn 默认配置会让 `media_sync.*` INFO 审计低于 root 的有效阈值。`serve` 现会深复制而不修改 Uvicorn 默认配置，按已校验应用级别增加一个不向上传播的 `media_sync` stderr handler，并继续关闭 access log。无 socket subprocess 会输出两个固定 playback/operator-auth 审计码，且不含私有 sentinel。
 
 ## 剩余实现证据
 
-当前检查点已关闭冻结退出门中的本地 fingerprint、revision/model、受保护 downgrade、自然重放与 SQLite 部分。剩余工作仍须为以下内容提供精确 passing evidence：
+当前检查点已关闭冻结退出门中的本地 fingerprint、revision/model、受保护 downgrade、自然重放、SQLite、确认权威与仅浏览器 POST 部分。剩余工作仍须为以下内容提供精确 passing evidence：
 
-1. 实现 resolve → unique lookup → resolve 的 TOCTOU 封闭、经鉴权 confirmation service/API 与全部失败零写入路径。
-2. 实现 qualification schema v3 真值：无证据为 `IMPLEMENTED/NOT_RUN`，只有精确当前 evidence 可 PASS，stale 绝不 PASS，provider completion/automatic scan 保持未实现。
-3. 实现并验证 Web login/session/logout/expiry 生命周期、内存 CSRF 注入、集中 401 reset、cookie-only EventSource/直接媒体行为，以及可访问且只允许 matched 的播放确认交互。
-4. 在安装 Docker 的主机上完成真实 Docker/Compose 配置与启动检查。
-5. 在已配置主机上运行 8 项 PlaybackEvidence PostgreSQL 竞态并重跑此前跳过的 PostgreSQL 覆盖；源码检查不能替代执行。
-6. 通过最终仓库、包与发布扫描继续保证 credential/session/CSRF/reference/raw selector 零保留。
-7. 剩余实现完成后重跑完整 Python/Web 及全部质量/包/文档/上游/generated-output/host-path/secret/空白门，再完成 Git 发布门。
+1. 实现有界、经鉴权、按作者的 current/stale 投影及 qualification schema v3 真值：无当前 evidence 为 `IMPLEMENTED/NOT_RUN`，只有精确当前 evidence 可 PASS，stale/unknown 绝不 PASS，provider completion/automatic scan 保持未实现。
+2. 实现并验证 Web login/session/logout/expiry 生命周期、内存 CSRF 注入、集中 401 reset、cookie-only EventSource/直接媒体行为，以及可访问且只允许 matched 的播放确认交互。
+3. 在安装 Docker 的主机上完成真实 Docker/Compose 配置与启动检查。
+4. 在已配置主机上运行 8 项 PlaybackEvidence PostgreSQL 竞态并重跑此前跳过的 PostgreSQL 覆盖；源码检查不能替代执行。
+5. 通过最终仓库、包与发布扫描继续保证 credential/session/CSRF/reference/raw selector 零保留。
+6. 剩余实现完成后重跑完整 Python/Web 及全部质量/包/文档/上游/generated-output/host-path/secret/空白门，再完成 Git 发布门。
 
 ## 真人资格
 

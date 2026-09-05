@@ -130,6 +130,14 @@ from media_sync.application.pipeline_runtime import (
     LocalPipelineRuntimeConfig,
     SubscriptionPipelineExecutor,
 )
+from media_sync.application.playback_evidence import (
+    PlaybackEvidenceAuditCode,
+    PlaybackEvidenceConfirmation,
+    PlaybackEvidenceConfirmationError,
+    PlaybackEvidenceDatabasePort,
+    PlaybackEvidenceObservationPort,
+    PlaybackEvidenceService,
+)
 from media_sync.application.qualifications import (
     HUMAN_QUALIFICATION_STATUSES,
     IMPLEMENTATION_STATUSES,
@@ -250,6 +258,12 @@ __all__ = [
     "OperationShutdownSummary",
     "OperationSubmission",
     "OperationTerminalState",
+    "PlaybackEvidenceAuditCode",
+    "PlaybackEvidenceConfirmation",
+    "PlaybackEvidenceConfirmationError",
+    "PlaybackEvidenceDatabasePort",
+    "PlaybackEvidenceObservationPort",
+    "PlaybackEvidenceService",
     "QualificationError",
     "QualificationService",
     "SelectedPipelineAsset",

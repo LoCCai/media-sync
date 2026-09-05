@@ -1,5 +1,7 @@
 # Local upstream checkouts are reproducible from upstreams.lock.json.
 .upstream/
+# Local review-tool findings and history are never source or package input.
+.mimosa/
 # Host-side prefetch target for the Docker build (allowed in .dockerignore).
 .mediacrawler-local/
 

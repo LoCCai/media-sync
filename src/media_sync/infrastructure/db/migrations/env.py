@@ -12,8 +12,10 @@ from media_sync.config import Settings
 from media_sync.infrastructure.db import Base, create_database_engine
 
 config = context.config
-if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+if config.config_file_name is not None and config.cmd_opts is not None:
+    # Only the standalone Alembic CLI owns process logging. Embedded callers
+    # must retain their root handlers, levels, and application audit loggers.
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 target_metadata = Base.metadata
 

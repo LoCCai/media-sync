@@ -131,7 +131,7 @@ Console v2 当前会在建立 session 前请求受保护 API，也不会为 muta
 | `MEDIA_SYNC_MEDIA_SERVER_ALLOWED_CIDRS` | 显式允许的 IP/CIDR 列表；DNS 返回的每个地址都必须落在其中 |
 | `MEDIA_SYNC_MEDIA_SERVER_VERIFY_TLS` | 默认 `true`；生产环境保持开启 |
 | `MEDIA_SYNC_MEDIA_SERVER_TIMEOUT_SECONDS` | 0.1–60 秒，默认 10 |
-| `MEDIA_SYNC_MEDIA_SERVER_OPERATIONS_ENABLED` | 所有媒体服务器网络动作的共用服务端门，包括 probe、两种 scan 模式与作者 lookup；默认 `false` |
+| `MEDIA_SYNC_MEDIA_SERVER_OPERATIONS_ENABLED` | 所有媒体服务器网络动作的共用服务端门，包括 probe、两种 scan 模式、作者 lookup 与播放确认重校验；默认 `false` |
 
 API key 值应通过引用指向的环境变量或 secret 文件注入，不得写入仓库。配置 API 只返回脱敏摘要：不会回显 key、完整 secret reference、Library ID、服务器路径或网络范围。连接器禁止环境代理与重定向，校验全部 DNS 答案并绑定实际连接 IP，同时保留原始 Host/TLS SNI。
 
@@ -143,10 +143,11 @@ API key 值应通过引用指向的环境变量或 secret 文件注入，不得�
 4. 严格 legacy `{}` 刷新只调用 `POST /Items/{configured-library-id}/Refresh`；`404/405/501` 会关闭失败，绝不回退到全库 `/Library/Refresh`。Operation 成功只证明收到可信 2xx 接受。
 5. 作者刷新并核验在当前且完整的媒体树检查授予动作后，只接受精确 `{"author_id":"<uuid>"}`。作者模式先要求完整 absent baseline；精确项目已经存在时不会发送 POST，并返回 `media_server_scan_observation_precondition_failed`。成功需要一次刷新被接受，随后间隔两次观察到同一唯一项目；仍不证明 provider task completion 或可播放。
 6. 持久 `media-server-probe` / `media-server-scan` Operation 会区分 accepted、observed、acceptance unknown 与 completion unknown。进入 transport 后无法确认接受时以不可重试的 `media_server_scan_acceptance_unknown` 收尾；已经可信接受但无法证明观察时以不可重试的 `media_server_scan_completion_unknown` 收尾，并保留 accepted checkpoint。两种歧义都不得自动重试。
+7. 播放确认使用 `POST /api/v1/media-server/playback-evidence`。它不是自动化 endpoint：必须具有已登录浏览器 session、精确 Origin 与 CSRF，并在进入 handler 前拒绝 Bearer-only 或 Cookie/Authorization 混用。严格正文只含规范 `author_id` 与 matched lookup 返回的不透明 `observation_fingerprint`；`Idempotency-Key`、selector、路径、远端 ID、timestamp 与说明文本均被拒绝。服务端先执行 resolve → 一次完整唯一 lookup → resolve，再打开短 create-or-replay 事务，且不返回 fingerprint 或内部上下文摘要。Web 检查点交付前，该后端契约尚未成为受支持的控制台工作流。
 
 服务重启时，处于 `preparing` 或 `baselining` 的作者观察属于 dispatch 前中断；`dispatching` 收敛为 acceptance unknown；`accepted` 或 `polling` 收敛为 completion unknown 并保留 accepted checkpoint；只有有效持久 `observed` checkpoint 才能收敛为成功。Legacy targetless scan 保持 0054-A 的保守恢复。Probe 可人工重试；scan 歧义则必须先在服务器侧检查，才能考虑新请求。
 
-`GET /api/v1/qualifications` schema v2 会把本地自动化计数、实现状态与真人资格分开。当前工作区没有真实服务器凭据，已实现的连接 probe、Library 发现、定向刷新接受、项目查找与刷新后项目观察真人状态都仍为 `NOT_RUN`。`provider_task_completion` 为 `NOT_IMPLEMENTED`，原因是 `provider_api_unsupported`；经鉴权播放证据与导出后自动扫描也为 `NOT_IMPLEMENTED`。所有未实现能力的 `human_status` 都是 `null`，不得写成真人 `NOT_RUN`、`FAIL` 或 `PASS`。
+`GET /api/v1/qualifications` 仍为 schema v2，并把本地自动化计数、实现状态与真人资格分开。当前工作区没有真实服务器凭据，已实现的连接 probe、Library 发现、定向刷新接受、项目查找与刷新后项目观察真人状态都仍为 `NOT_RUN`。只允许浏览器的播放确认写入后端已经实现并通过离线验证，但 schema v2 仍如实把整体 `playback_evidence` 能力报为 `NOT_IMPLEMENTED` 与 `human_status: null`，因为有界按作者 current/stale 投影及 qualification schema v3 尚不存在。`provider_task_completion` 继续为 `NOT_IMPLEMENTED`，原因是 `provider_api_unsupported`；导出后自动扫描也为 `NOT_IMPLEMENTED`。未实现能力不得写成真人 `NOT_RUN`、`FAIL` 或 `PASS`。
 
 ## 6. 验收清单（如实记录）
 
@@ -161,7 +162,8 @@ API key 值应通过引用指向的环境变量或 secret 文件注入，不得�
 | 真实服务器精确 provider/path 项目查找 | 0054-B 已实现；以一次完整 lookup 快照为证；未执行记 `NOT_RUN` |
 | 真实服务器刷新后项目观察 | 0054-B 已实现；absent baseline + 一次 accepted POST + 同一唯一项目连续观察两次；未执行记 `NOT_RUN` |
 | Provider task completion | `NOT_IMPLEMENTED`（`provider_api_unsupported`）；没有真人状态 |
-| 经鉴权的播放证据 | `NOT_IMPLEMENTED`；后端操作者鉴权本身不等于播放证据；没有真人状态 |
+| 仅浏览器播放确认后端/API | 已实现并通过离线验证；未向真实 Emby/Jellyfin 提交真人播放，因此不授予现网状态 |
+| 播放证据 current/stale 投影与资格 | schema v2 中仍为 `NOT_IMPLEMENTED`；有界投影与 schema v3 交付前 `human_status: null` |
 | 导出后自动扫描 | `NOT_IMPLEMENTED`；尚无已冻结后续归属，也没有真人状态 |
 
 现网证据以实际运行为准；未执行的项一律保持 `NOT_RUN`，遵守项目真实性规则。

@@ -14,7 +14,7 @@
 ## 机密与隐私
 
 - [ ] `git grep -iE "(set-cookie|cookie:|Authorization:)" -- docs src tests` 只出现协议代码、脱敏引用、哨兵或夹具——绝无真实凭据、session、CSRF 值或 Bearer token。
-- [ ] 无 `.env`、`*.sqlite3`、`browser_data/` 或运行时输出被跟踪（`.gitignore` 已覆盖；`git ls-files | grep -iE "\.env|sqlite"` 为空）。
+- [ ] 精确 `.env`、数据库、浏览器 profile、`.mimosa/` 或运行时输出均未被跟踪或打包。使用根路径感知的精确路径/扩展名扫描，不能误伤合法 `.env.example`；同时确认 `.gitignore` 与 `.dockerignore` 都覆盖 `.mimosa/`。
 - [ ] `THIRD_PARTY_NOTICES.md` 为最新：两个上游、许可证正确、无内嵌代码。
 - [ ] 全树无个人账户数据、二维码图片或浏览器 profile。
 - [ ] 操作者鉴权示例只含类型化引用与占位路径；宿主机凭据文件及可选 Bearer 值始终位于仓库与镜像之外。
@@ -24,7 +24,7 @@
 - [ ] `uv run ruff check . && uv run ruff format --check .`
 - [ ] `uv run mypy --strict src`
 - [ ] `uv run pytest -q`——完整套件在部署主机通过（把数字记入最新执行的验证文件）
-- [ ] `uv run python -m compileall -q src/media_sync && uv build`
+- [ ] `uv run python -m compileall -q src/media_sync && uv build`；检查全新 wheel/sdist 含必需应用/migration 文件，并拒绝运行时根目录、`.mimosa/`、secret、数据库、日志、partial 文件与工作站路径。
 
 ## 发布机制
 

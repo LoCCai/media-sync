@@ -400,6 +400,12 @@ class MediaServerObservationService:
         self._monotonic = monotonic
         self._clock = clock
 
+    @property
+    def profile_fingerprint(self) -> str:
+        """Expose only the validated immutable profile identity."""
+
+        return self._profile_identity()[0]
+
     def resolve_target(
         self,
         author_id: str,

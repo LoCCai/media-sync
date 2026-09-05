@@ -72,6 +72,10 @@ from media_sync.application.library import LibraryInspection, LibraryInspectionE
 from media_sync.application.media_server import MediaServerError, MediaServerService
 from media_sync.application.media_server_observation import MediaServerObservationService
 from media_sync.application.media_server_publication import MediaServerPublicationResolver
+from media_sync.application.playback_evidence import (
+    PlaybackEvidenceConfirmationError,
+    PlaybackEvidenceService,
+)
 from media_sync.application.qualifications import QualificationError, QualificationService
 from media_sync.application.support_bundle import SupportBundleError, SupportBundleService
 from media_sync.config import Settings, get_settings
@@ -129,12 +133,14 @@ from media_sync.scheduler import DurableSchedulerService, SchedulerRepository, S
 from media_sync.security import (
     OPERATOR_SESSION_COOKIE_NAME,
     OperatorAuthConfigurationError,
+    OperatorAuthMethod,
     OperatorAuthMiddleware,
     OperatorAuthRuntime,
     OperatorLoginRejected,
     OperatorOriginPolicy,
     SecretResolver,
     derive_operator_origin_policy,
+    operator_auth_method,
     resolve_operator_auth_runtime,
     session_cookie_from_headers,
 )
@@ -152,6 +158,7 @@ _OPERATION_STREAM_MAX_SECONDS = 30.0
 _OPERATION_RECONCILE_MIN_INTERVAL_SECONDS = 1.0
 _OPERATION_RECONCILE_SHUTDOWN_SECONDS = 1.0
 _MAX_OPERATOR_LOGIN_BODY_BYTES = 8 * 1024
+_MAX_PLAYBACK_EVIDENCE_BODY_BYTES = 1_024
 _LAST_EVENT_ID = re.compile(r"(?:0|[1-9][0-9]{0,18})\Z")
 _JSON_CONTENT_TYPE = re.compile(r"application/json(?:\s*;\s*charset=utf-8)?\Z", re.IGNORECASE)
 _OPERATOR_LOGIN_OPENAPI = {
@@ -176,6 +183,64 @@ _OPERATOR_LOGIN_OPENAPI = {
         },
     }
 }
+_PLAYBACK_EVIDENCE_OPENAPI = {
+    "requestBody": {
+        "required": True,
+        "content": {
+            "application/json": {
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "author_id": {
+                            "type": "string",
+                            "minLength": 36,
+                            "maxLength": 36,
+                            "format": "uuid",
+                        },
+                        "observation_fingerprint": {
+                            "type": "string",
+                            "minLength": 64,
+                            "maxLength": 64,
+                            "pattern": "^[0-9a-f]{64}$",
+                            "writeOnly": True,
+                        },
+                    },
+                    "required": ["author_id", "observation_fingerprint"],
+                    "additionalProperties": False,
+                }
+            }
+        },
+    },
+    "responses": {
+        "201": {
+            "description": "Playback evidence created or replayed",
+            "content": {
+                "application/json": {
+                    "schema": {
+                        "type": "object",
+                        "properties": {
+                            "schema_version": {"type": "integer", "enum": [1]},
+                            "id": {"type": "string", "format": "uuid"},
+                            "author_id": {"type": "string", "format": "uuid"},
+                            "observed_at": {"type": "string", "format": "date-time"},
+                            "confirmed_at": {"type": "string", "format": "date-time"},
+                            "replayed": {"type": "boolean"},
+                        },
+                        "required": [
+                            "schema_version",
+                            "id",
+                            "author_id",
+                            "observed_at",
+                            "confirmed_at",
+                            "replayed",
+                        ],
+                        "additionalProperties": False,
+                    }
+                }
+            },
+        }
+    },
+}
 _ACCOUNT_LOGIN_RETRYABLE_CODES = frozenset(
     {
         "account_login_busy",
@@ -195,6 +260,30 @@ def _resolve_web_root() -> Path | None:
         if (resolved / "index.html").is_file():
             return resolved
     return None
+
+
+def _strict_json_object(payload: bytes) -> dict[str, object]:
+    """Decode one finite JSON object while rejecting duplicate members."""
+
+    def strict_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        result: dict[str, object] = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("duplicate JSON member")
+            result[key] = value
+        return result
+
+    def reject_constant(_value: str) -> object:
+        raise ValueError("non-finite JSON value")
+
+    decoded = json.loads(
+        payload.decode("utf-8"),
+        object_pairs_hook=strict_object,
+        parse_constant=reject_constant,
+    )
+    if type(decoded) is not dict:
+        raise ValueError("JSON value must be an object")
+    return decoded
 
 
 def _static_response(web_root: Path, relative_path: str = "index.html") -> FileResponse:
@@ -612,6 +701,11 @@ def create_api_app(
         if media_server_profile is not None
         else None
     )
+    playback_evidence_service = (
+        PlaybackEvidenceService(operation_database, media_server_observation_service)
+        if media_server_observation_service is not None
+        else None
+    )
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
@@ -638,6 +732,7 @@ def create_api_app(
     app.state.operations = operations
     app.state.media_server_service = media_server_service
     app.state.media_server_observation_service = media_server_observation_service
+    app.state.playback_evidence_service = playback_evidence_service
     app.state.library_inspection_service = library_inspection_service
     deep_readiness_cache: dict[bool, tuple[float, dict[str, object]]] = {}
     deep_readiness_lock = threading.Lock()
@@ -905,6 +1000,16 @@ def create_api_app(
                 headers={"Cache-Control": "no-store"},
             )
         return media_server_observation_service
+
+    def _playback_evidence_confirmation() -> PlaybackEvidenceService:
+        _media_server_observation()
+        if playback_evidence_service is None:
+            raise HTTPException(
+                status_code=409,
+                detail="media_server_not_configured",
+                headers={"Cache-Control": "no-store"},
+            )
+        return playback_evidence_service
 
     def _media_server_error(error: MediaServerError) -> HTTPException:
         if error.code == "media_server_operations_disabled":
@@ -1245,6 +1350,132 @@ def create_api_app(
             return service.lookup_author(canonical_author_id).as_dict()
         except MediaServerError as error:
             raise _media_server_error(error) from None
+
+    @app.post(
+        "/api/v1/media-server/playback-evidence",
+        status_code=201,
+        openapi_extra=_PLAYBACK_EVIDENCE_OPENAPI,
+    )
+    async def confirm_media_server_playback(request: Request) -> Response:
+        """Revalidate and append one explicit browser-only playback attestation."""
+
+        if operator_auth_method(request.scope) is not OperatorAuthMethod.BROWSER:
+            return JSONResponse(
+                status_code=403,
+                content={"detail": "operator_browser_session_required"},
+                headers={"Cache-Control": "no-store"},
+            )
+        raw_headers = request.scope.get("headers", ())
+        if any(name.lower() == b"idempotency-key" for name, _value in raw_headers):
+            return JSONResponse(
+                status_code=400,
+                content={"detail": "playback_evidence_idempotency_key_unsupported"},
+                headers={"Cache-Control": "no-store"},
+            )
+
+        content_types = [value for name, value in raw_headers if name.lower() == b"content-type"]
+        if len(content_types) != 1 or len(content_types[0]) > 64:
+            return JSONResponse(
+                status_code=415,
+                content={"detail": "playback_evidence_content_type_invalid"},
+                headers={"Cache-Control": "no-store"},
+            )
+        try:
+            content_type = content_types[0].decode("ascii")
+        except UnicodeDecodeError:
+            content_type = ""
+        if _JSON_CONTENT_TYPE.fullmatch(content_type) is None:
+            return JSONResponse(
+                status_code=415,
+                content={"detail": "playback_evidence_content_type_invalid"},
+                headers={"Cache-Control": "no-store"},
+            )
+
+        content_lengths = [value for name, value in raw_headers if name.lower() == b"content-length"]
+        if len(content_lengths) > 1:
+            return JSONResponse(
+                status_code=400,
+                content={"detail": "playback_evidence_request_invalid"},
+                headers={"Cache-Control": "no-store"},
+            )
+        if content_lengths:
+            content_length_text = ""
+            try:
+                content_length_text = content_lengths[0].decode("ascii")
+                content_length = int(content_length_text)
+            except (UnicodeDecodeError, ValueError):
+                content_length = -1
+            if (
+                str(content_length) != content_length_text
+                or not 0 <= content_length <= _MAX_PLAYBACK_EVIDENCE_BODY_BYTES
+            ):
+                too_large = content_length > _MAX_PLAYBACK_EVIDENCE_BODY_BYTES
+                return JSONResponse(
+                    status_code=413 if too_large else 400,
+                    content={
+                        "detail": (
+                            "playback_evidence_body_too_large" if too_large else "playback_evidence_request_invalid"
+                        )
+                    },
+                    headers={"Cache-Control": "no-store"},
+                )
+
+        payload = bytearray()
+        try:
+            async for chunk in request.stream():
+                payload.extend(chunk)
+                if len(payload) > _MAX_PLAYBACK_EVIDENCE_BODY_BYTES:
+                    return JSONResponse(
+                        status_code=413,
+                        content={"detail": "playback_evidence_body_too_large"},
+                        headers={"Cache-Control": "no-store"},
+                    )
+            decoded = _strict_json_object(bytes(payload))
+            if set(decoded) != {"author_id", "observation_fingerprint"}:
+                raise ValueError("invalid playback-evidence fields")
+            author_id = decoded["author_id"]
+            observation_fingerprint = decoded["observation_fingerprint"]
+            if type(author_id) is not str or type(observation_fingerprint) is not str:
+                raise ValueError("invalid playback-evidence field types")
+            if str(UUID(author_id)) != author_id or re.fullmatch(r"[0-9a-f]{64}", observation_fingerprint) is None:
+                raise ValueError("invalid playback-evidence identity")
+        except (AttributeError, RecursionError, UnicodeError, ValueError):
+            return JSONResponse(
+                status_code=400,
+                content={"detail": "playback_evidence_request_invalid"},
+                headers={"Cache-Control": "no-store"},
+            )
+
+        service = _playback_evidence_confirmation()
+        try:
+            result = await asyncio.to_thread(service.confirm, author_id, observation_fingerprint)
+        except MediaServerError as error:
+            raise _media_server_error(error) from None
+        except PlaybackEvidenceConfirmationError as error:
+            if error.code in {"playback_evidence_identity_conflict", "playback_evidence_not_confirmable"}:
+                status = 409
+            elif error.code == "playback_evidence_request_invalid":
+                status = 400
+            else:
+                status = 503
+            return JSONResponse(
+                status_code=status,
+                content={"detail": error.code},
+                headers={"Cache-Control": "no-store"},
+            )
+
+        return JSONResponse(
+            status_code=201,
+            content={
+                "schema_version": result.schema_version,
+                "id": result.id,
+                "author_id": result.author_id,
+                "observed_at": result.observed_at.astimezone(UTC).isoformat(),
+                "confirmed_at": result.confirmed_at.astimezone(UTC).isoformat(),
+                "replayed": result.replayed,
+            },
+            headers={"Cache-Control": "no-store"},
+        )
 
     @app.post("/api/v1/media-server/probe", status_code=202)
     def media_server_probe(_body: MediaServerOperationRequest, request: Request) -> dict[str, object]:

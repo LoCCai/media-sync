@@ -14,7 +14,7 @@ Run top-down before every public push or tagged release. Every item is checkable
 ## Secrets and privacy
 
 - [ ] `git grep -iE "(set-cookie|cookie:|Authorization:)" -- docs src tests` shows only protocol code, redaction references, sentinels or fixtures — never a real credential, session, CSRF value or Bearer token.
-- [ ] No `.env`, `*.sqlite3`, `browser_data/`, or runtime output tracked (`.gitignore` covers them; `git ls-files | grep -iE "\.env|sqlite"` empty).
+- [ ] No exact `.env`, database, browser-profile, `.mimosa/`, or runtime output is tracked or packaged. Use a root-aware exact-path/extension scan rather than matching the legitimate `.env.example`; verify `.mimosa/` is covered by both `.gitignore` and `.dockerignore`.
 - [ ] `THIRD_PARTY_NOTICES.md` current: both upstreams, correct licenses, no vendored code.
 - [ ] No personal account data, QR images or profiles anywhere in the tree.
 - [ ] Operator-auth examples contain typed references and placeholder paths only; the host credential file and optional Bearer value remain outside the repository and image.
@@ -24,7 +24,7 @@ Run top-down before every public push or tagged release. Every item is checkable
 - [ ] `uv run ruff check . && uv run ruff format --check .`
 - [ ] `uv run mypy --strict src`
 - [ ] `uv run pytest -q` — full suite green on the deployment host (record the numbers in the newest execution's verification file)
-- [ ] `uv run python -m compileall -q src/media_sync && uv build`
+- [ ] `uv run python -m compileall -q src/media_sync && uv build`; inspect the fresh wheel and sdist for required application/migration files and reject runtime roots, `.mimosa/`, secrets, databases, logs, partial files, and workstation paths.
 
 ## Release mechanics
 

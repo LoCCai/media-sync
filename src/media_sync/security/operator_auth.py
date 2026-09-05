@@ -834,6 +834,9 @@ class OperatorAuthMiddleware:
 
         cookie = session_cookie_from_headers(headers)
         bearer = bearer_token_from_headers(headers)
+        if route in self.browser_only_routes and any(name.lower() == b"authorization" for name, _value in headers):
+            await self._reject(scope, send, OperatorAuthErrorCode.BROWSER_SESSION_REQUIRED, 403)
+            return
         auth_method = self.runtime.authenticate(cookie, bearer)
         if auth_method is None:
             await self._reject(scope, send, OperatorAuthErrorCode.AUTH_REQUIRED, 401)

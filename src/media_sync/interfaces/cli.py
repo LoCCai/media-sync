@@ -15,6 +15,7 @@ import signal
 import sys
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
+from copy import deepcopy
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
@@ -2710,6 +2711,25 @@ def run_sync(
         raise typer.Exit(code=2 if result.status is RunStatus.AWAITING_AUTH else 1)
 
 
+def _uvicorn_log_config(log_level: str) -> dict[str, Any]:
+    """Extend Uvicorn's defaults with one visible application-log namespace."""
+
+    from uvicorn.config import LOGGING_CONFIG
+
+    config: dict[str, Any] = deepcopy(LOGGING_CONFIG)
+    config["handlers"]["media_sync"] = {
+        "class": "logging.StreamHandler",
+        "formatter": "default",
+        "stream": "ext://sys.stderr",
+    }
+    config["loggers"]["media_sync"] = {
+        "handlers": ["media_sync"],
+        "level": log_level,
+        "propagate": False,
+    }
+    return config
+
+
 @app.command("serve")
 def serve_api(
     host: Annotated[
@@ -2774,6 +2794,7 @@ def serve_api(
         host=resolved_host,
         port=int(resolved_port),
         log_level=settings.log_level.lower(),
+        log_config=_uvicorn_log_config(settings.log_level),
         proxy_headers=False,
         access_log=False,
     )

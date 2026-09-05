@@ -425,6 +425,15 @@ def test_middleware_host_login_origin_browser_csrf_and_bearer_precedence() -> No
     browser_only = client.post("/api/v1/media-server/playback-evidence", headers=bearer_headers)
     assert browser_only.status_code == 403
     assert browser_only.json() == {"detail": "operator_browser_session_required"}
+    cookie_and_bearer = _browser_headers(issued.cookie_value, issued.csrf_token)
+    cookie_and_bearer.update(bearer_headers)
+    mixed_authority = client.post(
+        "/api/v1/media-server/playback-evidence",
+        headers=cookie_and_bearer,
+    )
+    assert mixed_authority.status_code == 403
+    assert mixed_authority.json() == {"detail": "operator_browser_session_required"}
+    assert not any(path == "/api/v1/media-server/playback-evidence" for _method, path, _auth in entered)
 
     assert ("POST", "/mutate", OperatorAuthMethod.BROWSER) in entered
     assert ("POST", "/mutate", OperatorAuthMethod.BEARER) in entered

@@ -69,11 +69,11 @@ def test_app_factory_rejects_missing_auth_before_database_construction(
         api_module.create_api_app(_base_settings(tmp_path))
 
 
-def test_all_57_routes_are_denied_by_default_except_the_exact_public_table(tmp_path: Path) -> None:
+def test_all_58_routes_are_denied_by_default_except_the_exact_public_table(tmp_path: Path) -> None:
     settings = _authenticated_settings(tmp_path)
     app = api_module.create_api_app(settings)
     routes = app.routes
-    assert len(routes) == 57
+    assert len(routes) == 58
     public_routes = {
         ("GET", "/api/v1/health"),
         ("HEAD", "/api/v1/health"),

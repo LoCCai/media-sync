@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import subprocess
+import sys
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
@@ -155,6 +157,56 @@ def test_alembic_uses_runtime_database_setting(tmp_path: Path, monkeypatch: pyte
         assert DOMAIN_TABLES.issubset(inspect(configured.engine).get_table_names())
     finally:
         configured.dispose()
+
+
+def test_embedded_alembic_ini_preserves_caller_logging(tmp_path: Path) -> None:
+    script = """
+from io import StringIO
+import logging
+import sys
+
+from alembic import command
+from alembic.config import Config
+
+logger = logging.getLogger("media_sync.application.playback_evidence")
+logger.disabled = False
+logger.setLevel(logging.NOTSET)
+logger.propagate = True
+logger.handlers.clear()
+stream = StringIO()
+handler = logging.StreamHandler(stream)
+root = logging.getLogger()
+root.setLevel(logging.INFO)
+root.handlers[:] = [handler]
+configuration = Config(sys.argv[1])
+configuration.set_main_option("sqlalchemy.url", sys.argv[2])
+if configuration.cmd_opts is not None:
+    raise AssertionError("programmatic Alembic config unexpectedly looks like CLI")
+command.upgrade(configuration, "head")
+if logger.disabled:
+    raise AssertionError("Alembic disabled an existing application logger")
+if root.level != logging.INFO or root.handlers != [handler]:
+    raise AssertionError("embedded Alembic replaced caller root logging")
+if logger.getEffectiveLevel() != logging.INFO:
+    raise AssertionError("embedded Alembic changed the audit logger effective level")
+logger.info("playback_evidence_created")
+if "playback_evidence_created" not in stream.getvalue():
+    raise AssertionError("application audit logger stopped emitting after Alembic")
+"""
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            script,
+            str(ALEMBIC_INI),
+            _database_url(tmp_path / "logger-safe.sqlite3"),
+        ],
+        cwd=REPOSITORY_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
 
 
 def test_sqlite_pragmas_and_nested_work_rollback(database: Database) -> None:

@@ -10,12 +10,12 @@
 
 | 维度 | 状态 |
 | --- | --- |
-| 离线实现 | 提交 `f19bfaa` 已交付后端单操作者凭据/session/CSRF 边界及可选独立 Bearer 自动化。当前工作变更新增仅适用于唯一匹配结果的 observation fingerprint、revision `0008_playback_evidence`，以及 append-only create-or-replay 仓储原语；经鉴权确认 service/API/UI、资格 schema v3 与 Web 鉴权集成仍未实现 |
-| 离线验证 | 当前工作树通过 **2868 项测试、22 项跳过、1 个既有 warning**。跳过项分别为 3 项 Windows/POSIX 差异、11 项既有 Operation PostgreSQL 用例，以及因本工作站没有测试 URL 而跳过的 8 项新增 PlaybackEvidence PostgreSQL 用例。69 项 Web 测试及 format/check/build、727 文件 Ruff/format、105 个源文件 strict mypy、compileall 与 498 份文档检查均通过。真实 PostgreSQL 与 Docker 均未运行；隔离 PostgreSQL harness 不能证明完整部署支持 |
+| 离线实现 | 提交 `f19bfaa` 已交付后端单操作者凭据/session/CSRF 边界及可选独立 Bearer 自动化；`1d5b448` 新增仅 matched 的 observation 身份、revision `0008_playback_evidence` 与 append-only create-or-replay 持久化。当前检查点新增防 TOCTOU 的确认 service 与仅浏览器 POST；有界按作者 current/stale 投影、qualification schema v3、确认 UI 与 Web 鉴权集成仍未实现 |
+| 离线验证 | 当前工作树通过 **2941 项测试、22 项跳过、1 个既有 warning**。跳过项分别为 3 项 Windows/POSIX 差异、11 项 Operation PostgreSQL 用例，以及因本工作站没有测试 URL 而跳过的 8 项 PlaybackEvidence PostgreSQL 用例。69 项 Web 测试及 format/check/build、731 文件 Ruff/format、106 个源文件 strict mypy、compileall 与 498 份文档检查均通过。真实 PostgreSQL 与 Docker 均未运行；隔离 PostgreSQL harness 不能证明完整部署支持 |
 | REST API + Web 控制台 | 所有非公开后端路由现已在精确 Host 与浏览器 session 或可选 Bearer 鉴权之后关闭失败。SvelteKit 与 `/legacy` 客户端尚未提供登录壳、内存 CSRF 传播或统一过期处理，因此当前不能把 Web 控制台当作可操作的管理界面 |
 | Docker 打包 | 示例 Compose 把宿主机提供的操作者凭据挂载为 Docker secret，容器内绑定 `0.0.0.0` 时只显式允许宿主机回环浏览器 origin；0047 Linux 重启/恢复/进程证据仍为 `NOT_RUN` |
-| 真人验收 | **全部已实现平台/CDN/媒体服务器真人行保持 `NOT_RUN`**；provider task completion、播放证据及导出后自动扫描是 `NOT_IMPLEMENTED`，不是“尚未运行的真人行” |
-| 发布阻塞 | Web 鉴权集成、经鉴权播放确认 service/API/UI 与资格 v3、Linux 操作者基线及真人行零记录；见 [`docs/status.zh.md`](docs/status.zh.md) |
+| 真人验收 | **全部已实现平台/CDN/媒体服务器真人行保持 `NOT_RUN`**。在 projection/schema v3 交付前，qualification API 仍把整体播放证据报为 `NOT_IMPLEMENTED`；provider task completion 与导出后自动扫描也为 `NOT_IMPLEMENTED` |
+| 发布阻塞 | 有界播放证据投影与 qualification v3、Web 鉴权集成及确认 UI、Linux 操作者基线及真人行零记录；见 [`docs/status.zh.md`](docs/status.zh.md) |
 
 逐执行细节、证据与准确命令都在 [`docs/executions/`](docs/README.zh.md)——本 README 有意不堆叠执行叙事。
 

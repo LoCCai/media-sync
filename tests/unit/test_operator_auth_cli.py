@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -105,6 +107,7 @@ def test_serve_passes_one_resolved_boundary_and_disables_proxy_and_access_logs(
     assert len(calls) == 1
     application, kwargs = calls[0]
     assert application.state.operator_auth_runtime.bearer_enabled is False  # type: ignore[attr-defined]
+    log_config = kwargs.pop("log_config")
     assert kwargs == {
         "host": "127.0.0.1",
         "port": 8632,
@@ -112,6 +115,22 @@ def test_serve_passes_one_resolved_boundary_and_disables_proxy_and_access_logs(
         "proxy_headers": False,
         "access_log": False,
     }
+    assert log_config["handlers"]["media_sync"] == {
+        "class": "logging.StreamHandler",
+        "formatter": "default",
+        "stream": "ext://sys.stderr",
+    }
+    assert log_config["loggers"]["media_sync"] == {
+        "handlers": ["media_sync"],
+        "level": "INFO",
+        "propagate": False,
+    }
+    for name in ("default", "access"):
+        assert log_config["handlers"][name] == uvicorn.config.LOGGING_CONFIG["handlers"][name]
+    for name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
+        assert log_config["loggers"][name] == uvicorn.config.LOGGING_CONFIG["loggers"][name]
+    assert "media_sync" not in uvicorn.config.LOGGING_CONFIG["handlers"]
+    assert "media_sync" not in uvicorn.config.LOGGING_CONFIG["loggers"]
     payload = json.loads(result.output)
     assert payload == {
         "service": "media-sync-api",
@@ -122,6 +141,45 @@ def test_serve_passes_one_resolved_boundary_and_disables_proxy_and_access_logs(
     }
     assert credential not in result.output
     assert locator not in result.output
+
+
+def test_serve_log_config_emits_only_fixed_application_audits_without_binding() -> None:
+    private_sentinel = "private-runtime-audit-sentinel"
+    script = """
+import sys
+
+import uvicorn
+
+from media_sync.application.playback_evidence import PlaybackEvidenceAuditCode, PlaybackEvidenceService
+from media_sync.interfaces.cli import _uvicorn_log_config
+from media_sync.security import operator_auth as operator_auth_module
+from media_sync.security.operator_auth import OperatorAuditCode
+
+configuration = uvicorn.Config(
+    "media_sync.interfaces.api:create_api_app",
+    log_config=_uvicorn_log_config("INFO"),
+    log_level="info",
+    access_log=False,
+)
+configuration.configure_logging()
+PlaybackEvidenceService._default_audit_sink(PlaybackEvidenceAuditCode.CREATED)
+operator_auth_module._default_audit_sink(OperatorAuditCode.LOGIN_SUCCEEDED)
+if sys.argv[1] in "playback_evidence_created operator_login_succeeded":
+    raise AssertionError("private sentinel unexpectedly matched a fixed audit code")
+"""
+    completed = subprocess.run(
+        [sys.executable, "-c", script, private_sentinel],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    audit_lines = [line for line in completed.stderr.splitlines() if line]
+    assert len(audit_lines) == 2
+    assert audit_lines[0].endswith("playback_evidence_created")
+    assert audit_lines[1].endswith("operator_login_succeeded")
+    assert private_sentinel not in completed.stdout + completed.stderr
 
 
 def test_serve_non_loopback_override_requires_an_explicit_origin(

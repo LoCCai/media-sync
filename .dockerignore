@@ -1,5 +1,6 @@
 .git
 .gitignore
+.mimosa
 .upstream
 # NOTE: .mediacrawler-local/ (host-side prefetch from
 # scripts/fetch_mediacrawler.sh) is intentionally NOT ignored here — the
