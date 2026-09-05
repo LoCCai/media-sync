@@ -2,18 +2,20 @@
 
 # 执行 0054 阶段 B 进展
 
-- 状态：规划基线已记录；尚未开始实现
+- 状态：阶段 B 已实现并通过本地冻结验证；真人资格保持 `NOT_RUN`
 - 日期：2026-09-05
 - 基线：`4945df1`
-- 数据库 revision：计划不新增
+- 规划提交：`d7e14c9`
+- 实现/验证提交：`b4af46d`、`ff5da07`、`88f5ed0`、`22bd9ef`、`48ecbe9`、`d8bbdf7`
+- 数据库 revision：未新增；Alembic 保持 `0007`
 
 ## 基线
 
 阶段 B 从已发布的执行 0054-A 收尾 `4945df1` 开始。在创建本规划包之前，工作树没有 tracked change，只有既有未跟踪 `.mimosa/` 目录。该目录不属于项目范围，继续排除。
 
-基线已实现受管树检查器、不可变服务器 profile、加固连接器、只确认接受的定向刷新、两个媒体服务器 Operation kind、qualification schema v1，以及 Library/Settings/Jobs 集成。在此边界，scan completion polling 与 provider/path item lookup 仍明确为 `NOT_IMPLEMENTED`。
+基线已实现受管树检查器、不可变服务器 profile、加固连接器、只确认接受的定向刷新、两个媒体服务器 Operation kind、qualification schema v1，以及 Library/Settings/Jobs 集成。在该历史边界，provider/path item lookup 与刷新后观察仍为 `NOT_IMPLEMENTED`；本阶段现已实现这两项能力，并把 qualification 升级为 schema v2。
 
-## 已冻结设计
+## 已实现设计
 
 阶段 B 复核了官方 Emby 4.8.10/4.9.5 与 Jellyfin 10.10.7/10.11.11 API 描述，以及 Jellyfin 的 queued item-refresh controller。定向 refresh 没有返回共同的持久 task identity。Scheduled Tasks、WebSocket 消息、服务器空闲状态、时间戳与 Etag 变化都不能把 provider task 关联到该次请求。
 
@@ -42,33 +44,39 @@ author 模式复用同一 `media-server-scan` kind，使用 `target_type=author`
 
 无需 migration：当前 `0007` schema 已允许 author target、author/Job subject 与 target/related role、`result_summary` checkpoint 字段，以及 `operation_phase_changed` Event code。阶段 B 不新增数据库 kind、state、Event kind、subject type、role、表、列或 constraint value。
 
-## 工作状态
+## 已交付
 
-本规划切片已完成：
-
-1. 只读复核当前 connector、Operation、payload、publication、API、Web、migration 与 qualification 边界。
-2. 对比四个受支持 Emby/Jellyfin 版本的路由级契约。
-3. 冻结错误 taxonomy、成功证据、兼容策略、安全预算、API/Web 契约、restart policy 与验收矩阵。
-4. 创建本双语 `phase-b/` goal、plan、progress 与 verification 包。
-
-没有修改生产源码、测试、migration、部署配置或父级 0054 文档。本计划所述 running accepted/observed checkpoint 需要未来扩展 repository/coordinator，不得表述成当前已有能力；它将复用 `result_summary` 与 `operation_phase_changed`。不声称任何实现测试结果。
+1. `d7e14c9` 单独提交双语阶段 B 冻结规划，保留 legacy `{}` acceptance-only 契约，并明确不以任何 provider 全局状态推断 task completion。
+2. `b4af46d` 交付 publication target resolver、严格 manifest 权威、Emby 过滤查询与 Jellyfin 有界完整分页，以及同步作者 item lookup API。只有完整零匹配才返回 `not_found`，完整唯一 provider/path 双匹配才返回 `matched`。
+3. `ff5da07` 在既有 `result_summary` 中加入受 lease/revision fencing 的 accepted/observed running checkpoint，并完成取消 CAS、最终收尾与按 phase 重启恢复；没有增加表、列、Event kind 或 Alembic revision。
+4. `88f5ed0` 交付作者刷新后观察编排与 API：完整 absent baseline、至多一次 POST、可信 2xx 后保存 accepted、间隔观察同一唯一 item 两次后保存 observed。baseline 已存在时在 dispatch 前失败；accepted 后无法证明观察时保留 accepted 并以 completion unknown 收尾。
+5. `22bd9ef` 把 qualification 升级为 schema v2，并为 Library `refresh_and_verify` 建立服务端授权基础。`item_lookup` 与 `post_refresh_item_observation` 成为 `IMPLEMENTED`，但没有获得真人 PASS。
+6. `48ecbe9` 完成 Library 与 Jobs Web 表面：严格区分顶部 `{}` 刷新和作者 `{"author_id":"<uuid>"}` 刷新并验证；显示 accepted、observed、acceptance unknown 与 completion unknown；作者观察只显示核验次数，不伪造 provider 百分比、播放能力或远端任务完成。
+7. `d8bbdf7` 增加可选启用的真实 PostgreSQL 双连接竞态套件，并在普通取消与 coordinator `shutdown()` 的取消写入前执行权威锁定读取。accepted/observed checkpoint、cancel/final 双顺序、shutdown、coordinator fallback、lease loss 与 duplicate final 现由 11 个非 skip PostgreSQL 用例覆盖，并通过 `pg_stat_activity.wait_event_type='Lock'` 证明竞争连接确实进入锁等待。
+8. API、SQLite、Events、SSE、Web、日志与支持包继续只允许固定状态和摘要；原始服务器路径、provider 值、item ID、Etag、响应正文与远端错误文本不进入保留或返回出口。
 
 ## 资格状态
 
-基线时：
+收尾时：
 
-- `connection_probe`、`library_discovery` 与 `targeted_scan_acceptance` 已实现，但真人状态为 `NOT_RUN`。
-- `item_lookup` 与 `post_refresh_item_observation` 尚未实现；没有真人状态。
-- `provider_task_completion`、`playback_evidence` 与 `automatic_post_export_scan` 保持 `NOT_IMPLEMENTED`。
-
-实现完成后，只有前两个阶段 B 能力转为实现状态 `IMPLEMENTED`；在授权真实服务器上执行前，其真人状态仍为 `NOT_RUN`。
+- `connection_probe`、`library_discovery`、`targeted_scan_acceptance`、`item_lookup` 与 `post_refresh_item_observation` 均为 `IMPLEMENTED`，但在授权真实服务器上执行前，真人状态全部保持 `NOT_RUN`。
+- `provider_task_completion` 为 `NOT_IMPLEMENTED`，原因是 `provider_api_unsupported`；它不是 observation 的别名。
+- `playback_evidence` 与 `automatic_post_export_scan` 保持 `NOT_IMPLEMENTED`，其真人状态为空。
+- 本阶段所有 Emby/Jellyfin 响应均来自 mock/fake；没有真实服务器 PASS。
 
 ## 工作区纪律
 
-本规划任务只变更 `docs/executions/0054-media-library-server-integration/phase-b/` 下八个 Markdown 文件。它不检查、不添加、不修改、不删除、不暂存、不提交、不推送 `.mimosa/`。runtime data、secret、database、archive、export/job tree、build output、cache 与 report 继续排除。
+阶段 B 各实现提交均排除既有 `.mimosa/`。runtime data、secret、database、archive、export/job tree、build output、cache 与 report 继续排除。收尾仓库门禁对 490 份 Markdown、两个锁定 upstream 及 787 个 tracked 文件通过：没有禁入的 generated/runtime output，拟提交 diff 没有工作站路径、private key 或赋值形式的 secret 命中，空白干净；冻结的阶段 B goal/plan 保持逐字节不变。阶段 B 共七个提交——一个规划提交与截至 `d8bbdf7` 的六个实现/验证提交——均已推送到 `origin/main`；包含本记录的文档收尾提交按约定不嵌入自身 SHA。
 
 实现后，如果仍有 active author-observation Operation，就不得回滚到旧 binary。操作员必须等待这些行全部进入终态，或部署具备兼容 reconcile 的 binary；绝不能为了让回滚看似兼容而删除审计行或 accepted/observed 证据。
 
-## 下一检查点
+## 验证与收尾
 
-只有评审接受这些契约后才开始下一实现检查点。交付先从 publication target resolver 与只读 lookup 开始；只有 selector、完整性、预算和日志边界具备 focused test 后，才进入 mutation orchestration。之后每次进展更新都必须记录精确命令与结果，不得把 mocked evidence 升级为真人 qualification。
+- Web 最终门禁均在 `web/` 目录按顺序运行：`pnpm test`、`pnpm format:check`、`pnpm check`、`pnpm build`。69 项测试、format 与生产 build 均通过，Svelte/TypeScript check 为 0 errors、0 warnings。
+- 更早的一次 production build 与其他 Web 命令并发运行，因争用共享 `.svelte-kit` 中间产物而单独失败；这不是测试自身失败。停止并发后，全部门禁按上述顺序重跑并通过。该 build 诊断失败被如实保留。
+- 本阶段未单独执行 Phase-B 浏览器 smoke，因此不声明浏览器交互证据。
+- 启用真实 PostgreSQL 后，Python 完整套件通过 `2763 passed, 3 skipped, 1 warning in 544.08s`；Ruff lint、219 个文件的 Ruff format check、103 个源码文件的 strict mypy、compileall、wheel/sdist build、lock consistency 与两个锁定 upstream 检查均通过。
+- PostgreSQL 首次开发诊断共 10 项，其中 7 PASS、3 FAIL；失败揭示普通取消与 `shutdown()` 在等待竞争行锁前读取了旧 revision。两条路径都改为在取消写入前用 `require_for_update()` 重读权威行后，扩展后的最终矩阵 11/11 PASS。fixture 只在隔离 PostgreSQL schema 中创建生产 Operation/Event/Subject/StreamState 四张 metadata 表；它不证明全应用 schema 兼容或生产 PostgreSQL 部署，受支持的默认数据库仍是 SQLite。
+- Alembic 仍为 `0007`。回滚旧 binary 前必须等待所有 author-observation Operation 进入终态，或使用具备兼容 reconcile 的 binary；不得删除审计行或 checkpoint 强行回滚。
+
+阶段 B 的本地实现门已关闭。剩余工作仅包括获授权真实 Emby/Jellyfin 的外部 qualification，以及本阶段明确未实现的 provider task completion、播放证据和自动导出后扫描。

@@ -34,7 +34,7 @@ docker compose exec media-sync /app/.venv/bin/python -c \
 # 然后按上述方式把 /data/state/backup.sqlite3 与 archive/ 一并拷出
 ```
 
-SQLite 备份会包含持久 `media-server-probe` / `media-server-scan` 审计行及其白名单证据，但不包含环境变量托管的配置或 secret；上述部署输入必须另行备份。
+SQLite 备份会包含持久 `media-server-probe` / `media-server-scan` 审计行及其白名单证据，包括阶段 B 的作者 target、关联 publication Job 与 accepted/observed checkpoint；但不包含环境变量托管的配置或 secret，上述部署输入必须另行备份。
 
 ## 恢复
 
@@ -66,3 +66,5 @@ docker compose up -d
 schema 迁移在容器启动时运行（`db init` 幂等）。`uv.lock` 保证与发布时测试相同的依赖组合。本地 `docker-compose.yml` 被 git 忽略，上游更新不会与你的部署配置冲突。
 
 数据库一旦包含任一 `media-server-probe` 或 `media-server-scan` 行，revision `0007_media_server_operations` 就是 forward-only。其 downgrade 会有意关闭失败而不是删除持久审计证据，旧应用也不得针对该数据库运行。没有新 kind 行的数据库可以使用经过测试的 downgrade 路径，但 down-migration 从不自动执行。签出旧 tag/SHA 前必须检查发布说明与数据库状态；若已有新 kind 行，应恢复兼容的升级前备份，或继续使用理解 revision `0007` 的应用版本。
+
+执行 0054-B 不新增迁移，Alembic 仍为 `0007`。回滚应用版本前，必须等待所有作者观察 scan 进入终态，或部署具备兼容收敛逻辑的版本；不得通过删除 Operation 行或 accepted/observed checkpoint 强行制造兼容。

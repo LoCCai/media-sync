@@ -6,16 +6,16 @@
 
 ## Current status
 
-The single source of truth is [`docs/status.md`](docs/status.md). Summary at the execution 0054-A boundary:
+The single source of truth is [`docs/status.md`](docs/status.md). Summary at the execution 0054 phase-B boundary:
 
 | Dimension | State |
 | --- | --- |
-| Offline implementation | Frozen platform shapes through 0039 plus API/operations, Console v2, content/archive browsing and 0054-A safe managed-tree/media-server controls; danmaku/subtitles and 0054-B scan completion/item lookup remain open |
-| Offline verification | Execution 0054-A frozen suite: **2620 passed, 3 skipped, 1 existing warning**; see [`docs/status.md`](docs/status.md) |
-| REST API + web console | SvelteKit 5 SPA includes safe managed-tree paging, redacted media-server posture, durable probe/targeted-refresh actions and qualification evidence; `/legacy` remains available for rollback |
+| Offline implementation | Frozen platform shapes through 0039 plus API/operations, Console v2, content/archive browsing, safe managed-tree inspection, exact media-server item lookup and post-refresh item observation; danmaku/subtitles, provider task completion, playback evidence and automatic post-export scan remain open or unsupported |
+| Offline verification | Execution 0054 phase-B suite: **2763 passed, 3 skipped, 1 existing warning**; 11 real-PostgreSQL Operation race tests and 69 Web tests plus format/check/build pass; see [`docs/status.md`](docs/status.md) |
+| REST API + web console | SvelteKit 5 SPA includes safe managed-tree paging, redacted media-server posture, acceptance-only and author-observation refresh actions, safe result projections and qualification schema v2; `/legacy` remains available for rollback |
 | Docker packaging | Multi-stage frontend/runtime packaging and repaired-image preflight pass; 0047 Linux restart/restore/process evidence remains `NOT_RUN` |
-| Live qualification | **Every implemented live platform/CDN/media-server row remains `NOT_RUN`**; capabilities absent from 0054-A are `NOT_IMPLEMENTED`, not unexecuted live rows |
-| Release blockers | Linux baseline (Phase B) + zero live rows; see [`docs/status.md`](docs/status.md) |
+| Live qualification | **Every implemented live platform/CDN/media-server row remains `NOT_RUN`**; provider task completion, playback evidence and automatic post-export scan are `NOT_IMPLEMENTED`, not unexecuted live rows |
+| Release blockers | Linux operator baseline + zero live rows; see [`docs/status.md`](docs/status.md) |
 
 Per-execution detail, evidence and exact commands live in [`docs/executions/`](docs/README.md) — this README intentionally does not stack execution narratives.
 

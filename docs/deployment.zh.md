@@ -134,7 +134,7 @@ checkout 的逐项状态、稳定 `detail_code`、实际 Chromium 版本和构�
 | `MEDIA_SYNC_MEDIA_SERVER_ALLOWED_CIDRS` | 显式允许的 IP/CIDR 列表；DNS 返回的每个地址都必须落在其中 |
 | `MEDIA_SYNC_MEDIA_SERVER_VERIFY_TLS` | 默认 `true`；生产环境保持开启 |
 | `MEDIA_SYNC_MEDIA_SERVER_TIMEOUT_SECONDS` | 0.1–60 秒，默认 10 |
-| `MEDIA_SYNC_MEDIA_SERVER_OPERATIONS_ENABLED` | probe/scan 共用服务端门，默认 `false` |
+| `MEDIA_SYNC_MEDIA_SERVER_OPERATIONS_ENABLED` | 所有媒体服务器网络动作的共用服务端门，包括 probe、两种 scan 模式与作者 lookup；默认 `false` |
 
 API key 值应通过引用指向的环境变量或 secret 文件注入，不得写入仓库。配置 API 只返回脱敏摘要：不会回显 key、完整 secret reference、Library ID、服务器路径或网络范围。连接器禁止环境代理与重定向，校验全部 DNS 答案并绑定实际连接 IP，同时保留原始 Host/TLS SNI。
 
@@ -142,12 +142,14 @@ API key 值应通过引用指向的环境变量或 secret 文件注入，不得�
 
 1. 点作者行的「检查媒体树」，分页验证数据库成功发布链授权的 manifest；检查只读，不修复、删除、创建作者锁或泄露宿主路径。
 2. 点「测试连接」。后端只调用 `GET /System/Info` 与 `GET /Library/VirtualFolders`，并要求 Library ID 和路径精确唯一匹配。
-3. 点「定向刷新」。后端只调用 `POST /Items/{configured-library-id}/Refresh`；`404/405/501` 会关闭失败，绝不回退到全库 `/Library/Refresh`。
-4. 在「调度任务 → 持久操作」查看 `media-server-probe` / `media-server-scan`。scan 成功仅表示请求已接受；一旦越过应用层 dispatch gate，超时、断连、取消或未预期的传输/响应失败都会终结为不可重试的 `media_server_scan_acceptance_unknown`。不得自动再次提交刷新；必须先在服务器侧人工核对。
+3. 点「检查服务器项目」，对精确受管 provider/path 身份执行完整且有界的只读查找。`not_found` 或唯一 `matched` 都只是一次观察，不证明刷新完成或媒体可播放。
+4. 点页面级「定向刷新（只确认接受）」发送严格 legacy `{}`。后端只调用 `POST /Items/{configured-library-id}/Refresh`；`404/405/501` 会关闭失败，绝不回退到全库 `/Library/Refresh`。Operation 成功只证明收到可信 2xx 接受。
+5. 当前且完整的媒体树检查授予动作后，点「刷新并核验」发送精确 `{"author_id":"<uuid>"}`。作者模式先要求完整的 absent baseline；精确项目已经存在时不会发送 POST，并返回 `media_server_scan_observation_precondition_failed`。成功需要一次刷新被接受，随后间隔两次观察到同一唯一项目；仍不证明 provider task completion 或可播放。
+6. 在「调度任务 → 持久操作」查看 `media-server-probe` / `media-server-scan`。Jobs 会区分 accepted、observed、acceptance unknown 与 completion unknown；作者观察只显示“核验 N 次”，不显示百分比。进入 transport 后无法确认接受时以不可重试的 `media_server_scan_acceptance_unknown` 收尾；已经可信接受但无法证明观察时以不可重试的 `media_server_scan_completion_unknown` 收尾，并保留 accepted checkpoint。两种歧义都不得自动重试。
 
-若服务重启时远端 Operation 已丢失 lease，进行中的 probe 与定向 scan 都会收敛为 `interrupted`，因为 0054-A 不持久化远端任务标识。probe 可以人工重试；中断的定向 scan 会显示为不可重试，任何新请求前都必须先在服务器侧核对。
+服务重启时，处于 `preparing` 或 `baselining` 的作者观察属于 dispatch 前中断；`dispatching` 收敛为 acceptance unknown；`accepted` 或 `polling` 收敛为 completion unknown 并保留 accepted checkpoint；只有有效持久 `observed` checkpoint 才能收敛为成功。Legacy targetless scan 保持 0054-A 的保守恢复。Probe 可人工重试；scan 歧义则必须先在服务器侧检查，才能考虑新请求。
 
-`GET /api/v1/qualifications` 会把本地自动化计数、实现状态与真人资格分开。当前工作区没有真实服务器凭据，已实现的连接 probe、Library 发现与定向刷新接受三行真人状态仍为 `NOT_RUN`。扫描完成轮询与 provider/path 项目查找在另行冻结 0054-B 前保持 `NOT_IMPLEMENTED`；经鉴权的播放证据属于 0055。导出后自动扫描同样为 `NOT_IMPLEMENTED`，但尚无已冻结的后续归属。所有 `NOT_IMPLEMENTED` 能力的 `human_status` 都是 `null`，不得写成真人 `NOT_RUN`、`FAIL` 或 `PASS`。
+`GET /api/v1/qualifications` schema v2 会把本地自动化计数、实现状态与真人资格分开。当前工作区没有真实服务器凭据，已实现的连接 probe、Library 发现、定向刷新接受、项目查找与刷新后项目观察真人状态都仍为 `NOT_RUN`。`provider_task_completion` 为 `NOT_IMPLEMENTED`，原因是 `provider_api_unsupported`；经鉴权播放证据与导出后自动扫描也为 `NOT_IMPLEMENTED`。所有未实现能力的 `human_status` 都是 `null`，不得写成真人 `NOT_RUN`、`FAIL` 或 `PASS`。
 
 ## 6. 验收清单（如实记录）
 
@@ -159,8 +161,10 @@ API key 值应通过引用指向的环境变量或 secret 文件注入，不得�
 | Emby 目录发布 | `/data/library` 的作者目录列表 |
 | Emby/Jellyfin 真实连接与 Library 发现 | `media-server-probe` 成功记录 + 服务器版本；未执行记 `NOT_RUN` |
 | 定向刷新被真实服务器接受 | `media-server-scan` 成功记录；不等同扫描完成，未执行记 `NOT_RUN` |
-| 扫描完成与 provider/path 项目查找 | 0054-A 为 `NOT_IMPLEMENTED`；0054-B 尚待另行冻结；没有真人状态 |
-| 经鉴权的播放证据 | 0054-A 为 `NOT_IMPLEMENTED`；后移至 0055；没有真人状态 |
+| 真实服务器精确 provider/path 项目查找 | 0054-B 已实现；以一次完整 lookup 快照为证；未执行记 `NOT_RUN` |
+| 真实服务器刷新后项目观察 | 0054-B 已实现；absent baseline + 一次 accepted POST + 同一唯一项目连续观察两次；未执行记 `NOT_RUN` |
+| Provider task completion | `NOT_IMPLEMENTED`（`provider_api_unsupported`）；没有真人状态 |
+| 经鉴权的播放证据 | `NOT_IMPLEMENTED`；后移至 0055；没有真人状态 |
 | 导出后自动扫描 | `NOT_IMPLEMENTED`；尚无已冻结后续归属，也没有真人状态 |
 
 现网证据以实际运行为准；未执行的项一律保持 `NOT_RUN`，遵守项目真实性规则。

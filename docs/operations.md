@@ -34,7 +34,7 @@ docker compose exec media-sync /app/.venv/bin/python -c \
 # then copy /data/state/backup.sqlite3 plus archive/ out of the volume as above
 ```
 
-The SQLite backup includes durable `media-server-probe` / `media-server-scan` audit rows and their allowlisted evidence, but not the environment-owned profile or secret. Back up those deployment inputs separately as described above.
+The SQLite backup includes durable `media-server-probe` / `media-server-scan` audit rows and their allowlisted evidence, including phase-B author targets, related publication Jobs, and accepted/observed checkpoints. It does not include the environment-owned profile or secret. Back up those deployment inputs separately as described above.
 
 ## Restore
 
@@ -66,3 +66,5 @@ docker compose up -d
 Schema migrations run at container start (`db init` is idempotent). `uv.lock` guarantees the same dependency set the release was tested with. The live `docker-compose.yml` is git-ignored, so upstream updates never conflict with your deployment configuration.
 
 Revision `0007_media_server_operations` is forward-only once the database contains any `media-server-probe` or `media-server-scan` row. Its downgrade deliberately fails closed instead of deleting durable audit evidence, and an older application must not be run against that database. A database with no new-kind rows may use the tested downgrade path, but down-migrations are never automatic. Before checking out an older tag/SHA, inspect the release notes and database state; if new-kind rows exist, restore a compatible pre-upgrade backup or continue with an application version that understands revision `0007`.
+
+Execution 0054-B adds no migration; Alembic remains at `0007`. Before rolling an application binary back, wait until every author-observation scan is terminal or deploy a reconciliation-compatible binary. Never delete Operation rows or accepted/observed checkpoints to force compatibility.

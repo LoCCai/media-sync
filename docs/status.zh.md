@@ -2,14 +2,14 @@
 
 # 项目统一状态（单一事实来源）
 
-边界：执行 0054-A 已基于 `22b5864` 基线及 `793d33b`/`d913537` 计划完成交付和冻结验证；[执行 0054-B](executions/0054-media-library-server-integration/phase-b/plan.zh.md) 现已冻结 provider/path 项目查找与如实的刷新后项目观察。共同 API 不支持 provider task completion，因此它不是阶段 B 的声明。执行 0047 仍是开启中的 P0 操作者门，Linux 持久性/恢复/进程检查以及全部已实现真人登录/抓取/CDN/媒体服务器行继续保持 `NOT_RUN`。缺失能力是 `NOT_IMPLEMENTED`，不是尚未执行的真人行。本表是权威状态视图；逐执行细节见 [`executions/`](README.zh.md)，证据见各验证记录。每次收尾时更新本页。
+边界：执行 0054（包括[阶段 B](executions/0054-media-library-server-integration/phase-b/plan.zh.md)）已通过实现/验证提交 `b4af46d`、`ff5da07`、`88f5ed0`、`22bd9ef`、`48ecbe9` 与 `d8bbdf7` 交付。它在保留 legacy 只确认接受刷新的同时，新增有界精确 provider/path 查找与如实的 absent-to-unique-match 刷新后观察，并以真实 PostgreSQL 服务验证 Operation 竞态。共同 API 不支持 provider task completion，因此它不是阶段 B 的声明。执行 0047 仍是开启中的 P0 操作者门，Linux 持久性/恢复/进程检查以及全部已实现真人登录/抓取/CDN/媒体服务器行继续保持 `NOT_RUN`。缺失能力是 `NOT_IMPLEMENTED`，不是尚未执行的真人行。本表是权威状态视图；逐执行细节见 [`executions/`](README.zh.md)，证据见各验证记录。每次收尾时更新本页。
 
 ## 里程碑状态
 
 | 里程碑 | 状态 |
 | --- | --- |
 | 离线功能开发 | 平台形状冻结于 0039，外加 0040/0044 运维面与 0050 Console v2 控制面基础；0043（弹幕/字幕）仍延期 |
-| REST API + Web 控制台 | 已交付 0050–0053 基础及 0054-A 安全受管树分页、脱敏媒体服务器姿态、持久 probe/定向刷新 Operation 与资格证据；0054-B 项目查找/刷新后观察已冻结但尚未实现 |
+| REST API + Web 控制台 | 已交付 0050–0053 基础及执行 0054 的安全受管树分页、脱敏媒体服务器姿态、持久只确认接受/作者观察 Operation、精确项目查找、资格 schema v2，以及如实的 Library/Settings/Jobs 证据 |
 | Docker 打包 | 候选镜像、可复现加固及最终镜像不含 Node 的 Console v2 多阶段构建已交付（0041、0048–0050）；操作者修复版镜像已构建/启动，doctor、深度预检与 Chromium 启动全绿 |
 | 运维文档 / 安全审查 / 发布清单 | 已交付（0045、0046） |
 | 真人验收（最终门） | 开启中——执行 0047，操作者在 Linux 协助执行 |
@@ -19,15 +19,15 @@
 | 维度 | 状态 | 证据 / 阻塞 |
 | --- | --- | --- |
 | 实现（离线形状） | 七平台 15+ 冻结形状 | 执行 0013–0039 记录 |
-| 离线完整套件 | Execution 0054-A 冻结套件：`2620 passed, 3 skipped, 1 warning in 505.44s`；skip 是三个 Windows 不适用的 POSIX venv/mode 用例，warning 是既有 Starlette/httpx 弃用。Linux 阶段 B 仍为权威 | 执行 0054 验证 |
-| API/控制台测试 | Connector 专项 52 项通过；Operation 模块 62 项通过；58 项 Web 单测、格式、Svelte check、生产构建及本地 Library/Settings/Jobs 浏览器 smoke 通过。聚焦选择存在重叠；真实平台/媒体服务器资格仍是外部门 | 执行 0054 验证 |
-| 静态门（ruff/format/mypy/compileall/docs/前端检查与构建） | Execution 0054-A 全仓 Ruff、213 个 Python 文件格式、101 个源码 strict mypy、compileall、sdist/wheel、482 份文档、Web format/check/test/build、两个锁定上游、tracked-output/机密性审计及 `git diff --check` 全部通过 | 执行 0054 验证 |
+| 离线完整套件 | 启用真实 PostgreSQL 的执行 0054 阶段 B 收尾套件：`2763 passed, 3 skipped, 1 warning in 544.08s`；skip 是三个 Windows 不适用的 POSIX venv/mode 用例，warning 是既有 Starlette/httpx 弃用 | 执行 0054 阶段 B 验证 |
+| API/控制台测试 | 阶段 B 后端联合专项 350 项通过；qualification/Library/API 专项 70 项通过；Library application 专项 12 项通过；7 个文件中的 69 项 Web 测试及格式、Svelte check、生产构建通过。聚焦选择存在重叠；不声明阶段 B 浏览器 smoke 或真实媒体服务器资格 | 执行 0054 阶段 B 验证 |
+| 静态门（ruff/format/mypy/compileall/docs/前端检查与构建） | 执行 0054 全仓 Ruff/format、strict mypy、compileall、sdist/wheel、双语文档、Web format/test/check/build、两个锁定上游、tracked-output/机密性/宿主路径审计及 `git diff --check` 通过 | 执行 0054 阶段 B 验证 |
 | Docker 镜像构建 | 构建/运行时预检 `PASS`：修复版镜像已启动；doctor 与深度预检均为 `ready`；运行时 Chromium `151.0.7922.34` 与构建清单一致 | 执行 0050 与 0047 验证 |
 | 容器就绪 / 重启持久性 / 备份恢复演练 | 深度预检 `PASS`；重启持久性与备份恢复 `NOT_RUN` | 执行 0047；docs/operations.zh.md 流程就绪 |
 | 真人登录（任一平台） | `NOT_RUN`——操作者（阶段 C 金丝雀：Bilibili + 小红书） | 执行 0047 |
 | 真人抓取 / 下载 / 增量性 | `NOT_RUN`——操作者（阶段 C–E） | 执行 0047 |
 | 真实 Emby/Jellyfin 连接、Library 发现与定向刷新接受 | `NOT_RUN`——0054-A 已实现，但未使用获授权真实服务器 | 执行 0054 与 0047 |
-| Provider/path 项目查找与刷新后项目观察 | `NOT_IMPLEMENTED`——0054-B 范围已冻结；尚未开始实现且没有真人状态 | 执行 0054-B 计划 |
+| Provider/path 项目查找与刷新后项目观察 | `IMPLEMENTED / NOT_RUN`——本地/mock 门禁通过，但未使用获授权真实 Emby/Jellyfin 服务器 | 执行 0054-B 验证 |
 | Provider task completion | `NOT_IMPLEMENTED`——Emby/Jellyfin 共同刷新 API 不提供持久任务身份；阶段 B 不声明该能力 | 执行 0054-B 真实性边界 |
 | 播放证据写入 / 导出后自动扫描 | `NOT_IMPLEMENTED`——播放记录继续归 0055；自动联动尚无冻结归属 | 执行 0054 资格边界 |
 | 外部安全审计 | `NOT_RUN`——可选 | docs/security-review.md 残余风险 |

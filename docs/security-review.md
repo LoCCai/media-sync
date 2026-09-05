@@ -2,14 +2,14 @@
 
 # Security and privacy review (execution 0046)
 
-Scope: the claim-by-claim self-review introduced at the 0046 boundary and calibrated through the implemented execution 0054-A posture. This is a self-review, not an external audit.
+Scope: the claim-by-claim self-review introduced at the 0046 boundary and calibrated through the implemented execution 0054 phase-B posture. This is a self-review, not an external audit.
 
 ## 1. Credentials and secrets
 
 | Claim | Enforcement |
 | --- | --- |
 | Raw cookies/passwords are never persisted in the database, config, logs, argv or Git | Requirements AUTH-004; accounts store opaque `credential_ref` values only; QR/OTP material stays inside the login child process |
-| Crawler/account secrets resolve only at their process boundary; the media-server API key resolves only at the final connector boundary | `security/secrets.py` provides `env:` / `keyring:` / confined relative `file:` schemes; execution 0054-A keeps the complete media-server reference and value out of API responses, Operation payloads and SQLite |
+| Crawler/account secrets resolve only at their process boundary; the media-server API key resolves only at the final connector boundary | `security/secrets.py` provides `env:` / `keyring:` / confined relative `file:` schemes; execution 0054 keeps the complete media-server reference and value out of API responses, Operation payloads and SQLite |
 | Signed CDN URLs are runtime-only | Detail-protocol children carry them in bounded frames/memory; recursive strip before persistence (executions 0009, 0013+); retained-tree scans assert zero-match |
 | Creator authority references are secret-typed | `SecretValue` provenance for `creator_input.secret_ref`; ambiguous query/fragment URLs fail closed |
 | Media-server configuration cannot be supplied by an API request | One immutable environment-owned profile is validated at startup; the API returns only a hand-built summary without the API key, complete reference, Library ID, server path or network ranges |
@@ -27,7 +27,7 @@ Scope: the claim-by-claim self-review introduced at the 0046 boundary and calibr
 | Claim | Enforcement |
 | --- | --- |
 | Downloads reach only public, verified addresses | Every hop resolves to public DNS answers; pinned connections; manual redirects that drop Range validators across origins |
-| Media-server calls reach only the configured origin and explicit network policy | Every DNS answer must match an operator allowlisted IP/CIDR, the connection is pinned while preserving Host/TLS SNI, environment proxies are disabled, redirects are rejected, and requests cannot override the target |
+| Media-server calls reach only the configured origin and explicit network policy | Every lookup page and POST revalidates all DNS answers against operator-allowlisted IP/CIDR, pins the connection while preserving Host/TLS SNI, disables environment proxies, rejects redirects and server-provided next links, and prevents requests from overriding the target |
 | Download paths cannot escape configured roots | Path-confinement guards; symlink/lstat checks on every directory; archive blobs are immutable no-clobber links |
 | Upstream binary downloads stay disabled | Bridge config forces `ENABLE_GET_MEIDAS/GET_MEDIAS = False` |
 
@@ -36,8 +36,8 @@ Scope: the claim-by-claim self-review introduced at the 0046 boundary and calibr
 | Claim | Enforcement |
 | --- | --- |
 | API/console default to loopback | `MEDIA_SYNC_API_HOST=127.0.0.1`; compose publishes `127.0.0.1:8632:8632` only |
-| No authentication is a documented decision | The API is a local-first operator surface; container deployment docs require trusted networks. Media-server probe/scan are additionally disabled by default behind one server-side gate, but that gate is not authentication |
-| Structured logs are redacted | Classified secret names are masked at sinks; raw adapter exceptions never surface to CLI/API output. Request-scoped media-server redaction also covers dynamically created `httpx`/`httpcore.*` records without permanently changing logger policy |
+| No authentication is a documented decision | The API is a local-first operator surface; container deployment docs require trusted networks. Every media-server network action—including probe, both scan modes, and author lookup—is additionally disabled by default behind `MEDIA_SYNC_MEDIA_SERVER_OPERATIONS_ENABLED`, but that gate is not authentication |
+| Structured logs and durable operation surfaces are redacted | Classified secret names are masked at sinks; raw adapter exceptions never surface to CLI/API output. Selector-bearing dependency wire messages are replaced with fixed text. Raw or percent-encoded media-server paths/provider values, remote item IDs, Etags and remote error bodies cannot enter logs, SQLite, Events, SSE, API results or support bundles |
 
 ## 5. Privacy
 
@@ -46,7 +46,7 @@ Scope: the claim-by-claim self-review introduced at the 0046 boundary and calibr
 
 ## 6. Residual risks (honest list)
 
-1. The API has no authentication: anyone with host-network access to the port controls the service. Execution 0054-A keeps media-server operations disabled by default, but once an operator enables that gate, any client that can reach the API can submit a connection probe or exact targeted refresh. Mitigation: keep loopback/Tailscale/LAN trust, leave the gate closed when unused, and treat execution 0055 operator authentication as unresolved risk rather than claiming access control.
+1. The API has no authentication: anyone with host-network access to the port controls the service. Execution 0054 keeps media-server operations disabled by default, but once an operator enables that gate, any client that can reach the API can submit an author lookup, connection probe, legacy acceptance-only refresh or author refresh-and-verify request. Mitigation: keep loopback/Tailscale/LAN trust, leave the gate closed when unused, and treat execution 0055 operator authentication as unresolved risk rather than claiming access control.
 2. SQLite is the single store; disk access equals full data access (including credential *references*, which still require the secret provider to use).
 3. Upstream platform behavior changes can alter what the pinned crawler does; the license gate is an acknowledgement, not a technical control on upstream behavior.
 4. No external audit has been performed (`NOT_RUN`, operator option).

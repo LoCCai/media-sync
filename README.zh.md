@@ -6,16 +6,16 @@
 
 ## 当前状态
 
-单一事实来源是 [`docs/status.zh.md`](docs/status.zh.md)。执行 0054-A 边界摘要：
+单一事实来源是 [`docs/status.zh.md`](docs/status.zh.md)。执行 0054 阶段 B 边界摘要：
 
 | 维度 | 状态 |
 | --- | --- |
-| 离线实现 | 平台形状冻结于 0039，并已交付 API/运维、Console v2、内容/归档浏览及 0054-A 安全受管树/媒体服务器控制；弹幕/字幕和 0054-B 扫描完成/项目查找仍开放 |
-| 离线验证 | 执行 0054-A 冻结套件：**2620 passed、3 skipped、1 个既有 warning**；见 [`docs/status.zh.md`](docs/status.zh.md) |
-| REST API + Web 控制台 | SvelteKit 5 SPA 已含安全受管树分页、脱敏媒体服务器姿态、持久 probe/定向刷新动作及资格证据；`/legacy` 保留回退 |
+| 离线实现 | 平台形状冻结于 0039，并已交付 API/运维、Console v2、内容/归档浏览、安全受管树检查、精确媒体服务器项目查找与刷新后项目观察；弹幕/字幕、provider task completion、播放证据及导出后自动扫描仍开放或不受支持 |
+| 离线验证 | 执行 0054 阶段 B 套件：**2763 passed、3 skipped、1 个既有 warning**；11 项真实 PostgreSQL Operation 竞态测试及 69 项 Web 测试与 format/check/build 通过；见 [`docs/status.zh.md`](docs/status.zh.md) |
+| REST API + Web 控制台 | SvelteKit 5 SPA 已含安全受管树分页、脱敏媒体服务器姿态、只确认接受/作者观察刷新动作、安全结果投影及资格 schema v2；`/legacy` 保留回退 |
 | Docker 打包 | 前端/运行时多阶段打包及修复镜像预检通过；0047 Linux 重启/恢复/进程证据仍为 `NOT_RUN` |
-| 真人验收 | **全部已实现平台/CDN/媒体服务器真人行保持 `NOT_RUN`**；0054-A 尚不存在的能力是 `NOT_IMPLEMENTED`，不是“尚未运行的真人行” |
-| 发布阻塞 | Linux 基线（阶段 B）+ 真人行零记录；见 [`docs/status.zh.md`](docs/status.zh.md) |
+| 真人验收 | **全部已实现平台/CDN/媒体服务器真人行保持 `NOT_RUN`**；provider task completion、播放证据及导出后自动扫描是 `NOT_IMPLEMENTED`，不是“尚未运行的真人行” |
+| 发布阻塞 | Linux 操作者基线 + 真人行零记录；见 [`docs/status.zh.md`](docs/status.zh.md) |
 
 逐执行细节、证据与准确命令都在 [`docs/executions/`](docs/README.zh.md)——本 README 有意不堆叠执行叙事。
 

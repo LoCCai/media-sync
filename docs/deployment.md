@@ -139,7 +139,7 @@ Stage 0054-A supports one immutable, environment-owned connection. Add the compl
 | `MEDIA_SYNC_MEDIA_SERVER_ALLOWED_CIDRS` | Explicit IP/CIDR allowlist; every DNS answer must belong to it |
 | `MEDIA_SYNC_MEDIA_SERVER_VERIFY_TLS` | Defaults to `true`; keep it enabled in production |
 | `MEDIA_SYNC_MEDIA_SERVER_TIMEOUT_SECONDS` | 0.1–60 seconds; default 10 |
-| `MEDIA_SYNC_MEDIA_SERVER_OPERATIONS_ENABLED` | Shared server-side gate for probe/scan; defaults to `false` |
+| `MEDIA_SYNC_MEDIA_SERVER_OPERATIONS_ENABLED` | Shared server-side gate for every media-server network action, including probe, both scan modes, and author lookup; defaults to `false` |
 
 Inject the API-key value through the environment variable or secret file named by the reference; never commit it. The configuration API returns a hand-built redacted summary and never echoes the key, full secret reference, Library ID, server path, or network ranges. The connector disables environment proxies and redirects, validates every DNS answer and pins the actual connection IP while retaining the original Host/TLS SNI.
 
@@ -147,12 +147,14 @@ Start with `MEDIA_SYNC_MEDIA_SERVER_OPERATIONS_ENABLED=false` and inspect the su
 
 1. Select 检查媒体树 for an author to verify pages of the manifest authorized by the successful database publication chain. Inspection is read-only: it does not repair, delete, create an author lock, or expose a host path.
 2. Select 测试连接. The backend calls only `GET /System/Info` and `GET /Library/VirtualFolders`, requiring an exact unique Library ID and path match.
-3. Select 定向刷新. The backend calls only `POST /Items/{configured-library-id}/Refresh`; `404/405/501` fail closed and never fall back to global `/Library/Refresh`.
-4. Inspect `media-server-probe` / `media-server-scan` under 调度任务 → 持久操作. Scan success means request accepted only. Once the application dispatch gate has been crossed, a timeout, disconnect, cancellation, or unexpected transport/response failure becomes terminal, non-retryable `media_server_scan_acceptance_unknown`; never submit another refresh automatically—check the server manually first.
+3. Select 检查服务器项目 for a read-only complete bounded lookup of the exact managed provider/path identity. `not_found` and one unique `matched` result are observations only; neither proves a refresh completed or that media plays.
+4. Select the page-level 定向刷新（只确认接受） to send the strict legacy `{}` request. The backend calls only `POST /Items/{configured-library-id}/Refresh`; `404/405/501` fail closed and never fall back to global `/Library/Refresh`. A successful Operation proves only a trusted 2xx acceptance.
+5. After a current, complete tree inspection grants the action, select 刷新并核验 to send exactly `{"author_id":"<uuid>"}`. Author mode first requires a complete absent baseline. If the exact item already exists, it sends no POST and returns `media_server_scan_observation_precondition_failed`. Success requires one accepted refresh followed by two separated observations of the same unique item; it still does not prove provider task completion or playback.
+6. Inspect `media-server-probe` / `media-server-scan` under 调度任务 → 持久操作. Jobs keeps accepted, observed, acceptance-unknown and completion-unknown distinct; author observation shows “verification N” rather than a percentage. After transport entry, uncertain acceptance becomes non-retryable `media_server_scan_acceptance_unknown`. After trusted acceptance, an unproven observation becomes non-retryable `media_server_scan_completion_unknown` while retaining the accepted checkpoint. Never retry either ambiguity automatically.
 
-If the service restarts after a remote Operation lost its lease, both an in-flight probe and an in-flight targeted scan are reconciled to `interrupted` because 0054-A persists no remote task identity. A probe may be retried manually; an interrupted targeted scan is exposed as non-retryable and requires server-side inspection before any new request.
+On restart, an author observation in `preparing` or `baselining` is a pre-dispatch interruption; `dispatching` becomes acceptance unknown; `accepted` or `polling` becomes completion unknown with its accepted checkpoint preserved; only a valid persisted `observed` checkpoint may reconcile to success. Legacy targetless scans retain their conservative 0054-A recovery. A probe may be retried manually, but a scan ambiguity requires server-side inspection before any new request.
 
-`GET /api/v1/qualifications` separates local automated counts, implementation status and human qualification. This workspace has no real server credentials, so the implemented connection probe, Library discovery and targeted-refresh acceptance rows remain human `NOT_RUN`. Scan-completion polling and provider/path item lookup are `NOT_IMPLEMENTED` until a separately frozen 0054-B; authenticated playback evidence is 0055 work. Automatic post-export scanning is also `NOT_IMPLEMENTED` but has no frozen follow-up assignment. Every `NOT_IMPLEMENTED` capability has `human_status: null`—it must not be reported as human `NOT_RUN`, `FAIL` or `PASS`.
+`GET /api/v1/qualifications` schema v2 separates local automated counts, implementation status and human qualification. This workspace has no real server credentials, so implemented connection probe, Library discovery, targeted-refresh acceptance, item lookup and post-refresh item observation all remain human `NOT_RUN`. `provider_task_completion` is `NOT_IMPLEMENTED` with reason `provider_api_unsupported`; authenticated playback evidence and automatic post-export scanning are also `NOT_IMPLEMENTED`. Every unimplemented capability has `human_status: null`—it must not be reported as human `NOT_RUN`, `FAIL` or `PASS`.
 
 ## 6. Verification checklist (record honestly)
 
@@ -164,8 +166,10 @@ If the service restarts after a remote Operation lost its lease, both an in-flig
 | Emby tree published | `/data/library` author directory listing |
 | Real Emby/Jellyfin connection and Library discovery | successful `media-server-probe` record + server version; `NOT_RUN` if not exercised |
 | Targeted refresh accepted by a real server | successful `media-server-scan` record; not scan completion; `NOT_RUN` if not exercised |
-| Scan completion and provider/path item lookup | `NOT_IMPLEMENTED` in 0054-A; 0054-B remains to be frozen separately; no human status |
-| Authenticated playback evidence | `NOT_IMPLEMENTED` in 0054-A; deferred to 0055; no human status |
+| Exact provider/path item lookup on a real server | implemented in 0054-B; one complete lookup snapshot; `NOT_RUN` if not exercised |
+| Post-refresh item observation on a real server | implemented in 0054-B; absent baseline + one accepted POST + the same unique item observed twice; `NOT_RUN` if not exercised |
+| Provider task completion | `NOT_IMPLEMENTED` (`provider_api_unsupported`); no human status |
+| Authenticated playback evidence | `NOT_IMPLEMENTED`; deferred to 0055; no human status |
 | Automatic post-export scan | `NOT_IMPLEMENTED`; no frozen follow-up assignment and no human status |
 
 Live evidence is limited to what actually ran; anything not exercised stays `NOT_RUN` per the project's truth rules.

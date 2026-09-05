@@ -139,13 +139,13 @@ Scheduled creator child 把 manifest/Subscription `max_items` 传给有界回答
 
 执行 0007 已为七个平台标识提供自动化离线证据：“订阅 → tick → manifest-v3 写入/读取 → 真实本地 fake child 写入版本化 JSONL → receipt-v2 写入/读取 → 受保护导入 → 重试/重启 → 幂等重放”。这只证明 media-sync/子进程文件系统协议与持久身份；没有使用浏览器、平台账户、作者端点、CDN 或媒体服务器，也不证明上游分页有界或真人兼容。
 
-仍未使用真人账户或交互挑战。七个平台的真人二维码/Cookie/保存会话登录、作者流量及定时运行全部保持 `NOT_RUN`；手机号登录仍属于不支持，而不是仅未测试。没有运行真实签名 locator 刷新/CDN 获取，也没有在获授权真实服务器上运行连接探测、Library 发现或定向刷新接受。执行 0007 自身的 AC6/AC13 记录继续作为历史 `PARTIAL` 证据。
+仍未使用真人账户或交互挑战。七个平台的真人二维码/Cookie/保存会话登录、作者流量及定时运行全部保持 `NOT_RUN`；手机号登录仍属于不支持，而不是仅未测试。没有运行真实签名 locator 刷新/CDN 获取，也没有在获授权真实服务器上运行连接探测、Library 发现、定向刷新接受、精确项目查找或刷新后项目观察。执行 0007 自身的 AC6/AC13 记录继续作为历史 `PARTIAL` 证据。
 
-### 执行 0054-A 媒体服务器真值
+### 执行 0054 阶段 B 媒体服务器真值
 
-执行 0054-A 暴露三个相互独立的维度，不会从本地记录推导真人资格。`automated_evidence` 只包含有界数据库计数及最新白名单 probe/scan Operation 事实，绝不会授予真人 PASS。`connection_probe`、`library_discovery` 与 `targeted_scan_acceptance` 的实现状态为 `IMPLEMENTED`，在当前工作区的真人状态为 `NOT_RUN`。`scan_completion`、`item_lookup`、`playback_evidence` 与 `automatic_post_export_scan` 的实现状态为 `NOT_IMPLEMENTED`，真人状态为空，因为尚不存在的能力不可能已经运行。成功的 `media-server-scan` 只证明固定定向刷新已接受，不证明扫描完成或样本可播放。
+Qualification schema v2 暴露三个相互独立的维度，不会从本地记录推导真人资格。`automated_evidence` 只包含有界数据库计数及最新白名单 probe/scan Operation 事实，绝不会授予真人 PASS。`connection_probe`、`library_discovery`、`targeted_scan_acceptance`、`item_lookup` 与 `post_refresh_item_observation` 的实现状态为 `IMPLEMENTED`，在当前工作区的真人状态为 `NOT_RUN`。`provider_task_completion` 为 `NOT_IMPLEMENTED`，原因是 `provider_api_unsupported`；`playback_evidence` 与 `automatic_post_export_scan` 也为 `NOT_IMPLEMENTED`。这些未实现能力的真人状态为空。
 
-执行 0054 继续为另行冻结的阶段 B 保持开启；该阶段覆盖可 mock 的扫描完成进度及 provider/path 项目查找。经鉴权的播放证据写入继续与浏览器可写设置、多配置、保留/破坏性维护及访问控制一起属于执行 0055。导出后自动扫描仍未实现，且没有已冻结的后续归属；文档不得把它静默分配给任一阶段。
+Legacy `{}` scan 成功只证明定向刷新已接受。作者观察只证明 absent baseline、一次被接受的刷新，以及间隔两次观察到同一唯一 provider/path 项目；这是后置条件证据，不是 provider task completion 或可播放。阶段 B 本地门禁通过 7 个文件中的 69 项 Web 测试，以及格式、Svelte check 与生产构建；11 项真实 PostgreSQL Operation 竞态测试通过；完整 Python 套件为 2763 passed、3 skipped、1 个既有 warning。PostgreSQL fixture 只在隔离 schema 中创建生产 Operation/Event/Subject/StreamState 四张 metadata 表；这不代表全应用 schema 或部署已经支持 PostgreSQL。这些本地/mock 证据没有使用真实 Emby/Jellyfin 凭据，不会授予真人 PASS。经鉴权的播放证据写入继续与浏览器可写设置、多配置、保留/破坏性维护及访问控制一起属于执行 0055。导出后自动扫描仍未实现，且没有已冻结的后续归属。
 
 执行 0011 本地提交 `8bb16f6` 建立了显式 QR 登录、已过期 saved-session 重认证及非交互 saved-session 复用的历史离线状态与正常进程边界。执行 0012 提交 `28655f8` 现已增加有界请求/结果 framing、持续父进程控制、结果 guardian、父进程硬终止时的完整树收容，以及在同一账户锁下受截止时间 fencing 保护的遗留会话回收。登录启动、脱敏状态查询和常驻 sweep 使恢复路径可达；轮转游标避免早期 busy 候选饿死后续账户。0012 专项门禁通过 283 项并有 1 项 Windows 不适用的跳过，完整套件通过 1156 项并跳过同一项。上游 saved-session 探测为 false 仍可能包含网络异常歧义，因此 `auth_expired` 继续是保守动作而非精确远端原因诊断。这些证据不会改变任何真人资格行。
 
