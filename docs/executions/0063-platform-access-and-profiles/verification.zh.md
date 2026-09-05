@@ -47,3 +47,9 @@ fresh fetch确认HEAD=origin/main `cc3ab9341636d45fb8a890829f68be982a70a5b7`、�
 只读终审发现账户页四平台条件下仍显示旧两平台提示、部署指南旧章节仍称贴吧不可用/五平台资料未实现；已修正双语指南及账户页文字，并更新既有UI接线断言。此前Web结果保留为前一快照，不冒充修改后验证。
 
 最终在web目录依次运行 `pnpm test`（671通过/1.11s）、`pnpm check`（0错误/0警告）、`pnpm build`（通过，9.36s）及 `pnpm format:check`（通过），每一步非零立即退出。Vite输出插件耗时提示，不是构建失败。之后未改Web源码/测试；本轮没有浏览器实测或平台调用。最终docs/diff检查及发布见后续记录。
+
+## GitHub发布
+
+双语冻结计划 `c75c5ed` 和实现 `34a634896dd06d8e2d54145f960bde36f50f0ead` 已非强制推送至 https://github.com/LoCCai/media-sync 的origin/main。随后fresh fetch确认HEAD与origin/main均为该完整实现SHA，分歧0 0、工作区干净。实现暂存仅含本任务46份源码/测试/Web/文档；凭据、运行数据、本地JUnit原始报告、构建输出及临时包均未暂存。上游/依赖/schema未改变。
+
+最终实现前 `python scripts/check_docs.py`642份Markdown及 `git diff --check`、暂存差异检查通过。这份发布确认以独立双语纯文档提交记录，并再次普通推送及fresh-fetch一致性检查；不改变冻结源码测试与包证据，不部署服务。原定七平台目标继续活动，剩余校验器/资料/头像/媒体能力与真实Linux/平台验收仍须推进。

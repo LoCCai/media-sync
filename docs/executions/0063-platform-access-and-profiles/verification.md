@@ -47,3 +47,9 @@ Docker is unavailable and `MEDIA_SYNC_TEST_POSTGRESQL_URL` is unset. Integration
 Read-only final review found old two-platform account-page copy inside the four-platform condition, plus deployment sections still claiming Tieba unavailable/five profile platforms pending. Both language guides and the account-page wording are corrected, including the existing UI-wiring assertion. Earlier Web results remain an earlier snapshot, not post-edit proof.
 
 Final commands in web ran sequentially with immediate nonzero exit: `pnpm test` (671 passed/1.11s), `pnpm check` (0 errors/0 warnings), `pnpm build` (PASS,9.36s), `pnpm format:check` (PASS). Vite emitted plugin timing notices, not build failures. No later Web source/test edits. No browser qualification or platform requests this round. Final docs/diff gates and publication are recorded below.
+
+## GitHub publication
+
+Bilingual frozen plan `c75c5ed` and implementation `34a634896dd06d8e2d54145f960bde36f50f0ead` were normally pushed to origin/main at https://github.com/LoCCai/media-sync. A fresh fetch then confirmed HEAD=origin/main at that full implementation SHA, divergence0 0 and a clean worktree. Implementation staging contained only46 task source/test/Web/doc files; no credentials, runtime data, raw local JUnit, build outputs or temporary packages. Upstream/dependency/schema inputs are unchanged.
+
+Before the implementation commit, `python scripts/check_docs.py` passed642 Markdown files, alongside `git diff --check` and staged-diff validation. This publication confirmation is a separate bilingual documentation-only commit, followed by another normal push and fresh-fetch consistency check. It changes neither frozen-source tests nor package proof and deploys no service. The original seven-platform goal remains active; remaining validators/profiles/avatars/media capabilities and real Linux/platform qualification still require progress.
