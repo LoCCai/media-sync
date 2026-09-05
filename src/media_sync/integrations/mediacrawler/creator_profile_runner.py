@@ -1,4 +1,4 @@
-"""One saved-session Bili profile, isolated from content crawling and storage.
+"""One authenticated Bili or Weibo profile, isolated from content and storage.
 
 A trusted guardian owns verification and the upstream-runtime child in one
 process tree. The parent owns one execution deadline and retains the shared
@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, Protocol
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, urlencode, urlsplit
 from uuid import UUID, uuid4
 
 if __name__ == "__main__" and not __package__:
@@ -73,6 +73,10 @@ _SHA = re.compile(r"[0-9a-f]{40}\Z")
 _API_HOST = "api.bilibili.com"
 _NAV_PATH = "/x/web-interface/nav"
 _PROFILE_PATH = "/x/space/wbi/acc/info"
+_WB_ORIGIN = "https://m.weibo.cn"
+_WB_CONFIG_PATH = "/api/config"
+_WB_PROFILE_PATH = "/api/container/getIndex"
+_SUPPORTED_PLATFORMS = frozenset({Platform.BILI, Platform.WB})
 _RETAINED_LOCKS: list[_AccountFileLock] = []
 
 
@@ -167,7 +171,7 @@ class MediaCrawlerCreatorProfileResult:
             raise ValueError("creator_profile_result_invalid")
         if self.status is MediaCrawlerCreatorProfileStatus.SUCCEEDED:
             if (
-                self.platform is not Platform.BILI
+                self.platform not in _SUPPORTED_PLATFORMS
                 or self.upstream_sha is None
                 or not isinstance(self.profile, MediaCrawlerCreatorProfile)
                 or self.profile.remote_id != self.creator_remote_id
@@ -343,7 +347,7 @@ class MediaCrawlerCreatorProfileProcessRunner:
         if cancellation is not None and not isinstance(cancellation, threading.Event):
             raise TypeError("creator_profile_cancellation_invalid")
         deadline = time.monotonic() + request.timeout_seconds
-        if request.platform is not Platform.BILI:
+        if request.platform not in _SUPPORTED_PLATFORMS:
             return _result(request, MediaCrawlerCreatorProfileStatus.UNSUPPORTED)
         if not self._enabled or not self._license_acknowledged:
             return _result(request, MediaCrawlerCreatorProfileStatus.CONFIGURATION_INVALID)
@@ -528,7 +532,7 @@ class _Envelope:
             UUID(raw["request_id"]),
             cookie=parse_cookie_header(raw["cookie"]) if "cookie" in raw else None,
         )
-        if request.platform is not Platform.BILI:
+        if request.platform not in _SUPPORTED_PLATFORMS:
             raise ValueError("creator_profile_identity_invalid")
         for key in ("account_id", "request_id", "execution_id"):
             if str(UUID(raw[key])) != raw[key]:
@@ -653,7 +657,7 @@ class _LookupFailure(RuntimeError):
         super().__init__(status.value)
 
 
-def _fetch_api_json(url: str, headers: Mapping[str, str], deadline: float) -> dict[str, Any]:
+def _fetch_raw_api_json(url: str, headers: Mapping[str, str], deadline: float) -> dict[str, Any]:
     import httpx
 
     from media_sync.media.network import PinnedHTTPTransport, SocketAddressResolver, validate_target
@@ -693,13 +697,89 @@ def _fetch_api_json(url: str, headers: Mapping[str, str], deadline: float) -> di
             if len(chunks) + len(chunk) > MAX_PROFILE_API_BYTES:
                 raise _LookupFailure(MediaCrawlerCreatorProfileStatus.RESULT_INVALID)
             chunks.extend(chunk)
-    raw = _json(bytes(chunks), MAX_PROFILE_API_BYTES)
+    return _json(bytes(chunks), MAX_PROFILE_API_BYTES)
+
+
+def _fetch_api_json(url: str, headers: Mapping[str, str], deadline: float) -> dict[str, Any]:
+    raw = _fetch_raw_api_json(url, headers, deadline)
     if type(raw.get("code")) is not int or raw["code"] != 0:
         raise _LookupFailure(MediaCrawlerCreatorProfileStatus.TEMPORARY)
     data = raw.get("data")
     if type(data) is not dict:
         raise _LookupFailure(MediaCrawlerCreatorProfileStatus.RESULT_INVALID)
     return data
+
+
+async def _query_weibo_client(client: Any, creator_remote_id: str, deadline: float) -> MediaCrawlerCreatorProfile:
+    """Run the exact locked public-profile method only after fresh auth proof."""
+    _uid(creator_remote_id)
+    expected_urls = (
+        _WB_ORIGIN + _WB_CONFIG_PATH,
+        _WB_ORIGIN
+        + _WB_PROFILE_PATH
+        + "?"
+        + urlencode(
+            {
+                "jumpfrom": "weibocom",
+                "type": "uid",
+                "value": creator_remote_id,
+                "containerid": "100505" + creator_remote_id,
+            }
+        ),
+    )
+    calls = 0
+    auth_confirmed = False
+    original_headers = dict(client.headers)
+
+    async def bounded_request(method: str, url: str, **kwargs: Any) -> dict[str, Any]:
+        nonlocal calls
+        if (
+            method != "GET"
+            or calls >= 2
+            or url != expected_urls[calls]
+            or set(kwargs) != {"headers"}
+            or not isinstance(kwargs["headers"], Mapping)
+            or dict(kwargs["headers"]) != original_headers
+            or (calls == 1 and not auth_confirmed)
+        ):
+            raise _LookupFailure(MediaCrawlerCreatorProfileStatus.RESULT_INVALID)
+        calls += 1
+        raw = await asyncio.to_thread(_fetch_raw_api_json, url, original_headers, deadline)
+        if type(raw.get("ok")) is not int or raw["ok"] != 1:
+            raise _LookupFailure(MediaCrawlerCreatorProfileStatus.TEMPORARY)
+        data = raw.get("data")
+        if type(data) is not dict:
+            raise _LookupFailure(MediaCrawlerCreatorProfileStatus.RESULT_INVALID)
+        return data
+
+    # Replace the decorated request itself: do not permit its five retries or
+    # malformed-JSON browser navigation/cookie refresh fallback.
+    client.request = bounded_request
+    authenticated = await client.get(_WB_CONFIG_PATH)
+    if type(authenticated) is not dict:
+        raise _LookupFailure(MediaCrawlerCreatorProfileStatus.RESULT_INVALID)
+    if authenticated.get("login") is False:
+        raise _LookupFailure(MediaCrawlerCreatorProfileStatus.AUTH_EXPIRED)
+    if calls != 1 or authenticated.get("login") is not True:
+        raise _LookupFailure(MediaCrawlerCreatorProfileStatus.RESULT_INVALID)
+    auth_confirmed = True
+    raw = await client.get_creator_info_by_id(creator_remote_id)
+    user = raw.get("userInfo") if type(raw) is dict else None
+    if (
+        calls != 2
+        or type(user) is not dict
+        or type(user.get("id")) not in (str, int)
+        or str(user["id"]) != creator_remote_id
+    ):
+        raise _LookupFailure(MediaCrawlerCreatorProfileStatus.RESULT_INVALID)
+    avatar: str | None = None
+    for key in ("avatar_hd", "profile_image_url"):
+        try:
+            avatar = _text(user.get(key), 2048)
+            break
+        except ValueError:
+            continue
+    return MediaCrawlerCreatorProfile(creator_remote_id, _text(user.get("screen_name"), 512), avatar)
 
 
 async def _query_bili_client(client: Any, creator_remote_id: str, deadline: float) -> MediaCrawlerCreatorProfile:
@@ -829,6 +909,97 @@ async def _lookup_bili(
                     await asyncio.wait_for(browser.close(), timeout=max(0.01, min(2.0, deadline - time.monotonic())))
 
 
+async def _lookup_weibo(
+    checkout: Path, profile: Path, remote_id: str, deadline: float, *, cookie: SecretValue | None = None
+) -> MediaCrawlerCreatorProfile:
+    """Use a scoped browser only for credentials; all profile HTTP is isolated."""
+    os.chdir(checkout)
+    sys.path.insert(0, str(checkout))
+    if "config" in sys.modules or "media_platform.weibo.client" in sys.modules:
+        raise _LookupFailure(MediaCrawlerCreatorProfileStatus.CONFIGURATION_INVALID)
+    config: Any = importlib.import_module("config")
+    _origin(config, checkout / "config/__init__.py")
+    config.PLATFORM = "wb"
+    config.COOKIES = ""
+    config.ENABLE_IP_PROXY = False
+    config.STATIC_PROXY_URL = ""
+    client_module = importlib.import_module("media_platform.weibo.client")
+    utils = importlib.import_module("tools.utils")
+    _origin(client_module, checkout / "media_platform/weibo/client.py")
+    _origin(utils, checkout / "tools/utils.py")
+    if getattr(client_module.WeiboClient, "__module__", None) != client_module.__name__:
+        raise _LookupFailure(MediaCrawlerCreatorProfileStatus.CONFIGURATION_INVALID)
+    playwright_api = importlib.import_module("playwright.async_api")
+    async with playwright_api.async_playwright() as playwright:
+        browser = None
+        try:
+            if cookie is None:
+                context = await playwright.chromium.launch_persistent_context(
+                    user_data_dir=str(profile),
+                    executable_path=playwright.chromium.executable_path,
+                    headless=True,
+                    accept_downloads=False,
+                    service_workers="block",
+                    timeout=max(1, int(min(15, deadline - time.monotonic()) * 1000)),
+                )
+            else:
+                browser = await playwright.chromium.launch(
+                    executable_path=playwright.chromium.executable_path,
+                    headless=True,
+                    timeout=max(1, int(min(15, deadline - time.monotonic()) * 1000)),
+                )
+                context = await browser.new_context(accept_downloads=False, service_workers="block")
+                await context.add_cookies(
+                    [
+                        {"name": name, "value": value, "domain": ".weibo.cn", "path": "/", "secure": True}
+                        for name, value in cookie_pairs(cookie.reveal()).items()
+                    ]
+                )
+        except Exception:
+            raise _LookupFailure(MediaCrawlerCreatorProfileStatus.BROWSER_LAUNCH_FAILED) from None
+        try:
+
+            async def route_browser(route: Any) -> None:
+                if route.request.is_navigation_request() and route.request.url == _WB_ORIGIN + "/":
+                    await route.fulfill(status=200, content_type="text/html", body="<!doctype html><title></title>")
+                else:
+                    await route.abort()
+
+            await context.route("**/*", route_browser)
+            page = await context.new_page()
+            await page.goto(_WB_ORIGIN + "/", wait_until="domcontentloaded")
+            if cookie is None:
+                header, _unused = await utils.convert_browser_context_cookies(context, urls=[_WB_ORIGIN])
+                if not header:
+                    raise _LookupFailure(MediaCrawlerCreatorProfileStatus.AUTH_EXPIRED)
+                header = parse_cookie_header(header).reveal()
+            else:
+                # Use the candidate exactly, never a coalesced browser-cookie
+                # reread or a previous saved session as substitute authority.
+                header = cookie.reveal()
+            client = client_module.WeiboClient(
+                proxy=None,
+                headers={
+                    "User-Agent": utils.get_mobile_user_agent(),
+                    "Cookie": header,
+                    "Origin": _WB_ORIGIN,
+                    "Referer": _WB_ORIGIN + "/",
+                },
+                playwright_page=page,
+                cookie_dict=cookie_pairs(header),
+            )
+            if type(client) is not client_module.WeiboClient:
+                raise _LookupFailure(MediaCrawlerCreatorProfileStatus.CONFIGURATION_INVALID)
+            return await _query_weibo_client(client, remote_id, deadline)
+        finally:
+            config.COOKIES = ""
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(context.close(), timeout=max(0.01, min(2.0, deadline - time.monotonic())))
+            if browser is not None:
+                with contextlib.suppress(Exception):
+                    await asyncio.wait_for(browser.close(), timeout=max(0.01, min(2.0, deadline - time.monotonic())))
+
+
 def _worker_entry() -> int:
     try:
         raw = _json(_read_control_frame(), MAX_PROFILE_REQUEST_BYTES)
@@ -865,7 +1036,7 @@ def _worker_entry() -> int:
         profile = paths.profile_root
         sha, deadline = raw["upstream_sha"], raw["deadline"]
         if (
-            request.platform is not Platform.BILI
+            request.platform not in _SUPPORTED_PLATFORMS
             or _SHA.fullmatch(sha) is None
             or checkout.resolve() != Path.cwd().resolve()
         ):
@@ -878,9 +1049,8 @@ def _worker_entry() -> int:
         return 20
     try:
         with _silenced_upstream():
-            result = asyncio.run(
-                _lookup_bili(checkout, profile, request.creator_remote_id, deadline, cookie=request.cookie)
-            )
+            lookup = _lookup_bili if request.platform is Platform.BILI else _lookup_weibo
+            result = asyncio.run(lookup(checkout, profile, request.creator_remote_id, deadline, cookie=request.cookie))
         outcome = _result(request, MediaCrawlerCreatorProfileStatus.SUCCEEDED, sha, result)
     except _LookupFailure as error:
         outcome = _result(request, error.status, sha)

@@ -49,6 +49,7 @@
     creatorLookupEligibility,
     creatorLookupIdentity,
     initialCreatorLookupView,
+    isCreatorLookupPlatform,
     subscriptionCreatorLabel,
     subscriptionCreatorProfile
   } from '$lib/utils/creator-profile';
@@ -926,7 +927,7 @@
           <div class="creator-lookup" aria-live="polite" aria-busy={lookupBusy}>
             {#if lookupEligibility}
               <div class="notice warning">{lookupEligibility}</div>
-              {#if selectedAccount.platform === 'bili'}<a class="field-help" href="/accounts"
+              {#if isCreatorLookupPlatform(selectedAccount.platform)}<a class="field-help" href="/accounts"
                   >到账户页面核对登录</a
                 >{/if}
             {:else}

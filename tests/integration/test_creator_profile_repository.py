@@ -34,6 +34,7 @@ from media_sync.infrastructure.db.creator_profile_repository import (
     CreatorProfileRepository,
     LookupTicket,
     ProfileValue,
+    creator_profile_homepage,
 )
 
 NOW = datetime.now(UTC)
@@ -93,6 +94,30 @@ def _begin(database: Database, account: str, *, creator: str = "123", operation:
 
 def _value(creator: str = "123", nickname: str = "Remote nickname") -> ProfileValue:
     return ProfileValue("bili", creator, nickname, f"https://space.bilibili.com/{creator}", SHA)
+
+
+@pytest.mark.parametrize("platform,origin", [("bili", "https://space.bilibili.com/"), ("wb", "https://weibo.com/u/")])
+@pytest.mark.parametrize("uid", ["1", "252671524", "18446744073709551615"])
+def test_numeric_profile_contract_is_platform_bound(platform: str, origin: str, uid: str) -> None:
+    assert creator_profile_homepage(platform, uid) == origin + uid
+    ProfileValue(platform, uid, "平台昵称", origin + uid, SHA).validate()
+    wrong = "https://weibo.com/u/" if platform == "bili" else "https://space.bilibili.com/"
+    with pytest.raises(CreatorProfileError, match="creator_profile_invalid"):
+        ProfileValue(platform, uid, "平台昵称", wrong + uid, SHA).validate()
+
+
+@pytest.mark.parametrize(
+    "uid", ["0", "01", "-1", "1.0", "\uff11\uff12\uff13", "123\n", "18446744073709551616", None, True, 123]
+)
+def test_weibo_profile_contract_does_not_weaken_numeric_identity(uid: object) -> None:
+    with pytest.raises(CreatorProfileError, match="creator_profile_identity_mismatch"):
+        creator_profile_homepage("wb", uid)
+
+
+@pytest.mark.parametrize("platform", ["xhs", "dy", "ks", "tieba", "zhihu"])
+def test_unimplemented_profile_platforms_still_fail_closed(platform: str) -> None:
+    with pytest.raises(CreatorProfileError, match="creator_profile_unsupported"):
+        creator_profile_homepage(platform, "123")
 
 
 def _finish(database: Database, operation_id: str) -> None:

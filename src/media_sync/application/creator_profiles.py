@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 from collections.abc import Callable
 from uuid import UUID
 
@@ -16,6 +15,7 @@ from media_sync.infrastructure.db.creator_profile_repository import (
     CreatorProfileRepository,
     ProfileSnapshot,
     ProfileValue,
+    creator_profile_homepage,
 )
 from media_sync.integrations.mediacrawler.creator_profile_runner import (
     MediaCrawlerCreatorProfileRequest,
@@ -24,7 +24,7 @@ from media_sync.integrations.mediacrawler.creator_profile_runner import (
 )
 from media_sync.security.secrets import SecretError, SecretResolver
 
-from .creator_avatar import fetch_creator_avatar
+from .creator_avatar import fetch_creator_avatar, validate_creator_avatar_url
 from .operations import OperationExecutionContext, OperationOutcome
 
 _RUNNER_ERRORS = {
@@ -100,10 +100,7 @@ class CreatorProfileService:
         self.secret_resolver = secret_resolver
 
     def preflight(self, account_id: str, platform: str, creator_remote_id: str) -> str:
-        if platform != "bili":
-            raise CreatorProfileError("creator_profile_unsupported")
-        if re.fullmatch(r"[1-9][0-9]{0,19}", creator_remote_id) is None or int(creator_remote_id) > 2**64 - 1:
-            raise CreatorProfileError("creator_profile_identity_mismatch")
+        creator_profile_homepage(platform, creator_remote_id)
         with self.database.session() as session:
             digest = CreatorProfileRepository(session).credential_snapshot(account_id, platform)
         if self.runner is None:
@@ -170,7 +167,7 @@ class CreatorProfileService:
                 platform,
                 creator_remote_id,
                 result.profile.display_name,
-                f"https://space.bilibili.com/{creator_remote_id}",
+                creator_profile_homepage(platform, creator_remote_id),
                 result.upstream_sha,
             )
             value.validate()
@@ -180,6 +177,8 @@ class CreatorProfileService:
             # Images are optional evidence; a failure must not erase successful
             # text or the older avatar. All remote work precedes the DB effect.
             try:
+                if result.profile.avatar_url is not None:
+                    validate_creator_avatar_url(result.profile.avatar_url, platform=platform)
                 avatar = self.avatar_fetcher(result.profile.avatar_url)
             except Exception:
                 avatar = None

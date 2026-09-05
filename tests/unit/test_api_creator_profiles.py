@@ -30,6 +30,7 @@ class Runner:
         self.name = "平台上的准确昵称"
         self.status = MediaCrawlerCreatorProfileStatus.SUCCEEDED
         self.wrong_identity = False
+        self.avatar: str | None = None
         self.hook: Any = None
 
     def run(self, request: MediaCrawlerCreatorProfileRequest, *, cancellation: threading.Event | None = None) -> Any:
@@ -43,7 +44,7 @@ class Runner:
             request.creator_remote_id,
             request.request_id,
             upstream_sha="a" * 40 if self.status.value == "succeeded" else None,
-            profile=MediaCrawlerCreatorProfile(request.creator_remote_id, self.name, None)
+            profile=MediaCrawlerCreatorProfile(request.creator_remote_id, self.name, self.avatar)
             if self.status.value == "succeeded"
             else None,
         )
@@ -102,8 +103,8 @@ def _wait(client: Any, operation_id: str) -> dict[str, Any]:
     raise AssertionError("lookup did not terminate")
 
 
-def _lookup(client: Any, account_id: str) -> dict[str, Any]:
-    response = client.post(f"/api/v1/accounts/{account_id}/creator-lookups", json=_body())
+def _lookup(client: Any, account_id: str, **extra: object) -> dict[str, Any]:
+    response = client.post(f"/api/v1/accounts/{account_id}/creator-lookups", json=_body(**extra))
     assert response.status_code == 202, response.text
     return _wait(client, response.json()["operation_id"])
 
@@ -317,3 +318,122 @@ def test_lookup_error_projection_never_reflects_arbitrary_stored_error(environme
     assert response.status_code == 200
     assert response.json()["error_code"] == "creator_profile_failed"
     assert "private_cookie" not in response.text
+
+
+def _weibo_account(database: Database) -> str:
+    with database.session() as session:
+        return (
+            AccountRepository(session)
+            .create(
+                platform="wb",
+                display_name=f"Weibo {uuid4()}",
+                adapter="mediacrawler",
+                login_method="saved_session",
+                auth_status="authenticated",
+            )
+            .id
+        )
+
+
+def test_weibo_profile_lookup_is_independent_of_capture_ack_and_preserves_author_path(environment: Any) -> None:
+    client, database, bili_account_id, runner = environment
+    wb_account_id = _weibo_account(database)
+    bili = _lookup(client, bili_account_id)
+    runner.name = "微博平台昵称"
+    wb = _lookup(client, wb_account_id, platform="wb")
+    assert wb["state"] == "succeeded", wb
+    assert wb["profile"]["platform"] == "wb" and wb["profile"]["nickname"] == runner.name
+    assert wb["profile"]["profile_url"] == "https://weibo.com/u/252671524"
+    assert wb["profile"]["id"] != bili["profile"]["id"]
+    # A lookup needs no full-history acknowledgement; actual capture policy does.
+    draft = {
+        "account_id": wb_account_id,
+        "platform": "wb",
+        "creator_remote_id": "252671524",
+        "profile_lookup_id": wb["operation_id"],
+    }
+    assert client.post("/api/v1/subscriptions/preview", json=draft).status_code == 400
+    draft["allow_full_history"] = True
+    response = client.post("/api/v1/subscriptions", json=draft)
+    assert response.status_code == 201, response.text
+    assert response.json()["creator_display_name"] == "微博平台昵称"
+    runner.name = "微博新昵称"
+    newer = _lookup(client, wb_account_id, platform="wb")
+    draft.update(profile_lookup_id=newer["operation_id"], local_alias="我的备注")
+    assert client.post("/api/v1/subscriptions", json=draft).status_code == 201
+    row = client.get("/api/v1/subscriptions").json()[0]
+    assert row["creator_profile"]["nickname"] == "微博新昵称" and row["local_alias"] == "我的备注"
+    with database.session() as session:
+        assert session.scalar(select(Author)).display_name == "微博平台昵称"
+        assert session.scalar(select(LoginSession)) is None
+        account = session.get(Account, wb_account_id)
+        assert account.auth_revision == 0 and account.auth_status == "authenticated"
+
+
+def test_weibo_cannot_borrow_bili_or_other_account_receipt(environment: Any) -> None:
+    client, database, bili_account_id, _ = environment
+    bili = _lookup(client, bili_account_id)
+    account = _weibo_account(database)
+    wb = _lookup(client, account, platform="wb")
+    other = _weibo_account(database)
+    for account_id, receipt in ((account, bili["operation_id"]), (other, wb["operation_id"])):
+        response = client.post(
+            "/api/v1/subscriptions",
+            json={
+                "account_id": account_id,
+                "platform": "wb",
+                "creator_remote_id": "252671524",
+                "allow_full_history": True,
+                "profile_lookup_id": receipt,
+            },
+        )
+        assert response.status_code in {400, 409}, response.text
+    assert client.get("/api/v1/subscriptions").json() == []
+
+
+@pytest.mark.parametrize("failure", ["auth_expired", "result_invalid", "timed_out", "auth_changed"])
+def test_weibo_failed_refresh_preserves_previous_profile_and_avatar(environment: Any, failure: str) -> None:
+    client, database, _, runner = environment
+    account = _weibo_account(database)
+    output = io.BytesIO()
+    Image.new("RGB", (1, 1), "red").save(output, format="PNG")
+    client.app.state.creator_profile_service.avatar_fetcher = lambda _: output.getvalue()
+    first = _lookup(client, account, platform="wb")
+    assert first["state"] == "succeeded", first
+    if failure == "auth_changed":
+
+        def change(*_: object) -> None:
+            with database.session() as session:
+                session.get(Account, account).auth_revision += 1
+
+        runner.hook = change
+    else:
+        runner.status = MediaCrawlerCreatorProfileStatus(failure)
+    second = _lookup(client, account, platform="wb")
+    assert second["state"] == "failed_terminal", second
+    with database.session() as session:
+        profile = session.get(CreatorProfile, first["profile"]["id"])
+        assert profile.nickname == runner.name and profile.revision == 1
+        assert profile.avatar_revision == 1 and profile.avatar_png == output.getvalue()
+        assert session.get(Account, account).auth_status == "authenticated"
+
+
+@pytest.mark.parametrize("platform", ["bili", "wb"])
+@pytest.mark.parametrize("wrong_platform", [False, True])
+def test_avatar_network_scope_is_bound_to_profile_platform(
+    environment: Any, platform: str, wrong_platform: bool
+) -> None:
+    client, database, bili_account_id, runner = environment
+    account = bili_account_id if platform == "bili" else _weibo_account(database)
+    urls = {
+        "bili": "https://i1.hdslb.com/bfs/face/" + "a" * 40 + ".jpg",
+        "wb": "https://tvax1.sinaimg.cn/crop.0.0.180.180.180/synthetic.jpg",
+    }
+    other = "wb" if platform == "bili" else "bili"
+    runner.avatar = urls[other if wrong_platform else platform]
+    received = []
+    client.app.state.creator_profile_service.avatar_fetcher = lambda url: received.append(url)
+    result = _lookup(client, account, platform=platform)
+    assert result["state"] == "succeeded", result
+    assert result["profile"]["nickname"] == runner.name
+    assert received == ([] if wrong_platform else [urls[platform]])

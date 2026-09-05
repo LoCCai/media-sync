@@ -115,6 +115,7 @@ async def lookup(checkout, profile, remote_id, deadline, *, cookie=None):
 
 module._run_guardian = guardian
 module._lookup_bili = lookup
+module._lookup_weibo = lookup
 raise SystemExit(module._guardian_entry() if sys.argv[1] == "--guardian" else module._worker_entry())
 """
 
@@ -184,14 +185,16 @@ def _request(timeout: float = 8) -> MediaCrawlerCreatorProfileRequest:
 
 
 @pytest.mark.parametrize("login_method", ["cookie", "saved_session"])
+@pytest.mark.parametrize("platform", [Platform.BILI, Platform.WB])
 def test_real_private_frames_reach_worker_without_cookie_output_or_saved_profile_dependency(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capfd: pytest.CaptureFixture[str],
     login_method: str,
+    platform: Platform,
 ) -> None:
     runtime = tmp_path / "runtime"
-    paths = build_run_paths(runtime, Platform.BILI, ACCOUNT, uuid4())
+    paths = build_run_paths(runtime, platform, ACCOUNT, uuid4())
     paths.account_root.mkdir(parents=True)
     has_cookie = login_method == "cookie"
     if not has_cookie:
@@ -209,7 +212,7 @@ def test_real_private_frames_reach_worker_without_cookie_output_or_saved_profile
     monkeypatch.setenv("MEDIA_SYNC_PRIVATE_SENTINEL", _PRIVATE_COOKIE)
     request = MediaCrawlerCreatorProfileRequest(
         ACCOUNT,
-        Platform.BILI,
+        platform,
         "123",
         uuid4(),
         timeout_seconds=12,
@@ -219,6 +222,7 @@ def test_real_private_frames_reach_worker_without_cookie_output_or_saved_profile
     result = _runner(runtime, "two-hop").run(request)
 
     assert result.status.value == "succeeded"
+    assert result.platform is platform
     assert result.upstream_sha == SHA
     assert result.profile is not None and result.profile.display_name == "Offline creator"
     assert "PRIVATE_PROFILE_COOKIE" not in repr(request)

@@ -58,7 +58,7 @@ def _uuid(value: str) -> str:
 
 
 def _identity(platform: str, creator_remote_id: str) -> None:
-    if platform != "bili":
+    if platform not in {"bili", "wb"}:
         raise CreatorProfileError("creator_profile_unsupported")
     if (
         type(creator_remote_id) is not str
@@ -66,6 +66,13 @@ def _identity(platform: str, creator_remote_id: str) -> None:
         or int(creator_remote_id) > 2**64 - 1
     ):
         raise CreatorProfileError("creator_profile_identity_mismatch")
+
+
+def creator_profile_homepage(platform: str, creator_remote_id: str) -> str:
+    """Canonical, platform-bound profile location; never trust a supplied URL."""
+    _identity(platform, creator_remote_id)
+    origin = "https://space.bilibili.com/" if platform == "bili" else "https://weibo.com/u/"
+    return origin + creator_remote_id
 
 
 def _time(value: datetime | None) -> datetime:
@@ -99,7 +106,7 @@ class ProfileValue:
             or not 1 <= len(self.nickname) <= 512
             or self.nickname != self.nickname.strip()
             or not self.nickname.isprintable()
-            or self.canonical_homepage != f"https://space.bilibili.com/{self.creator_remote_id}"
+            or self.canonical_homepage != creator_profile_homepage(self.platform, self.creator_remote_id)
             or type(self.upstream_commit) is not str
             or re.fullmatch(r"[0-9a-f]{40}", self.upstream_commit) is None
         ):

@@ -32,7 +32,7 @@ const STATES = new Set<OperationState>([
   'interrupted'
 ]);
 export const CREATOR_LOOKUP_NOTICE =
-  '输入完成后自动查询一次 B 站作者资料；只查询昵称与头像，不扫码、不采集内容。资料成功不代表内容已抓取。';
+  '输入完成后自动查询一次 B 站或微博作者资料；支持已认证的保存会话和 Cookie，只查询昵称与头像，不扫码、不采集内容，无需确认全历史采集。其他五个平台的资料查询尚未接入。资料成功不代表内容已抓取或可播放。';
 export const CREATOR_LOOKUP_UNAVAILABLE = '暂时无法确认本次作者资料查询结果；未自动重试。';
 export const CREATOR_LOOKUP_LICENSE_REQUIRED = '请先完成首次使用与许可证确认，本次未发起查询。';
 export const CREATOR_LOOKUP_WAIT_ENDED =
@@ -52,8 +52,10 @@ const ERRORS: Record<string, string> = {
   creator_profile_account_busy: '该账户正被其他操作使用；本次未查询，请结束后手动重试。',
   account_busy: '该账户正被其他操作使用；本次未查询，请结束后手动重试。',
   creator_profile_auth_required: '平台会话需要重新登录。请到账户页面手动处理；本次不会启动扫码。',
-  creator_profile_account_ineligible: '该账户当前不满足 B 站已保存会话查询条件；未启动扫码。',
-  creator_profile_unsupported: '当前仅支持 B 站已保存会话的作者资料查询。',
+  creator_profile_account_ineligible:
+    '该账户当前不满足 B 站或微博已认证 Cookie／保存会话查询条件；未启动扫码。',
+  creator_profile_unsupported:
+    '当前仅支持 B 站和微博已认证 Cookie／保存会话的作者资料查询，其他五个平台尚未接入。',
   creator_profile_not_found: '本次未取得该作者资料，请核对作者 UID。',
   creator_profile_rate_limited: '平台暂时限制查询；未自动重试，请稍后手动处理。',
   creator_profile_timed_out: '本次作者资料查询超过服务端执行期限；没有自动重试。',
@@ -100,26 +102,31 @@ export function creatorIdentityMatches(value: CreatorIdentity, identity: Creator
   );
 }
 
+export function isCreatorLookupPlatform(value: unknown): value is 'bili' | 'wb' {
+  return value === 'bili' || value === 'wb';
+}
+
 export function creatorLookupIdentity(account: Account | null, creatorId: string): CreatorIdentity | null {
   const uid = creatorId.trim();
   if (
     !account ||
     !uuid(account.id) ||
-    account.platform !== 'bili' ||
+    !isCreatorLookupPlatform(account.platform) ||
     account.adapter !== 'mediacrawler' ||
     !['saved_session', 'cookie'].includes(account.login_method ?? '') ||
     account.auth_status !== 'authenticated' ||
     !validUid(uid)
   )
     return null;
-  return { account_id: account.id, platform: 'bili', creator_remote_id: uid };
+  return { account_id: account.id, platform: account.platform, creator_remote_id: uid };
 }
 
 export function creatorLookupEligibility(account: Account | null): string {
   if (!account) return '请先选择平台账户。';
-  if (account.platform !== 'bili') return '此平台的远端作者资料查询尚未接入；仍可填写本地备注并校验订阅。';
+  if (!isCreatorLookupPlatform(account.platform))
+    return '此平台的远端作者资料查询尚未接入；当前仅支持 B 站和微博，仍可填写本地备注并校验订阅。';
   if (account.adapter !== 'mediacrawler' || !['saved_session', 'cookie'].includes(account.login_method ?? ''))
-    return '当前只支持 B 站 MediaCrawler Cookie 凭据或已保存会话；此处不会启动扫码或其他登录方式。';
+    return '当前只支持 B 站或微博 MediaCrawler Cookie 凭据或已保存会话；此处不会启动扫码或其他登录方式。';
   if (account.auth_status !== 'authenticated')
     return '账户没有已认证的 Cookie 凭据或保存会话；请到账户页面手动处理登录，此处不会自动扫码。';
   return '';
@@ -143,7 +150,7 @@ export function parseCreatorProfile(value: unknown, identity: CreatorIdentity): 
     typeof source.id !== 'string' ||
     !uuid(source.id) ||
     !uuid(identity.account_id) ||
-    identity.platform !== 'bili' ||
+    !isCreatorLookupPlatform(identity.platform) ||
     !validUid(identity.creator_remote_id) ||
     !creatorIdentityMatches(source as unknown as CreatorIdentity, identity) ||
     typeof source.nickname !== 'string' ||
@@ -151,7 +158,10 @@ export function parseCreatorProfile(value: unknown, identity: CreatorIdentity): 
     Array.from(source.nickname).length > 512 ||
     source.nickname.trim() !== source.nickname ||
     /[\u0000-\u001f\u007f-\u009f]/u.test(source.nickname) ||
-    source.profile_url !== `https://space.bilibili.com/${identity.creator_remote_id}` ||
+    source.profile_url !==
+      (identity.platform === 'wb'
+        ? `https://weibo.com/u/${identity.creator_remote_id}`
+        : `https://space.bilibili.com/${identity.creator_remote_id}`) ||
     !count(source.revision) ||
     !timestamp(source.observed_at) ||
     !count(source.avatar_revision, 0) ||
@@ -343,7 +353,9 @@ export class CreatorLookupController {
     if (this.disposed) return;
     if (
       identity &&
-      (!uuid(identity.account_id) || identity.platform !== 'bili' || !validUid(identity.creator_remote_id))
+      (!uuid(identity.account_id) ||
+        !isCreatorLookupPlatform(identity.platform) ||
+        !validUid(identity.creator_remote_id))
     )
       identity = null;
     const key = identity

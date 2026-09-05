@@ -21,6 +21,7 @@ import {
   creatorLookupEligibility,
   creatorLookupFailure,
   creatorLookupIdentity,
+  isCreatorLookupPlatform,
   parseCreatorLookup,
   parseCreatorProfile,
   safeCreatorAvatarUrl,
@@ -64,6 +65,13 @@ const profile: CreatorProfile = {
   avatar_state: 'retained',
   avatar_url: `/api/v1/creator-profiles/${profileId}/avatar/1`
 };
+const weiboAccount: Account = { ...account, platform: 'wb' };
+const weiboScope: CreatorLookupScope = { ...scope, platform: 'wb' };
+const weiboProfile: CreatorProfile = {
+  ...profile,
+  platform: 'wb',
+  profile_url: 'https://weibo.com/u/123456'
+};
 
 function result(binding = scope, changes: Partial<CreatorLookupResponse> = {}): CreatorLookupResponse {
   return {
@@ -74,8 +82,12 @@ function result(binding = scope, changes: Partial<CreatorLookupResponse> = {}): 
     profile: {
       ...profile,
       account_id: binding.account_id,
+      platform: binding.platform,
       creator_remote_id: binding.creator_remote_id,
-      profile_url: `https://space.bilibili.com/${binding.creator_remote_id}`
+      profile_url:
+        binding.platform === 'wb'
+          ? `https://weibo.com/u/${binding.creator_remote_id}`
+          : `https://space.bilibili.com/${binding.creator_remote_id}`
     },
     profile_source: 'lookup_result',
     ...changes
@@ -99,10 +111,19 @@ function generationFactory() {
 
 afterEach(() => vi.useRealTimers());
 
-describe('Bili saved-session eligibility and closed profile projection', () => {
+describe.each([account, weiboAccount])('$platform eligibility and closed profile projection', (account) => {
+  const scope: CreatorLookupScope = {
+    ...creatorLookupIdentity(account, '123456')!,
+    frontend_generation: frontendId
+  };
+  const profile = result(scope).profile!;
+
   it('keeps UID a canonical string, including values larger than JavaScript safe integers', () => {
     expect(creatorLookupIdentity(account, ' 123456 ')).toMatchObject({ creator_remote_id: '123456' });
     expect(creatorLookupIdentity(account, '9007199254740993')?.creator_remote_id).toBe('9007199254740993');
+    expect(creatorLookupIdentity(account, '18446744073709551615')?.creator_remote_id).toBe(
+      '18446744073709551615'
+    );
     for (const id of [
       '',
       '0',
@@ -111,6 +132,7 @@ describe('Bili saved-session eligibility and closed profile projection', () => {
       '-1',
       'https://space.bilibili.com/123',
       '12?cookie=x',
+      '18446744073709551616',
       '1'.repeat(21)
     ])
       expect(creatorLookupIdentity(account, id)).toBeNull();
@@ -129,11 +151,11 @@ describe('Bili saved-session eligibility and closed profile projection', () => {
     expect(creatorLookupEligibility(candidate as Account | null)).not.toBe('');
   });
 
-  it('allows authenticated Bili Cookie credentials without starting QR', () => {
+  it('allows authenticated Cookie credentials without starting QR', () => {
     const current = { ...account, login_method: 'cookie' as const };
     expect(creatorLookupIdentity(current, '123456')).toEqual({
       account_id: accountId,
-      platform: 'bili',
+      platform: account.platform,
       creator_remote_id: '123456'
     });
     expect(creatorLookupEligibility(current)).toBe('');
@@ -208,12 +230,15 @@ describe('Bili saved-session eligibility and closed profile projection', () => {
   });
 });
 
-describe('exact lookup identity and successful-revision binding', () => {
+describe.each([scope, weiboScope])('$platform lookup identity and revision binding', (scope) => {
+  const profile = result(scope).profile!;
+
   it('requires the entire account/platform/creator/frontend/backend/operation tuple', () => {
-    expect(parseCreatorLookup(result(), scope, operationId, 3)).toEqual(result());
+    expect(parseCreatorLookup(result(scope), scope, operationId, 3)).toEqual(result(scope));
     for (const changes of [
       { account_id: otherId },
       { platform: 'dy' },
+      { platform: scope.platform === 'wb' ? 'bili' : 'wb' },
       { creator_remote_id: '42' },
       { frontend_generation: otherId },
       { generation: 4 },
@@ -221,7 +246,9 @@ describe('exact lookup identity and successful-revision binding', () => {
     ])
       expect(
         parseCreatorLookup(
-          result(scope, { lookup: { ...result().lookup!, ...changes } as CreatorLookupResponse['lookup'] }),
+          result(scope, {
+            lookup: { ...result(scope).lookup!, ...changes } as CreatorLookupResponse['lookup']
+          }),
           scope,
           operationId,
           3
@@ -251,7 +278,7 @@ describe('exact lookup identity and successful-revision binding', () => {
     expect(parseCreatorLookup(result(scope, { state: 'failed_terminal' }), scope, operationId, 3)).toBeNull();
     expect(
       parseCreatorLookup(
-        result(scope, { lookup: { ...result().lookup!, result_profile_revision: null } }),
+        result(scope, { lookup: { ...result(scope).lookup!, result_profile_revision: null } }),
         scope,
         operationId,
         3
@@ -264,7 +291,8 @@ describe('exact lookup identity and successful-revision binding', () => {
   });
 });
 
-describe('bounded lookup controller and late-response fences', () => {
+describe.each([scope, weiboScope])('$platform bounded controller and race fences', (scope) => {
+  const profile = result(scope).profile!;
   it('a local license refusal sends no lookup, consumes no automatic attempt and claims no history', async () => {
     vi.useFakeTimers();
     let confirmed = false;
@@ -370,7 +398,7 @@ describe('bounded lookup controller and late-response fences', () => {
     }
   );
 
-  it.each(['account', 'session', 'close', 'dispose'])(
+  it.each(['account', 'platform', 'session', 'close', 'dispose'])(
     'invalidates pending result after %s change',
     async (change) => {
       const delayed = deferred<unknown>();
@@ -392,6 +420,8 @@ describe('bounded lookup controller and late-response fences', () => {
       const pending = controller.query();
       await Promise.resolve();
       if (change === 'account') controller.setIdentity({ ...scope, account_id: otherId }, 1);
+      if (change === 'platform')
+        controller.setIdentity({ ...scope, platform: scope.platform === 'bili' ? 'wb' : 'bili' }, 1);
       if (change === 'session') controller.setIdentity(scope, 2);
       if (change === 'close') controller.setIdentity(null);
       if (change === 'dispose') controller.dispose();
@@ -566,6 +596,66 @@ describe('bounded lookup controller and late-response fences', () => {
   });
 });
 
+describe('closed Bili and Weibo platform support', () => {
+  it.each(['xhs', 'dy', 'ks', 'tieba', 'zhihu'] as const)(
+    'does not enable %s even with a valid numeric UID and authenticated Cookie',
+    async (platform) => {
+      const candidate: Account = { ...account, platform, login_method: 'cookie' };
+      expect(isCreatorLookupPlatform(platform)).toBe(false);
+      expect(creatorLookupIdentity(candidate, '123456')).toBeNull();
+      expect(creatorLookupEligibility(candidate)).toContain('尚未接入');
+      const identity = { ...scope, platform };
+      expect(parseCreatorProfile({ ...profile, platform }, identity)).toBeNull();
+      const start = vi.fn();
+      const read = vi.fn();
+      const controller = new CreatorLookupController({ start, read }, vi.fn(), generationFactory());
+      controller.setIdentity(identity);
+      await controller.query();
+      expect(controller.snapshot.scope).toBeNull();
+      expect(start).not.toHaveBeenCalled();
+      expect(read).not.toHaveBeenCalled();
+      controller.dispose();
+    }
+  );
+
+  it.each([
+    'https://space.bilibili.com/123456',
+    'https://weibo.com/u/42',
+    'http://weibo.com/u/123456',
+    'https://m.weibo.cn/u/123456',
+    'https://weibo.com/u/123456/',
+    'https://weibo.com/u/123456?token=private',
+    'https://weibo.com/u/123456#x',
+    'https://weibo.com:443/u/123456',
+    'https://weibo.com@evil.invalid/u/123456',
+    'https://weibo.com.evil.invalid/u/123456',
+    'https://weibo.com/u/%31%32%33%34%35%36',
+    '//weibo.com/u/123456',
+    'javascript:alert(1)'
+  ])('rejects a noncanonical WB homepage %s', (profile_url) => {
+    expect(parseCreatorProfile({ ...weiboProfile, profile_url }, weiboScope)).toBeNull();
+  });
+
+  it('never reuses a profile, receipt or image event from the same UID on another supported platform', () => {
+    expect(parseCreatorProfile(weiboProfile, weiboScope)).toEqual(weiboProfile);
+    expect(parseCreatorProfile(profile, weiboScope)).toBeNull();
+    expect(parseCreatorProfile(weiboProfile, scope)).toBeNull();
+    expect(parseCreatorLookup(result(scope), weiboScope, operationId, 3)).toBeNull();
+    expect(parseCreatorLookup(result(weiboScope), scope, operationId, 3)).toBeNull();
+    expect(creatorAvatarEventMatches(creatorAvatarKey(profile, frontendId), weiboProfile, frontendId)).toBe(
+      false
+    );
+    expect(
+      subscriptionCreatorLabel({
+        ...weiboScope,
+        local_alias: null,
+        creator_display_name: '本地旧名',
+        creator_profile: profile
+      } as unknown as Subscription)
+    ).toBe('本地旧名');
+  });
+});
+
 describe('creation, image and operation presentation integration', () => {
   it('allows no alias only with an exact receipt preview and preserves full-history consent independently', () => {
     const state = {
@@ -608,6 +698,55 @@ describe('creation, image and operation presentation integration', () => {
     expect(source).not.toContain('creatorName = next.profile');
     expect(source).not.toMatch(/api\([^\n]*(?:\/login|\/contents|\/qr)/);
     expect(CREATOR_LOOKUP_NOTICE).toContain('不扫码、不采集内容');
+    expect(CREATOR_LOOKUP_NOTICE).toContain('B 站或微博');
+    expect(CREATOR_LOOKUP_NOTICE).toContain('其他五个平台');
+    expect(CREATOR_LOOKUP_NOTICE).toContain('无需确认全历史采集');
+    const completedInput = source.slice(
+      source.indexOf('function completeCreatorInput('),
+      source.indexOf('function creatorInputKeydown(')
+    );
+    expect(completedInput).toContain('creatorLookupIdentity(selectedAccount, creatorId)');
+    expect(completedInput).toContain('lookupController.query(manual)');
+    expect(completedInput).not.toMatch(/fullHistory|wizardGates|selectedCapability|canRequestPreview/);
+    expect(source).toContain('isCreatorLookupPlatform(selectedAccount.platform)');
+    const accounts = readFileSync(new URL('../../routes/accounts/+page.svelte', import.meta.url), 'utf8');
+    expect(accounts).toContain('isCreatorLookupPlatform(selectedAccount.platform)');
+    expect(accounts.replace(/\s+/g, ' ')).toContain('B 站和微博 Cookie 作者资料查询已接入');
+  });
+
+  it('allows WB profile lookup without the independently required full-history capture acknowledgement', async () => {
+    const state = {
+      accountId,
+      capability: { platform: 'wb', requires_full_history_acknowledgement: true } as never,
+      creatorId: '123456',
+      creatorName: '',
+      profileLookupId: null,
+      fullHistoryAcknowledged: false,
+      preview: null
+    };
+    expect(subscriptionWizardGates(state).canRequestPreview).toBe(false);
+    let sent = weiboScope;
+    const start = vi.fn(async (value: CreatorLookupScope) => {
+      sent = value;
+      return { operation_id: operationId, state: 'queued' };
+    });
+    const controller = new CreatorLookupController(
+      { licenseConfirmed: () => true, start, read: async () => result(sent) },
+      vi.fn(),
+      generationFactory()
+    );
+    controller.setIdentity(creatorLookupIdentity(weiboAccount, state.creatorId));
+    await controller.query();
+    expect(start).toHaveBeenCalledOnce();
+    expect(sent.platform).toBe('wb');
+    expect(controller.snapshot.profile).toEqual(weiboProfile);
+    expect(controller.snapshot.receipt).toBe(operationId);
+    expect(subscriptionWizardGates({ ...state, profileLookupId: operationId }).canRequestPreview).toBe(false);
+    expect(
+      subscriptionWizardGates({ ...state, profileLookupId: operationId, fullHistoryAcknowledged: true })
+        .canRequestPreview
+    ).toBe(true);
+    controller.dispose();
   });
 
   it('generic failures do not invent previous data when there has never been a successful observation', () => {

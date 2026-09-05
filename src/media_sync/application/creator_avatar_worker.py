@@ -16,7 +16,7 @@ if __name__ == "__main__" and not __package__:
 from media_sync.application.creator_avatar import (
     MAX_AVATAR_BYTES,
     MAX_AVATAR_PIXELS,
-    validate_bili_avatar_url,
+    validate_creator_avatar_url,
 )
 from media_sync.media.network import NetworkLimits, SafeHttpClient, SocketAddressResolver
 
@@ -51,7 +51,7 @@ def decode_avatar(payload: bytes) -> bytes:
 
 
 def retrieve_avatar(url: str, *, client: SafeHttpClient | None = None) -> bytes:
-    candidate = validate_bili_avatar_url(url)
+    candidate = validate_creator_avatar_url(url)
     network = client or SafeHttpClient(
         SocketAddressResolver(), limits=NetworkLimits(max_redirects=0, timeout_seconds=7, max_url_chars=256)
     )

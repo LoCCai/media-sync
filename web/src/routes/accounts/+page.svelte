@@ -26,6 +26,7 @@
     StartedOperation
   } from '$lib/types/api';
   import { formatDate, PLATFORM_META, shortId, statusLabel } from '$lib/utils/format';
+  import { isCreatorLookupPlatform } from '$lib/utils/creator-profile';
   import {
     accountLoginExplanation,
     LOGIN_READINESS_NOTICE,
@@ -505,8 +506,9 @@
           <span
             >以账户当前认证记录为准；最近扫码会话仅为历史，不覆盖本次 Cookie 认证。保存成功不代表内容已采集。</span
           >
-          {#if selectedAccount.platform === 'bili'}<span
-              >B 站 Cookie 作者资料查询已接入，请到订阅页面单独查询；不代表真实平台端到端验收完成。</span
+          {#if isCreatorLookupPlatform(selectedAccount.platform)}<span
+              >B 站和微博 Cookie
+              作者资料查询已接入，请到订阅页面单独查询；不代表内容已抓取、可播放或真实平台端到端验收完成。</span
             >{/if}
         </div>
       {:else if statusErrors[selectedAccount.id]}

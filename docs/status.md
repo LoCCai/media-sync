@@ -2,7 +2,15 @@
 
 # Unified project status (single source of truth)
 
-## Latest: bounded resumable Bili upload units (0059)
+## Latest: Weibo creator nickname/avatar lookup (0060)
+
+[Execution 0060](executions/0060-weibo-creator-profile/progress.md) extends automatic creator lookup to Weibo saved-session and pasted-Cookie accounts. Stable numeric UID entry triggers one authenticated config check and one exact creator request, not a post crawl. Platform-observed nickname, optional restricted same-origin avatar and local notes retain account/platform/identity and publication fences; existing author/export paths are not renamed. Lookup does not require full-history capture acknowledgement or a media-server connection.
+
+Final full Python directories passed **4729 tests, 23 environment skips**; Web passed635 plus type/format/build checks. Both wheel and sdist contain all140 application Python files byte-identical to the frozen source. Exact runs, earlier failures/corrections, packaging and publication status are in [verification](executions/0060-weibo-creator-profile/verification.md), not a claim of live qualification. The Weibo CDN paths and profile_image_url fallback are synthetic design contracts, not locked-upstream/live-verified avatar forms; unknown forms safely retain text/old image.
+
+Bili and Weibo profiles are implemented offline; the other five platform profiles, DY/KS/Tieba pasted-Cookie validators, Bili dynamics and real capture/archive/local-library playback remain required. No production action, deployment or supervisor restart. The original seven-platform objective remains active.
+
+## Previous: bounded resumable Bili upload units (0059)
 
 [Execution0059](executions/0059-bili-bounded-capture/progress.md) connects bounded ordinary-upload capture to the real bridge/scheduler/receipt/normalizer/atomic ingestion pipeline. Each unit verifies at most min(max_items,30) details and makes at most two author-list attempts; browser/auth and up to two WBI key reads are additional. Head/history lanes retain queued identities and page witnesses, and do not filter history using the old watermark. New Bili requests need no unbounded-history acknowledgement; legacy artifacts retain their gate. API/Web distinguish partial unit progress, conservative restart and source-end observation from full history, without exposing cursors or IDs.
 

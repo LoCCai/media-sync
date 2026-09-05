@@ -350,9 +350,12 @@ def test_capabilities_distinguish_supported_remote_proofs(environment: Any) -> N
     assert len(rows) == 7
 
 
-def test_saved_cookie_feeds_bili_profile_receipt_and_subscription(environment: Any) -> None:
+@pytest.mark.parametrize("platform", ["bili", "wb"])
+def test_saved_cookie_feeds_profile_receipt_and_subscription(environment: Any, platform: str) -> None:
     client, database, account_id, _, _ = environment
-    assert submit(environment)["state"] == "succeeded"
+    with database.session() as session:
+        session.get(Account, account_id).platform = platform
+    assert submit(environment, body(platform=platform))["state"] == "succeeded"
     calls = []
 
     class ProfileRunner:
@@ -374,7 +377,7 @@ def test_saved_cookie_feeds_bili_profile_receipt_and_subscription(environment: A
     response = client.post(
         f"/api/v1/accounts/{account_id}/creator-lookups",
         json={
-            "platform": "bili",
+            "platform": platform,
             "creator_remote_id": "123",
             "frontend_generation": str(uuid4()),
             "enable_mediacrawler": True,
@@ -388,7 +391,7 @@ def test_saved_cookie_feeds_bili_profile_receipt_and_subscription(environment: A
         "/api/v1/subscriptions",
         json={
             "account_id": account_id,
-            "platform": "bili",
+            "platform": platform,
             "creator_remote_id": "123",
             "profile_lookup_id": operation_id,
             "allow_full_history": True,

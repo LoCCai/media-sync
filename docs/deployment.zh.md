@@ -4,6 +4,12 @@
 
 本指南使用内含锁定 MediaCrawler 运行时的自托管容器部署 media-sync，要求 Linux 主机与 Docker Compose v2。当前 0055 安全控制台与启动预检已实现，本地离线与合成浏览器门禁已通过；准确状态见[验证](executions/0055-operator-auth-playback-evidence/secure-console/verification.zh.md)。后端鉴权、Web session／内存 CSRF、退出／过期与二维码／SSE 已接线，`/legacy` 仅提供受保护迁移提示；无 v2 构建时根页仅提示构建／CLI。当前 Linux 镜像、运行用户权限与平台／媒体服务器真人流程仍为 NOT_RUN，不能用旧 0050 镜像 PASS 或公开 health 成功替代。
 
+## 微博作者资料（0060）
+
+选择已认证的微博保存会话或Cookie账户后，输入规范数字作者UID，完成输入（失焦/回车）会自动查询一次。先检查一次登录config，再请求一次精确作者资料，不请求帖子/评论/下载。昵称来自平台观察，本地备注可选，来源主页固定https://weibo.com/u/UID；刷新不会重命名已有作者/归档/导出路径。查询无需Emby/Jellyfin连接或全历史确认；另行执行的微博采集策略仍须全历史确认。
+
+头像为可选同源PNG，隔离限量下载解码，HTTPS CDN规则绑定资料平台。窄新浪crop/尺寸路径及可选profile_image_url回退是合成设计合同，不是已经证明的真人URL形状；未知/带签名/重定向/不支持图片不获取，昵称和旧头像仍保留。其他五平台自动资料继续待完成。本轮无新依赖或数据库迁移。见[0060验证](executions/0060-weibo-creator-profile/verification.zh.md)，部署/真人验证须单独进行，不自动恢复supervisor。
+
 ## B站有界订阅（0059）
 
 新B站调度采集和dry-run采用可续抓的普通投稿单元，不再要求旧的无限历史勾选。每轮最多校验min(max_items,30)条详情、最多两次作者列表尝试；浏览器/认证初始化和最多两次WBI签名密钥读取另计。头部更新与历史扫描交替，私有检查点跨成功轮次保留未完成身份。旧cursor从不假定覆盖的新状态开始，损坏或错配的新版本cursor安全拒绝，不静默重置。
