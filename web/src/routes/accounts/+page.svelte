@@ -3,6 +3,7 @@
   import { LoaderCircle, Plus, QrCode, RefreshCw, ShieldAlert, XCircle } from '@lucide/svelte';
 
   import { api, apiBlob, apiMessage } from '$lib/api/client';
+  import { AccountPreflightReader } from '$lib/api/account-preflight';
   import { initialLoginAttemptView, LoginAttemptMonitor } from '$lib/api/login-attempt';
   import EmptyState from '$lib/components/EmptyState.svelte';
   import Modal from '$lib/components/Modal.svelte';
@@ -31,8 +32,10 @@
   } from '$lib/utils/login-diagnostics';
   import {
     accountCompositeState,
+    AUTHENTICATED_ACCOUNT_NOTICE,
     canStartQrLogin,
     capabilityByPlatform,
+    loginPreflightDisposition,
     loginMethodLabel
   } from '$lib/utils/workbench';
 
@@ -62,6 +65,13 @@
   let pollTimer: number | null = null;
   let destroyed = false;
   let loadRevision = 0;
+  const preflightReader = new AccountPreflightReader((id, signal) =>
+    api<LoginPreflight>(
+      `/api/v1/accounts/${id}/login-preflight?accept_mediacrawler_license=true`,
+      { signal },
+      65_000
+    )
+  );
 
   $: selectedAccount = accounts.find((item) => item.id === selectedAccountId) ?? null;
   $: selectedCapability = capabilityByPlatform(capabilities, selectedAccount?.platform);
@@ -77,11 +87,18 @@
   $: selectedComposite = selectedAccount
     ? accountCompositeState(selectedAccount, selectedLoginStatus, selectedCapability, selectedPreflight)
     : null;
-  $: selectedCanStart = canStartQrLogin(selectedAccount, selectedCapability, selectedPreflight);
+  $: selectedPreflightDisposition = loginPreflightDisposition(selectedAccount, selectedLoginStatus);
+  $: selectedCanStart =
+    !loading && canStartQrLogin(selectedAccount, selectedCapability, selectedPreflight, selectedLoginStatus);
   $: formCapability = capabilityByPlatform(capabilities, formPlatform);
 
   async function load(): Promise<void> {
     const revision = ++loadRevision;
+    preflightReader.invalidate();
+    preflights = {};
+    preflightErrors = {};
+    preflightLoading = '';
+    preflightBlock = '';
     loading = true;
     error = '';
     capabilityError = '';
@@ -133,28 +150,33 @@
   }
 
   async function loadPreflight(accountId: string): Promise<LoginPreflight | null> {
+    if (destroyed || loading || selectedAccountId !== accountId) return null;
+    const account = accounts.find((item) => item.id === accountId) ?? null;
+    const status = statuses[accountId] ?? null;
+    if (loginPreflightDisposition(account, status) !== 'required') {
+      preflightReader.invalidate();
+      preflightLoading = '';
+      return null;
+    }
     preflightLoading = accountId;
     preflightErrors = { ...preflightErrors, [accountId]: '' };
-    try {
-      const result = await api<LoginPreflight>(
-        `/api/v1/accounts/${accountId}/login-preflight?accept_mediacrawler_license=true`,
-        {},
-        65_000
-      );
-      preflights = { ...preflights, [accountId]: result };
-      return result;
-    } catch (caught) {
-      const next = { ...preflights };
-      delete next[accountId];
-      preflights = next;
-      preflightErrors = { ...preflightErrors, [accountId]: apiMessage(caught) };
-      return null;
-    } finally {
-      if (preflightLoading === accountId) preflightLoading = '';
+    const result = await preflightReader.read(account, status);
+    if (destroyed || result.kind === 'superseded') return null;
+    if (preflightLoading === accountId) preflightLoading = '';
+    if (result.kind === 'fulfilled') {
+      preflights = { ...preflights, [accountId]: result.report };
+      return result.report;
     }
+    const next = { ...preflights };
+    delete next[accountId];
+    preflights = next;
+    if (result.kind === 'failed') preflightErrors = { ...preflightErrors, [accountId]: result.message };
+    return null;
   }
 
   function selectForPreflight(account: Account): void {
+    preflightReader.invalidate();
+    preflightLoading = '';
     selectedAccountId = account.id;
     preflightBlock = '';
     void loadPreflight(account.id);
@@ -190,14 +212,21 @@
   }
 
   async function startLogin(account: Account): Promise<void> {
+    if (destroyed || loading || loginStarting) return;
+    const currentAccount = accounts.find((item) => item.id === account.id) ?? null;
+    if (loginPreflightDisposition(currentAccount, statuses[account.id] ?? null) !== 'required') return;
+    const revision = loadRevision;
     selectedAccountId = account.id;
     loginStarting = account.id;
     preflightBlock = '';
     try {
       const preflight = await loadPreflight(account.id);
-      if (destroyed) return;
+      if (destroyed || loading || revision !== loadRevision || selectedAccountId !== account.id) return;
+      const currentAccount = accounts.find((item) => item.id === account.id) ?? null;
+      const currentStatus = statuses[account.id] ?? null;
+      if (loginPreflightDisposition(currentAccount, currentStatus) !== 'required') return;
       const capability = capabilityByPlatform(capabilities, account.platform);
-      if (!canStartQrLogin(account, capability, preflight)) {
+      if (!canStartQrLogin(currentAccount, capability, preflight, currentStatus)) {
         preflightBlock = preflight?.code ?? preflightErrors[account.id] ?? 'login_preflight_unavailable';
         toast(`登录已在预检阶段停止：${preflightBlock}`, 'danger');
         return;
@@ -266,6 +295,7 @@
   onMount(() => void load());
   onDestroy(() => {
     destroyed = true;
+    preflightReader.invalidate();
     closeQr();
   });
 </script>
@@ -274,7 +304,7 @@
   <PageHeader title="平台账户" description="按服务端能力契约管理七个平台的认证、登录组合与隔离会话。">
     <svelte:fragment slot="actions">
       <button class="button secondary" type="button" on:click={load} disabled={loading}>
-        <RefreshCw class={loading ? 'spin' : ''} size={15} />刷新
+        <RefreshCw class={loading ? 'spin' : ''} size={15} />刷新本地状态
       </button>
       <button class="button" type="button" on:click={openAdd} disabled={!capabilities.length}>
         <Plus size={16} />添加账户
@@ -292,7 +322,7 @@
     </div>
   {/if}
 
-  {#if preflightBlock}
+  {#if preflightBlock && selectedPreflightDisposition === 'required'}
     <div class="notice danger">
       <ShieldAlert size={17} />
       <div>
@@ -307,30 +337,39 @@
 
   {#if selectedAccount}
     <Panel
-      title="登录启动前工作台"
+      title="账户登录工作台"
       description={`能力契约 v${capabilityVersion ?? '—'} · ${selectedAccount.display_name}`}
     >
       <svelte:fragment slot="actions">
-        <button
-          class="button secondary small"
-          type="button"
-          on:click={() => loadPreflight(selectedAccount.id)}
-          disabled={preflightLoading === selectedAccount.id || loginStarting === selectedAccount.id}
-        >
-          <RefreshCw class={preflightLoading === selectedAccount.id ? 'spin' : ''} size={14} />重新预检
-        </button>
-        <button
-          class="button small"
-          type="button"
-          on:click={() => startLogin(selectedAccount)}
-          disabled={!selectedCanStart || !!preflightLoading || !!loginStarting}
-          title={selectedCanStart ? '重新执行预检并启动扫码登录' : '所有必需预检通过后才能启动'}
-        >
-          {#if loginStarting === selectedAccount.id}<LoaderCircle class="spin" size={14} />{:else}<QrCode
-              size={14}
-            />{/if}
-          {selectedLoginStatus?.auth_status === 'authenticated' ? '重新认证' : '启动扫码登录'}
-        </button>
+        {#if selectedPreflightDisposition !== 'required'}
+          <button class="button secondary small" type="button" on:click={load} disabled={loading}>
+            <RefreshCw class={loading ? 'spin' : ''} size={14} />刷新本地状态
+          </button>
+          {#if selectedPreflightDisposition === 'not_needed'}
+            <a class="button small" href="/subscriptions">管理订阅</a>
+          {/if}
+        {:else}
+          <button
+            class="button secondary small"
+            type="button"
+            on:click={() => loadPreflight(selectedAccount.id)}
+            disabled={loading || preflightLoading === selectedAccount.id || !!loginStarting}
+          >
+            <RefreshCw class={preflightLoading === selectedAccount.id ? 'spin' : ''} size={14} />重新预检
+          </button>
+          <button
+            class="button small"
+            type="button"
+            on:click={() => startLogin(selectedAccount)}
+            disabled={!selectedCanStart || !!preflightLoading || !!loginStarting}
+            title={selectedCanStart ? '重新执行预检并启动扫码登录' : '所有必需预检通过后才能启动'}
+          >
+            {#if loginStarting === selectedAccount.id}<LoaderCircle class="spin" size={14} />{:else}<QrCode
+                size={14}
+              />{/if}
+            启动扫码登录
+          </button>
+        {/if}
       </svelte:fragment>
 
       <div class="workbench-grid">
@@ -373,49 +412,59 @@
         </section>
 
         <section class="preflight-card" aria-live="polite">
-          <div class="preflight-heading">
-            <div>
-              <strong>登录专用预检</strong>
-              <span>仅检查数据库、许可证、运行时、浏览器、profile 与账户锁。</span>
-              <span>{LOGIN_READINESS_NOTICE}</span>
-            </div>
-            {#if selectedPreflight}
-              <StatusBadge
-                status={selectedPreflight.ok ? 'succeeded' : 'failed'}
-                label={selectedPreflight.ok ? '允许启动' : '已阻塞'}
-              />
-            {/if}
-          </div>
-          {#if preflightLoading === selectedAccount.id}
-            <div class="preflight-loading"><LoaderCircle class="spin" size={16} />正在检查登录条件…</div>
-          {:else if preflightErrors[selectedAccount.id]}
-            <div class="notice danger"><XCircle size={16} />{preflightErrors[selectedAccount.id]}</div>
-          {:else if selectedPreflight}
-            <div class="check-grid">
-              {#each selectedPreflight.checks as check}
-                <div class:failed={check.status === 'fail'} class="check-row">
-                  <div>
-                    <strong>{check.name}</strong>
-                    <span>{check.detail_code ?? (check.status === 'pass' ? '检查通过' : '尚未运行')}</span>
-                  </div>
-                  <StatusBadge
-                    status={check.status === 'pass'
-                      ? 'succeeded'
-                      : check.status === 'fail'
-                        ? 'failed'
-                        : 'pending'}
-                    label={`${check.required ? '必需' : '可选'} · ${statusLabel(check.status)}`}
-                  />
-                </div>
-              {/each}
-            </div>
-            {#if !selectedPreflight.ok}
-              <p class="preflight-code">
-                {selectedPreflight.code}{selectedPreflight.retryable ? ' · 可修复后重试' : ' · 需要人工处理'}
-              </p>
-            {/if}
+          {#if selectedPreflightDisposition === 'not_needed'}
+            <div class="preflight-heading"><div><strong>无需启动登录预检</strong></div></div>
+            <p class="capability-note">{AUTHENTICATED_ACCOUNT_NOTICE}</p>
+          {:else if selectedPreflightDisposition === 'status_unavailable'}
+            <div class="preflight-heading"><div><strong>本地登录状态待确认</strong></div></div>
+            <p class="capability-note">{LOGIN_STATUS_UNAVAILABLE}</p>
           {:else}
-            <div class="preflight-loading">选择账户并运行预检后才会开放登录按钮。</div>
+            <div class="preflight-heading">
+              <div>
+                <strong>登录专用预检</strong>
+                <span>仅检查数据库、许可证、运行时、浏览器、profile 与账户锁。</span>
+                <span>{LOGIN_READINESS_NOTICE}</span>
+              </div>
+              {#if selectedPreflight}
+                <StatusBadge
+                  status={selectedPreflight.ok ? 'succeeded' : 'failed'}
+                  label={selectedPreflight.ok ? '允许启动' : '已阻塞'}
+                />
+              {/if}
+            </div>
+            {#if preflightLoading === selectedAccount.id}
+              <div class="preflight-loading"><LoaderCircle class="spin" size={16} />正在检查登录条件…</div>
+            {:else if preflightErrors[selectedAccount.id]}
+              <div class="notice danger"><XCircle size={16} />{preflightErrors[selectedAccount.id]}</div>
+            {:else if selectedPreflight}
+              <div class="check-grid">
+                {#each selectedPreflight.checks as check}
+                  <div class:failed={check.status === 'fail'} class="check-row">
+                    <div>
+                      <strong>{check.name}</strong>
+                      <span>{check.detail_code ?? (check.status === 'pass' ? '检查通过' : '尚未运行')}</span>
+                    </div>
+                    <StatusBadge
+                      status={check.status === 'pass'
+                        ? 'succeeded'
+                        : check.status === 'fail'
+                          ? 'failed'
+                          : 'pending'}
+                      label={`${check.required ? '必需' : '可选'} · ${statusLabel(check.status)}`}
+                    />
+                  </div>
+                {/each}
+              </div>
+              {#if !selectedPreflight.ok}
+                <p class="preflight-code">
+                  {selectedPreflight.code}{selectedPreflight.retryable
+                    ? ' · 可修复后重试'
+                    : ' · 需要人工处理'}
+                </p>
+              {/if}
+            {:else}
+              <div class="preflight-loading">选择账户并运行预检后才会开放登录按钮。</div>
+            {/if}
           {/if}
         </section>
       </div>
@@ -511,13 +560,17 @@
                     class="button secondary small"
                     type="button"
                     on:click={() => selectForPreflight(account)}
-                    disabled={preflightLoading === account.id}
+                    disabled={loading || preflightLoading === account.id || !!loginStarting}
                   >
                     {#if preflightLoading === account.id}<LoaderCircle
                         class="spin"
                         size={14}
                       />{:else}<ShieldAlert size={14} />{/if}
-                    {account.id === selectedAccountId ? '重新检查' : '登录准备'}
+                    {loginPreflightDisposition(account, login ?? null) === 'not_needed'
+                      ? '查看状态'
+                      : account.id === selectedAccountId
+                        ? '重新检查'
+                        : '登录准备'}
                   </button>
                 </td>
               </tr>

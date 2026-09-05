@@ -37,6 +37,11 @@
   import { formatDate, formatDateLong, operationLabel, shortId, statusLabel } from '$lib/utils/format';
   import { operationLoginExplanation } from '$lib/utils/login-diagnostics';
   import {
+    schedulerWorkerNotice,
+    schedulerWorkerStateLabel,
+    schedulerWorkerSummary
+  } from '$lib/utils/scheduler-worker-display';
+  import {
     createOperationStreamCursor,
     createOperationStreamHealth,
     markOperationSnapshotLoaded,
@@ -114,13 +119,20 @@
   $: failedCount = jobs.filter((item) => item.status.startsWith('failed')).length;
   $: activeOperationCount = operations.filter((item) => operationIsActive(item.state)).length;
   $: streamCopy = operationStreamStatusCopy(streamHealth, streamCursor);
-  $: selectedTruthNotice = selectedOperation ? operationTruthNotice(selectedOperation) : null;
+  $: selectedTruthNotice = selectedOperation
+    ? (schedulerWorkerNotice(selectedOperation) ?? operationTruthNotice(selectedOperation))
+    : null;
   $: selectedProgressPercent = selectedOperation ? operationProgressPercent(selectedOperation) : null;
-  $: selectedSafeResult = selectedOperation ? safeOperationResult(selectedOperation) : null;
+  $: selectedSafeResult = selectedOperation
+    ? selectedOperation.kind === 'scheduler-run'
+      ? schedulerWorkerSummary(selectedOperation)
+      : safeOperationResult(selectedOperation)
+    : null;
   $: selectedLoginExplanation =
     selectedOperation?.kind === 'account-login' ? operationLoginExplanation(selectedOperation) : null;
 
   function eventLabel(code: string): string {
+    if (selectedOperation?.kind === 'scheduler-run' && code === 'operation_succeeded') return 'Worker 已完成';
     return (
       {
         operation_requested: '已接收请求',
@@ -611,8 +623,12 @@
             ></thead
           ><tbody
             >{#each filteredOperations as operation}{@const truthNotice =
-                operationTruthNotice(operation)}{@const progressPercent =
-                operationProgressPercent(operation)}{@const safeResult = safeOperationResult(operation)}<tr
+                schedulerWorkerNotice(operation) ?? operationTruthNotice(operation)}{@const workerStateLabel =
+                schedulerWorkerStateLabel(operation.kind, operation.state)}{@const progressPercent =
+                operationProgressPercent(operation)}{@const safeResult =
+                operation.kind === 'scheduler-run'
+                  ? schedulerWorkerSummary(operation)
+                  : safeOperationResult(operation)}<tr
                 ><td
                   ><span class="cell-main"
                     >{operationDisplayLabel(operation) === operation.kind
@@ -620,8 +636,10 @@
                       : operationDisplayLabel(operation)}</span
                   ><span class="cell-sub mono">{shortId(operation.id)}</span></td
                 ><td
-                  ><StatusBadge status={operation.state} />{#if operation.cancel_requested_at}<span
-                      class="cell-sub cancel-copy">取消处理中</span
+                  ><StatusBadge
+                    status={workerStateLabel ? 'info' : operation.state}
+                    label={workerStateLabel}
+                  />{#if operation.cancel_requested_at}<span class="cell-sub cancel-copy">取消处理中</span
                     >{/if}</td
                 ><td><span class="phase-code mono">{operation.phase ?? '—'}</span></td><td
                   ><span class="progress-copy">{operationProgressLabel(operation)}</span
@@ -635,6 +653,11 @@
                 ><td>{formatDate(operation.requested_at)}</td><td
                   >{#if operation.error_code}<span class="error-code mono">{operation.error_code}</span
                     >{#if truthNotice}<span class="cell-sub truth-copy">{truthNotice.title}</span>{/if}
+                    >{:else if truthNotice && workerStateLabel}<span
+                      class="worker-outcome"
+                      class:danger-text={truthNotice.tone === 'danger'}
+                      class:waiting-copy={truthNotice.tone === 'warning'}
+                      class:success-copy={truthNotice.tone === 'success'}>{truthNotice.title}</span
                     >{:else if truthNotice}<span class="success-copy">{truthNotice.title}</span
                     >{:else if safeResult}<span class="success-copy">已有白名单摘要</span>{:else}—{/if}</td
                 ><td class="actions operation-actions"
@@ -686,7 +709,12 @@
             : operationDisplayLabel(selectedOperation)}
         </h3>
       </div>
-      <StatusBadge status={selectedOperation.state} />
+      <StatusBadge
+        status={schedulerWorkerStateLabel(selectedOperation.kind, selectedOperation.state)
+          ? 'info'
+          : selectedOperation.state}
+        label={schedulerWorkerStateLabel(selectedOperation.kind, selectedOperation.state)}
+      />
     </div>
 
     {#if selectedOperation.progress}
@@ -806,7 +834,11 @@
                   <code>#{event.stream_sequence}</code>
                   {#if event.phase}<span>phase · <code>{event.phase}</code></span>{/if}
                   {#if event.from_state || event.to_state}<span
-                      >{statusLabel(event.from_state)} → {statusLabel(event.to_state)}</span
+                      >{schedulerWorkerStateLabel(selectedOperation.kind, event.from_state) ??
+                        statusLabel(event.from_state)} → {schedulerWorkerStateLabel(
+                        selectedOperation.kind,
+                        event.to_state
+                      ) ?? statusLabel(event.to_state)}</span
                     >{/if}
                 </div>
                 {#if event.subject}<div class="timeline-subject mono">
@@ -946,6 +978,19 @@
   .success-copy {
     color: var(--success);
     font-size: 11px;
+  }
+
+  .worker-outcome {
+    color: var(--text-secondary);
+    font-size: 11px;
+  }
+
+  .worker-outcome.waiting-copy {
+    color: var(--warning);
+  }
+
+  .worker-outcome.success-copy {
+    color: var(--success);
   }
 
   .truth-copy {

@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import type {
   Account,
   LoginPreflight,
+  LoginStatus,
   PlatformCapability,
   SubscriptionCheckpointSummary,
   SubscriptionPolicySummary,
@@ -10,7 +11,10 @@ import type {
 } from '$lib/types/api';
 
 import {
+  accountCompositeState,
+  AUTHENTICATED_ACCOUNT_NOTICE,
   canStartQrLogin,
+  loginPreflightDisposition,
   safeCheckpointSummaryRows,
   safePolicySummaryRows,
   subscriptionWizardGates
@@ -55,6 +59,18 @@ const passingPreflight: LoginPreflight = {
   live_qualification: 'NOT_RUN'
 };
 
+const loginStatus: LoginStatus = {
+  account_id: account.id,
+  auth_status: 'unknown',
+  auth_updated_at: null,
+  login_session_id: null,
+  login_session_status: null,
+  expires_at: null,
+  completed_at: null,
+  created_at: null,
+  updated_at: null
+};
+
 const preview: SubscriptionPreview = {
   account_id: account.id,
   platform: account.platform,
@@ -76,22 +92,115 @@ const preview: SubscriptionPreview = {
 
 describe('capability-driven account rules', () => {
   it('permits QR login only for an exact passing account preflight', () => {
-    expect(canStartQrLogin(account, biliCapability, passingPreflight)).toBe(true);
-    expect(canStartQrLogin(account, { ...biliCapability, qr_login: false }, passingPreflight)).toBe(false);
+    expect(canStartQrLogin(account, biliCapability, passingPreflight, loginStatus)).toBe(true);
     expect(
-      canStartQrLogin({ ...account, login_method: 'saved_session' }, biliCapability, passingPreflight)
+      canStartQrLogin(account, { ...biliCapability, qr_login: false }, passingPreflight, loginStatus)
+    ).toBe(false);
+    expect(
+      canStartQrLogin({ ...account, login_method: 'saved_session' }, biliCapability, passingPreflight, {
+        ...loginStatus,
+        auth_status: 'expired'
+      })
     ).toBe(true);
     expect(
-      canStartQrLogin(account, biliCapability, {
-        ...passingPreflight,
-        ok: false,
-        retryable: true,
-        checks: [{ name: 'browser', status: 'fail', required: true, detail_code: 'browser_missing' }]
-      })
+      canStartQrLogin(
+        account,
+        biliCapability,
+        {
+          ...passingPreflight,
+          ok: false,
+          retryable: true,
+          checks: [{ name: 'browser', status: 'fail', required: true, detail_code: 'browser_missing' }]
+        },
+        loginStatus
+      )
     ).toBe(false);
-    expect(canStartQrLogin(account, biliCapability, { ...passingPreflight, account_id: 'other' })).toBe(
-      false
-    );
+    expect(
+      canStartQrLogin(account, biliCapability, { ...passingPreflight, account_id: 'other' }, loginStatus)
+    ).toBe(false);
+  });
+
+  it.each(['unknown', 'required', 'expired', 'failed', 'authenticated', 'authenticating', 'unrecognized'])(
+    'requires backend-eligible auth status %s even with a cached passing preflight',
+    (auth_status) => {
+      const status = { ...loginStatus, auth_status };
+      expect(canStartQrLogin(account, biliCapability, passingPreflight, status)).toBe(
+        ['unknown', 'required', 'expired', 'failed'].includes(auth_status)
+      );
+      expect(
+        canStartQrLogin(
+          { ...account, login_method: 'saved_session' },
+          biliCapability,
+          passingPreflight,
+          status
+        )
+      ).toBe(auth_status === 'expired');
+    }
+  );
+
+  it.each(['pending', 'waiting_user', 'running'])(
+    'never starts another login for an active %s session',
+    (login_session_status) => {
+      expect(
+        canStartQrLogin(account, biliCapability, passingPreflight, { ...loginStatus, login_session_status })
+      ).toBe(false);
+    }
+  );
+
+  it('keeps unsupported methods/adapters and foreign capabilities ineligible', () => {
+    expect(
+      canStartQrLogin({ ...account, login_method: 'cookie' }, biliCapability, passingPreflight, loginStatus)
+    ).toBe(false);
+    expect(
+      canStartQrLogin({ ...account, adapter: 'other' }, biliCapability, passingPreflight, loginStatus)
+    ).toBe(false);
+    expect(
+      canStartQrLogin(account, { ...biliCapability, platform: 'dy' }, passingPreflight, loginStatus)
+    ).toBe(false);
+  });
+
+  it('treats authenticated saved-session preflight as not needed, never as a passed live check', () => {
+    const authenticatedAccount = {
+      ...account,
+      login_method: 'saved_session',
+      auth_status: 'authenticated'
+    } as Account;
+    const status = { ...loginStatus, auth_status: 'authenticated', login_session_status: 'succeeded' };
+    const ineligible = { ...passingPreflight, ok: false, code: 'account_login_ineligible' };
+    expect(loginPreflightDisposition(authenticatedAccount, status)).toBe('not_needed');
+    expect(accountCompositeState(authenticatedAccount, status, biliCapability, ineligible)).toEqual({
+      status: 'authenticated',
+      label: '已认证',
+      detail: '本地保存的认证结果；未实时验证平台会话'
+    });
+    expect(canStartQrLogin(authenticatedAccount, biliCapability, passingPreflight, status)).toBe(false);
+    expect(AUTHENTICATED_ACCOUNT_NOTICE).toContain('只读取已保存结果');
+    expect(AUTHENTICATED_ACCOUNT_NOTICE).toContain('未向平台实时验证');
+    expect(ineligible.ok).toBe(false);
+  });
+
+  it.each([null, { ...loginStatus, account_id: 'other', auth_status: 'authenticated' }])(
+    'cannot infer authentication or start permission from absent/foreign status',
+    (status) => {
+      const authenticatedAccount = { ...account, auth_status: 'authenticated' };
+      expect(loginPreflightDisposition(authenticatedAccount, status)).toBe('status_unavailable');
+      expect(canStartQrLogin(authenticatedAccount, biliCapability, passingPreflight, status)).toBe(false);
+      expect(
+        accountCompositeState(authenticatedAccount, status, biliCapability, passingPreflight).label
+      ).toBe('本地状态待确认');
+    }
+  );
+
+  it('preserves genuine expiry and browser-preflight failures', () => {
+    const status = { ...loginStatus, auth_status: 'expired' };
+    const expiredAccount = { ...account, login_method: 'saved_session' } as Account;
+    expect(loginPreflightDisposition(expiredAccount, status)).toBe('required');
+    expect(canStartQrLogin(expiredAccount, biliCapability, null, status)).toBe(false);
+    expect(canStartQrLogin(expiredAccount, biliCapability, passingPreflight, status)).toBe(true);
+    const failed = { ...passingPreflight, ok: false, retryable: true, code: 'browser_launch_failed' };
+    expect(accountCompositeState(account, loginStatus, biliCapability, failed).label).toBe('预检可重试');
+    expect(canStartQrLogin(account, biliCapability, failed, loginStatus)).toBe(false);
+    expect(loginPreflightDisposition({ ...account, login_method: 'cookie' }, loginStatus)).toBe('required');
   });
 });
 

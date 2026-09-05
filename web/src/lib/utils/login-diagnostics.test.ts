@@ -175,7 +175,12 @@ describe('fixed login diagnostics', () => {
     const capability = { login_methods: ['qr'], qr_login: true } as PlatformCapability;
     const preflight = { ok: true, checks: [] } as unknown as LoginPreflight;
     expect(accountCompositeState(account, status, capability, preflight).label).toBe('登录浏览器启动失败');
-    const ready = accountCompositeState(account, null, capability, preflight);
+    const ready = accountCompositeState(
+      account,
+      { ...status, auth_status: 'required', login_session_status: null, diagnostic: null },
+      capability,
+      preflight
+    );
     expect(ready.label).toBe('允许启动登录');
     expect(ready.detail).toBe(LOGIN_READINESS_NOTICE);
     expect(ready.detail).toContain('不代表已经登录');

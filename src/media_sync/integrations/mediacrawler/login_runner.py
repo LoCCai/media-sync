@@ -512,6 +512,10 @@ class _LoginAuthenticated(RuntimeError):
     """A client authentication probe or post-login cookie update succeeded."""
 
 
+class _LoginConfirmationFailed(RuntimeError):
+    """A post-login remote probe explicitly rejected the updated session."""
+
+
 class SavedSessionQrFallbackBlocked(RuntimeError):
     """A saved profile would otherwise enter the upstream interactive QR path."""
 
@@ -664,6 +668,14 @@ def _install_client_guard(crawler: Any, platform: Platform) -> None:
 
         async def guarded_update(*update_args: Any, **update_kwargs: Any) -> Any:
             await original_update(*update_args, **update_kwargs)
+            if platform is Platform.BILI:
+                # Pinned Bilibili QR completion checks only Cookie markers.
+                # Confirm the updated headers remotely before stopping as success.
+                authenticated = await original_pong()
+                if authenticated is False:
+                    raise _LoginConfirmationFailed
+                if authenticated is not True:
+                    raise _ChildConfigurationError
             raise _LoginAuthenticated
 
         client.pong = guarded_pong

@@ -2,7 +2,13 @@
 
 # 项目统一状态（单一事实来源）
 
-## 最新：登录运行遗漏与诊断（2026-09-05）
+## 最新：B 站成功观察与后续修复（2026-09-05）
+
+用户报告 B 站扫码成功；控制台直接核查确认精确匹配的成功 Operation/会话及 authenticated、saved_session 账户，但尚不能当新进程复用或采集证明。页面把已认证账户不能启动登录错误显示为红色失败；独立合成复现还发现扫码 Cookie 更新 hook 无需第二次远程 pong 就会报告成功。仅 UI/BILI 的有界修复已在[跟进计划](executions/0055-operator-auth-playback-evidence/bili-success-followup/plan.zh.md)冻结，[进展](executions/0055-operator-auth-playback-evidence/bili-success-followup/progress.zh.md)及[验证](executions/0055-operator-auth-playback-evidence/bili-success-followup/verification.zh.md)分别记录观察、实施和真人结果。不能据此断言用户此次是假成功。
+
+用户指定验证作者，接受已说明的全历史边界与一次同步，随后确认已停止 supervisor，以防自动下载/导出。该尝试约 236 秒后 FAILED，零内容：Job 为 schema_invalid，关联 Run 仍 running 且无错误。测试订阅已暂停，未启动重试/下载/导出。账户预检、B 站扫码后确认及 Worker 结果展示已实现并本地验证（最终 Web 269 项）；实际采集根因仍未解决，不能推定是 Cookie 失效。粘贴 Cookie 登录仍是已接受的独立待实施增量；七平台目标不变，下述运行失败属于历史背景。
+
+## 上一检查点：登录运行遗漏与诊断
 
 已发布的浏览器环境修复通过 Windows 空白启动；操作者现又提供 Linux 有头持久 Chromium `151.0.7922.34` 冒烟及配置验证成功输出。但浏览器只读核查仍看到 17:47/17:48 的 B 站/抖音新登录失败（累计八条失败 Operation），最新抖音运行九秒后 runner/会话/认证均失败。操作者随后确认 `NODE_MISSING`。源码审查发现上游导入时 PyExecJS 依赖可用 JavaScript 运行时，二维码转发又静默丢弃了上游 base64 字符串。最终镜像 Node/真实 JS 预检与二维码规范化见[运行后续修复](executions/0055-operator-auth-playback-evidence/login-runtime-followup/progress.zh.md)；精确会话安全诊断与二维码终态 UI 见[登录诊断](executions/0055-operator-auth-playback-evidence/login-diagnostics/progress.zh.md)。这些修复不追认历史具体异常，也不构成平台 PASS。
 
@@ -35,8 +41,8 @@
 | 静态与制品门 | 当前 Ruff/format、mypy、compileall、Web、docs／上游与包检查结果统一见[验证](executions/0055-operator-auth-playback-evidence/secure-console/verification.zh.md) | 执行 0055 安全控制台 |
 | Docker 镜像构建 | 0050/0047 镜像预检仍是历史 `PASS`；当前 0055 鉴权版 Compose 接线已代码审查，但本工作站没有 Docker CLI，故为 `NOT_RUN` | 执行 0050/0047 与 0055-A 验证 |
 | 容器就绪 / 重启持久性 / 备份恢复演练 | 旧镜像深度预检为历史 `PASS`；当前镜像就绪、重启持久性与备份恢复 `NOT_RUN` | 执行 0047；docs/operations.zh.md 流程就绪 |
-| 真人登录（任一平台） | 已观察 B 站/抖音/小红书历史失败会话；修复版本尚未真人验证，无平台 PASS | [失败证据](executions/0055-operator-auth-playback-evidence/secure-console/login-runtime-triage.zh.md)；执行 0047 仍为金丝雀门槛 |
-| 真人抓取 / 下载 / 增量性 | `NOT_RUN`——操作者（阶段 C–E） | 执行 0047 |
+| 真人登录（任一平台） | 已观察 B 站成功 Operation/会话及 saved_session 账户；离线复现更新后确认遗漏。新证明/复用与平台支持资格仍开放，其余平台失败为历史记录 | [当前跟进](executions/0055-operator-auth-playback-evidence/bili-success-followup/verification.zh.md)；执行 0047 仍为金丝雀门槛 |
+| 真人抓取 / 下载 / 增量性 | 首次 B 站测试 FAILED，零内容，schema_invalid Job / running Run；下载和增量性 NOT_RUN | [当前测试](executions/0055-operator-auth-playback-evidence/bili-success-followup/verification.zh.md)；执行 0047 |
 | 真实 Emby/Jellyfin 连接、Library 发现与定向刷新接受 | `NOT_RUN`——0054-A 已实现，但未使用获授权真实服务器 | 执行 0054 与 0047 |
 | Provider/path 项目查找与刷新后项目观察 | `IMPLEMENTED / NOT_RUN`——本地/mock 门禁通过，但未使用获授权真实 Emby/Jellyfin 服务器 | 执行 0054-B 验证 |
 | Provider task completion | `NOT_IMPLEMENTED`——Emby/Jellyfin 共同刷新 API 不提供持久任务身份；阶段 B 不声明该能力 | 执行 0054-B 真实性边界 |

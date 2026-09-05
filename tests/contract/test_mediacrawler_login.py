@@ -123,7 +123,15 @@ def mode():
 
 class FakeClient:
     async def pong(self, *args, **kwargs):
-        return (profile_root() / "authenticated.state").is_file() and mode() != "expired"
+        profile_present = (profile_root() / "authenticated.state").is_file()
+        if profile_present:
+            if mode() == "post_update_false":
+                return False
+            if mode() == "post_update_nonboolean":
+                return 1
+            if mode() == "post_update_error":
+                raise RuntimeError("PRIVATE-POST-UPDATE-FAILURE-MUST-NOT-ESCAPE")
+        return profile_present and mode() != "expired"
 
     async def update_cookies(self, *args, **kwargs):
         if mode() == "linger_after_result":
@@ -497,6 +505,36 @@ def test_seven_platform_login_contract_has_no_content_or_qr_export(tmp_path: Pat
     assert (profile / "authenticated.state").read_text(encoding="utf-8") == "ok"
     assert "QR-SECRET" not in repr((interactive, probe, expired))
     assert str(profile) not in repr((interactive, probe, expired))
+
+
+@pytest.mark.parametrize(
+    ("mode", "expected"),
+    [
+        ("post_update_false", MediaCrawlerLoginStatus.FAILED),
+        ("post_update_nonboolean", MediaCrawlerLoginStatus.CONFIGURATION_INVALID),
+        ("post_update_error", MediaCrawlerLoginStatus.FAILED),
+    ],
+)
+def test_bilibili_child_rejects_unconfirmed_update_without_content_or_sensitive_output(
+    tmp_path: Path,
+    capfd: pytest.CaptureFixture[str],
+    mode: str,
+    expected: MediaCrawlerLoginStatus,
+) -> None:
+    checkout = _write_fake_checkout(tmp_path / "upstream")
+    (checkout / "mode.txt").write_text(mode, encoding="utf-8")
+    integration_root = tmp_path / "runtime"
+    result = _runner(checkout, integration_root).run(_request(Platform.BILI, MediaCrawlerLoginMode.INTERACTIVE_QR))
+
+    assert result.status is expected
+    assert not (checkout / "content-side-effect").exists()
+    assert list((integration_root / "jobs").iterdir()) == []
+    account_root = build_run_paths(integration_root, Platform.BILI, ACCOUNT_ID, ACCOUNT_ID).account_root
+    account_lock = _AccountFileLock(account_root)
+    assert account_lock.acquire()
+    account_lock.release()
+    captured = capfd.readouterr()
+    assert "PRIVATE-POST-UPDATE" not in captured.out + captured.err + repr(result)
 
 
 @pytest.mark.parametrize("platform", list(Platform))

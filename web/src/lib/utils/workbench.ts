@@ -8,7 +8,22 @@ import type {
   SubscriptionPolicySummary,
   SubscriptionPreview
 } from '$lib/types/api';
-import { accountLoginExplanation, LOGIN_READINESS_NOTICE } from './login-diagnostics';
+import {
+  accountLoginExplanation,
+  LOGIN_READINESS_NOTICE,
+  LOGIN_STATUS_UNAVAILABLE
+} from './login-diagnostics';
+
+export const AUTHENTICATED_ACCOUNT_NOTICE =
+  '本地记录为已认证。当前页面只读取已保存结果，未向平台实时验证会话；无需再次启动扫码登录，可继续配置作者订阅。';
+
+export function loginPreflightDisposition(
+  account: Account | null,
+  status: LoginStatus | null
+): 'not_needed' | 'status_unavailable' | 'required' {
+  if (!account || !status || status.account_id !== account.id) return 'status_unavailable';
+  return status.auth_status === 'authenticated' ? 'not_needed' : 'required';
+}
 
 export interface SubscriptionWizardState {
   accountId: string;
@@ -55,12 +70,20 @@ export function loginMethodLabel(method: string | null | undefined): string {
 export function canStartQrLogin(
   account: Account | null,
   capability: PlatformCapability | null,
-  preflight: LoginPreflight | null
+  preflight: LoginPreflight | null,
+  status: LoginStatus | null
 ): boolean {
-  if (!account || !capability || !preflight) return false;
+  if (!account || !capability || !preflight || !status || status.account_id !== account.id) return false;
   if (account.id !== preflight.account_id || account.platform !== preflight.platform) return false;
+  const eligible =
+    (account.login_method === 'qr' &&
+      ['unknown', 'required', 'expired', 'failed'].includes(status.auth_status)) ||
+    (account.login_method === 'saved_session' && status.auth_status === 'expired');
   if (
-    !['qr', 'saved_session'].includes(account.login_method ?? '') ||
+    account.adapter !== 'mediacrawler' ||
+    account.platform !== capability.platform ||
+    !eligible ||
+    ['pending', 'waiting_user', 'running'].includes(status.login_session_status ?? '') ||
     !capability.qr_login ||
     !capability.login_methods.includes('qr')
   ) {
@@ -83,7 +106,10 @@ export function accountCompositeState(
     return { status: 'failed_terminal', label: '组合不支持', detail: '账户登录方式不在平台能力范围内' };
   }
   if (status?.auth_status === 'authenticated') {
-    return { status: 'authenticated', label: '已认证', detail: '账户认证与平台能力均可用' };
+    return { status: 'authenticated', label: '已认证', detail: '本地保存的认证结果；未实时验证平台会话' };
+  }
+  if (!status) {
+    return { status: 'pending', label: '本地状态待确认', detail: LOGIN_STATUS_UNAVAILABLE };
   }
   if (
     status?.login_session_status &&

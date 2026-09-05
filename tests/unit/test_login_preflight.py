@@ -196,6 +196,106 @@ def test_login_preflight_rejects_ineligible_cookie_account_before_checkout(
     assert "SECRET_SENTINEL" not in json.dumps(report.to_payload())
 
 
+@pytest.mark.parametrize("login_method", ["saved_session", "qr"])
+@pytest.mark.parametrize("license_acknowledged", [False, True])
+def test_authenticated_accounts_remain_ineligible_without_runtime_or_profile_probes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    login_method: str,
+    license_acknowledged: bool,
+) -> None:
+    """A neutral authenticated UI must not relax the backend login-start gate."""
+    settings = _settings(tmp_path)
+    account_id = _account(settings, login_method=login_method, auth_status="authenticated")
+
+    def unexpected(*args: object, **kwargs: object) -> object:
+        pytest.fail("authenticated accounts must not reach runtime, browser, profile, or account-lock probes")
+
+    for name in (
+        "verify_mediacrawler_checkout",
+        "verify_mediacrawler_python",
+        "verify_mediacrawler_browser",
+        "_profile_root_ready",
+        "MediaCrawlerAccountLock",
+    ):
+        monkeypatch.setattr(f"media_sync.application.login_preflight.{name}", unexpected)
+
+    report = collect_account_login_preflight(settings, account_id, license_acknowledged=license_acknowledged)
+
+    assert report.ok is False
+    assert report.status == "blocked"
+    assert report.code == "account_login_ineligible"
+    assert report.retryable is False
+    assert report.account_id == account_id
+    assert report.platform is not None and report.platform.value == "bili"
+    assert [(check.name, check.status) for check in report.checks] == [
+        ("database", "pass"),
+        ("account", "pass"),
+        ("account_eligible", "fail"),
+        ("license_acknowledgement", "not_run"),
+        ("checkout", "not_run"),
+        ("runtime", "not_run"),
+        ("browser", "not_run"),
+        ("profile", "not_run"),
+        ("account_lock", "not_run"),
+    ]
+    assert report.to_payload()["live_qualification"] == "NOT_RUN"
+    assert not settings.resolved_mediacrawler_runtime_dir.exists()
+    database = Database(settings.resolved_database_url)
+    try:
+        with database.session() as session:
+            account = AccountRepository(session).get(str(account_id))
+            assert account is not None
+            assert account.login_method == login_method
+            assert account.auth_status == "authenticated"
+            assert LoginSessionRepository(session).list_for_account(str(account_id)) == []
+    finally:
+        database.dispose()
+
+
+@pytest.mark.parametrize("license_acknowledged", [False, True])
+def test_expired_saved_session_keeps_explicit_qr_login_preflight_eligibility(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    license_acknowledged: bool,
+) -> None:
+    settings = _settings(tmp_path)
+    account_id = _account(settings, login_method="saved_session", auth_status="expired")
+    calls: list[str] = []
+
+    def runtime_probe(*args: object, **kwargs: object) -> object:
+        calls.append("runtime")
+        return object()
+
+    def browser_probe(executable: Path, *, interactive: bool = False) -> str:
+        assert executable == settings.mediacrawler_python_executable
+        assert interactive is True
+        calls.append("headed_browser")
+        return "151.0.7922.34"
+
+    monkeypatch.setattr("media_sync.application.login_preflight.verify_mediacrawler_checkout", runtime_probe)
+    monkeypatch.setattr("media_sync.application.login_preflight.verify_mediacrawler_python", runtime_probe)
+    monkeypatch.setattr("media_sync.application.login_preflight.verify_mediacrawler_browser", browser_probe)
+
+    report = collect_account_login_preflight(settings, account_id, license_acknowledged=license_acknowledged)
+
+    assert next(check for check in report.checks if check.name == "account_eligible").status == "pass"
+    assert report.ok is license_acknowledged
+    assert report.code == ("ready" if license_acknowledged else "license_acknowledgement_required")
+    assert calls == (["runtime", "runtime", "headed_browser"] if license_acknowledged else [])
+    assert not settings.resolved_mediacrawler_runtime_dir.exists()
+    database = Database(settings.resolved_database_url)
+    try:
+        with database.session() as session:
+            account = AccountRepository(session).get(str(account_id))
+            assert account is not None
+            assert account.login_method == "saved_session"
+            assert account.auth_status == "expired"
+            assert LoginSessionRepository(session).list_for_account(str(account_id)) == []
+    finally:
+        database.dispose()
+
+
 def test_login_preflight_reports_active_session_as_busy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     settings = _settings(tmp_path)
     account_id = _account(settings)
