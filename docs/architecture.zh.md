@@ -246,7 +246,9 @@ library/
 
 ## 安全边界
 
-- REST 部署规则（执行 0040 已实现）：默认只绑定回环、无鉴权，绝不可发布到可信网络之外；Docker compose 布局仅发布宿主机回环。
+- 执行 0055 的后端检查点把执行 0040 的匿名 REST 边界改为关闭失败的单操作者鉴权。`serve` 会在绑定前解析必需的类型化浏览器凭据及可选独立 Bearer 凭据。最外层 ASGI middleware 首先校验精确原始 Host，只开放固定 health/readiness/login/bootstrap/静态白名单，并在 handler 工作前鉴权其余全部当前或未来路由。
+- 浏览器权限由唯一轮换的进程内 HttpOnly、`SameSite=Strict` Cookie 与仅存内存的 CSRF 值组成。登录与 Cookie 鉴权不安全请求要求精确配置的 Origin；CORS 与 forwarding-header 权限继续关闭。重启、退出、过期或凭据替换都会使 session 失效。Console v2 与 `/legacy` 尚未接入该 login/CSRF 契约，因此后端已受保护，但 Web 管理面当前不可操作。
+- 默认进程仍绑定回环。镜像只在容器内部绑定 wildcard；示例 Compose 从仓库外挂载操作者凭据、只发布宿主机回环，并显式允许该回环 HTTP 浏览器 origin。任何非回环浏览器 origin 都必须是精确 HTTPS，位于另行审查且保留允许 Host 的代理之后。
 - 凭据值优先保存在 OS keyring；无头环境可使用环境变量/文件 provider，数据库行只保存 provider/key。
 - 日志构造时先脱敏，并在 sink 边界再次脱敏。
 - 下载器解析并验证每次重定向，默认拒绝 loopback/私网/link-local 目标，并把路径限制在配置根目录内。
@@ -264,6 +266,6 @@ library/
 
 执行 0012 的仅登录协议使用相互独立的有界请求/结果长度 frame，并持续保留 START/CANCEL/EOF 父进程控制。父侧收容在 START 前附加，child 自持收容与控制 watcher 在导入上游前建立。结果发布后，guardian 会继续持有后代所有权及继承账户锁，直到父进程开始完整树关停；因此父进程被硬杀时，会先关闭所属 Windows Job 或 POSIX 进程组，另一次登录才可能获取该账户锁。持久恢复使用独立的截止时间权威：只有精确过期的 `pending|waiting_user` 二维码会话，在 Account 仍为 `qr/authenticating`、持有同一账户锁且通过仓储 CAS 时，才能原子切换为 `expired` 与 `qr/required`。PID 与仅凭锁可获取都不是恢复权威。
 
-监督器仍是本地前台进程，Docker 打包（执行 0041）通过可选 compose profile 运行它而非安装为服务。执行 0054-B 目前只有 Operation checkpoint/cancel/final 行锁竞态的真实 PostgreSQL 证据；分布式 HA、完整 schema 的 PostgreSQL 支持与生产部署、公网部署及控制台鉴权仍属后续工作。真实部署验证本身是操作者侧的发布门（执行 0047）。原生平台适配器可逐步替换受限桥接；经过脱敏的 raw envelope 允许在上游或模型升级后重新归一化。
+监督器仍是本地前台进程，Docker 打包（执行 0041）通过可选 compose profile 运行它而非安装为服务。执行 0054-B 目前只有 Operation checkpoint/cancel/final 行锁竞态的真实 PostgreSQL 证据；分布式 HA、完整 schema 的 PostgreSQL 支持与生产部署、公网部署及 Web login/CSRF 集成仍属后续工作。执行 0055 后端鉴权检查点不能替代操作者侧的真人部署门（执行 0047）。原生平台适配器可逐步替换受限桥接；经过脱敏的 raw envelope 允许在上游或模型升级后重新归一化。
 
-执行 0054 阶段 B 将资格 schema 升级到 v2，同时继续把本地自动化证据、实现状态和真人资格保持为相互独立的事实。`connection_probe`、`library_discovery`、`targeted_scan_acceptance`、`item_lookup` 与 `post_refresh_item_observation` 为 `IMPLEMENTED`，但在获授权真实服务器上执行前，真人状态仍为 `NOT_RUN`；mock 或本地证据不能授予真人 PASS。`provider_task_completion` 为 `NOT_IMPLEMENTED`，reason 是 `provider_api_unsupported`；`playback_evidence` 与 `automatic_post_export_scan` 也继续为 `NOT_IMPLEMENTED`。阶段 B 复用既有 author target、author/Job subject、`result_summary` 与 `operation_phase_changed` 词汇，因此没有新增 migration，Alembic 仍停留在 `0007_media_server_operations`。经鉴权的播放证据写入、浏览器可写设置、多配置、保留/破坏性维护与访问控制继续属于执行 0055；导出后自动扫描尚无已冻结的后续归属。
+执行 0054 阶段 B 将资格 schema 升级到 v2，同时继续把本地自动化证据、实现状态和真人资格保持为相互独立的事实。`connection_probe`、`library_discovery`、`targeted_scan_acceptance`、`item_lookup` 与 `post_refresh_item_observation` 为 `IMPLEMENTED`，但在获授权真实服务器上执行前，真人状态仍为 `NOT_RUN`；mock 或本地证据不能授予真人 PASS。`provider_task_completion` 为 `NOT_IMPLEMENTED`，reason 是 `provider_api_unsupported`；`playback_evidence` 与 `automatic_post_export_scan` 也继续为 `NOT_IMPLEMENTED`。阶段 B 复用既有 author target、author/Job subject、`result_summary` 与 `operation_phase_changed` 词汇，因此没有新增 migration，Alembic 仍停留在 `0007_media_server_operations`。后端访问边界现已实现；其 Web 客户端集成、经鉴权播放证据写入、浏览器可写设置、多配置及保留/破坏性维护继续属于执行 0055；导出后自动扫描尚无已冻结的后续归属。

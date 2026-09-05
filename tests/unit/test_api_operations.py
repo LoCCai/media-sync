@@ -13,6 +13,12 @@ from types import SimpleNamespace
 from uuid import UUID, uuid4
 
 import pytest
+from _api_client import (
+    TEST_OPERATOR_ORIGIN,
+    authenticate_test_client,
+    authenticated_test_client,
+    operator_test_settings,
+)
 from fastapi.testclient import TestClient
 from sqlalchemy import func, insert, select
 
@@ -55,7 +61,7 @@ def _settings(tmp_path: Path) -> Settings:
 
 def _client(settings: Settings) -> TestClient:
     upgrade_database(settings.resolved_database_url)
-    return TestClient(api_module.create_api_app(settings))
+    return authenticated_test_client(settings, app_factory=api_module.create_api_app)
 
 
 def _wait_terminal(client: TestClient, operation_id: str, *, timeout: float = 5.0) -> dict[str, object]:
@@ -890,7 +896,7 @@ def test_sse_initial_database_reads_do_not_block_the_asgi_event_loop(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    settings = _settings(tmp_path)
+    settings = operator_test_settings(_settings(tmp_path))
     upgrade_database(settings.resolved_database_url)
     app = api_module.create_api_app(settings)
     original_stream_bounds = app.state.operations.stream_bounds
@@ -907,7 +913,8 @@ def test_sse_initial_database_reads_do_not_block_the_asgi_event_loop(
     monkeypatch.setattr(api_module, "_OPERATION_STREAM_MAX_SECONDS", 0.02)
     monkeypatch.setattr(api_module, "_OPERATION_STREAM_POLL_SECONDS", 0.005)
 
-    with TestClient(app) as client:
+    with TestClient(app, base_url=TEST_OPERATOR_ORIGIN) as client:
+        authenticate_test_client(client)
         stream_request = threading.Thread(
             target=lambda: responses.append(client.get("/api/v1/operations/events")),
             daemon=True,

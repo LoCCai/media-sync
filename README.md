@@ -6,16 +6,16 @@
 
 ## Current status
 
-The single source of truth is [`docs/status.md`](docs/status.md). Summary at the execution 0054 phase-B boundary:
+The single source of truth is [`docs/status.md`](docs/status.md). Summary at the current execution 0055 Phase-A implementation checkpoint:
 
 | Dimension | State |
 | --- | --- |
-| Offline implementation | Frozen platform shapes through 0039 plus API/operations, Console v2, content/archive browsing, safe managed-tree inspection, exact media-server item lookup and post-refresh item observation; danmaku/subtitles, provider task completion, playback evidence and automatic post-export scan remain open or unsupported |
-| Offline verification | Execution 0054 phase-B suite: **2763 passed, 3 skipped, 1 existing warning**; 11 real-PostgreSQL Operation race tests and 69 Web tests plus format/check/build pass; see [`docs/status.md`](docs/status.md) |
-| REST API + web console | SvelteKit 5 SPA includes safe managed-tree paging, redacted media-server posture, acceptance-only and author-observation refresh actions, safe result projections and qualification schema v2; `/legacy` remains available for rollback |
-| Docker packaging | Multi-stage frontend/runtime packaging and repaired-image preflight pass; 0047 Linux restart/restore/process evidence remains `NOT_RUN` |
+| Offline implementation | The execution 0054 feature boundary remains intact. Execution 0055 now adds the backend single-operator credential/session/CSRF boundary and optional separate Bearer automation; playback evidence and the Web authentication integration are not implemented yet |
+| Offline verification | The current execution 0055 backend slice passes **2811 tests with 14 skips and 1 existing warning**; 3 skips are Windows/POSIX differences and 11 are real-PostgreSQL races because this workstation has no test URL. The 190-test auth/API focus, 69 Web tests, format/check/build, full static gates, docs/upstreams and distribution build also pass. The overall 0055 exit gate remains open for Web auth and playback evidence |
+| REST API + web console | Every non-public backend route is now fail-closed behind exact Host plus browser session or optional Bearer authentication. The SvelteKit and `/legacy` clients do not yet provide the login shell, in-memory CSRF propagation, or unified expiry handling, so the Web console is not currently an operable administration surface |
+| Docker packaging | The example Compose deployment mounts a host-provided operator credential as a Docker secret and explicitly permits only the host-loopback browser origin while binding `0.0.0.0` inside the container. The 0047 Linux restart/restore/process evidence remains `NOT_RUN` |
 | Live qualification | **Every implemented live platform/CDN/media-server row remains `NOT_RUN`**; provider task completion, playback evidence and automatic post-export scan are `NOT_IMPLEMENTED`, not unexecuted live rows |
-| Release blockers | Linux operator baseline + zero live rows; see [`docs/status.md`](docs/status.md) |
+| Release blockers | Web authentication integration, the remaining 0055 playback-evidence slice, the Linux operator baseline, and zero live rows; see [`docs/status.md`](docs/status.md) |
 
 Per-execution detail, evidence and exact commands live in [`docs/executions/`](docs/README.md) — this README intentionally does not stack execution narratives.
 
@@ -35,12 +35,12 @@ Quality gates: `uv run ruff check . && uv run ruff format --check .`, `uv run my
 
 ## Deployment and live verification
 
-Docker deployment, web-console QR login and the seven-platform qualification procedure are documented in [`docs/deployment.md`](docs/deployment.md) (build/run), [`docs/operations.md`](docs/operations.md) (backup/restore/upgrade) and [`docs/executions/0047-seven-platform-live-qualification/`](docs/executions/0047-seven-platform-live-qualification/) (the acceptance plan with support tiers). Console v2 asks for the personal-use/license acknowledgement once per browser and remembers it locally; runtime checkout and license gates are still enforced by the backend. The API/console carries no authentication: keep it on loopback or a trusted network.
+Docker deployment and the seven-platform qualification procedure are documented in [`docs/deployment.md`](docs/deployment.md) (build/run), [`docs/operations.md`](docs/operations.md) (backup/restore/upgrade) and [`docs/executions/0047-seven-platform-live-qualification/`](docs/executions/0047-seven-platform-live-qualification/) (the acceptance plan with support tiers). `media-sync serve` now requires an externally resolved operator credential before it binds. Keep the example port on host loopback; non-loopback browser origins require HTTPS. The current Web bundle has not yet integrated that backend session/CSRF contract, so use the CLI or resident supervisor and do not claim Web QR/login workflows until the remaining 0055 frontend work lands.
 
 ## Scope
 
 - Platforms: Xiaohongshu, Douyin, Kuaishou, Bilibili, Weibo, Tieba, Zhihu (adapter framework; per-platform live status is tracked in the qualification matrix, not implied).
-- Authentication: explicit double-gated QR login, opaque Cookie references, background-only saved sessions; phone login unsupported.
+- Authentication: platform accounts retain explicit double-gated QR login, opaque Cookie references and background-only saved sessions. The administration backend additionally has one process-local operator session plus optional distinct Bearer automation; its Web login client is still pending. Phone login is unsupported.
 - Non-goals: comments/keyword crawling, bangumi/live media, multi-user/public-network deployment.
 
 ## License boundary

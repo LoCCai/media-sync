@@ -2,21 +2,24 @@
 
 # Execution 0047 plan
 
-- Status: Awaiting operator execution (master phase; restructured by 0048)
+- Status: Awaiting prerequisites and operator execution (master phase; restructured by 0048)
 - Date: 2026-09-03
 
 ## Operator procedure
 
 **Phase B — Linux baseline (before any live account)**
 
-1. `git pull && uv sync --all-groups --locked && uv run pytest -q` — record exact numbers; compare against the execution 0049 baseline of `2066 passed, 1 skipped` (execution 0048's 33/35 flaky runs are only a historical anomaly set) and investigate any platform-specific divergence.
-2. `cp docker-compose.example.yml docker-compose.yml && docker compose build && docker compose up -d`; verify `/api/v1/health` + `/api/v1/ready`, console reachable, `db init` idempotent on restart.
-3. Restart persistence: `docker compose restart`, confirm accounts/subscriptions/jobs survive; run one backup → restore-into-fresh-volume drill per [`operations.md`](../../operations.md).
-4. Process expectations: exactly one managed Xvfb per running container that needs a display (two containers under the supervisor profile is normal); zero Chromium and zero ffmpeg/ffprobe while idle; no orphaned processes after tasks; all of them gone once the container stops.
+1. `git pull && uv sync --all-groups --locked && uv run pytest -q` — record exact numbers and investigate every platform-specific divergence. The current 0055 Windows developer run is `2811 passed, 14 skipped, 1 warning`; 11 skips are real-PostgreSQL races without a configured URL, so it does not replace this complete Linux host gate with PostgreSQL enabled.
+2. Before any Compose startup, create a dedicated UTF-8 operator-credential file outside the repository, restrict it to mode `0600`, and set `export MEDIA_SYNC_OPERATOR_CREDENTIAL_FILE=/absolute/private/path/operator-credential.txt`. The credential must be 16–1024 UTF-8 bytes, contain no control characters, and must not reuse a platform cookie or media-server key. Keep this absolute path available across restarts; the example Compose file mounts it as `/run/secrets/operator_credential` and passes only `file:operator_credential` to the application.
+3. `cp docker-compose.example.yml docker-compose.yml && docker compose build && docker compose up -d`; confirm the required typed credential resolves before bind and the configured browser origin exactly matches `http://127.0.0.1:8632`. With a reviewed HTTP client that does not expose the credential in logs or shell history, prove anonymous access is limited to `GET`/`HEAD /api/v1/health`, `GET`/`HEAD /api/v1/ready`, `POST /api/v1/operator-auth/login`, `GET /api/v1/operator-auth/session` and the public root assets; prove an anonymous business route and `/api/docs` are rejected; then prove login → cookie session → CSRF-protected unsafe request → logout. If optional Bearer automation is tested, configure a separately resolved credential that differs from the browser credential. Record exact status codes without recording credentials, cookies or CSRF values.
+4. Restart persistence: `docker compose restart`, confirm accounts/subscriptions/jobs survive and the process-local operator session is invalidated; run one backup → restore-into-fresh-volume drill per [`operations.md`](../../operations.md).
+5. Process expectations: exactly one managed Xvfb per running container that needs a display (two containers under the supervisor profile is normal); zero Chromium and zero ffmpeg/ffprobe while idle; no orphaned processes after tasks; all of them gone once the container stops.
+
+**Qualification hold point:** the backend authentication boundary above is implemented and focused-verified, but Console v2 and `/legacy` do not yet implement operator login/session/CSRF integration. Revision `0008_playback_evidence` and playback-evidence persistence/API/UI are also unimplemented. Therefore do not start the Web login, live-platform, real media-server playback or phases C–F qualification steps from this checkpoint. Keep every live qualification row `NOT_RUN`. Resume the procedure below only after both the Web authentication integration and playback-evidence implementation have their own verified closeouts; backend authentication alone grants no live PASS.
 
 **Phase C — canary (Bilibili, then XHS)**
 
-For each canary: login (QR preferred) → subscribe to the sample matrix creators → run-now → scheduler run (both gates) → pipeline run → record per-shape outcomes, archived bytes, Emby tree. Then the two incrementality rows (no-change rerun; true increment via the controlled test account). Then the recovery rows: kill a download worker mid-flight and confirm convergence; restart the container mid-crawl; expire a session and re-authenticate; force one CDN primary failure and observe backup selection. Mount `/data/library` read-only into the real Emby/Jellyfin, rescan, verify metadata/posters and sample playback.
+After the hold point is cleared, for each canary: authenticate through the completed Web login shell, login to the platform (QR preferred) → subscribe to the sample matrix creators → run-now → scheduler run (both gates) → pipeline run → record per-shape outcomes, archived bytes and the Emby tree. Then run the two incrementality rows (no-change rerun; true increment via the controlled test account). Then run the recovery rows: kill a download worker mid-flight and confirm convergence; restart the container mid-crawl; expire a session and re-authenticate; force one CDN primary failure and observe backup selection. Mount `/data/library` read-only into the real Emby/Jellyfin, rescan, verify metadata/posters, record sample playback through the implemented authenticated evidence path, and only then change the corresponding live rows from `NOT_RUN`.
 
 **Phase D — remaining platforms in media-class batches**
 

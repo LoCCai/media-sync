@@ -13,10 +13,11 @@ Run top-down before every public push or tagged release. Every item is checkable
 
 ## Secrets and privacy
 
-- [ ] `git grep -iE "(set-cookie|cookie:|Authorization:)" -- docs src tests` shows only redaction references, sentinels or fixtures — never a real token.
+- [ ] `git grep -iE "(set-cookie|cookie:|Authorization:)" -- docs src tests` shows only protocol code, redaction references, sentinels or fixtures — never a real credential, session, CSRF value or Bearer token.
 - [ ] No `.env`, `*.sqlite3`, `browser_data/`, or runtime output tracked (`.gitignore` covers them; `git ls-files | grep -iE "\.env|sqlite"` empty).
 - [ ] `THIRD_PARTY_NOTICES.md` current: both upstreams, correct licenses, no vendored code.
 - [ ] No personal account data, QR images or profiles anywhere in the tree.
+- [ ] Operator-auth examples contain typed references and placeholder paths only; the host credential file and optional Bearer value remain outside the repository and image.
 
 ## Quality gates (in a synced environment)
 
@@ -29,5 +30,6 @@ Run top-down before every public push or tagged release. Every item is checkable
 
 - [ ] Version bumped in `pyproject.toml` if releasing a tag; tag annotated with the execution index range included.
 - [ ] README current-status section references the newest closeout commit.
-- [ ] `[host]` Clean-clone drill: fresh `git clone` → `docs/deployment.zh.md` build → console reachable → one offline smoke (`media-sync doctor`).
+- [ ] `[host]` Clean-clone drill: fresh `git clone` → create the external operator credential file → export its absolute path → follow `docs/deployment.zh.md` → public health/readiness pass and an anonymous business route is denied → one offline smoke (`media-sync doctor`).
+- [ ] `[host]` Until the execution 0055 Web checkpoint closes, do **not** record “console reachable” as “console usable”: the backend auth boundary exists, but the checked-in Web clients still lack login/session bootstrap and CSRF propagation.
 - [ ] `[host]` Reminder honored: the Docker image embeds the non-commercial upstream checkout — never push it to a registry.

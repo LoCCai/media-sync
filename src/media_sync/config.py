@@ -22,6 +22,7 @@ MediaServerProvider = Literal["emby", "jellyfin"]
 MediaServerNetwork = ipaddress.IPv4Network | ipaddress.IPv6Network
 
 _MEDIA_SERVER_ID = re.compile(r"[A-Za-z0-9_-]{1,128}\Z")
+_MAX_OPERATOR_ORIGINS = 8
 
 
 def _canonical_media_server_origin(value: str) -> str:
@@ -77,7 +78,7 @@ def _canonical_media_server_origin(value: str) -> str:
             raise ValueError("media_server_base_url hostname is invalid") from None
     else:
         canonical_host = address.compressed.lower()
-    effective_port = port or (80 if scheme == "http" else 443)
+    effective_port = port if port is not None else (80 if scheme == "http" else 443)
     if not 1 <= effective_port <= 65535:  # pragma: no cover - urlsplit validates this
         raise ValueError("media_server_base_url port is invalid")
     bracketed = f"[{canonical_host}]" if ":" in canonical_host else canonical_host
@@ -141,6 +142,96 @@ def _parse_media_server_cidrs(value: object) -> tuple[str, ...] | None:
     if not networks:
         raise ValueError("media_server_allowed_cidrs must contain at least one network")
     return tuple(networks[key] for key in sorted(networks))
+
+
+def _canonical_operator_origin(value: str) -> str:
+    """Return one exact browser origin without retaining ambiguous URL forms."""
+
+    if not isinstance(value, str):
+        raise ValueError("operator origin must be an HTTP(S) origin")
+    normalized = value.strip()
+    if (
+        not normalized
+        or len(normalized) > 2048
+        or any(ord(character) < 0x20 or ord(character) == 0x7F for character in normalized)
+        or "\\" in normalized
+        or "*" in normalized
+    ):
+        raise ValueError("operator origin must be an HTTP(S) origin")
+    try:
+        parsed = urlsplit(normalized)
+        hostname = parsed.hostname
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError("operator origin must be an HTTP(S) origin") from exc
+    scheme = parsed.scheme.lower()
+    if (
+        scheme not in {"http", "https"}
+        or hostname is None
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+        or parsed.path not in {"", "/"}
+        or parsed.netloc.endswith(":")
+    ):
+        raise ValueError("operator origin must be an HTTP(S) origin")
+    hostname = hostname.rstrip(".")
+    try:
+        address = ipaddress.ip_address(hostname)
+    except ValueError:
+        try:
+            canonical_host = hostname.encode("idna").decode("ascii").lower()
+        except UnicodeError as exc:
+            raise ValueError("operator origin hostname is invalid") from exc
+        if (
+            not canonical_host
+            or len(canonical_host) > 253
+            or "%" in canonical_host
+            or any(
+                not label
+                or len(label) > 63
+                or label.startswith("-")
+                or label.endswith("-")
+                or re.fullmatch(r"[a-z0-9-]+", label) is None
+                for label in canonical_host.split(".")
+            )
+        ):
+            raise ValueError("operator origin hostname is invalid") from None
+    else:
+        canonical_host = address.compressed.lower()
+    effective_port = port if port is not None else (80 if scheme == "http" else 443)
+    if not 1 <= effective_port <= 65535:  # pragma: no cover - urlsplit rejects values above the range
+        raise ValueError("operator origin port is invalid")
+    bracketed = f"[{canonical_host}]" if ":" in canonical_host else canonical_host
+    default_port = 80 if scheme == "http" else 443
+    authority = bracketed if effective_port == default_port else f"{bracketed}:{effective_port}"
+    return urlunsplit((scheme, authority, "", "", ""))
+
+
+def _parse_operator_origins(value: object) -> tuple[str, ...] | None:
+    if value is None:
+        return None
+    raw_items: object = value
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("operator_allowed_origins must not be empty")
+        if stripped.startswith("["):
+            try:
+                raw_items = json.loads(stripped)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("operator_allowed_origins must be a JSON array or comma-separated list") from exc
+        else:
+            raw_items = stripped.split(",")
+    if not isinstance(raw_items, list | tuple):
+        raise ValueError("operator_allowed_origins must be a sequence")
+    if not 1 <= len(raw_items) <= _MAX_OPERATOR_ORIGINS:
+        raise ValueError(f"operator_allowed_origins must contain between 1 and {_MAX_OPERATOR_ORIGINS} origins")
+    origins = tuple(_canonical_operator_origin(item) for item in raw_items)
+    if len(set(origins)) != len(origins):
+        raise ValueError("operator_allowed_origins must not contain duplicates")
+    return origins
 
 
 def _media_server_networks(values: tuple[str, ...]) -> tuple[MediaServerNetwork, ...]:
@@ -331,6 +422,10 @@ class Settings(BaseSettings):
     api_host: str = "127.0.0.1"
     api_port: int = Field(default=8632, ge=1, le=65535)
     log_level: str = "INFO"
+    operator_credential_secret_ref: str | None = Field(default=None, repr=False)
+    operator_api_token_secret_ref: str | None = Field(default=None, repr=False)
+    operator_allowed_origins: Annotated[tuple[str, ...] | None, NoDecode] = None
+    operator_session_ttl_seconds: int = Field(default=28_800, ge=60, le=28_800)
     default_sync_interval_seconds: int = Field(default=21_600, ge=60)
     default_max_items: int = Field(default=30, ge=1, le=1_000)
     max_crawl_seconds: int = Field(default=1_800, ge=30, le=86_400)
@@ -354,6 +449,21 @@ class Settings(BaseSettings):
         if normalized not in allowed:
             raise ValueError(f"log_level must be one of {sorted(allowed)}")
         return normalized
+
+    @field_validator("operator_credential_secret_ref", "operator_api_token_secret_ref")
+    @classmethod
+    def normalize_operator_secret_reference(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        try:
+            return SecretReference.parse(value).serialize()
+        except SecretError as exc:
+            raise ValueError("operator credentials must use typed secret references") from exc
+
+    @field_validator("operator_allowed_origins", mode="before")
+    @classmethod
+    def normalize_operator_allowed_origins(cls, value: object) -> tuple[str, ...] | None:
+        return _parse_operator_origins(value)
 
     @field_validator("media_server_provider", mode="before")
     @classmethod
@@ -399,6 +509,11 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_media_server_profile(self) -> Self:
+        if (
+            self.operator_credential_secret_ref is not None
+            and self.operator_api_token_secret_ref == self.operator_credential_secret_ref
+        ):
+            raise ValueError("operator browser and API credentials must use distinct secret references")
         values: tuple[object | None, ...] = (
             self.media_server_provider,
             self.media_server_base_url,
@@ -413,6 +528,16 @@ class Settings(BaseSettings):
         if self.media_server_operations_enabled and not all(configured):
             raise ValueError("media-server operations cannot be enabled without a complete profile")
         return self
+
+    @property
+    def operator_credential_secret_reference(self) -> SecretReference | None:
+        value = self.operator_credential_secret_ref
+        return SecretReference.parse(value) if value is not None else None
+
+    @property
+    def operator_api_token_secret_reference(self) -> SecretReference | None:
+        value = self.operator_api_token_secret_ref
+        return SecretReference.parse(value) if value is not None else None
 
     @property
     def resolved_database_url(self) -> str:

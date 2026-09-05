@@ -2,13 +2,15 @@
 
 # Security and privacy review (execution 0046)
 
-Scope: the claim-by-claim self-review introduced at the 0046 boundary and calibrated through the implemented execution 0054 phase-B posture. This is a self-review, not an external audit.
+Scope: the claim-by-claim self-review introduced at the 0046 boundary, calibrated through execution 0054 phase B and the current execution 0055 backend-authentication checkpoint. This is a self-review, not an external audit. The backend boundary is implemented; the Web login/CSRF client and playback evidence are not.
 
 ## 1. Credentials and secrets
 
 | Claim | Enforcement |
 | --- | --- |
 | Raw cookies/passwords are never persisted in the database, config, logs, argv or Git | Requirements AUTH-004; accounts store opaque `credential_ref` values only; QR/OTP material stays inside the login child process |
+| The administration credential is resolved before `serve` binds and is never persisted | A required typed operator reference resolves through `env:` / confined `file:` / `keyring:`; the value is reduced to a process-memory digest. The optional automation Bearer uses a distinct reference and value. Fixed startup/login/audit codes disclose neither |
+| Browser authority is process-local and non-exportable | One rotating opaque HttpOnly, `SameSite=Strict` session cookie and one memory-only CSRF value expire on timeout, logout, restart, or credential replacement; neither belongs to a backup or support bundle |
 | Crawler/account secrets resolve only at their process boundary; the media-server API key resolves only at the final connector boundary | `security/secrets.py` provides `env:` / `keyring:` / confined relative `file:` schemes; execution 0054 keeps the complete media-server reference and value out of API responses, Operation payloads and SQLite |
 | Signed CDN URLs are runtime-only | Detail-protocol children carry them in bounded frames/memory; recursive strip before persistence (executions 0009, 0013+); retained-tree scans assert zero-match |
 | Creator authority references are secret-typed | `SecretValue` provenance for `creator_input.secret_ref`; ambiguous query/fragment URLs fail closed |
@@ -35,8 +37,11 @@ Scope: the claim-by-claim self-review introduced at the 0046 boundary and calibr
 
 | Claim | Enforcement |
 | --- | --- |
-| API/console default to loopback | `MEDIA_SYNC_API_HOST=127.0.0.1`; compose publishes `127.0.0.1:8632:8632` only |
-| No authentication is a documented decision | The API is a local-first operator surface; container deployment docs require trusted networks. Every media-server network action—including probe, both scan modes, and author lookup—is additionally disabled by default behind `MEDIA_SYNC_MEDIA_SERVER_OPERATIONS_ENABLED`, but that gate is not authentication |
+| `serve` fails before bind without valid operator authority | Missing, malformed, weak, unresolved or conflicting credential inputs collapse to fixed configuration errors before Uvicorn starts; no production anonymous-mode switch exists |
+| Deny-by-default route boundary | Exact raw Host validation runs first. Only health/readiness, login/session bootstrap, the public root and existing immutable bootstrap assets are anonymous; business APIs, QR/archive bytes, SSE, deep readiness, support bundle, OpenAPI/docs, `/legacy` and authenticated SPA deep links require a valid session or the optional Bearer where permitted |
+| Browser mutations require same-origin proof | Login requires an exact configured Origin. Every unsafe cookie-authenticated request additionally requires that Origin plus the session-bound CSRF header. CORS is disabled; forwarded Host/proto headers confer no authority |
+| Container loopback topology is explicit | The image binds `0.0.0.0` internally, while example Compose publishes `127.0.0.1:8632`, mounts the required credential from outside the repository, and allowlists exactly `http://127.0.0.1:8632`. Non-loopback browser origins require HTTPS |
+| Web integration is not overstated | Console v2 and `/legacy` do not yet bootstrap the session or propagate CSRF. They are not currently operable administration clients even though the backend boundary is active |
 | Structured logs and durable operation surfaces are redacted | Classified secret names are masked at sinks; raw adapter exceptions never surface to CLI/API output. Selector-bearing dependency wire messages are replaced with fixed text. Raw or percent-encoded media-server paths/provider values, remote item IDs, Etags and remote error bodies cannot enter logs, SQLite, Events, SSE, API results or support bundles |
 
 ## 5. Privacy
@@ -46,7 +51,8 @@ Scope: the claim-by-claim self-review introduced at the 0046 boundary and calibr
 
 ## 6. Residual risks (honest list)
 
-1. The API has no authentication: anyone with host-network access to the port controls the service. Execution 0054 keeps media-server operations disabled by default, but once an operator enables that gate, any client that can reach the API can submit an author lookup, connection probe, legacy acceptance-only refresh or author refresh-and-verify request. Mitigation: keep loopback/Tailscale/LAN trust, leave the gate closed when unused, and treat execution 0055 operator authentication as unresolved risk rather than claiming access control.
-2. SQLite is the single store; disk access equals full data access (including credential *references*, which still require the secret provider to use).
-3. Upstream platform behavior changes can alter what the pinned crawler does; the license gate is an acknowledgement, not a technical control on upstream behavior.
-4. No external audit has been performed (`NOT_RUN`, operator option).
+1. The Web clients are temporarily behind the backend contract: they cannot log in, retain CSRF in memory, or recover uniformly from session expiry. This fails closed as 401/403 rather than reopening anonymous access, but blocks Web administration and live QR qualification until the remaining 0055 frontend work is verified.
+2. This is single-operator authentication, not multi-user authorization. The optional Bearer is broad automation authority, and non-loopback deployment still requires reviewed HTTPS termination and exact Host preservation. Public-network deployment, RBAC, SSO/MFA and trusted reverse-proxy identity remain unsupported.
+3. SQLite is the single store; disk access equals full data access (including credential *references*, which still require the secret provider to use).
+4. Upstream platform behavior changes can alter what the pinned crawler does; the license gate is an acknowledgement, not a technical control on upstream behavior.
+5. No external audit has been performed (`NOT_RUN`, operator option).

@@ -7,6 +7,7 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
+from _api_client import authenticated_test_client
 from fastapi.testclient import TestClient
 
 import media_sync.interfaces.api as api_module
@@ -64,7 +65,7 @@ def _client(
     )
     upgrade_database(settings.resolved_database_url)
     monkeypatch.setattr(api_module, "LibraryInspectionService", lambda _database, _exporter: service)
-    return TestClient(api_module.create_api_app(settings))
+    return authenticated_test_client(settings, app_factory=api_module.create_api_app)
 
 
 def _inspection(author_id: str) -> LibraryInspection:

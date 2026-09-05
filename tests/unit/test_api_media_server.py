@@ -11,6 +11,7 @@ from typing import Any
 from uuid import uuid4
 
 import pytest
+from _api_client import authenticated_test_client
 from fastapi.testclient import TestClient
 
 import media_sync.interfaces.api as api_module
@@ -21,7 +22,6 @@ from media_sync.application.operations import OperationOutcome
 from media_sync.config import Settings
 from media_sync.infrastructure.db import Database, JobRepository, Operation, OperationRepository
 from media_sync.infrastructure.db.migration import upgrade_database
-from media_sync.interfaces.api import create_api_app
 from media_sync.ports.media_server import MediaServerError, MediaServerProbeResult, MediaServerScanResult
 
 
@@ -38,7 +38,7 @@ def _settings(tmp_path: Path, **overrides: object) -> Settings:
 
 def _client_for_settings(settings: Settings) -> TestClient:
     upgrade_database(settings.resolved_database_url)
-    return TestClient(create_api_app(settings))
+    return authenticated_test_client(settings)
 
 
 def _client(tmp_path: Path, **overrides: object) -> TestClient:

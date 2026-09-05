@@ -1,13 +1,14 @@
-# media-sync self-hosted deployment template (personal use; trusted networks only).
+# media-sync self-hosted deployment template (personal use; authenticated loopback console).
 #
+#   export MEDIA_SYNC_OPERATOR_CREDENTIAL_FILE=/absolute/path/to/operator-credential.txt
 #   cp docker-compose.example.yml docker-compose.yml
 #   docker compose up -d --build
 #   open http://127.0.0.1:8632/
 #
 # Keep YOUR docker-compose.yml local: it is git-ignored so upstream updates
-# never conflict with your deployment configuration. The API/console has NO
-# authentication: the port is published to the host loopback by default.
-# Change "127.0.0.1:8632:8632" only on trusted LANs.
+# never conflict with your deployment configuration. The API/console requires
+# the mounted operator credential and publishes to host loopback by default.
+# LAN exposure additionally requires HTTPS and its exact browser origin.
 
 services:
   media-sync:
@@ -32,8 +33,15 @@ services:
     ports:
       - "127.0.0.1:8632:8632"
     environment:
+      MEDIA_SYNC_SECRET_FILE_DIR: /run/secrets
+      MEDIA_SYNC_OPERATOR_CREDENTIAL_SECRET_REF: file:operator_credential
+      MEDIA_SYNC_OPERATOR_ALLOWED_ORIGINS: http://127.0.0.1:8632
+      MEDIA_SYNC_OPERATOR_SESSION_TTL_SECONDS: 28800
       MEDIA_SYNC_LIBRARY_INSPECTION_MAX_BYTES: 1073741824
       MEDIA_SYNC_LIBRARY_INSPECTION_DEADLINE_SECONDS: 10
+      # Optional automation uses a distinct Bearer secret reference. Add a
+      # second Compose secret and never reuse the browser credential.
+      # MEDIA_SYNC_OPERATOR_API_TOKEN_SECRET_REF: file:operator_api_token
       # Optional media-server control: uncomment ALL six selectors together,
       # review every allowed DNS answer/CIDR, then explicitly open the gate.
       # MEDIA_SYNC_MEDIA_SERVER_PROVIDER: emby
@@ -54,6 +62,9 @@ services:
       # IMPORTANT: switching to a bind mount requires applying the SAME mount
       # to the supervisor service below (and chown-ing the host dir to UID
       # 1000), or the two services will see different data.
+    secrets:
+      - source: media-sync-operator-credential
+        target: operator_credential
     shm_size: 1g
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8632/api/v1/health"]
@@ -92,3 +103,7 @@ services:
 
 volumes:
   media-sync-data:
+
+secrets:
+  media-sync-operator-credential:
+    file: ${MEDIA_SYNC_OPERATOR_CREDENTIAL_FILE:?set an absolute operator credential file path}

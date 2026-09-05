@@ -7,13 +7,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID
 
-from fastapi.testclient import TestClient
+from _api_client import authenticated_test_client
 
 from media_sync.config import Settings
 from media_sync.infrastructure.db.database import Database
 from media_sync.infrastructure.db.migration import upgrade_database
 from media_sync.infrastructure.db.models import Account, Author, Operation
-from media_sync.interfaces.api import create_api_app
 
 EXPECTED_REVISION = "0007_media_server_operations"
 PRIVATE_TIME = datetime(2037, 1, 2, 3, 4, 5, tzinfo=UTC)
@@ -89,7 +88,7 @@ def test_support_bundle_returns_raw_canonical_json_with_closed_aggregate_shape(t
     finally:
         database.dispose()
 
-    with TestClient(create_api_app(settings)) as client:
+    with authenticated_test_client(settings) as client:
         response = client.get("/api/v1/support-bundle")
 
     assert response.status_code == 200
@@ -173,7 +172,7 @@ def test_support_bundle_database_failure_has_only_a_fixed_safe_code(tmp_path: Pa
     settings = _migrated_settings(tmp_path)
     database_path = Path(settings.resolved_database_url.removeprefix("sqlite+pysqlite:///"))
 
-    with TestClient(create_api_app(settings)) as client:
+    with authenticated_test_client(settings) as client:
         database = Database(settings.resolved_database_url)
         try:
             database.drop_schema()

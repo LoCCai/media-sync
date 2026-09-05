@@ -10,6 +10,7 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
+from _api_client import authenticated_asgi_headers, authenticated_test_client
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select
@@ -20,12 +21,18 @@ from media_sync.application import ArchivePreviewService, ArchivePreviewSource
 from media_sync.config import Settings
 from media_sync.infrastructure.db import Asset, Author, Content, Database, ExportRecord, Operation
 from media_sync.infrastructure.db.migration import upgrade_database
-from media_sync.interfaces.api import _ArchiveStreamingResponse, create_api_app
+from media_sync.interfaces.api import _ArchiveStreamingResponse
 
 ARCHIVE_BYTES = b"0123456789abcdefghijklmnopqrstuvwxyz"
 
 
-def _asgi_exchange(app: FastAPI, method: str, path: str) -> list[Message]:
+def _asgi_exchange(
+    app: FastAPI,
+    method: str,
+    path: str,
+    *,
+    headers: list[tuple[bytes, bytes]],
+) -> list[Message]:
     async def exchange() -> list[Message]:
         messages: list[Message] = []
         request_sent = False
@@ -50,7 +57,7 @@ def _asgi_exchange(app: FastAPI, method: str, path: str) -> list[Message]:
             "raw_path": path.encode("ascii"),
             "query_string": b"",
             "root_path": "",
-            "headers": [(b"host", b"testserver")],
+            "headers": headers,
             "client": ("testclient", 50_000),
             "server": ("testserver", 80),
             "state": {},
@@ -157,7 +164,7 @@ def _seeded_client(tmp_path: Path) -> tuple[TestClient, dict[str, str]]:
             )
     finally:
         database.dispose()
-    return TestClient(create_api_app(settings)), {
+    return authenticated_test_client(settings), {
         "author_id": author_id,
         "content_id": content_id,
         "asset_id": asset_id,
@@ -524,6 +531,7 @@ def test_archive_head_errors_emit_no_asgi_body(tmp_path: Path) -> None:
         client.app,
         "HEAD",
         f"/api/v1/assets/{uuid4()}/archive",
+        headers=authenticated_asgi_headers(client),
     )
     assert _asgi_status_and_body(missing_messages) == (404, b"")
 
@@ -531,6 +539,7 @@ def test_archive_head_errors_emit_no_asgi_body(tmp_path: Path) -> None:
         client.app,
         "HEAD",
         "/api/v1/assets/not-a-uuid/archive",
+        headers=authenticated_asgi_headers(client),
     )
     assert _asgi_status_and_body(invalid_messages) == (422, b"")
 
@@ -546,5 +555,6 @@ def test_archive_head_errors_emit_no_asgi_body(tmp_path: Path) -> None:
         client.app,
         "HEAD",
         f"/api/v1/assets/{ids['asset_id']}/archive",
+        headers=authenticated_asgi_headers(client),
     )
     assert _asgi_status_and_body(not_ready_messages) == (409, b"")

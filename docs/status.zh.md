@@ -2,15 +2,15 @@
 
 # 项目统一状态（单一事实来源）
 
-已交付实现边界：执行 0054（包括[阶段 B](executions/0054-media-library-server-integration/phase-b/plan.zh.md)）已通过实现/验证提交 `b4af46d`、`ff5da07`、`88f5ed0`、`22bd9ef`、`48ecbe9` 与 `d8bbdf7` 交付。它在保留 legacy 只确认接受刷新的同时，新增有界精确 provider/path 查找与如实的 absent-to-unique-match 刷新后观察，并以真实 PostgreSQL 服务验证 Operation 竞态。规划边界现已包含基于 `d0a8cc2` 冻结的[执行 0055 阶段 A](executions/0055-operator-auth-playback-evidence/goal.zh.md)：先交付关闭失败的单操作者鉴权，再交付 append-only、经鉴权的播放证据；实现与实现验证均尚未开始。当前 51 条 API 路由仍为匿名，播放证据仍为 `NOT_IMPLEMENTED`，真人播放仍为 `NOT_RUN`。共同 API 不支持 provider task completion，因此它既不是阶段 B，也不是 0055-A 的声明。执行 0047 仍是开启中的 P0 操作者门，Linux 持久性/恢复/进程检查以及全部已实现真人登录/抓取/CDN/媒体服务器行继续保持 `NOT_RUN`。缺失能力是 `NOT_IMPLEMENTED`，不是尚未执行的真人行。本表是权威状态视图；逐执行细节见 [`executions/`](README.zh.md)，证据见各验证记录。每次收尾时更新本页。
+已推送的规划基线为执行 0055 提交 `4564b2a`；当前工作变更已部分实现[执行 0055 阶段 A](executions/0055-operator-auth-playback-evidence/goal.zh.md)（实现引用：**本次待提交**）。后端现会在绑定端口前解析必需的类型化操作者凭据，支持可选且不同的 Bearer 凭据，强制精确 Host/Origin 策略，签发轮换式、进程内 HttpOnly `SameSite=Strict` session Cookie，对 Cookie 鉴权的不安全方法强制 CSRF，以精确匿名白名单配合默认拒绝的 ASGI 保护，只接受严格有界的登录 JSON，并把凭据/origin 契约接入 Docker Compose。190 项 auth/API 专项与完整离线回归（`2811 passed, 14 skipped, 1 warning in 561.43s`）通过，69 项 Web 测试及本机可用的静态/构建/docs/打包门也通过。3 项跳过为 Windows/POSIX 差异；本工作站无法运行 11 项真实 PostgreSQL 竞态与 Docker 验证，因此不作通过声明。这还不是完整的 0055 退出门：Console v2 与 `/legacy` 尚未集成 login/session/CSRF，因此 Web 控制台当前不是可操作的管理界面；revision `0008_playback_evidence` 及播放证据持久化/API/UI 仍不存在。播放证据继续为 `NOT_IMPLEMENTED`，真人播放继续为 `NOT_RUN`，执行 0047 的全部真人资格行也继续为 `NOT_RUN`。共同 API 仍不支持 provider task completion，因此它既不是 0054-B，也不是 0055-A 的声明。执行 0047 仍是开启中的 P0 操作者门；缺失能力是 `NOT_IMPLEMENTED`，不是尚未执行的真人行。本表是权威状态视图；逐执行细节见 [`executions/`](README.zh.md)，证据见各验证记录。每次收尾时更新本页。
 
 ## 里程碑状态
 
 | 里程碑 | 状态 |
 | --- | --- |
 | 离线功能开发 | 平台形状冻结于 0039，外加 0040/0044 运维面与 0050 Console v2 控制面基础；0043（弹幕/字幕）仍延期 |
-| REST API + Web 控制台 | 已交付 0050–0053 基础及执行 0054 的安全受管树分页、脱敏媒体服务器姿态、持久只确认接受/作者观察 Operation、精确项目查找、资格 schema v2，以及如实的 Library/Settings/Jobs 证据；0055-A 鉴权目前仅冻结规划，当前 API 仍为匿名 |
-| 操作者鉴权 + 播放证据 | 0055-A 中英双语 goal/plan/progress/verification 已在规划边界冻结；实现尚未开始，revision `0008_playback_evidence` 不存在，播放证据为 `NOT_IMPLEMENTED`，真人播放为 `NOT_RUN` |
+| REST API + Web 控制台 | 已交付 0050–0053 基础及执行 0054 的安全受管树分页、脱敏媒体服务器姿态、持久只确认接受/作者观察 Operation、精确项目查找、资格 schema v2，以及如实的 Library/Settings/Jobs 证据；当前变更已实现 0055-A 后端鉴权边界，但 Web login/session/CSRF 集成仍待实现，控制台当前不是可操作的管理界面 |
+| 操作者鉴权 + 播放证据 | 0055-A 后端单操作者边界已经实现，且本机可用的完整离线门通过（实现引用为**本次待提交**）；Web 鉴权集成、revision `0008_playback_evidence`、播放证据持久化/API/UI 及资格 schema v3 仍待实现。播放证据为 `NOT_IMPLEMENTED`，真人播放为 `NOT_RUN` |
 | Docker 打包 | 候选镜像、可复现加固及最终镜像不含 Node 的 Console v2 多阶段构建已交付（0041、0048–0050）；操作者修复版镜像已构建/启动，doctor、深度预检与 Chromium 启动全绿 |
 | 运维文档 / 安全审查 / 发布清单 | 已交付（0045、0046） |
 | 真人验收（最终门） | 开启中——执行 0047，操作者在 Linux 协助执行 |
@@ -20,17 +20,17 @@
 | 维度 | 状态 | 证据 / 阻塞 |
 | --- | --- | --- |
 | 实现（离线形状） | 七平台 15+ 冻结形状 | 执行 0013–0039 记录 |
-| 离线完整套件 | 启用真实 PostgreSQL 的执行 0054 阶段 B 收尾套件：`2763 passed, 3 skipped, 1 warning in 544.08s`；skip 是三个 Windows 不适用的 POSIX venv/mode 用例，warning 是既有 Starlette/httpx 弃用 | 执行 0054 阶段 B 验证 |
-| API/控制台测试 | 阶段 B 后端联合专项 350 项通过；qualification/Library/API 专项 70 项通过；Library application 专项 12 项通过；7 个文件中的 69 项 Web 测试及格式、Svelte check、生产构建通过。聚焦选择存在重叠；不声明阶段 B 浏览器 smoke 或真实媒体服务器资格 | 执行 0054 阶段 B 验证 |
-| 静态门（ruff/format/mypy/compileall/docs/前端检查与构建） | 执行 0054 全仓 Ruff/format、strict mypy、compileall、sdist/wheel、双语文档、Web format/test/check/build、两个锁定上游、tracked-output/机密性/宿主路径审计及 `git diff --check` 通过 | 执行 0054 阶段 B 验证 |
-| Docker 镜像构建 | 构建/运行时预检 `PASS`：修复版镜像已启动；doctor 与深度预检均为 `ready`；运行时 Chromium `151.0.7922.34` 与构建清单一致 | 执行 0050 与 0047 验证 |
+| 离线完整套件 | 当前 0055 后端切片：`2811 passed, 14 skipped, 1 warning in 561.43s`；3 项跳过为 Windows/POSIX 差异，11 项为未配置 URL 的真实 PostgreSQL 竞态，warning 是既有 Starlette/httpx 弃用 | 执行 0055-A 验证；执行 0054 仍是最近一次真实 PostgreSQL 对照 |
+| API/控制台测试 | 当前 0055 auth/config/七个 API 专项通过 `190 passed, 1 warning in 41.99s`；既有 Web 套件通过 69 项及 format/check/build。不声明 Web login/session/CSRF 实现或已鉴权浏览器 smoke | 执行 0055-A 验证 |
+| 静态门（ruff/format/mypy/compileall/docs/前端检查与构建） | 当前 0055 全仓 Ruff/format、strict mypy（104 文件）、compileall、498 份文档链接、两个锁定上游、Web format/check/build、distribution build 与 diff 检查通过 | 执行 0055-A 验证 |
+| Docker 镜像构建 | 0050/0047 镜像预检仍是历史 `PASS`；当前 0055 鉴权版 Compose 接线已代码审查，但本工作站没有 Docker CLI，故为 `NOT_RUN` | 执行 0050/0047 与 0055-A 验证 |
 | 容器就绪 / 重启持久性 / 备份恢复演练 | 深度预检 `PASS`；重启持久性与备份恢复 `NOT_RUN` | 执行 0047；docs/operations.zh.md 流程就绪 |
 | 真人登录（任一平台） | `NOT_RUN`——操作者（阶段 C 金丝雀：Bilibili + 小红书） | 执行 0047 |
 | 真人抓取 / 下载 / 增量性 | `NOT_RUN`——操作者（阶段 C–E） | 执行 0047 |
 | 真实 Emby/Jellyfin 连接、Library 发现与定向刷新接受 | `NOT_RUN`——0054-A 已实现，但未使用获授权真实服务器 | 执行 0054 与 0047 |
 | Provider/path 项目查找与刷新后项目观察 | `IMPLEMENTED / NOT_RUN`——本地/mock 门禁通过，但未使用获授权真实 Emby/Jellyfin 服务器 | 执行 0054-B 验证 |
 | Provider task completion | `NOT_IMPLEMENTED`——Emby/Jellyfin 共同刷新 API 不提供持久任务身份；阶段 B 不声明该能力 | 执行 0054-B 真实性边界 |
-| 操作者访问控制 | `NOT_IMPLEMENTED`——基线 FastAPI 应用仍有 51 条匿名路由；0055-A 已冻结“绑定前关闭失败的单操作者 session/CSRF + 可选独立 Bearer 鉴权”，但尚未运行实现测试 | 执行 0055-A [目标](executions/0055-operator-auth-playback-evidence/goal.zh.md)与[验证](executions/0055-operator-auth-playback-evidence/verification.zh.md) |
+| 操作者访问控制 | `IMPLEMENTED / offline verification PASS`——后端在缺少必需类型化凭据时会在绑定端口前失败，强制精确 Host/Origin 与默认拒绝的路由保护，并支持轮换式 HttpOnly session、CSRF 及可选且不同的 Bearer 凭据；190 项专项与本机可用的完整套件均通过。Web login/session/CSRF 集成仍待实现，因此不声明可操作的已鉴权控制台或任何真人资格 | 执行 0055-A [目标](executions/0055-operator-auth-playback-evidence/goal.zh.md)与[验证](executions/0055-operator-auth-playback-evidence/verification.zh.md)；实现引用为**本次待提交** |
 | 播放证据写入 / 导出后自动扫描 | `NOT_IMPLEMENTED`——0055-A 播放证据计划已冻结，但尚无代码或 revision `0008_playback_evidence`；自动联动不属于阶段 A，且尚无冻结归属 | 执行 0055-A [计划](executions/0055-operator-auth-playback-evidence/plan.zh.md)与执行 0054 资格边界 |
 | 外部安全审计 | `NOT_RUN`——可选 | docs/security-review.md 残余风险 |
 

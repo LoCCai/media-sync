@@ -1,8 +1,8 @@
 **English** | [中文](deployment.zh.md)
 
-# Docker deployment and web-console verification
+# Docker deployment and backend-authentication checkpoint
 
-This guide deploys media-sync as a self-hosted container with the pinned MediaCrawler runtime, then verifies QR login and subscription downloading entirely through Web Console v2. It was introduced by executions 0040/0041, updated by 0050, and expects a Linux host with Docker (compose v2).
+This guide deploys media-sync as a self-hosted container with the pinned MediaCrawler runtime. It was introduced by executions 0040/0041, updated by 0050, and expects a Linux host with Docker Compose v2. At the current execution 0055 checkpoint, the backend single-operator authentication boundary is implemented, but Console v2 and `/legacy` have not yet integrated its login, in-memory CSRF, logout, or expiry flow. The container can be started and its public health/readiness probes can be verified; do not claim the Web administration, QR-login, or media-server-control workflow usable yet.
 
 ## 1. Build
 
@@ -10,8 +10,13 @@ This guide deploys media-sync as a self-hosted container with the pinned MediaCr
 git clone <your-fork> media-sync && cd media-sync
 sh scripts/fetch_mediacrawler.sh   # MANDATORY host-side prefetch of the locked upstream
 cp docker-compose.example.yml docker-compose.yml   # your live copy is git-ignored
+export MEDIA_SYNC_OPERATOR_CREDENTIAL_FILE=/absolute/private/path/operator-credential.txt
 docker compose build          # edit your copy first if you need different ports/paths
 ```
+
+Before running any Compose command, create the referenced UTF-8 file outside the repository with mode `0600`. It contains only the dedicated operator credential (a final CR/LF is stripped): 16–1024 UTF-8 bytes, no control characters, and at least four distinct characters. Do not reuse a platform cookie or media-server key. The path supplied through `MEDIA_SYNC_OPERATOR_CREDENTIAL_FILE` must be absolute and must remain available on every restart.
+
+The example Compose file mounts that host file as the Docker secret `/run/secrets/operator_credential`, sets `MEDIA_SYNC_SECRET_FILE_DIR=/run/secrets`, and gives the application only the typed reference `file:operator_credential`. It also sets the exact browser origin `http://127.0.0.1:8632`. No credential value is committed to Git, copied into the image, or stored in SQLite.
 
 The build now compiles the SvelteKit 5 console in a dedicated Node/pnpm stage and copies only its static output into the Python application. Node.js, pnpm and `node_modules` are not present in the final runtime image. The build manifest records their build-time versions and the frontend lock-file digest.
 
@@ -47,9 +52,9 @@ The image contains two layers:
 docker compose up -d
 ```
 
-- Web console: <http://127.0.0.1:8632/> (published to host loopback only).
-- Legacy rollback console: <http://127.0.0.1:8632/legacy> (kept for one migration cycle).
-- REST docs: <http://127.0.0.1:8632/api/docs>.
+- Public root shell: <http://127.0.0.1:8632/> (published to host loopback only). The current bundle has no operator-login shell, so it cannot operate protected APIs yet.
+- `/legacy` and `/api/docs` are protected routes. They require an established browser session, but the checked-in clients do not yet establish one.
+- `GET`/`HEAD /api/v1/health` and `/api/v1/ready` remain intentionally public for container probes; deep readiness and every business route require authentication.
 - SQLite state, archive, Emby tree and MediaCrawler runtime live in the `media-sync-data` volume under `/data`.
 
 After pulling an 0050-or-later revision, rebuild the image before restarting; `git pull` alone cannot replace the static bundle inside an existing image:
@@ -61,7 +66,9 @@ docker compose build --no-cache
 docker compose up -d
 ```
 
-The console and API carry **no authentication** — publish the port to trusted networks only. To expose on your LAN, edit YOUR local `docker-compose.yml` (copied from the example) and change `127.0.0.1:8632:8632` to `192.168.x.x:8632:8632` at your own risk; the example template stays untouched so `git pull` never conflicts with your deployment configuration.
+`media-sync serve` resolves the required credential and origin policy before calling Uvicorn. The container binds `0.0.0.0:8632` internally, while Compose publishes it only as host `127.0.0.1:8632`; the explicit loopback browser origin may therefore use HTTP. Every request still passes an exact raw `Host` gate, and forwarded Host/proto headers are ignored.
+
+Do not expose the example by merely changing the port mapping to a LAN address. Every non-loopback browser origin must be an exact HTTPS origin in `MEDIA_SYNC_OPERATOR_ALLOWED_ORIGINS`, with TLS terminated by a reviewed reverse proxy that preserves the allowed `Host`; wildcard origins are forbidden. The application does not trust forwarding headers or provide public-network, multi-user, RBAC, SSO, or MFA support.
 
 ### 2.1 Preflight the in-container checkout (phase-B gate)
 
@@ -103,25 +110,15 @@ MediaCrawler-enabled workers disabled.
 
 `runtime_invalid / runtime_imports_missing` on the first `4c6d0bf` image was caused by dereferencing the normal venv launcher symlink to the base Python. Pull the launcher repair and rebuild without cache. Keep `MEDIA_SYNC_MEDIACRAWLER_PYTHON_EXECUTABLE=/opt/mediacrawler-venv/bin/python`; do not replace it with the resolved base interpreter path.
 
-## 3. QR login through the console
+## 3. Web and QR-login status at this checkpoint
 
-1. Open <http://127.0.0.1:8632/>. On the first visit in this browser, read and accept the personal-use/license and trusted-network notice once. The acknowledgement is stored in browser `localStorage`; ordinary refreshes do not ask again. Settings can reset it deliberately.
-2. Open 平台账户 and add an account: pick the platform (e.g. `bili`), a display name and login method `扫码 QR`.
-3. Click 扫码登录 on the account row. Console v2 automatically sends the MediaCrawler enable and license acknowledgement fields; the backend still runs the complete deep preflight before starting the child.
-4. The dialog polls the QR image relayed from the headed login child running on the container's Xvfb display; scan it with the platform app within 180 seconds.
-5. The dialog shows the login outcome; the account row should switch to `authenticated`.
+The backend now exposes strict operator login/session/logout contracts, an HttpOnly `SameSite=Strict` process-local cookie, and CSRF enforcement for cookie-authenticated unsafe requests. A successful login rotates the sole session; restart, logout, expiry, or credential change invalidates it. An optional, separately resolved Bearer credential may be configured for non-browser automation, but it cannot replace the browser-only confirmation authority planned later in 0055.
 
-If the QR does not appear within ~20 seconds, check `docker compose logs media-sync` — the most common causes are a missing checkout SHA mismatch (build arg) or an expired challenge (retry the login).
+Console v2 currently calls protected APIs before establishing that session and does not attach the in-memory CSRF value to mutations. `/legacy` has the same limitation. Consequently the prior click-through QR instructions are suspended: receiving the public root HTML or a green healthcheck is not proof that the console works. Continue to use the CLI and, for already configured subscriptions, the resident supervisor. Resume browser QR qualification only after the Web login/CSRF checkpoint has its own verified closeout.
 
 ## 4. Subscribe and download
 
-1. In 创作者订阅 pick the account, enter a stable creator ID (for Bilibili: the numeric UID), a display name and a small 单次上限 (e.g. 5).
-2. Click 添加订阅, then 立即运行 to make it due.
-3. Click 运行同步 — after the one-time browser acknowledgement, the console supplies both required MediaCrawler gate fields and the backend revalidates them — to run the creator crawl child and ingest content/assets.
-4. Click 运行下载/导出 pipeline — this downloads media through the signed-locator refresh, archives under SHA-256 and publishes the Emby/Jellyfin tree.
-5. Watch 调度任务 and 后台操作记录 for outcomes; 媒体资产 lists downloaded/verified assets; the library lands in the volume at `/data/library`.
-
-For an unattended chain, enable the resident supervisor service instead of clicking: `docker compose --profile supervisor up -d`.
+The subscription, scheduler, download, archive and Emby/Jellyfin publication backends remain available. At this checkpoint, administer them with the existing CLI rather than the incomplete Web authentication client. For an already configured unattended chain, enable the resident supervisor service with `docker compose --profile supervisor up -d`; it does not run `serve` and receives no operator credential. The resulting library still lands at `/data/library`.
 
 ## 5. Point Emby/Jellyfin at the library
 
@@ -143,14 +140,14 @@ Stage 0054-A supports one immutable, environment-owned connection. Add the compl
 
 Inject the API-key value through the environment variable or secret file named by the reference; never commit it. The configuration API returns a hand-built redacted summary and never echoes the key, full secret reference, Library ID, server path, or network ranges. The connector disables environment proxies and redirects, validates every DNS answer and pins the actual connection IP while retaining the original Host/TLS SNI.
 
-Start with `MEDIA_SYNC_MEDIA_SERVER_OPERATIONS_ENABLED=false` and inspect the summary in Settings. After checking the origin, TLS posture, network-rule count and Library digest, open the gate and restart. Then use Library:
+Start with `MEDIA_SYNC_MEDIA_SERVER_OPERATIONS_ENABLED=false`. After checking the configured origin, TLS posture, network-rule count and Library digest through a reviewed authenticated client, open the gate and restart. The following backend behaviors are implemented, but their former Console v2 controls remain unavailable until the Web authentication integration lands:
 
-1. Select 检查媒体树 for an author to verify pages of the manifest authorized by the successful database publication chain. Inspection is read-only: it does not repair, delete, create an author lock, or expose a host path.
-2. Select 测试连接. The backend calls only `GET /System/Info` and `GET /Library/VirtualFolders`, requiring an exact unique Library ID and path match.
-3. Select 检查服务器项目 for a read-only complete bounded lookup of the exact managed provider/path identity. `not_found` and one unique `matched` result are observations only; neither proves a refresh completed or that media plays.
-4. Select the page-level 定向刷新（只确认接受） to send the strict legacy `{}` request. The backend calls only `POST /Items/{configured-library-id}/Refresh`; `404/405/501` fail closed and never fall back to global `/Library/Refresh`. A successful Operation proves only a trusted 2xx acceptance.
-5. After a current, complete tree inspection grants the action, select 刷新并核验 to send exactly `{"author_id":"<uuid>"}`. Author mode first requires a complete absent baseline. If the exact item already exists, it sends no POST and returns `media_server_scan_observation_precondition_failed`. Success requires one accepted refresh followed by two separated observations of the same unique item; it still does not prove provider task completion or playback.
-6. Inspect `media-server-probe` / `media-server-scan` under 调度任务 → 持久操作. Jobs keeps accepted, observed, acceptance-unknown and completion-unknown distinct; author observation shows “verification N” rather than a percentage. After transport entry, uncertain acceptance becomes non-retryable `media_server_scan_acceptance_unknown`. After trusted acceptance, an unproven observation becomes non-retryable `media_server_scan_completion_unknown` while retaining the accepted checkpoint. Never retry either ambiguity automatically.
+1. Managed-tree inspection verifies pages of the manifest authorized by the successful database publication chain. It is read-only: it does not repair, delete, create an author lock, or expose a host path.
+2. Connection probe calls only `GET /System/Info` and `GET /Library/VirtualFolders`, requiring an exact unique Library ID and path match.
+3. Item inspection performs a read-only complete bounded lookup of the exact managed provider/path identity. `not_found` and one unique `matched` result are observations only; neither proves a refresh completed or that media plays.
+4. The strict legacy `{}` refresh calls only `POST /Items/{configured-library-id}/Refresh`; `404/405/501` fail closed and never fall back to global `/Library/Refresh`. A successful Operation proves only a trusted 2xx acceptance.
+5. Author refresh-and-verify accepts exactly `{"author_id":"<uuid>"}` after a current, complete tree inspection grants the action. It first requires a complete absent baseline. If the exact item already exists, it sends no POST and returns `media_server_scan_observation_precondition_failed`. Success requires one accepted refresh followed by two separated observations of the same unique item; it still does not prove provider task completion or playback.
+6. Durable `media-server-probe` / `media-server-scan` Operations keep accepted, observed, acceptance-unknown and completion-unknown distinct. After transport entry, uncertain acceptance becomes non-retryable `media_server_scan_acceptance_unknown`. After trusted acceptance, an unproven observation becomes non-retryable `media_server_scan_completion_unknown` while retaining the accepted checkpoint. Never retry either ambiguity automatically.
 
 On restart, an author observation in `preparing` or `baselining` is a pre-dispatch interruption; `dispatching` becomes acceptance unknown; `accepted` or `polling` becomes completion unknown with its accepted checkpoint preserved; only a valid persisted `observed` checkpoint may reconcile to success. Legacy targetless scans retain their conservative 0054-A recovery. A probe may be retried manually, but a scan ambiguity requires server-side inspection before any new request.
 
@@ -160,7 +157,7 @@ On restart, an author observation in `preparing` or `baselining` is a pre-dispat
 
 | Row | Evidence |
 | --- | --- |
-| Real QR login (which platform/account) | console outcome + `login-status` showing `authenticated` |
+| Real QR login (which platform/account) | Remains `NOT_RUN` at this checkpoint; record the authenticated console outcome plus `login-status` only after Web auth is delivered |
 | Creator crawl (which creator, item count) | scheduler job result + asset counts |
 | Real media download | asset rows reaching `verified`/`archived`; SHA-256 files under `/data/archive` |
 | Emby tree published | `/data/library` author directory listing |
@@ -169,7 +166,7 @@ On restart, an author observation in `preparing` or `baselining` is a pre-dispat
 | Exact provider/path item lookup on a real server | implemented in 0054-B; one complete lookup snapshot; `NOT_RUN` if not exercised |
 | Post-refresh item observation on a real server | implemented in 0054-B; absent baseline + one accepted POST + the same unique item observed twice; `NOT_RUN` if not exercised |
 | Provider task completion | `NOT_IMPLEMENTED` (`provider_api_unsupported`); no human status |
-| Authenticated playback evidence | `NOT_IMPLEMENTED`; deferred to 0055; no human status |
+| Authenticated playback evidence | `NOT_IMPLEMENTED`; backend operator authentication alone is not playback evidence; no human status |
 | Automatic post-export scan | `NOT_IMPLEMENTED`; no frozen follow-up assignment and no human status |
 
 Live evidence is limited to what actually ran; anything not exercised stays `NOT_RUN` per the project's truth rules.

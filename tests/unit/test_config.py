@@ -64,6 +64,77 @@ def test_settings_normalizes_log_level() -> None:
     assert Settings(log_level=" warning ", _env_file=None).log_level == "WARNING"
 
 
+def test_operator_auth_settings_are_bounded_canonical_and_repr_safe() -> None:
+    settings = Settings(
+        operator_credential_secret_ref=" env:OPERATOR_BROWSER_SENTINEL ",
+        operator_api_token_secret_ref="file:operator-api-token",
+        operator_allowed_origins=("HTTPS://Console.Example:443/", "http://[::1]:8632"),
+        operator_session_ttl_seconds=3_600,
+        _env_file=None,
+    )
+
+    assert settings.operator_credential_secret_ref == "env:OPERATOR_BROWSER_SENTINEL"
+    assert settings.operator_api_token_secret_ref == "file:operator-api-token"
+    assert settings.operator_allowed_origins == ("https://console.example", "http://[::1]:8632")
+    assert settings.operator_session_ttl_seconds == 3_600
+    assert settings.operator_credential_secret_reference is not None
+    assert settings.operator_api_token_secret_reference is not None
+    rendered = repr(settings)
+    assert "OPERATOR_BROWSER_SENTINEL" not in rendered
+    assert "operator-api-token" not in rendered
+
+
+def test_operator_origins_accept_json_environment_syntax(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(
+        "MEDIA_SYNC_OPERATOR_ALLOWED_ORIGINS",
+        '["https://console.example:443", "https://backup.example:8443/"]',
+    )
+
+    settings = Settings(_env_file=None)
+
+    assert settings.operator_allowed_origins == (
+        "https://console.example",
+        "https://backup.example:8443",
+    )
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "",
+        [],
+        ["ftp://console.example"],
+        ["https://user@console.example"],
+        ["https://console.example/path"],
+        ["https://*.example"],
+        ["https://console.example:0"],
+        ["https://console.example", "HTTPS://CONSOLE.EXAMPLE:443/"],
+        ["https://a.example"] * 9,
+        [None],
+    ],
+)
+def test_operator_origins_reject_ambiguous_or_unbounded_values(value: object) -> None:
+    with pytest.raises(ValidationError):
+        Settings(operator_allowed_origins=value, _env_file=None)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("value", [59, 28_801])
+def test_operator_session_ttl_rejects_out_of_bounds(value: int) -> None:
+    with pytest.raises(ValidationError):
+        Settings(operator_session_ttl_seconds=value, _env_file=None)
+
+
+def test_operator_credentials_require_distinct_typed_references() -> None:
+    with pytest.raises(ValidationError):
+        Settings(operator_credential_secret_ref="inline-secret", _env_file=None)
+    with pytest.raises(ValidationError):
+        Settings(
+            operator_credential_secret_ref="env:SAME_OPERATOR_SECRET",
+            operator_api_token_secret_ref="env:SAME_OPERATOR_SECRET",
+            _env_file=None,
+        )
+
+
 def _media_server_settings(**overrides: object) -> Settings:
     values: dict[str, object] = {
         "media_server_provider": " EMBY ",

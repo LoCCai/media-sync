@@ -2,21 +2,24 @@
 
 # 执行 0047 计划
 
-- 状态：等待操作者执行（总阶段；由 0048 重构）
+- 状态：等待前置条件与操作者执行（总阶段；由 0048 重构）
 - 日期：2026-09-03
 
 ## 操作者流程
 
 **阶段 B —— Linux 基线（任何真人账户之前）**
 
-1. `git pull && uv sync --all-groups --locked && uv run pytest -q`——记录准确数字；以执行 0049 的 `2066 passed, 1 skipped` 为当前对照基线（0048 的 33/35 项抖动只作为历史异常集合），任何平台特异性分歧都要调查。
-2. `cp docker-compose.example.yml docker-compose.yml && docker compose build && docker compose up -d`；验证 `/api/v1/health` + `/api/v1/ready`、控制台可达、重启后 `db init` 幂等。
-3. 重启持久性：`docker compose restart`，确认账户/订阅/任务仍在；按 [`operations.zh.md`](../../operations.zh.md) 做一次备份 → 恢复到新卷的演练。
-4. 进程口径：每个需要显示环境的运行中容器恰好一个受管 Xvfb（启用 supervisor profile 时两个容器各一个是正常情况）；空闲时零 Chromium、零 ffmpeg/ffprobe；不存在任务结束后遗留的孤儿进程；容器停止后相关进程全部消失。
+1. `git pull && uv sync --all-groups --locked && uv run pytest -q`——记录准确数字并调查全部平台特异性分歧。当前 0055 Windows 开发机结果为 `2811 passed, 14 skipped, 1 warning`；其中 11 项是真实 PostgreSQL 竞态因未配置 URL 而跳过，因此不能替代启用 PostgreSQL 的完整 Linux 主机门。
+2. 任何 Compose 启动之前，先在仓库外创建专用 UTF-8 操作者凭据文件，将权限限制为 `0600`，并设置 `export MEDIA_SYNC_OPERATOR_CREDENTIAL_FILE=/absolute/private/path/operator-credential.txt`。凭据须为 16–1024 个 UTF-8 字节，不含控制字符，且不得复用平台 Cookie 或媒体服务器 key。每次重启时都要保持该绝对路径可用；示例 Compose 会把它挂载为 `/run/secrets/operator_credential`，并且只向应用传递 `file:operator_credential`。
+3. `cp docker-compose.example.yml docker-compose.yml && docker compose build && docker compose up -d`；确认必需的类型化凭据在绑定端口前成功解析，配置的浏览器 origin 精确等于 `http://127.0.0.1:8632`。使用不会把凭据写入日志或 shell 历史的受审查 HTTP 客户端，证明匿名访问仅限 `GET`/`HEAD /api/v1/health`、`GET`/`HEAD /api/v1/ready`、`POST /api/v1/operator-auth/login`、`GET /api/v1/operator-auth/session` 及公开根资源；证明匿名业务路由与 `/api/docs` 被拒绝；随后证明登录 → Cookie session → 受 CSRF 保护的不安全请求 → 退出完整链路。若验证可选 Bearer 自动化，须配置与浏览器凭据不同且单独解析的凭据。记录精确状态码，但不得记录凭据、Cookie 或 CSRF 值。
+4. 重启持久性：`docker compose restart`，确认账户/订阅/任务仍在，并确认进程内操作者 session 已失效；按 [`operations.zh.md`](../../operations.zh.md) 做一次备份 → 恢复到新卷的演练。
+5. 进程口径：每个需要显示环境的运行中容器恰好一个受管 Xvfb（启用 supervisor profile 时两个容器各一个是正常情况）；空闲时零 Chromium、零 ffmpeg/ffprobe；不存在任务结束后遗留的孤儿进程；容器停止后相关进程全部消失。
+
+**资格暂停点：**上述后端鉴权边界已经实现并通过专项验证，但 Console v2 与 `/legacy` 尚未集成操作者 login/session/CSRF。Revision `0008_playback_evidence` 及播放证据持久化/API/UI 也尚未实现。因此当前检查点不得启动 Web 登录、真人平台、真实媒体服务器播放或阶段 C–F 资格步骤。全部真人资格行继续保持 `NOT_RUN`。只有 Web 鉴权集成与播放证据实现都各自完成验证收尾后，才能恢复下述流程；只有后端鉴权不能授予任何真人 PASS。
 
 **阶段 C —— 金丝雀（先 Bilibili，后小红书）**
 
-每个金丝雀：登录（优先 QR）→ 订阅样例矩阵创作者 → 立即运行 → 调度运行（双门禁）→ pipeline 运行 → 记录逐形状结果、归档字节、Emby 目录。然后两行增量性验证（无变化重跑；经可控测试账号的真实增量）。再是恢复行：下载中杀死 worker 并确认收敛；抓取中重启容器；会话过期后重认证；制造一次 CDN 主地址失败并观察备用选择。把 `/data/library` 只读挂载进真实 Emby/Jellyfin，重扫，验证元数据/海报并抽样播放。
+暂停点解除后，每个金丝雀先通过已完成的 Web 登录壳完成操作者鉴权，再登录平台（优先 QR）→ 订阅样例矩阵创作者 → 立即运行 → 调度运行（双门禁）→ pipeline 运行 → 记录逐形状结果、归档字节与 Emby 目录。然后执行两行增量性验证（无变化重跑；经可控测试账号的真实增量）。再执行恢复行：下载中杀死 worker 并确认收敛；抓取中重启容器；会话过期后重认证；制造一次 CDN 主地址失败并观察备用选择。把 `/data/library` 只读挂载进真实 Emby/Jellyfin，重扫，验证元数据/海报，通过已实现的鉴权证据路径记录抽样播放，之后才可把相应真人行从 `NOT_RUN` 翻转。
 
 **阶段 D —— 其余平台按媒体类别分批**
 

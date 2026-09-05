@@ -177,8 +177,9 @@ RUN { echo "python: $(python --version)"; \
     && rm -f /tmp/WEB-BUILD-MANIFEST.txt
 
 # --------------------------------------------------------------- runtime env
-# Data roots are volumes; the API must bind 0.0.0.0 inside the container
-# network namespace (compose publishes it to a trusted host network only).
+# Data roots are volumes; the API binds 0.0.0.0 inside the container network
+# namespace. Deployments must inject operator auth and an exact browser origin;
+# the example compose publishes only to host loopback.
 ENV MEDIA_SYNC_STATE_DIR=/data/state \
     MEDIA_SYNC_ARCHIVE_DIR=/data/archive \
     MEDIA_SYNC_EXPORT_DIR=/data/library \

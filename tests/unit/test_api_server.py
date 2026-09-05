@@ -6,12 +6,12 @@ from pathlib import Path
 from uuid import UUID, uuid4
 
 import pytest
+from _api_client import authenticated_test_client
 from fastapi.testclient import TestClient
 
 from media_sync.config import Settings
 from media_sync.infrastructure.db import Database
 from media_sync.infrastructure.db.migration import upgrade_database
-from media_sync.interfaces.api import create_api_app
 
 
 def _client(tmp_path: Path) -> TestClient:
@@ -24,7 +24,7 @@ def _client(tmp_path: Path) -> TestClient:
         mediacrawler_runtime_dir=tmp_path / "mediacrawler",
     )
     upgrade_database(settings.resolved_database_url)
-    return TestClient(create_api_app(settings))
+    return authenticated_test_client(settings)
 
 
 def test_health_ready_settings_and_console(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

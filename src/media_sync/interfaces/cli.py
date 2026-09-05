@@ -23,6 +23,7 @@ from typing import Annotated, Any
 from uuid import UUID, uuid4
 
 import typer
+from pydantic import ValidationError
 from sqlalchemy import create_engine, inspect, select, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import IntegrityError, OperationalError, SQLAlchemyError
@@ -151,9 +152,12 @@ from media_sync.scheduler import (
 )
 from media_sync.security import (
     InvalidSecretReferenceError,
+    OperatorAuthConfigurationError,
     SecretError,
     SecretReference,
     SecretResolver,
+    derive_operator_origin_policy,
+    resolve_operator_auth_runtime,
 )
 
 app = typer.Typer(
@@ -2717,13 +2721,33 @@ def serve_api(
         typer.Option(min=1, max=65_535, help="Port override; defaults to MEDIA_SYNC_API_PORT (8632)."),
     ] = None,
 ) -> None:
-    """Serve the local REST API and embedded web console (no authentication)."""
+    """Serve the REST API and web console behind single-operator authentication."""
 
-    settings = get_settings()
+    try:
+        settings = get_settings()
+    except ValidationError:
+        typer.echo('{"detail":"service_configuration_invalid"}', err=True)
+        raise typer.Exit(code=2) from None
     resolved_host = host or settings.api_host
     resolved_port = port or settings.api_port
     if not resolved_host or not math.isfinite(float(resolved_port)) or not 1 <= int(resolved_port) <= 65_535:
         raise typer.BadParameter("invalid bind address")
+
+    try:
+        operator_auth_runtime = resolve_operator_auth_runtime(
+            settings.operator_credential_secret_reference,
+            settings.operator_api_token_secret_reference,
+            SecretResolver.local(file_root=settings.resolved_secret_file_dir),
+            settings.operator_session_ttl_seconds,
+        )
+        operator_origin_policy = derive_operator_origin_policy(
+            resolved_host,
+            int(resolved_port),
+            settings.operator_allowed_origins,
+        )
+    except OperatorAuthConfigurationError:
+        typer.echo('{"detail":"operator_auth_configuration_invalid"}', err=True)
+        raise typer.Exit(code=2) from None
 
     import uvicorn
 
@@ -2734,19 +2758,24 @@ def serve_api(
             {
                 "service": "media-sync-api",
                 "bind": f"{resolved_host}:{resolved_port}",
-                "console": "http://127.0.0.1:8632/"
-                if resolved_host == "127.0.0.1"
-                else f"http://{resolved_host}:{resolved_port}/",
-                "authentication": "none; trusted networks only",
+                "console": f"{operator_origin_policy.origins[0]}/",
+                "authentication": "single-operator-session",
+                "bearer_automation_enabled": operator_auth_runtime.bearer_enabled,
             },
             ensure_ascii=True,
         )
     )
     uvicorn.run(
-        create_api_app(settings),
+        create_api_app(
+            settings,
+            operator_auth_runtime=operator_auth_runtime,
+            operator_origin_policy=operator_origin_policy,
+        ),
         host=resolved_host,
         port=int(resolved_port),
         log_level=settings.log_level.lower(),
+        proxy_headers=False,
+        access_log=False,
     )
 
 

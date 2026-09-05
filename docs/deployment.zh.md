@@ -1,8 +1,8 @@
 [English](deployment.md) | **中文**
 
-# Docker 部署与 Web 后台验证
+# Docker 部署与后端鉴权检查点
 
-本指南把 media-sync 作为自托管容器部署（内含锁定版本 MediaCrawler 运行时），并全程通过 Web Console v2 验证扫码登录与订阅下载。由执行 0040/0041 引入、0050 更新，需要装有 Docker（compose v2）的 Linux 主机。
+本指南使用内含锁定 MediaCrawler 运行时的自托管容器部署 media-sync。它由执行 0040/0041 首次建立、由 0050 更新，要求 Linux 主机与 Docker Compose v2。当前执行 0055 检查点已经实现后端单操作者鉴权边界，但 Console v2 与 `/legacy` 尚未接入登录、内存 CSRF、退出或过期流程。容器可以启动，也可以验证公开 health/readiness 探针；目前不得宣称 Web 管理、扫码登录或媒体服务器控制流程可用。
 
 ## 1. 构建
 
@@ -10,8 +10,13 @@
 git clone <你的仓库> media-sync && cd media-sync
 sh scripts/fetch_mediacrawler.sh   # 必选：宿主机预取锁定上游
 cp docker-compose.example.yml docker-compose.yml   # 本地副本已被 git 忽略
+export MEDIA_SYNC_OPERATOR_CREDENTIAL_FILE=/绝对/私有路径/operator-credential.txt
 docker compose build          # 如需改端口/路径，先编辑你的本地副本
 ```
+
+运行任何 Compose 命令前，先在仓库外创建上述 UTF-8 文件并设为 `0600`。文件只包含专用操作者凭据（末尾 CR/LF 会被剥离）：16–1024 个 UTF-8 字节、不含控制字符，并至少含四种不同字符。不得复用平台 Cookie 或媒体服务器 key。`MEDIA_SYNC_OPERATOR_CREDENTIAL_FILE` 必须是绝对路径，并在每次重启时持续可用。
+
+示例 Compose 会把宿主机文件挂载成 Docker secret `/run/secrets/operator_credential`，设置 `MEDIA_SYNC_SECRET_FILE_DIR=/run/secrets`，并只向应用提供类型化引用 `file:operator_credential`；同时设置精确浏览器 origin `http://127.0.0.1:8632`。凭据值不会提交到 Git、复制进镜像或写入 SQLite。
 
 构建现在会在独立 Node/pnpm 阶段编译 SvelteKit 5 控制台，只把静态产物复制进 Python 应用；最终运行镜像不包含 Node.js、pnpm 或 `node_modules`。构建清单会记录其构建期版本与前端锁文件摘要。
 
@@ -46,9 +51,9 @@ compose 模板会把 `BASE_IMAGE` 作为 build arg 透传，构建清单记录�
 docker compose up -d
 ```
 
-- Web 控制台：<http://127.0.0.1:8632/>（默认只发布到宿主机回环）。
-- 旧版回退控制台：<http://127.0.0.1:8632/legacy>（保留一个迁移周期）。
-- REST 文档：<http://127.0.0.1:8632/api/docs>。
+- 公开根壳：<http://127.0.0.1:8632/>（默认只发布到宿主机回环）。当前 bundle 没有操作者登录壳，因此尚不能操作受保护 API。
+- `/legacy` 与 `/api/docs` 是受保护路由，需要已建立的浏览器 session；当前已检入客户端还不能建立该 session。
+- `GET`/`HEAD /api/v1/health` 与 `/api/v1/ready` 为容器探针有意保持公开；深度就绪及全部业务路由都要求鉴权。
 - SQLite 状态库、归档、Emby 目录与 MediaCrawler 运行时都在 `media-sync-data` 卷的 `/data` 下。
 
 拉取 0050 或更高版本后，应先重建镜像再重启；只执行 `git pull` 无法替换既有镜像中的静态前端：
@@ -60,7 +65,9 @@ docker compose build --no-cache
 docker compose up -d
 ```
 
-控制台与 API **没有鉴权** —— 只发布到可信网络。要在内网开放，请编辑你自己的本地 `docker-compose.yml`（从 example 复制而来），把 `127.0.0.1:8632:8632` 改成 `192.168.x.x:8632:8632`，风险自负；example 模板本身保持原样，`git pull` 更新时不会与你的部署配置冲突。
+`media-sync serve` 会在调用 Uvicorn 前解析必需凭据与 origin 策略。容器内部绑定 `0.0.0.0:8632`，Compose 只把它发布为宿主机 `127.0.0.1:8632`，因此显式回环浏览器 origin 可以使用 HTTP。每个请求仍须通过精确原始 `Host` 门禁，转发 Host/proto header 不受信任。
+
+不得只把端口映射改成内网地址就暴露示例。每个非回环浏览器 origin 都必须作为精确 HTTPS origin 写入 `MEDIA_SYNC_OPERATOR_ALLOWED_ORIGINS`，由经过审查且保留允许 `Host` 的反向代理终止 TLS；禁止通配 origin。应用不信任 forwarding header，也不支持公网、多用户、RBAC、SSO 或 MFA 部署。
 
 ### 2.1 容器内 checkout 预检（阶段 B 门）
 
@@ -98,25 +105,15 @@ checkout 的逐项状态、稳定 `detail_code`、实际 Chromium 版本和构�
 
 首个 `4c6d0bf` 镜像若显示 `runtime_invalid / runtime_imports_missing`，根因是正常的 venv launcher 符号链接被解引用成基础 Python。请拉取启动器修复并无缓存重建。保持 `MEDIA_SYNC_MEDIACRAWLER_PYTHON_EXECUTABLE=/opt/mediacrawler-venv/bin/python`，不要替换为解引用后的基础解释器路径。
 
-## 3. 控制台扫码登录
+## 3. 当前检查点的 Web 与扫码登录状态
 
-1. 打开 <http://127.0.0.1:8632/>。该浏览器首次访问时阅读并一次性确认个人使用/许可证与可信网络提示；确认保存在浏览器 `localStorage`，普通刷新不会再询问，设置页可主动重置。
-2. 进入「平台账户」添加账户：选择平台（如 `bili`）、显示名，登录方式选 `扫码 QR`。
-3. 点击该账户行的「扫码登录」。Console v2 会自动发送 MediaCrawler 启用与许可证确认字段；后端仍会在启动 child 前执行完整深度预检。
-4. 弹窗会轮询显示由容器内 Xvfb 有头登录子进程中继出来的二维码图片，180 秒内用平台 App 扫码。
-5. 弹窗显示登录结果；账户行应变为 `authenticated`。
+后端现已提供严格的操作者 login/session/logout 契约、HttpOnly `SameSite=Strict` 进程内 Cookie，以及对 Cookie 鉴权不安全请求的 CSRF 强制。登录成功会轮换唯一 session；重启、退出、过期或凭据变化都会使其失效。非浏览器自动化可以另配独立解析的 Bearer 凭据，但它不能替代 0055 后续规划的浏览器专属确认权限。
 
-若约 20 秒后二维码仍未出现，查看 `docker compose logs media-sync` —— 常见原因是 checkout SHA 不匹配（构建参数）或挑战已过期（重试登录即可）。
+Console v2 当前会在建立 session 前请求受保护 API，也不会为 mutation 附加仅存内存的 CSRF 值；`/legacy` 同样如此。因此此前的控制台扫码步骤暂停：收到公开根 HTML 或 healthcheck 变绿都不能证明控制台可用。请继续使用 CLI；已有订阅的常驻处理可使用 supervisor。只有 Web 登录/CSRF 检查点完成独立验证收尾后，才能恢复浏览器扫码资格验证。
 
 ## 4. 订阅与下载
 
-1. 在「创作者订阅」选择账户，填写稳定的创作者 ID（B 站为数字 UID）、显示名与较小的单次上限（如 5）。
-2. 点击「添加订阅」，再点「立即运行」使其到期。
-3. 点击「运行同步」——首次浏览器确认后，控制台会带上两个必需的 MediaCrawler 门禁字段，后端仍会重新校验——运行创作者抓取子进程并导入内容/资产。
-4. 点击「运行下载/导出 pipeline」—— 通过签名 locator 刷新下载媒体、按 SHA-256 归档并发布 Emby/Jellyfin 目录。
-5. 在「调度任务」与「后台操作记录」观察结果；「媒体资产」列出已下载/已验证资产；媒体库落在卷内 `/data/library`。
-
-如需无人值守链路，改用常驻监督服务：`docker compose --profile supervisor up -d`。
+订阅、调度、下载、归档及 Emby/Jellyfin 发布后端保持可用。当前检查点应使用既有 CLI 管理，而不是尚未完成鉴权集成的 Web 客户端。已有配置的无人值守链路可用 `docker compose --profile supervisor up -d` 启动常驻 supervisor；它不运行 `serve`，也不会获得操作者凭据。最终媒体库仍落在 `/data/library`。
 
 ## 5. 将媒体库接入 Emby/Jellyfin
 
@@ -138,14 +135,14 @@ checkout 的逐项状态、稳定 `detail_code`、实际 Chromium 版本和构�
 
 API key 值应通过引用指向的环境变量或 secret 文件注入，不得写入仓库。配置 API 只返回脱敏摘要：不会回显 key、完整 secret reference、Library ID、服务器路径或网络范围。连接器禁止环境代理与重定向，校验全部 DNS 答案并绑定实际连接 IP，同时保留原始 Host/TLS SNI。
 
-先保持 `MEDIA_SYNC_MEDIA_SERVER_OPERATIONS_ENABLED=false` 启动并在「设置」检查摘要；核对 origin、TLS、网络规则数量与 Library 摘要后再打开门并重启。随后进入「媒体库」：
+先保持 `MEDIA_SYNC_MEDIA_SERVER_OPERATIONS_ENABLED=false`。通过经过审查的鉴权客户端核对配置 origin、TLS 姿态、网络规则数量与 Library 摘要后，再打开门并重启。以下后端行为已经实现，但原 Console v2 控件要等 Web 鉴权集成后才能使用：
 
-1. 点作者行的「检查媒体树」，分页验证数据库成功发布链授权的 manifest；检查只读，不修复、删除、创建作者锁或泄露宿主路径。
-2. 点「测试连接」。后端只调用 `GET /System/Info` 与 `GET /Library/VirtualFolders`，并要求 Library ID 和路径精确唯一匹配。
-3. 点「检查服务器项目」，对精确受管 provider/path 身份执行完整且有界的只读查找。`not_found` 或唯一 `matched` 都只是一次观察，不证明刷新完成或媒体可播放。
-4. 点页面级「定向刷新（只确认接受）」发送严格 legacy `{}`。后端只调用 `POST /Items/{configured-library-id}/Refresh`；`404/405/501` 会关闭失败，绝不回退到全库 `/Library/Refresh`。Operation 成功只证明收到可信 2xx 接受。
-5. 当前且完整的媒体树检查授予动作后，点「刷新并核验」发送精确 `{"author_id":"<uuid>"}`。作者模式先要求完整的 absent baseline；精确项目已经存在时不会发送 POST，并返回 `media_server_scan_observation_precondition_failed`。成功需要一次刷新被接受，随后间隔两次观察到同一唯一项目；仍不证明 provider task completion 或可播放。
-6. 在「调度任务 → 持久操作」查看 `media-server-probe` / `media-server-scan`。Jobs 会区分 accepted、observed、acceptance unknown 与 completion unknown；作者观察只显示“核验 N 次”，不显示百分比。进入 transport 后无法确认接受时以不可重试的 `media_server_scan_acceptance_unknown` 收尾；已经可信接受但无法证明观察时以不可重试的 `media_server_scan_completion_unknown` 收尾，并保留 accepted checkpoint。两种歧义都不得自动重试。
+1. 受管树检查会分页验证数据库成功发布链授权的 manifest；它只读，不修复、删除、创建作者锁或泄露宿主路径。
+2. 连接探测只调用 `GET /System/Info` 与 `GET /Library/VirtualFolders`，并要求 Library ID 和路径精确唯一匹配。
+3. 项目检查会对精确受管 provider/path 身份执行完整且有界的只读查找。`not_found` 或唯一 `matched` 都只是一次观察，不证明刷新完成或媒体可播放。
+4. 严格 legacy `{}` 刷新只调用 `POST /Items/{configured-library-id}/Refresh`；`404/405/501` 会关闭失败，绝不回退到全库 `/Library/Refresh`。Operation 成功只证明收到可信 2xx 接受。
+5. 作者刷新并核验在当前且完整的媒体树检查授予动作后，只接受精确 `{"author_id":"<uuid>"}`。作者模式先要求完整 absent baseline；精确项目已经存在时不会发送 POST，并返回 `media_server_scan_observation_precondition_failed`。成功需要一次刷新被接受，随后间隔两次观察到同一唯一项目；仍不证明 provider task completion 或可播放。
+6. 持久 `media-server-probe` / `media-server-scan` Operation 会区分 accepted、observed、acceptance unknown 与 completion unknown。进入 transport 后无法确认接受时以不可重试的 `media_server_scan_acceptance_unknown` 收尾；已经可信接受但无法证明观察时以不可重试的 `media_server_scan_completion_unknown` 收尾，并保留 accepted checkpoint。两种歧义都不得自动重试。
 
 服务重启时，处于 `preparing` 或 `baselining` 的作者观察属于 dispatch 前中断；`dispatching` 收敛为 acceptance unknown；`accepted` 或 `polling` 收敛为 completion unknown 并保留 accepted checkpoint；只有有效持久 `observed` checkpoint 才能收敛为成功。Legacy targetless scan 保持 0054-A 的保守恢复。Probe 可人工重试；scan 歧义则必须先在服务器侧检查，才能考虑新请求。
 
@@ -155,7 +152,7 @@ API key 值应通过引用指向的环境变量或 secret 文件注入，不得�
 
 | 验收行 | 证据 |
 | --- | --- |
-| 真人扫码登录（哪个平台/账户） | 控制台结果 + `login-status` 显示 `authenticated` |
+| 真人扫码登录（哪个平台/账户） | 当前检查点保持 `NOT_RUN`；Web 鉴权交付后才记录鉴权控制台结果及 `login-status` |
 | 创作者抓取（哪个创作者、条数） | 调度任务结果 + 资产计数 |
 | 真实媒体下载 | 资产行达到 `verified`/`archived`；`/data/archive` 下出现 SHA-256 文件 |
 | Emby 目录发布 | `/data/library` 的作者目录列表 |
@@ -164,7 +161,7 @@ API key 值应通过引用指向的环境变量或 secret 文件注入，不得�
 | 真实服务器精确 provider/path 项目查找 | 0054-B 已实现；以一次完整 lookup 快照为证；未执行记 `NOT_RUN` |
 | 真实服务器刷新后项目观察 | 0054-B 已实现；absent baseline + 一次 accepted POST + 同一唯一项目连续观察两次；未执行记 `NOT_RUN` |
 | Provider task completion | `NOT_IMPLEMENTED`（`provider_api_unsupported`）；没有真人状态 |
-| 经鉴权的播放证据 | `NOT_IMPLEMENTED`；后移至 0055；没有真人状态 |
+| 经鉴权的播放证据 | `NOT_IMPLEMENTED`；后端操作者鉴权本身不等于播放证据；没有真人状态 |
 | 导出后自动扫描 | `NOT_IMPLEMENTED`；尚无已冻结后续归属，也没有真人状态 |
 
 现网证据以实际运行为准；未执行的项一律保持 `NOT_RUN`，遵守项目真实性规则。

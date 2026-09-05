@@ -1,4 +1,4 @@
-"""Local REST API and embedded web console for media-sync administration.
+"""Authenticated REST API and embedded web console for media-sync administration.
 
 The API mirrors the bounded CLI control surface: accounts (including the
 blocking QR login with the QR-image relay for container displays),
@@ -6,9 +6,9 @@ subscriptions, durable scheduler/pipeline runs, scheduler Jobs, assets and
 Emby export. Every endpoint is a thin projection over the same application
 services the CLI uses; no new authority or credential surface is introduced.
 
-The service is local-first: it binds ``127.0.0.1`` by default and carries no
-authentication. Container deployments bind ``0.0.0.0`` inside the network
-namespace but must publish the port to a trusted network only.
+The service is local-first and binds ``127.0.0.1`` by default.  A required
+single-operator browser credential protects every non-public route; optional
+Bearer automation remains separate from the HttpOnly browser session.
 """
 
 from __future__ import annotations
@@ -126,7 +126,18 @@ from media_sync.interfaces.cli import (
     collect_deep_readiness_report,
 )
 from media_sync.scheduler import DurableSchedulerService, SchedulerRepository, StaleLaneError
-from media_sync.security import SecretResolver
+from media_sync.security import (
+    OPERATOR_SESSION_COOKIE_NAME,
+    OperatorAuthConfigurationError,
+    OperatorAuthMiddleware,
+    OperatorAuthRuntime,
+    OperatorLoginRejected,
+    OperatorOriginPolicy,
+    SecretResolver,
+    derive_operator_origin_policy,
+    resolve_operator_auth_runtime,
+    session_cookie_from_headers,
+)
 
 _CONSOLE_PATH = Path(__file__).with_name("console.html")
 _PACKAGED_WEB_ROOT = Path(__file__).with_name("static") / "console-v2"
@@ -140,7 +151,31 @@ _OPERATION_STREAM_KEEPALIVE_SECONDS = 10.0
 _OPERATION_STREAM_MAX_SECONDS = 30.0
 _OPERATION_RECONCILE_MIN_INTERVAL_SECONDS = 1.0
 _OPERATION_RECONCILE_SHUTDOWN_SECONDS = 1.0
+_MAX_OPERATOR_LOGIN_BODY_BYTES = 8 * 1024
 _LAST_EVENT_ID = re.compile(r"(?:0|[1-9][0-9]{0,18})\Z")
+_JSON_CONTENT_TYPE = re.compile(r"application/json(?:\s*;\s*charset=utf-8)?\Z", re.IGNORECASE)
+_OPERATOR_LOGIN_OPENAPI = {
+    "requestBody": {
+        "required": True,
+        "content": {
+            "application/json": {
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "credential": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 1_024,
+                            "writeOnly": True,
+                        }
+                    },
+                    "required": ["credential"],
+                    "additionalProperties": False,
+                }
+            }
+        },
+    }
+}
 _ACCOUNT_LOGIN_RETRYABLE_CODES = frozenset(
     {
         "account_login_busy",
@@ -525,10 +560,32 @@ class MediaServerAuthorOperationRequest(BaseModel):
 # ------------------------------------------------------------------ app factory
 
 
-def create_api_app(settings: Settings | None = None) -> FastAPI:
-    """Build the local FastAPI application without migrating durable state."""
+def create_api_app(
+    settings: Settings | None = None,
+    *,
+    operator_auth_runtime: OperatorAuthRuntime | None = None,
+    operator_origin_policy: OperatorOriginPolicy | None = None,
+) -> FastAPI:
+    """Build the fail-closed FastAPI application without migrating durable state."""
 
     resolved = settings or get_settings()
+    if (operator_auth_runtime is None) != (operator_origin_policy is None):
+        raise OperatorAuthConfigurationError
+    if operator_auth_runtime is None:
+        resolver = SecretResolver.local(file_root=resolved.resolved_secret_file_dir)
+        operator_auth_runtime = resolve_operator_auth_runtime(
+            resolved.operator_credential_secret_reference,
+            resolved.operator_api_token_secret_reference,
+            resolver,
+            resolved.operator_session_ttl_seconds,
+        )
+        operator_origin_policy = derive_operator_origin_policy(
+            resolved.api_host,
+            resolved.api_port,
+            resolved.operator_allowed_origins,
+        )
+    assert operator_auth_runtime is not None
+    assert operator_origin_policy is not None
     operation_database = Database(resolved.resolved_database_url)
     operations = OperationCoordinator(operation_database)
     operation_reconciliation = _OperationReconciliationTrigger(operations)
@@ -576,6 +633,8 @@ def create_api_app(settings: Settings | None = None) -> FastAPI:
 
     app = FastAPI(title="media-sync", version=__version__, docs_url="/api/docs", lifespan=lifespan)
     app.state.settings = resolved
+    app.state.operator_auth_runtime = operator_auth_runtime
+    app.state.operator_origin_policy = operator_origin_policy
     app.state.operations = operations
     app.state.media_server_service = media_server_service
     app.state.media_server_observation_service = media_server_observation_service
@@ -931,6 +990,158 @@ def create_api_app(settings: Settings | None = None) -> FastAPI:
     def health() -> dict[str, str]:
         return {"status": "ok"}
 
+    @app.head("/api/v1/health", include_in_schema=False)
+    def health_head() -> Response:
+        return Response(status_code=200)
+
+    @app.post("/api/v1/operator-auth/login", openapi_extra=_OPERATOR_LOGIN_OPENAPI)
+    async def operator_login(request: Request) -> Response:
+        raw_headers = request.scope.get("headers", ())
+        content_types = [value for name, value in raw_headers if name.lower() == b"content-type"]
+        if len(content_types) != 1 or len(content_types[0]) > 64:
+            return JSONResponse(
+                status_code=415,
+                content={"detail": "operator_login_content_type_invalid"},
+                headers={"Cache-Control": "no-store"},
+            )
+        try:
+            content_type = content_types[0].decode("ascii")
+        except UnicodeDecodeError:
+            content_type = ""
+        if _JSON_CONTENT_TYPE.fullmatch(content_type) is None:
+            return JSONResponse(
+                status_code=415,
+                content={"detail": "operator_login_content_type_invalid"},
+                headers={"Cache-Control": "no-store"},
+            )
+        content_lengths = [value for name, value in raw_headers if name.lower() == b"content-length"]
+        if len(content_lengths) > 1:
+            return JSONResponse(
+                status_code=400,
+                content={"detail": "operator_login_request_invalid"},
+                headers={"Cache-Control": "no-store"},
+            )
+        if content_lengths:
+            content_length_text = ""
+            try:
+                content_length_text = content_lengths[0].decode("ascii")
+                content_length = int(content_length_text)
+            except (UnicodeDecodeError, ValueError):
+                content_length = -1
+            if str(content_length) != content_length_text or not 0 <= content_length <= _MAX_OPERATOR_LOGIN_BODY_BYTES:
+                return JSONResponse(
+                    status_code=413 if content_length > _MAX_OPERATOR_LOGIN_BODY_BYTES else 400,
+                    content={
+                        "detail": (
+                            "operator_login_body_too_large"
+                            if content_length > _MAX_OPERATOR_LOGIN_BODY_BYTES
+                            else "operator_login_request_invalid"
+                        )
+                    },
+                    headers={"Cache-Control": "no-store"},
+                )
+        payload = bytearray()
+        try:
+            async for chunk in request.stream():
+                payload.extend(chunk)
+                if len(payload) > _MAX_OPERATOR_LOGIN_BODY_BYTES:
+                    return JSONResponse(
+                        status_code=413,
+                        content={"detail": "operator_login_body_too_large"},
+                        headers={"Cache-Control": "no-store"},
+                    )
+
+            def strict_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+                result: dict[str, object] = {}
+                for key, value in pairs:
+                    if key in result:
+                        raise ValueError("duplicate JSON member")
+                    result[key] = value
+                return result
+
+            def reject_constant(_value: str) -> object:
+                raise ValueError("non-finite JSON value")
+
+            decoded = json.loads(
+                bytes(payload).decode("utf-8"),
+                object_pairs_hook=strict_object,
+                parse_constant=reject_constant,
+            )
+            credential = decoded.get("credential") if type(decoded) is dict and set(decoded) == {"credential"} else None
+            if type(credential) is not str or not credential or len(credential.encode("utf-8")) > 1_024:
+                raise ValueError("invalid credential shape")
+        except (RecursionError, UnicodeError, ValueError):
+            return JSONResponse(
+                status_code=400,
+                content={"detail": "operator_login_request_invalid"},
+                headers={"Cache-Control": "no-store"},
+            )
+        try:
+            issued = await asyncio.to_thread(operator_auth_runtime.login, credential)
+        except OperatorLoginRejected as error:
+            headers = {"Cache-Control": "no-store"}
+            if error.retry_after_seconds is not None:
+                headers["Retry-After"] = str(error.retry_after_seconds)
+            return JSONResponse(
+                status_code=error.status_code,
+                content={"detail": error.code.value},
+                headers=headers,
+            )
+        response = JSONResponse(
+            content={"authenticated": True, "expires_in_seconds": issued.max_age_seconds},
+            headers={"Cache-Control": "no-store"},
+        )
+        response.set_cookie(
+            key=OPERATOR_SESSION_COOKIE_NAME,
+            value=issued.cookie_value,
+            max_age=issued.max_age_seconds,
+            path="/",
+            secure=operator_origin_policy.secure_cookie,
+            httponly=True,
+            samesite="strict",
+        )
+        return response
+
+    @app.get("/api/v1/operator-auth/session")
+    def operator_session(request: Request) -> Response:
+        cookie = session_cookie_from_headers(request.scope.get("headers", ()))
+        session = operator_auth_runtime.session(cookie)
+        if session is None:
+            response = JSONResponse(
+                content={"authenticated": False},
+                headers={"Cache-Control": "no-store"},
+            )
+            response.delete_cookie(
+                OPERATOR_SESSION_COOKIE_NAME,
+                path="/",
+                secure=operator_origin_policy.secure_cookie,
+                httponly=True,
+                samesite="strict",
+            )
+            return response
+        return JSONResponse(
+            content={
+                "authenticated": True,
+                "csrf_token": session.csrf_token,
+                "expires_in_seconds": session.expires_in_seconds,
+            },
+            headers={"Cache-Control": "no-store"},
+        )
+
+    @app.post("/api/v1/operator-auth/logout", status_code=204)
+    def operator_logout(request: Request) -> Response:
+        cookie = session_cookie_from_headers(request.scope.get("headers", ()))
+        operator_auth_runtime.logout(cookie)
+        response = Response(status_code=204, headers={"Cache-Control": "no-store"})
+        response.delete_cookie(
+            OPERATOR_SESSION_COOKIE_NAME,
+            path="/",
+            secure=operator_origin_policy.secure_cookie,
+            httponly=True,
+            samesite="strict",
+        )
+        return response
+
     @app.get("/api/v1/support-bundle")
     def support_bundle() -> Response:
         try:
@@ -947,8 +1158,7 @@ def create_api_app(settings: Settings | None = None) -> FastAPI:
             headers={"Cache-Control": "no-store"},
         )
 
-    @app.get("/api/v1/ready")
-    def ready() -> dict[str, object]:
+    def _ready_payload() -> dict[str, object]:
         database = _database()
         try:
             with database.session() as session:
@@ -961,6 +1171,15 @@ def create_api_app(settings: Settings | None = None) -> FastAPI:
         finally:
             database.dispose()
         return {"status": "ready", "database": "ok"}
+
+    @app.get("/api/v1/ready")
+    def ready() -> dict[str, object]:
+        return _ready_payload()
+
+    @app.head("/api/v1/ready", include_in_schema=False)
+    def ready_head() -> Response:
+        _ready_payload()
+        return Response(status_code=200)
 
     @app.get("/api/v1/readiness/deep")
     def deep_readiness(
@@ -1206,7 +1425,7 @@ def create_api_app(settings: Settings | None = None) -> FastAPI:
         except (RepositoryError, SQLAlchemyError):
             raise HTTPException(status_code=503, detail="operation_store_unavailable") from None
 
-    @app.get("/", include_in_schema=False)
+    @app.api_route("/", methods=["GET", "HEAD"], include_in_schema=False)
     def console() -> Response:
         if web_root is not None:
             return _static_response(web_root)
@@ -2073,8 +2292,7 @@ def create_api_app(settings: Settings | None = None) -> FastAPI:
         finally:
             database.dispose()
 
-    @app.api_route("/api/v1/assets/{asset_id}/archive", methods=["GET", "HEAD"])
-    def preview_asset_archive(asset_id: UUID, request: Request) -> Response:
+    def _preview_asset_archive(asset_id: UUID, request: Request) -> Response:
         """Serve one verified archive blob without exposing or reopening its path."""
 
         canonical_asset_id = str(asset_id)
@@ -2171,6 +2389,14 @@ def create_api_app(settings: Settings | None = None) -> FastAPI:
             with suppress(ArchivePreviewError):
                 preview.close()
             raise
+
+    @app.get("/api/v1/assets/{asset_id}/archive")
+    def preview_asset_archive(asset_id: UUID, request: Request) -> Response:
+        return _preview_asset_archive(asset_id, request)
+
+    @app.head("/api/v1/assets/{asset_id}/archive", include_in_schema=False)
+    def preview_asset_archive_head(asset_id: UUID, request: Request) -> Response:
+        return _preview_asset_archive(asset_id, request)
 
     @app.get("/api/v1/contents")
     def list_contents(
@@ -2515,12 +2741,18 @@ def create_api_app(settings: Settings | None = None) -> FastAPI:
         _reconcile_operation_reads()
         return _operation_detail(operation_id)
 
-    @app.get("/{frontend_path:path}", include_in_schema=False)
+    @app.api_route("/{frontend_path:path}", methods=["GET", "HEAD"], include_in_schema=False)
     def console_spa(frontend_path: str) -> Response:
         if frontend_path.startswith("api/") or web_root is None:
             raise HTTPException(status_code=404, detail="not found")
         return _static_response(web_root, frontend_path or "index.html")
 
+    app.add_middleware(
+        OperatorAuthMiddleware,
+        runtime=operator_auth_runtime,
+        origin_policy=operator_origin_policy,
+        web_root=web_root,
+    )
     return app
 
 
