@@ -200,7 +200,7 @@
     <div class="summary-item">
       <span class="summary-label">创作者订阅<UsersRound size={16} /></span>
       <strong class="summary-value">{loading ? '—' : subscriptions.length}</strong>
-      <span class="summary-hint">{subscriptions.filter((item) => item.enabled).length} 个运行中</span>
+      <span class="summary-hint">{subscriptions.filter((item) => item.enabled).length} 个已启用</span>
     </div>
     <div class="summary-item">
       <span class="summary-label">待处理任务<Clock3 size={16} /></span>

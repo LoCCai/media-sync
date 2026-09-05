@@ -14,7 +14,7 @@ from types import MappingProxyType
 import pytest
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import func, inspect, select, text
+from sqlalchemy import event, func, inspect, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -918,6 +918,109 @@ def test_job_exact_claim_never_consumes_another_queue_item(database: Database) -
         untouched_after = repository.get(untouched.id)
         assert untouched_after is not None
         assert untouched_after.status == "queued"
+
+
+@pytest.mark.parametrize("same_job", [True, False], ids=["same-job", "different-jobs"])
+@pytest.mark.parametrize("subscription_scoped", [True, False], ids=["subscription", "unscoped"])
+def test_exact_claim_preserves_writer_first_sqlite_concurrency(
+    database: Database, same_job: bool, subscription_scoped: bool
+) -> None:
+    now = datetime(2026, 9, 5, tzinfo=UTC)
+    with database.session() as session:
+        subscription_id = None
+        if subscription_scoped:
+            account = AccountRepository(session).create(platform="bili", display_name="exact-claim")
+            author = AuthorRepository(session).upsert(
+                AuthorUpsert(platform="bili", remote_id="exact-claim", display_name="Exact claim")
+            )
+            subscription_id = SubscriptionRepository(session).create(account_id=account.id, author_id=author.id).id
+        jobs = JobRepository(session)
+        ids = [
+            jobs.enqueue(
+                job_type="offline.exact-claim",
+                natural_key=f"concurrent-{index}",
+                subscription_id=subscription_id,
+                available_at=now,
+            ).id
+            for index in range(1 if same_job else 2)
+        ]
+    start = Barrier(2)
+
+    def claim(index: int) -> tuple[str | None, str]:
+        worker_database = Database(database.url)
+        statements: list[str] = []
+
+        def capture(
+            connection: object, cursor: object, statement: str, parameters: object, context: object, executemany: bool
+        ) -> None:
+            if statement.lstrip().upper().startswith(("SELECT", "UPDATE", "INSERT", "DELETE")):
+                statements.append(statement)
+
+        event.listen(worker_database.engine, "before_cursor_execute", capture)
+        try:
+            with worker_database.session() as session:
+                start.wait()
+                claimed = JobRepository(session).claim(
+                    ids[0 if same_job else index], worker_id=f"worker-{index}", now=now
+                )
+                return claimed.id if claimed is not None else None, statements[0]
+        finally:
+            worker_database.dispose()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(claim, (0, 1)))
+    assert sum(identifier is not None for identifier, _ in results) == (1 if same_job else 2)
+    assert all(statement.startswith("UPDATE jobs") for _, statement in results)
+    with database.session() as session:
+        rows = JobRepository(session).list()
+        assert len(rows) == len(ids)
+        assert all(row.status == "claimed" and row.attempts == 1 for row in rows)
+
+
+@pytest.mark.parametrize("same_key", [True, False], ids=["same-key", "different-keys"])
+def test_scoped_enqueue_preserves_writer_first_sqlite_concurrency(database: Database, same_key: bool) -> None:
+    now = datetime(2026, 9, 5, tzinfo=UTC)
+    with database.session() as session:
+        account = AccountRepository(session).create(platform="bili", display_name="scoped-enqueue")
+        author = AuthorRepository(session).upsert(
+            AuthorUpsert(platform="bili", remote_id="scoped-enqueue", display_name="Scoped enqueue")
+        )
+        subscription_id = SubscriptionRepository(session).create(account_id=account.id, author_id=author.id).id
+    start = Barrier(2)
+
+    def enqueue(index: int) -> tuple[str, str]:
+        worker_database = Database(database.url)
+        statements: list[str] = []
+
+        def capture(
+            connection: object, cursor: object, statement: str, parameters: object, context: object, executemany: bool
+        ) -> None:
+            if statement.lstrip().upper().startswith(("SELECT", "UPDATE", "INSERT", "DELETE")):
+                statements.append(statement)
+
+        event.listen(worker_database.engine, "before_cursor_execute", capture)
+        try:
+            with worker_database.session() as session:
+                start.wait()
+                job = JobRepository(session).enqueue(
+                    job_type="offline.scoped-enqueue",
+                    natural_key=f"concurrent-{0 if same_key else index}",
+                    subscription_id=subscription_id,
+                    available_at=now,
+                )
+                return job.id, statements[0]
+        finally:
+            worker_database.dispose()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(enqueue, (0, 1)))
+    assert len({identifier for identifier, _ in results}) == (1 if same_key else 2)
+    assert all(statement.startswith("UPDATE jobs") for _, statement in results)
+    with database.session() as session:
+        rows = JobRepository(session).list()
+        assert len(rows) == (1 if same_key else 2)
+        assert all(row.status == "queued" and row.attempts == 0 for row in rows)
+        assert all(row.subscription_id == subscription_id for row in rows)
 
 
 def test_concurrent_sqlite_author_content_upsert_is_idempotent(database: Database) -> None:

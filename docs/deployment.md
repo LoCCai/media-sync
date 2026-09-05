@@ -156,9 +156,19 @@ Subscription, scheduler, download, archive and Emby/Jellyfin publication backend
 
 ## 5. Point Emby/Jellyfin at the library
 
-Mount or share the `media-sync-data` volume's `/data/library` path read-only to your media server and add it as a TV library. NFO, posters and episodes are deterministic per creator. If the media server needs a host bind mount, follow the compose comment and mount the same `/srv/media-sync/data` into media-sync. `MEDIA_SYNC_MEDIA_SERVER_LIBRARY_PATH` must be the **server-side absolute path returned by the Emby/Jellyfin API**, not a browser path or an interchangeable local path.
+### Local directory first — no server connection required
 
-Stage 0054-A supports one immutable, environment-owned connection. Add the complete configuration below to `media-sync.environment` in your local `docker-compose.yml`; the six selectors must be either all present or all absent:
+Downloading, archiving and exporting compatible files do not require an Emby/Jellyfin URL, API key, connection probe or playback confirmation. Local export still requires verified archive assets and retains its existing ownership, integrity and publication checks. Leave all optional media-server profile fields unset if you only need the directory.
+
+Mount or share the `media-sync-data` volume's `/data/library` path read-only to your media server, add it as a TV library, then request a library scan in Emby/Jellyfin itself. NFO, posters and episodes are deterministic per creator. If the media server needs a host bind mount, follow the compose comment and mount the same `/srv/media-sync/data` into media-sync. The shared files must be readable by the media-server process; a successful media-sync export alone does not prove that server-side mapping, scanning or playback succeeded.
+
+For later additions, scan again in Emby/Jellyfin, or configure that server's own periodic/real-time scanning where supported. Do not assume automatic scanning is enabled. media-sync does not automatically request a server refresh after export. The output directory and local publication records remain usable with no API linkage and no remote playback qualification.
+
+### Optional API linkage — convenience for probe, refresh and verification
+
+Configure this only if you want to trigger a connection probe, explicitly request a refresh, inspect a server item or record playback evidence from media-sync. These are separate, optional operations; they do not unlock local export or automatically enable scanning. Stage 0054-A supports one immutable, environment-owned connection. Add the complete configuration below to `media-sync.environment` in your local `docker-compose.yml`; the six selectors must be either all present or all absent. Partial configuration remains an error.
+
+For this optional linkage, `MEDIA_SYNC_MEDIA_SERVER_LIBRARY_PATH` must be the **server-side absolute path returned by the Emby/Jellyfin API**, not a browser path or an interchangeable local path.
 
 | Environment variable | Meaning |
 | --- | --- |

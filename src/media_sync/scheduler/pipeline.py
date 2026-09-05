@@ -17,7 +17,13 @@ from sqlalchemy.orm import Session
 
 from media_sync.infrastructure.db.base import utc_now
 from media_sync.infrastructure.db.models import PLATFORMS, Account, Job, Subscription, SyncRun
-from media_sync.infrastructure.db.repositories import JobRepository, NotFoundError, RepositoryError
+from media_sync.infrastructure.db.repositories import (
+    JobRepository,
+    NotFoundError,
+    RepositoryError,
+    SubscriptionRemovalError,
+    SubscriptionRepository,
+)
 
 from .repository import validate_sync_subscription_job
 
@@ -194,7 +200,10 @@ class PipelineJobRepository:
         run = self.session.get(SyncRun, run_id)
         if run is None or run.status != "succeeded" or run.subscription_id != source.subscription_id:
             raise PipelineJobRepositoryError("pipeline run is not a succeeded run for the source subscription")
-        subscription = self.session.get(Subscription, source.subscription_id)
+        try:
+            subscription = SubscriptionRepository(self.session).require_active(source.subscription_id, lock=True)
+        except SubscriptionRemovalError:
+            raise PipelineJobRepositoryError("subscription_removed") from None
         if subscription is None or subscription.account_id != source.account_id:
             raise PipelineJobRepositoryError("pipeline source does not match the current subscription account")
         account = self.session.get(Account, source.account_id)

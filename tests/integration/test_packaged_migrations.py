@@ -14,7 +14,7 @@ from datetime import UTC, datetime, timedelta
 from importlib.resources import as_file, files
 from io import StringIO
 from pathlib import Path
-from uuid import UUID
+from uuid import UUID, uuid4
 from zipfile import ZipFile
 
 import httpx
@@ -47,14 +47,13 @@ from media_sync.infrastructure.db import (
     JobRepository,
     OperationRepository,
     OperationSubjectInput,
-    SubscriptionRepository,
 )
 from media_sync.infrastructure.db.asset_identity import stable_asset_key
 from media_sync.infrastructure.db.migration import MIGRATIONS_PACKAGE, upgrade_database
 from media_sync.media import AdapterRefreshLocator, SafeHttpClient, SecureMediaDownloader, ValidatedTarget
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
-HEAD_REVISION = "0008_playback_evidence"
+HEAD_REVISION = "0009_subscription_removal"
 
 
 class _PublicResolver:
@@ -195,6 +194,7 @@ def test_built_wheel_contains_and_runs_packaged_migrations(tmp_path: Path) -> No
             "media_sync/infrastructure/db/migrations/versions/0006_operations_observability.py",
             "media_sync/infrastructure/db/migrations/versions/0007_media_server_operations.py",
             "media_sync/infrastructure/db/migrations/versions/0008_playback_evidence.py",
+            "media_sync/infrastructure/db/migrations/versions/0009_subscription_removal.py",
         }
         assert required_resources <= wheel_names
         wheel.extractall(installed_root)
@@ -220,7 +220,7 @@ try:
     if "accounts" not in inspect(engine).get_table_names():
         raise AssertionError("packaged migration did not create accounts")
     with engine.connect() as connection:
-        if connection.scalar(text("SELECT version_num FROM alembic_version")) != "0008_playback_evidence":
+        if connection.scalar(text("SELECT version_num FROM alembic_version")) != "0009_subscription_removal":
             raise AssertionError("unexpected migration revision")
 finally:
     engine.dispose()
@@ -586,6 +586,7 @@ def test_0005_roundtrip_conservatively_backfills_only_unique_mediacrawler_source
 
     seeded = Database(database_url)
     try:
+        assert "deleted_at" not in {column["name"] for column in inspect(seeded.engine).get_columns("subscriptions")}
         with seeded.session() as session:
 
             def seed_asset(
@@ -604,11 +605,14 @@ def test_0005_roundtrip_conservatively_backfills_only_unique_mediacrawler_source
                         adapter=adapter,
                         display_name=f"account-{suffix}-{index}",
                     )
-                    subscription = SubscriptionRepository(session).create(
-                        account_id=account.id,
-                        author_id=author.id,
+                    # This is a 0004 fixture: do not insert through today's
+                    # Subscription model, which includes later migration fields.
+                    subscription_id = str(uuid4())
+                    session.execute(
+                        text("INSERT INTO subscriptions (id, account_id, author_id) VALUES (:id, :account, :author)"),
+                        {"id": subscription_id, "account": account.id, "author": author.id},
                     )
-                    subscription_ids.append(subscription.id)
+                    subscription_ids.append(subscription_id)
                 content = contents[0]
                 locator = AdapterRefreshLocator(
                     adapter="mediacrawler",

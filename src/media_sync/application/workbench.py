@@ -64,6 +64,7 @@ _ERROR_MESSAGES: Final = {
         "MediaCrawler scheduling policy options require a MediaCrawler account"
     ),
     "subscription_exists_with_different_options": ("the subscription already exists with different scheduling options"),
+    "subscription_removed": "the subscription was removed; restore it explicitly before making changes",
 }
 WORKBENCH_ERROR_CODES: Final = frozenset(_ERROR_MESSAGES)
 
@@ -227,6 +228,7 @@ class SubscriptionWorkbenchResult:
     last_success_at: datetime | None
     next_run_at: datetime | None
     created: bool
+    deleted_at: datetime | None = None
 
     def to_payload(self) -> dict[str, object]:
         return {
@@ -238,6 +240,7 @@ class SubscriptionWorkbenchResult:
             "creator_remote_id": self.creator_remote_id,
             "creator_display_name": self.creator_display_name,
             "enabled": self.enabled,
+            "deleted_at": _iso_datetime(self.deleted_at),
             "interval_seconds": self.interval_seconds,
             "max_items": self.max_items,
             "policy_summary": self.policy_summary.to_payload(),
@@ -575,6 +578,8 @@ class SubscriptionWorkbenchService:
                 account.id,
                 existing_author.id,
             )
+        if existing_subscription is not None and existing_subscription.deleted_at is not None:
+            raise WorkbenchError("subscription_removed")
         if existing_subscription is not None and (
             existing_subscription.interval_seconds != draft.interval_seconds
             or existing_subscription.max_items != draft.max_items

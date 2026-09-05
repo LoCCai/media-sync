@@ -2,7 +2,13 @@
 
 # Unified project status (single source of truth)
 
-## Latest: actionable scheduler diagnostics (2026-09-05)
+## Latest: subscription usability and local delivery (2026-09-05)
+
+[Execution 0056](executions/0056-subscription-usability/progress.md) implements local-directory/optional-server guidance, reversible subscription removal and paused restoration, and an exact-Job safe report with business-first UI. The migration retains files and history; busy work rejects removal. Focused API/CLI and backend regression passed, as did the 440-test Web gate and bounded synthetic browser checks; [verification](executions/0056-subscription-usability/verification.md) distinguishes full-suite/publication state and real-world exclusions.
+
+Automatic creator nickname/avatar retrieval is still **NOT_IMPLEMENTED** and is the next mandatory part of 0056; local input preview is not remote lookup. Pasted-Cookie login, correct bounded Bili history coverage and the seven-platform capture/archive/Emby/Jellyfin qualification goal remain unchanged. No production deployment or retry occurred; supervisor remains operator-stopped. 0056 is not complete.
+
+## Previous checkpoint: actionable scheduler diagnostics
 
 The first real Bili capture remains FAILED: terminal schema_invalid Job, attached running Run without an error, zero content. The [scheduler diagnostic increment](executions/0055-operator-auth-playback-evidence/scheduler-diagnostics/progress.md) separates heartbeat failure, typed SQLite writer contention and finalization failure, without changing terminal/circuit policy or rewriting historical Runs. API/CLI and Jobs use fixed diagnostic projections; detailed checks and limits are in [verification](executions/0055-operator-auth-playback-evidence/scheduler-diagnostics/verification.md). Implementation and local regression pass (Python unions 368 and 269, one Windows skip; Web 343), but are not a production remedy or live PASS. Supervisor remains operator-stopped and the test subscription paused; no new capture is authorized by this increment.
 

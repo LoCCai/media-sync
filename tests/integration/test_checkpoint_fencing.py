@@ -12,7 +12,7 @@ from threading import Barrier
 import pytest
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import select, text
+from sqlalchemy import event, select, text
 from sqlalchemy.exc import IntegrityError
 
 from media_sync.infrastructure.db import (
@@ -21,6 +21,7 @@ from media_sync.infrastructure.db import (
     AuthorUpsert,
     Database,
     StaleCheckpointError,
+    SubscriptionRemovalError,
     SubscriptionRepository,
     SyncRunRepository,
     create_database_engine,
@@ -300,3 +301,49 @@ def test_stale_publication_can_be_caught_without_dirtying_the_transaction(databa
         assert subscription.next_run_at is None
         assert subscription.watermarked_at is None
         assert subscription.watermark_remote_ids == []
+
+
+@pytest.mark.parametrize("expected_revision", [0, 99], ids=["current", "stale"])
+def test_removed_checkpoint_cas_is_writer_first_and_caught_failure_changes_nothing(
+    database: Database, expected_revision: int
+) -> None:
+    subscription_id = _seed_subscription(database)
+    deleted_at = datetime(2026, 9, 5, tzinfo=UTC)
+    with database.session() as session:
+        subscription = session.get(Subscription, subscription_id)
+        assert subscription is not None
+        subscription.deleted_at = deleted_at
+        subscription.enabled = False
+
+    statements: list[str] = []
+
+    def capture(
+        connection: object, cursor: object, statement: str, parameters: object, context: object, executemany: bool
+    ) -> None:
+        if statement.lstrip().upper().startswith(("SELECT", "UPDATE", "INSERT", "DELETE")):
+            statements.append(statement)
+
+    event.listen(database.engine, "before_cursor_execute", capture)
+    try:
+        with database.session() as session:
+            with pytest.raises(SubscriptionRemovalError, match="subscription_removed"):
+                SubscriptionRepository(session).publish_checkpoint(
+                    subscription_id,
+                    expected_revision=expected_revision,
+                    cursor={"head": "must-not-publish"},
+                    backfill_cursor=None,
+                    next_run_at=deleted_at,
+                )
+            # Deliberately commit a caught conflict, proving the CAS changed
+            # neither revision nor data rather than relying on a rollback.
+            assert session.in_transaction()
+        assert statements[0].startswith("UPDATE subscriptions")
+        assert "subscriptions.deleted_at IS NULL" in statements[0]
+    finally:
+        event.remove(database.engine, "before_cursor_execute", capture)
+    with database.session() as session:
+        subscription = session.get(Subscription, subscription_id)
+        assert subscription is not None
+        assert subscription.deleted_at == deleted_at and not subscription.enabled
+        assert subscription.checkpoint_revision == 0 and subscription.cursor == {"head": "initial"}
+        assert subscription.backfill_cursor == {"page": 1} and subscription.next_run_at is None

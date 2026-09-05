@@ -138,6 +138,7 @@ export interface Subscription {
   creator_remote_id: string;
   creator_display_name: string;
   enabled: boolean;
+  deleted_at: string | null;
   interval_seconds: number;
   max_items: number;
   watermarked_at: string | null;
@@ -145,6 +146,14 @@ export interface Subscription {
   next_run_at: string | null;
   policy_summary?: SubscriptionPolicySummary;
   created?: boolean;
+}
+
+export interface SubscriptionLifecycleResult {
+  id: string;
+  status: 'deleted' | 'paused';
+  changed: boolean;
+  cancelled_jobs: number;
+  media_preserved: true;
 }
 
 export interface SubscriptionDetail extends Subscription {

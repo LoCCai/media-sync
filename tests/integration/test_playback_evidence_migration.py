@@ -156,7 +156,7 @@ def _table_signature(engine: Engine) -> dict[str, object]:
 def test_0008_upgrades_fresh_and_populated_0007_databases_without_changing_parents(tmp_path: Path) -> None:
     fresh_url = _database_url(tmp_path / "fresh.sqlite3")
     upgrade_database(fresh_url, PARENT_REVISION)
-    upgrade_database(fresh_url)
+    upgrade_database(fresh_url, HEAD_REVISION)
     fresh_engine = create_database_engine(fresh_url)
     try:
         assert "playback_evidence" in inspect(fresh_engine).get_table_names()
@@ -169,7 +169,7 @@ def test_0008_upgrades_fresh_and_populated_0007_databases_without_changing_paren
     populated_url = _database_url(tmp_path / "populated.sqlite3")
     upgrade_database(populated_url, PARENT_REVISION)
     author_id, job_id = _seed_parents(populated_url, "populated")
-    upgrade_database(populated_url)
+    upgrade_database(populated_url, HEAD_REVISION)
     populated_engine = create_database_engine(populated_url)
     try:
         with populated_engine.connect() as connection:
@@ -207,7 +207,7 @@ def test_0008_offline_upgrade_is_portable_and_contains_the_complete_ledger(
 
 def test_0008_migration_and_create_all_have_equivalent_playback_evidence_metadata(tmp_path: Path) -> None:
     migrated_url = _database_url(tmp_path / "migrated.sqlite3")
-    upgrade_database(migrated_url)
+    upgrade_database(migrated_url, HEAD_REVISION)
     migrated_engine = create_database_engine(migrated_url)
 
     metadata_database = Database(_database_url(tmp_path / "metadata.sqlite3"))
@@ -263,7 +263,7 @@ def test_0008_rejects_invalid_uuid_digest_schema_and_timestamp_rows(
     overrides: dict[str, object],
 ) -> None:
     database_url = _database_url(tmp_path / "constraints.sqlite3")
-    upgrade_database(database_url)
+    upgrade_database(database_url, HEAD_REVISION)
     author_id, job_id = _seed_parents(database_url, "constraints")
     engine = create_database_engine(database_url)
     try:
@@ -277,7 +277,7 @@ def test_0008_rejects_invalid_uuid_digest_schema_and_timestamp_rows(
 
 def test_0008_restricts_parent_deletion_and_blocks_nonempty_downgrade(tmp_path: Path) -> None:
     database_url = _database_url(tmp_path / "guarded.sqlite3")
-    upgrade_database(database_url)
+    upgrade_database(database_url, HEAD_REVISION)
     author_id, job_id = _seed_parents(database_url, "guarded")
     engine = create_database_engine(database_url)
     try:

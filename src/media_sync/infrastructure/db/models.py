@@ -297,6 +297,7 @@ class Subscription(TimestampMixin, Base):
         nullable=False,
     )
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default=text("1"))
+    deleted_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     interval_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=21_600, server_default="21600")
     max_items: Mapped[int] = mapped_column(Integer, nullable=False, default=30, server_default="30")
     cursor: Mapped[dict[str, Any] | None] = mapped_column(JSON)

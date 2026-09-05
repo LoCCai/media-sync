@@ -66,6 +66,7 @@ from media_sync.application.login_diagnostics import LoginDiagnostic, latest_ses
 from media_sync.application.mediacrawler import load_normalized_output
 from media_sync.application.mediacrawler_download import LazyMediaCrawlerLocatorRefresher
 from media_sync.application.operations import DurableSubjectHook
+from media_sync.application.subscription_removal import SubscriptionRemovalError, SubscriptionRemovalService
 from media_sync.config import Settings, get_settings
 from media_sync.domain import AccountRef, AssetStatus, Cursor, DomainError, JobStatus, LoginMethod, Platform, RunStatus
 from media_sync.exporters.emby import EmbyExporter, ExportError
@@ -193,7 +194,7 @@ app.add_typer(asset_app, name="asset")
 app.add_typer(emby_app, name="emby")
 app.add_typer(pipeline_app, name="pipeline")
 
-_EXPECTED_DATABASE_REVISION = "0008_playback_evidence"
+_EXPECTED_DATABASE_REVISION = "0009_subscription_removal"
 _REQUIRED_DATABASE_TABLES = frozenset(str(name) for name in Base.metadata.tables)
 
 
@@ -732,6 +733,7 @@ def _subscription_payload(
         "creator_remote_id": subscription.author.remote_id,
         "creator_display_name": subscription.author.display_name,
         "enabled": subscription.enabled,
+        "deleted_at": _iso_datetime(subscription.deleted_at),
         "interval_seconds": subscription.interval_seconds,
         "max_items": subscription.max_items,
         "watermarked_at": _iso_datetime(subscription.watermarked_at),
@@ -941,6 +943,8 @@ def _scheduler_runtime() -> Iterator[tuple[Database, DurableSchedulerService]]:
         yield database, DurableSchedulerService(database)
     except StaleLaneError:
         raise typer.BadParameter("scheduler lane revision conflict; list lanes and retry") from None
+    except SubscriptionRemovalError as error:
+        raise typer.BadParameter(error.code) from None
     except NotFoundError:
         raise typer.BadParameter("scheduler record was not found") from None
     except IntegrityError:
@@ -1646,12 +1650,40 @@ def add_subscription(
 @subscription_app.command("list")
 def list_subscriptions(
     json_output: Annotated[bool, typer.Option("--json", help="Emit machine-readable JSON.")] = False,
+    deleted: Annotated[bool, typer.Option("--deleted", help="List only removed subscriptions.")] = False,
 ) -> None:
     """List creator subscriptions using redaction-safe fields."""
 
     with _database_session() as session:
-        records = [_subscription_payload(subscription) for subscription in SubscriptionRepository(session).list()]
+        records = [
+            _subscription_payload(subscription)
+            for subscription in SubscriptionRepository(session).list(deleted=deleted)
+        ]
     _emit_list(records, json_output=json_output, label="subscriptions")
+
+
+@subscription_app.command("delete")
+def delete_subscription(
+    subscription_id: Annotated[UUID, typer.Option(help="Subscription UUID to remove reversibly.")],
+    json_output: Annotated[bool, typer.Option("--json", help="Emit machine-readable JSON.")] = False,
+) -> None:
+    """Remove the subscription and cancel unstarted work; retain media and history."""
+
+    with _scheduler_runtime() as (database, _service):
+        result = SubscriptionRemovalService(database).remove(str(subscription_id))
+    _emit_record(result.to_payload(), json_output=json_output, label="Removed subscription")
+
+
+@subscription_app.command("restore")
+def restore_subscription(
+    subscription_id: Annotated[UUID, typer.Option(help="Removed subscription UUID to restore paused.")],
+    json_output: Annotated[bool, typer.Option("--json", help="Emit machine-readable JSON.")] = False,
+) -> None:
+    """Restore the same subscription paused; never restart cancelled work."""
+
+    with _scheduler_runtime() as (database, _service):
+        result = SubscriptionRemovalService(database).restore(str(subscription_id))
+    _emit_record(result.to_payload(), json_output=json_output, label="Restored subscription")
 
 
 @subscription_app.command("pause")

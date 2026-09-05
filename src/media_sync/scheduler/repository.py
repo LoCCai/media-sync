@@ -35,6 +35,8 @@ from media_sync.infrastructure.db.repositories import (
     LeaseLostError,
     NotFoundError,
     RepositoryError,
+    SubscriptionRemovalError,
+    SubscriptionRepository,
     SyncRunRepository,
 )
 
@@ -448,6 +450,7 @@ class SchedulerRepository:
         *,
         now: datetime,
         expired_only: bool,
+        locked_lanes: tuple[SchedulerLane, ...] | None = None,
     ) -> Job | None:
         """Make an attached succeeded SyncRun authoritative for its scheduler Job.
 
@@ -501,7 +504,7 @@ class SchedulerRepository:
         )
         if reconciled is None:
             return None
-        self._apply_lane_success(reconciled, now=now)
+        self._apply_lane_success(reconciled, now=now, locked_lanes=locked_lanes)
         self._finalize_subscription(reconciled, now=now, outcome="success")
         self._enqueue_pipeline_for_succeeded_run(reconciled, now=now)
         return reconciled
@@ -537,7 +540,7 @@ class SchedulerRepository:
                 Account.platform,
             )
             .join(Account, Account.id == Subscription.account_id)
-            .where(Subscription.enabled.is_(True), due, ~active_cycle)
+            .where(Subscription.enabled.is_(True), Subscription.deleted_at.is_(None), due, ~active_cycle)
             .order_by(
                 case((Subscription.next_run_at.is_(None), 0), else_=1),
                 Subscription.next_run_at,
@@ -561,6 +564,7 @@ class SchedulerRepository:
                 .where(
                     Subscription.id == subscription_id,
                     Subscription.enabled.is_(True),
+                    Subscription.deleted_at.is_(None),
                     Subscription.schedule_revision == schedule_revision,
                     or_(Subscription.next_run_at.is_(None), Subscription.next_run_at <= current),
                     ~fenced_active_cycle,
@@ -1086,6 +1090,13 @@ class SchedulerRepository:
             .limit(candidate_limit)
         ).all()
         for candidate in candidates:
+            if candidate.subscription_id is None:
+                self._terminalize_invalid_candidate(candidate, now=current)
+                continue
+            try:
+                SubscriptionRepository(self.session).require_active(candidate.subscription_id, lock=True)
+            except (NotFoundError, SubscriptionRemovalError):
+                continue
             try:
                 _parse_payload(candidate)
                 lanes = self._job_lanes(candidate, now=current)
@@ -1161,6 +1172,11 @@ class SchedulerRepository:
                 Job.status.in_(allowed_statuses),
                 Job.lease_expires_at.is_not(None),
                 Job.lease_expires_at > now,
+                exists(
+                    select(Subscription.id).where(
+                        Subscription.id == Job.subscription_id, Subscription.deleted_at.is_(None)
+                    )
+                ),
             )
             .values(**dict(values))
             .returning(Job)
@@ -1340,8 +1356,10 @@ class SchedulerRepository:
             raise StaleLaneError("scheduler lane result revision changed")
         return updated
 
-    def _apply_lane_success(self, job: Job, *, now: datetime) -> None:
-        for lane in self._job_lanes(job, now=now):
+    def _apply_lane_success(
+        self, job: Job, *, now: datetime, locked_lanes: tuple[SchedulerLane, ...] | None = None
+    ) -> None:
+        for lane in self._job_lanes(job, now=now) if locked_lanes is None else locked_lanes:
             if lane.circuit_state == "closed":
                 self._update_lane_values(
                     lane,
@@ -1415,8 +1433,15 @@ class SchedulerRepository:
                     now=now,
                 )
 
-    def _release_lane_probe(self, job: Job, *, now: datetime, reset_all: bool) -> None:
-        for lane in self._job_lanes(job, now=now):
+    def _release_lane_probe(
+        self,
+        job: Job,
+        *,
+        now: datetime,
+        reset_all: bool,
+        locked_lanes: tuple[SchedulerLane, ...] | None = None,
+    ) -> None:
+        for lane in self._job_lanes(job, now=now) if locked_lanes is None else locked_lanes:
             if reset_all or (lane.circuit_state == "half_open" and lane.half_open_job_id == job.id):
                 self._update_lane_values(
                     lane,
@@ -1706,7 +1731,9 @@ class SchedulerRepository:
         normalized_id = _required_text(job_id, name="job_id", maximum=36)
         current = _aware_utc(now)
         self._serialize_sqlite_writer()
-        self._get_sync_job(normalized_id)
+        observed = self._get_sync_job(normalized_id)
+        if observed.subscription_id is not None:
+            SubscriptionRepository(self.session).require_active(observed.subscription_id, lock=True)
         resumed = self.session.scalar(
             update(Job)
             .where(
@@ -1739,6 +1766,36 @@ class SchedulerRepository:
 
     def resume_waiting(self, job_id: str, *, now: datetime | None = None) -> SchedulerJobSummary:
         return self.resume(job_id, now=now)
+
+    def cancel_unstarted_for_removal(
+        self, job_id: str, *, now: datetime, locked_lanes: tuple[SchedulerLane, ...]
+    ) -> SchedulerJobSummary:
+        """Retire a non-running cycle without rewriting its historical Run."""
+
+        self._serialize_sqlite_writer()
+        observed = self._get_sync_job(job_id)
+        if any(
+            lane.platform != observed.platform
+            or lane.scope_type not in {"platform", "account"}
+            or (lane.scope_type == "account" and lane.account_id != observed.account_id)
+            for lane in locked_lanes
+        ):
+            raise SchedulerRepositoryError("removal lane scope is invalid")
+        if observed.status not in {"queued", "retry_wait", "waiting_auth", "waiting_user", "failed_retryable"}:
+            raise SubscriptionRemovalError("subscription_busy")
+        reconciled = self._reconcile_succeeded_attachment(
+            observed, now=now, expired_only=False, locked_lanes=locked_lanes
+        )
+        if reconciled is not None:
+            return _summary(reconciled)
+        observed.status = "cancelled"
+        observed.lease_owner = observed.lease_token = None
+        observed.lease_expires_at = None
+        observed.finished_at = observed.updated_at = now
+        observed.last_error_code = observed.last_error_message = None
+        self.session.flush()
+        self._release_lane_probe(observed, now=now, reset_all=False, locked_lanes=locked_lanes)
+        return _summary(observed)
 
     def cancel(self, job_id: str, *, now: datetime | None = None) -> SchedulerJobSummary:
         normalized_id = _required_text(job_id, name="job_id", maximum=36)
@@ -1810,6 +1867,7 @@ class SchedulerRepository:
             maximum=36,
         )
         self._serialize_sqlite_writer()
+        SubscriptionRepository(self.session).require_active(normalized_id, lock=True)
         updated = self.session.scalar(
             update(Subscription)
             .where(Subscription.id == normalized_id)

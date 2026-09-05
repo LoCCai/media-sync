@@ -2,6 +2,8 @@
 
 # 项目工作日志
 
+当前交付：[0056 订阅可用性](executions/0056-subscription-usability/progress.zh.md)增加可恢复删除/暂停恢复、单 Job 报告，明确本地目录交付不依赖可选服务器联动。自动获取创作者昵称/头像仍是下一项必做、未实现切片。实际测试与边界见[验证记录](executions/0056-subscription-usability/verification.zh.md)，本执行未完成。
+
 最新 P0 后续：[首次真实 B 站采集失败](executions/0055-operator-auth-playback-evidence/bili-success-followup/verification.zh.md)后的[调度失败诊断](executions/0055-operator-auth-playback-evidence/scheduler-diagnostics/progress.zh.md)，保存双语目标/计划/推进/验证。登录成功和 Worker 完成不等于采集成功；已实现与待实现见[统一状态](status.zh.md)。有界 B 站采集与粘贴 Cookie 校验/保存/复用仍待实现，七平台目标不变。
 
 本目录是项目的长期审计记录。每个执行里程碑固定保存四类文件：目标、计划、推进结果和验证过程。自执行 0028 起，每份文档维护两种语言版本：英文 `<name>.md` 与中文 `<name>.zh.md`，两个版本顶部互相链接。
@@ -27,6 +29,7 @@
 
 | ID | 里程碑 | 状态 | 提交 |
 | --- | --- | --- | --- |
+| 0056 | 订阅可用性与本地交付 | 删除/暂停恢复、本地输出说明和精确 Job 报告已实现；自动作者资料仍必做；[进度](executions/0056-subscription-usability/progress.zh.md)、[验证](executions/0056-subscription-usability/verification.zh.md) | 计划 `fe54aba`；实现为包含本行的提交 |
 | 0001 | 初始化并锁定上游 | 已完成 | `59da120` |
 | 0002 | 上游分析与架构 | 已完成 | `af813bd`, `201fbbf` |
 | 0003 | 核心领域、持久化与离线 CLI | 已完成 | `564cdb8` |

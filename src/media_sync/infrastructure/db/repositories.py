@@ -56,6 +56,21 @@ class NotFoundError(RepositoryError):
     """The requested row does not exist."""
 
 
+class SubscriptionRemovalError(RepositoryError):
+    """Closed, public-safe subscription lifecycle conflict."""
+
+    def __init__(self, code: str) -> None:
+        if code not in {
+            "subscription_not_found",
+            "subscription_busy",
+            "subscription_removed",
+            "subscription_not_removed",
+        }:
+            raise ValueError("unsupported subscription removal error code")
+        self.code = code
+        super().__init__(code)
+
+
 class LeaseLostError(RepositoryError):
     """A worker attempted to mutate a job without its current lease."""
 
@@ -1881,6 +1896,7 @@ class AssetRefreshSourceRepository:
                     AssetRefreshSource.observed_semantic_fingerprint == asset.semantic_fingerprint,
                     AssetRefreshSource.observed_locator_fingerprint == asset.locator_fingerprint,
                     Subscription.author_id == content.author_id,
+                    Subscription.deleted_at.is_(None),
                     Account.platform == asset.platform,
                     Account.adapter == "mediacrawler",
                 )
@@ -1910,6 +1926,8 @@ class AssetRefreshSourceRepository:
         )
         if subscription is None:
             raise NotFoundError(f"subscription not found: {subscription_id}")
+        if subscription.deleted_at is not None:
+            raise SubscriptionRemovalError("subscription_removed")
         content = asset.content
         author = content.author
         account = subscription.account
@@ -2013,10 +2031,28 @@ class SubscriptionRepository:
             .options(joinedload(Subscription.account), joinedload(Subscription.author))
         )
 
-    def list(self, *, enabled: bool | None = None) -> list[Subscription]:
+    def require_active(self, subscription_id: str, *, lock: bool = False) -> Subscription:
+        """Reject tombstones; a row lock coordinates lifecycle decisions on PostgreSQL."""
+
+        statement = select(Subscription).where(Subscription.id == subscription_id)
+        if lock:
+            statement = statement.with_for_update()
+        subscription = self.session.scalar(statement.execution_options(populate_existing=True))
+        if subscription is None:
+            raise NotFoundError("subscription not found")
+        if subscription.deleted_at is not None:
+            raise SubscriptionRemovalError("subscription_removed")
+        return subscription
+
+    def list(self, *, enabled: bool | None = None, deleted: bool = False) -> list[Subscription]:
+        if type(deleted) is not bool:
+            raise ValueError("deleted must be boolean")
         statement = select(Subscription).options(
             joinedload(Subscription.account),
             joinedload(Subscription.author),
+        )
+        statement = statement.where(
+            Subscription.deleted_at.is_not(None) if deleted else Subscription.deleted_at.is_(None)
         )
         if enabled is not None:
             statement = statement.where(Subscription.enabled.is_(enabled))
@@ -2107,6 +2143,7 @@ class SubscriptionRepository:
             .where(
                 Subscription.id == subscription_id,
                 Subscription.checkpoint_revision == expected_revision,
+                Subscription.deleted_at.is_(None),
             )
             .values(
                 checkpoint_revision=Subscription.checkpoint_revision + 1,
@@ -2116,12 +2153,16 @@ class SubscriptionRepository:
             .execution_options(synchronize_session="fetch", populate_existing=True)
         ).one_or_none()
         if subscription is None:
-            actual_revision = self.session.scalar(
-                select(Subscription.checkpoint_revision).where(Subscription.id == subscription_id)
-            )
-            if actual_revision is None:
+            current = self.session.execute(
+                select(Subscription.checkpoint_revision, Subscription.deleted_at).where(
+                    Subscription.id == subscription_id
+                )
+            ).one_or_none()
+            if current is None:
                 raise NotFoundError(f"subscription not found: {subscription_id}")
-            raise StaleCheckpointError(subscription_id, expected_revision, actual_revision)
+            if current.deleted_at is not None:
+                raise SubscriptionRemovalError("subscription_removed")
+            raise StaleCheckpointError(subscription_id, expected_revision, current.checkpoint_revision)
 
         if not isinstance(safe_cursor, _UnsetType):
             subscription.cursor = safe_cursor
@@ -2162,6 +2203,7 @@ class SyncRunRepository:
         checkpoint_revision_before: int | None = None,
         manifest: Mapping[str, Any] | None = None,
     ) -> SyncRun:
+        SubscriptionRepository(self.session).require_active(subscription_id, lock=True)
         _require_status(status, RUN_STATUSES, "run")
         if isinstance(attempt, bool) or not isinstance(attempt, int) or attempt < 0:
             raise ValueError("run attempt must be a nonnegative integer")
@@ -2334,6 +2376,12 @@ class JobRepository:
     def __init__(self, session: Session) -> None:
         self.session = session
 
+    def _serialize_sqlite_writer(self) -> None:
+        """Preserve writer-first paths before their subscription lifecycle read."""
+
+        if self.session.get_bind().dialect.name == "sqlite":
+            self.session.connection().exec_driver_sql("UPDATE jobs SET updated_at = updated_at WHERE 0")
+
     @staticmethod
     def _normalize_job_types(job_types: Sequence[str] | None) -> tuple[str, ...] | None:
         if job_types is None:
@@ -2382,6 +2430,9 @@ class JobRepository:
         available_at: datetime | None = None,
         scheduled_for: datetime | None = None,
     ) -> Job:
+        if subscription_id is not None:
+            self._serialize_sqlite_writer()
+            SubscriptionRepository(self.session).require_active(subscription_id, lock=True)
         values = {
             "id": new_uuid(),
             "run_id": run_id,
@@ -2494,6 +2545,13 @@ class JobRepository:
         if lease_seconds < 1:
             raise ValueError("lease_seconds must be positive")
         current = _aware_utc(now)
+        self._serialize_sqlite_writer()
+        observed = self.get(job_id)
+        if observed is not None and observed.subscription_id is not None:
+            try:
+                SubscriptionRepository(self.session).require_active(observed.subscription_id, lock=True)
+            except SubscriptionRemovalError:
+                return None
         self.reclaim_expired(now=current, job_id=job_id)
         self.session.execute(
             update(Job)
@@ -2559,6 +2617,14 @@ class JobRepository:
             Job.status == "queued",
             Job.available_at <= current,
             Job.attempts < Job.max_attempts,
+            or_(
+                Job.subscription_id.is_(None),
+                exists(
+                    select(Subscription.id).where(
+                        Subscription.id == Job.subscription_id, Subscription.deleted_at.is_(None)
+                    )
+                ),
+            ),
         ]
         if normalized_job_types is not None:
             eligible_conditions.append(Job.job_type.in_(normalized_job_types))
@@ -2566,9 +2632,18 @@ class JobRepository:
         candidate = select(Job.id).where(eligible)
         candidate = candidate.order_by(Job.priority.desc(), Job.available_at, Job.created_at, Job.id).limit(1)
 
+        candidate_id = self.session.scalar(candidate)
+        if candidate_id is None:
+            return None
+        candidate_job = self.get(candidate_id)
+        if candidate_job is not None and candidate_job.subscription_id is not None:
+            try:
+                SubscriptionRepository(self.session).require_active(candidate_job.subscription_id, lock=True)
+            except SubscriptionRemovalError:
+                return None
         statement = (
             update(Job)
-            .where(Job.id == candidate.scalar_subquery(), eligible)
+            .where(Job.id == candidate_id, eligible)
             .values(
                 status="claimed",
                 lease_owner=worker_id,

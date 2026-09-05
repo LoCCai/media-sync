@@ -343,7 +343,7 @@ def test_db_init_runs_packaged_migrations_idempotently(tmp_path: Path, monkeypat
         try:
             assert "alembic_version" in inspect(database.engine).get_table_names()
             with database.engine.connect() as connection:
-                assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0008_playback_evidence"
+                assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0009_subscription_removal"
         finally:
             database.dispose()
     finally:
@@ -392,8 +392,8 @@ def test_db_status_reports_current_complete_schema_without_exposing_target(
         "ok": True,
         "database_driver": "sqlite+pysqlite",
         "reachable": True,
-        "revision": "0008_playback_evidence",
-        "expected_revision": "0008_playback_evidence",
+        "revision": "0009_subscription_removal",
+        "expected_revision": "0009_subscription_removal",
         "revision_current": True,
         "required_table_count": 17,
         "present_table_count": 17,
@@ -402,7 +402,7 @@ def test_db_status_reports_current_complete_schema_without_exposing_target(
     }
     assert text_result.exit_code == 0
     assert "Database ready:" in text_result.output
-    assert "revision=0008_playback_evidence" in text_result.output
+    assert "revision=0009_subscription_removal" in text_result.output
     assert "tables=17/17" in text_result.output
     for output in (json_result.output, text_result.output):
         assert initialized_cli_database not in output
@@ -817,6 +817,7 @@ def test_mediacrawler_full_history_subscription_requires_confirmation_before_wri
     assert accepted.exit_code == 0, accepted.output
     payload = json.loads(accepted.output)
     assert payload["creator_remote_id"] == "legacy.creator-ID_1"
+    assert payload["deleted_at"] is None
     assert set(payload) == {
         "id",
         "account_id",
@@ -826,6 +827,7 @@ def test_mediacrawler_full_history_subscription_requires_confirmation_before_wri
         "creator_remote_id",
         "creator_display_name",
         "enabled",
+        "deleted_at",
         "interval_seconds",
         "max_items",
         "watermarked_at",

@@ -4,6 +4,8 @@
     Activity,
     Ban,
     Clock3,
+    Copy,
+    Download,
     Eye,
     ListRestart,
     Play,
@@ -37,6 +39,15 @@
   } from '$lib/types/api';
   import { formatDate, formatDateLong, operationLabel, shortId, statusLabel } from '$lib/utils/format';
   import { operationLoginExplanation } from '$lib/utils/login-diagnostics';
+  import {
+    JOB_REPORT_UNAVAILABLE,
+    JobReportReader,
+    jobBusinessSummary,
+    jobOperationPhase,
+    jobReportArtifact,
+    jobReportObservations,
+    type JobReport
+  } from '$lib/utils/job-report';
   import {
     isSchedulerJobId,
     schedulerJobDetailRows,
@@ -91,6 +102,18 @@
   let detailLoading = false;
   let detailError = '';
   let detailRequest = 0;
+  let jobReport: JobReport | null = null;
+  let reportLoading = false;
+  let reportError = '';
+  let reportRequest = 0;
+  let reportAuthEpoch = operatorAuth.snapshot.epoch;
+  const reportReader = new JobReportReader(
+    (id, signal) => api<unknown>(`/api/v1/scheduler/jobs/${id}/diagnostics`, { signal }),
+    () => ({
+      authenticated: operatorAuth.snapshot.phase === 'authenticated',
+      epoch: operatorAuth.snapshot.epoch
+    })
+  );
   const jobsRequest = new LatestRequestGate();
   const jobDetailReader = new SchedulerJobDetailReader((id, signal) =>
     api<Job>(`/api/v1/scheduler/jobs/${id}`, { signal })
@@ -142,7 +165,98 @@
     selectedOperation?.kind === 'account-login' ? operationLoginExplanation(selectedOperation) : null;
   $: selectedJobDiagnostic = detailJob ? schedulerJobDiagnostic(detailJob, requestedJobId) : null;
   $: selectedJobRows = detailJob ? schedulerJobDetailRows(detailJob) : [];
-  $: if (!detailOpen) jobDetailReader.invalidate();
+  $: selectedJobSummary = detailJob ? jobBusinessSummary(detailJob) : null;
+  $: if (!detailOpen) {
+    jobDetailReader.invalidate();
+    clearJobReport();
+  }
+  $: if ($operatorAuth.phase !== 'authenticated' || $operatorAuth.epoch !== reportAuthEpoch) {
+    reportAuthEpoch = $operatorAuth.epoch;
+    clearJobReport();
+  }
+
+  function clearJobReport(): void {
+    reportRequest += 1;
+    reportReader.invalidate();
+    jobReport = null;
+    reportLoading = false;
+    reportError = '';
+  }
+
+  async function loadJobReport(): Promise<void> {
+    if (
+      !detailOpen ||
+      !detailJob ||
+      detailJob.job_id !== requestedJobId ||
+      selectedOperation ||
+      destroyed ||
+      operatorAuth.snapshot.phase !== 'authenticated'
+    )
+      return;
+    clearJobReport();
+    const request = reportRequest;
+    const id = requestedJobId;
+    reportLoading = true;
+    const result = await reportReader.read(id);
+    if (
+      destroyed ||
+      !detailOpen ||
+      request !== reportRequest ||
+      id !== requestedJobId ||
+      selectedOperation ||
+      operatorAuth.snapshot.phase !== 'authenticated' ||
+      result.kind === 'superseded'
+    )
+      return;
+    reportLoading = false;
+    if (result.kind === 'fulfilled') jobReport = result.report;
+    else reportError = JOB_REPORT_UNAVAILABLE;
+  }
+
+  function currentReportArtifact(): ReturnType<typeof jobReportArtifact> {
+    if (
+      destroyed ||
+      !detailOpen ||
+      !detailJob ||
+      selectedOperation ||
+      !jobReport ||
+      detailJob.job_id !== requestedJobId ||
+      operatorAuth.snapshot.phase !== 'authenticated' ||
+      operatorAuth.snapshot.epoch !== reportAuthEpoch
+    )
+      return null;
+    return jobReportArtifact(jobReport, requestedJobId);
+  }
+
+  async function copyJobReport(): Promise<void> {
+    const artifact = currentReportArtifact();
+    if (!artifact) return;
+    const request = reportRequest;
+    try {
+      await navigator.clipboard.writeText(artifact.text);
+      if (request === reportRequest && currentReportArtifact()) toast('本任务的安全诊断报告已复制。');
+    } catch {
+      if (request === reportRequest && currentReportArtifact())
+        toast('复制未完成，可下载报告后自行查看。', 'danger');
+    }
+  }
+
+  function downloadJobReport(): void {
+    const artifact = currentReportArtifact();
+    if (!artifact) return;
+    let url: string | null = null;
+    try {
+      url = URL.createObjectURL(new Blob([artifact.text], { type: 'application/json;charset=utf-8' }));
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = artifact.filename;
+      link.click();
+    } catch {
+      toast('下载报告未完成，请重新获取后再试。', 'danger');
+    } finally {
+      if (url) URL.revokeObjectURL(url);
+    }
+  }
 
   function eventLabel(code: string): string {
     if (selectedOperation?.kind === 'scheduler-run' && code === 'operation_succeeded') return 'Worker 已完成';
@@ -249,6 +363,7 @@
   }
 
   async function showJob(job: Job): Promise<void> {
+    clearJobReport();
     const request = ++detailRequest;
     requestedJobId = job.job_id;
     detailTitle = isSchedulerJobId(job.job_id) ? `任务 ${shortId(job.job_id)}` : '任务详情';
@@ -297,6 +412,7 @@
   }
 
   function showOperation(operation: Operation): void {
+    clearJobReport();
     jobDetailReader.invalidate();
     requestedJobId = '';
     detailTitle = operationLabel(operation.kind);
@@ -457,6 +573,7 @@
 
   onDestroy(() => {
     destroyed = true;
+    clearJobReport();
     jobDetailReader.invalidate();
     streamRecovery.dispose();
     operationStream?.close();
@@ -603,12 +720,12 @@
           <table class="data-table jobs-table">
             <thead
               ><tr
-                ><th>Job</th><th>平台</th><th>状态</th><th>尝试</th><th>可运行时间</th><th>更新时间</th><th
-                  class="actions">操作</th
-                ></tr
+                ><th>采集任务</th><th>平台</th><th>业务状态 / 下一步</th><th>尝试</th><th>可运行时间</th><th
+                  >更新时间</th
+                ><th class="actions">操作</th></tr
               ></thead
             ><tbody
-              >{#each filteredJobs as job}{@const diagnostic = schedulerJobDiagnostic(job)}<tr
+              >{#each filteredJobs as job}{@const business = jobBusinessSummary(job)}<tr
                   ><td
                     ><span class="cell-main mono">{shortId(job.job_id)}</span><span class="cell-sub mono"
                       >订阅 {shortId(job.subscription_id)}</span
@@ -618,11 +735,8 @@
                         <PlatformMark platform={job.platform} /><span>{job.platform}</span>
                       </div>{:else}—{/if}</td
                   ><td
-                    ><StatusBadge status={job.status} />
-                    {#if diagnostic}
-                      <span class="cell-sub">{diagnostic.title}</span>
-                      {#if diagnostic.code}<span class="cell-sub mono">{diagnostic.code}</span>{/if}
-                    {/if}
+                    ><StatusBadge status={job.status} label={business.title} />
+                    <span class="cell-sub">{business.next}</span>
                   </td><td>{job.attempt} / {job.max_attempts}</td><td>{formatDate(job.available_at)}</td><td
                     >{formatDate(job.updated_at)}</td
                   ><td class="actions"
@@ -669,7 +783,7 @@
                     label={workerStateLabel}
                   />{#if operation.cancel_requested_at}<span class="cell-sub cancel-copy">取消处理中</span
                     >{/if}</td
-                ><td><span class="phase-code mono">{operation.phase ?? '—'}</span></td><td
+                ><td><span>{jobOperationPhase(operation.phase)}</span></td><td
                   ><span class="progress-copy">{operationProgressLabel(operation)}</span
                   >{#if progressPercent !== null}
                     <div
@@ -715,7 +829,7 @@
   title={detailTitle}
   description={selectedOperation
     ? '持久状态、安全结果摘要与提交有序事件；不包含 Cookie、签名 URL 或 lease token'
-    : '调度 Job 的安全摘要'}
+    : '先查看采集结果与下一步；原始字段和单任务报告可按需展开'}
   wide
 >
   {#if detailLoading && !detailJob && !selectedOperation}
@@ -723,23 +837,86 @@
   {:else if requestedJobId && detailError && !detailJob && !selectedOperation}
     <div class="notice warning" role="status">{detailError}</div>
   {:else if detailJob}
-    {#if selectedJobDiagnostic}
+    {#if selectedJobSummary}
       <div
         class="notice observation-truth"
-        class:danger={selectedJobDiagnostic.tone === 'danger'}
-        class:warning={selectedJobDiagnostic.tone === 'warning'}
+        class:danger={selectedJobDiagnostic?.tone === 'danger'}
+        class:warning={selectedJobDiagnostic?.tone === 'warning'}
       >
-        <strong>{selectedJobDiagnostic.title}</strong>
-        <span>{selectedJobDiagnostic.detail}</span>
-        <span>下一步：{selectedJobDiagnostic.next}</span>
+        <strong>{selectedJobSummary.title}</strong>
+        <span>{selectedJobSummary.detail}</span>
+        <span>下一步：{selectedJobSummary.next}</span>
       </div>
     {/if}
-    <dl class="key-value-list">
-      {#each selectedJobRows as { key, value }}<div class="key-value-row">
-          <dt>{key}</dt>
-          <dd class:mono={key.includes('id')}>{value ?? '—'}</dd>
-        </div>{/each}
-    </dl>
+    <section class="detail-section">
+      <h3>本任务诊断报告</h3>
+      <p>点击后读取当前任务与关联运行的安全快照；不包含原始日志、凭据或路径，也不自动复制或发送。</p>
+      <button class="button secondary" type="button" on:click={loadJobReport} disabled={reportLoading}>
+        <RefreshCw class={reportLoading ? 'spin' : ''} size={15} />{reportLoading
+          ? '正在获取…'
+          : '获取 / 更新报告'}
+      </button>
+      {#if reportError}<div class="notice warning" role="status">{reportError}</div>{/if}
+      {#if jobReport}
+        <dl class="key-value-list">
+          <div class="key-value-row">
+            <dt>报告时间</dt>
+            <dd>{formatDateLong(jobReport.generated_at)}</dd>
+          </div>
+          <div class="key-value-row">
+            <dt>采集任务</dt>
+            <dd>{jobReport.job.status ? statusLabel(jobReport.job.status) : '未知'}</dd>
+          </div>
+          <div class="key-value-row">
+            <dt>关联采集运行</dt>
+            <dd>
+              {jobReport.run?.status
+                ? statusLabel(jobReport.run.status)
+                : jobReport.run_matches_subscription
+                  ? '状态未知'
+                  : '未取得同订阅的有效运行'}
+            </dd>
+          </div>
+          <div class="key-value-row">
+            <dt>运行记录的新增 / 更新 / 资产</dt>
+            <dd>
+              {jobReport.run?.discovered_count ?? '未知'} / {jobReport.run?.updated_count ?? '未知'} / {jobReport
+                .run?.asset_count ?? '未知'}
+            </dd>
+          </div>
+          <div class="key-value-row">
+            <dt>关联后台操作</dt>
+            <dd>
+              {jobReport.operations.length} 条{jobReport.operations_truncated
+                ? '（已截断，并非完整历史）'
+                : '（本次有界查询）'}
+            </dd>
+          </div>
+        </dl>
+        {#each jobReportObservations(jobReport) as observation}<div class="notice warning">
+            {observation}
+          </div>{/each}
+        <p>这是读取时的持久状态，不是进程实时探测或根因结论。分享前请自行检查任务与订阅标识。</p>
+        <div class="report-actions">
+          <button class="button secondary" type="button" on:click={copyJobReport}
+            ><Copy size={15} />复制报告</button
+          >
+          <button class="button secondary" type="button" on:click={downloadJobReport}
+            ><Download size={15} />下载 JSON</button
+          >
+        </div>
+      {/if}
+    </section>
+    <details class="detail-section developer-details">
+      <summary>开发者详情：固定字段与安全 JSON</summary>
+      <dl class="key-value-list">
+        {#each selectedJobRows as { key, value }}<div class="key-value-row">
+            <dt>{key}</dt>
+            <dd class:mono={key.includes('id')}>{value ?? '—'}</dd>
+          </div>{/each}
+      </dl>
+      {#if jobReport}<pre>{jobReportArtifact(jobReport, requestedJobId)?.text ?? ''}</pre>{/if}
+    </details>
   {:else if selectedOperation}
     <div class="operation-detail-heading">
       <div>
@@ -794,61 +971,63 @@
       </div>
     {/if}
 
-    <dl class="key-value-list compact-list">
-      <div class="key-value-row">
-        <dt>phase</dt>
-        <dd class="mono">{selectedOperation.phase ?? '—'}</dd>
-      </div>
-      <div class="key-value-row">
-        <dt>requested_at</dt>
-        <dd>{formatDateLong(selectedOperation.requested_at)}</dd>
-      </div>
-      <div class="key-value-row">
-        <dt>started_at</dt>
-        <dd>{formatDateLong(selectedOperation.started_at)}</dd>
-      </div>
-      <div class="key-value-row">
-        <dt>finished_at</dt>
-        <dd>{formatDateLong(selectedOperation.finished_at)}</dd>
-      </div>
-      <div class="key-value-row">
-        <dt>correlation_id</dt>
-        <dd class="mono">{selectedOperation.correlation_id}</dd>
-      </div>
-      <div class="key-value-row">
-        <dt>target</dt>
-        <dd class="mono">
-          {selectedOperation.target
-            ? `${selectedOperation.target.type} · ${selectedOperation.target.id}`
-            : '—'}
-        </dd>
-      </div>
-      <div class="key-value-row">
-        <dt>error_code</dt>
-        <dd class:error-code={!!selectedOperation.error_code} class="mono">
-          {selectedOperation.error_code ?? '—'}
-        </dd>
-      </div>
-    </dl>
-
-    {#if selectedOperation.subjects?.length}
-      <section class="detail-section">
-        <h3>关联实体</h3>
-        <div class="subject-list">
-          {#each selectedOperation.subjects as subject}<div>
-              <span>{subject.type} · {subject.role}</span><code>{subject.id}</code>
-            </div>{/each}
+    <details class="detail-section developer-details">
+      <summary>开发者详情：操作字段与安全摘要</summary>
+      <dl class="key-value-list compact-list">
+        <div class="key-value-row">
+          <dt>phase</dt>
+          <dd class="mono">{selectedOperation.phase ?? '—'}</dd>
         </div>
-      </section>
-    {/if}
+        <div class="key-value-row">
+          <dt>requested_at</dt>
+          <dd>{formatDateLong(selectedOperation.requested_at)}</dd>
+        </div>
+        <div class="key-value-row">
+          <dt>started_at</dt>
+          <dd>{formatDateLong(selectedOperation.started_at)}</dd>
+        </div>
+        <div class="key-value-row">
+          <dt>finished_at</dt>
+          <dd>{formatDateLong(selectedOperation.finished_at)}</dd>
+        </div>
+        <div class="key-value-row">
+          <dt>correlation_id</dt>
+          <dd class="mono">{selectedOperation.correlation_id}</dd>
+        </div>
+        <div class="key-value-row">
+          <dt>target</dt>
+          <dd class="mono">
+            {selectedOperation.target
+              ? `${selectedOperation.target.type} · ${selectedOperation.target.id}`
+              : '—'}
+          </dd>
+        </div>
+        <div class="key-value-row">
+          <dt>error_code</dt>
+          <dd class:error-code={!!selectedOperation.error_code} class="mono">
+            {selectedOperation.error_code ?? '—'}
+          </dd>
+        </div>
+      </dl>
 
-    {#if selectedSafeResult}
-      <section class="detail-section">
-        <h3>白名单结果摘要</h3>
-        <pre>{JSON.stringify(selectedSafeResult, null, 2)}</pre>
-      </section>
-    {/if}
+      {#if selectedOperation.subjects?.length}
+        <section class="detail-section">
+          <h3>关联实体</h3>
+          <div class="subject-list">
+            {#each selectedOperation.subjects as subject}<div>
+                <span>{subject.type} · {subject.role}</span><code>{subject.id}</code>
+              </div>{/each}
+          </div>
+        </section>
+      {/if}
 
+      {#if selectedSafeResult}
+        <section class="detail-section">
+          <h3>白名单结果摘要</h3>
+          <pre>{JSON.stringify(selectedSafeResult, null, 2)}</pre>
+        </section>
+      {/if}
+    </details>
     <section class="detail-section timeline-section">
       <div class="section-heading">
         <h3>事件时间线</h3>
@@ -1038,7 +1217,6 @@
     margin-top: 3px;
   }
 
-  .phase-code,
   .progress-copy {
     color: var(--text-secondary);
     font-size: 11px;

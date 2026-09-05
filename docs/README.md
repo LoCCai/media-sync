@@ -2,6 +2,8 @@
 
 # media-sync project journal
 
+Current delivery: [0056 subscription usability](executions/0056-subscription-usability/progress.md) adds reversible removal/paused restore, a per-Job report and clear local-directory delivery independent of optional server linkage. Automatic creator nickname/avatar lookup remains the next required, unimplemented slice. See [verification](executions/0056-subscription-usability/verification.md) for exact tests and limits; this execution is not complete.
+
 Latest P0 follow-up: [scheduler failure diagnostics](executions/0055-operator-auth-playback-evidence/scheduler-diagnostics/progress.md) after the [failed real Bili canary](executions/0055-operator-auth-playback-evidence/bili-success-followup/verification.md), with bilingual goals/plans/progress/verification. Login success and Worker completion do not prove capture success. See [unified status](status.md) for implemented and pending work. Bounded Bili capture and pasted-Cookie validation/persistence/reuse remain pending; the seven-platform goal is unchanged.
 
 This directory is the durable audit trail for the project. Every execution milestone has four records: goal, plan, progress, and verification. Since execution 0028 every document is maintained as two editions — English `<name>.md` and Chinese `<name>.zh.md` — and each edition links to its counterpart in its header.
@@ -27,6 +29,7 @@ This directory is the durable audit trail for the project. Every execution miles
 
 | ID | Milestone | Status | Commit |
 | --- | --- | --- | --- |
+| 0056 | Subscription usability and local delivery | Removal/paused restore, local output guidance and exact-Job reports implemented; automatic creator profiles still required; [progress](executions/0056-subscription-usability/progress.md), [verification](executions/0056-subscription-usability/verification.md) | Plan `fe54aba`; implementation is the commit containing this row |
 | 0001 | Bootstrap and pin upstreams | Complete | `59da120` |
 | 0002 | Upstream analysis and architecture | Complete | `af813bd`, `201fbbf` |
 | 0003 | Core domain, persistence and offline CLI | Complete | `564cdb8` |

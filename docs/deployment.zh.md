@@ -151,9 +151,19 @@ Console v2 现已实现串行 login/session/logout、仅内存 CSRF、私有页�
 
 ## 5. 将媒体库接入 Emby/Jellyfin
 
-把 `media-sync-data` 卷的 `/data/library` 以只读方式挂给媒体服务器并添加为“剧集”媒体库。NFO、海报与剧集按创作者确定性生成。若媒体服务器需要看到宿主机 bind mount，按 compose 注释把同一个 `/srv/media-sync/data` 挂到 media-sync；`MEDIA_SYNC_MEDIA_SERVER_LIBRARY_PATH` 必须填写 **Emby/Jellyfin API 返回的那一侧绝对路径**，不能填写浏览器路径或任意替代路径。
+### 先使用本地目录：无需连接服务器
 
-阶段 0054-A 支持一个不可变、环境变量托管的连接。把以下完整配置加到你本地 `docker-compose.yml` 的 `media-sync.environment`；六个选择器必须全部存在或全部省略：
+下载、归档和导出兼容文件，不要求 Emby/Jellyfin 地址、API Key、连接探测或播放确认。本地导出仍要求归档资产已校验，并保留既有文件归属、完整性与发布检查。只需要目录时，将可选媒体服务器配置字段全部省略即可。
+
+把 `media-sync-data` 卷的 `/data/library` 以只读方式挂给媒体服务器，添加为“剧集”媒体库，然后在 Emby/Jellyfin 自身发起媒体库扫描。NFO、海报与剧集按创作者确定性生成。若媒体服务器需要看到宿主机 bind mount，按 compose 注释把同一个 `/srv/media-sync/data` 挂到 media-sync。共享文件必须允许媒体服务器进程读取；media-sync 导出成功本身不证明服务器侧路径映射、扫描或播放已经成功。
+
+后续新增文件后，可在 Emby/Jellyfin 再次扫描，或按该服务器支持的方式自行配置定时／实时扫描；不能假定自动扫描已开启。media-sync 不会在导出完成后自动请求服务器刷新。没有 API 联动或远程播放资格，也可以使用导出目录与本地发布记录。
+
+### 可选 API 联动：方便探测、主动刷新与核验
+
+只有希望从 media-sync 发起连接探测、明确请求刷新、检查服务器项目或记录播放证据时，才需配置此项。这些是独立的可选操作，不负责解锁本地导出，也不会自动开启扫描。阶段 0054-A 支持一个不可变、环境变量托管的连接。把以下完整配置加到你本地 `docker-compose.yml` 的 `media-sync.environment`；六个选择器必须全部存在或全部省略，不完整配置仍会报错。
+
+仅对于这项可选联动，`MEDIA_SYNC_MEDIA_SERVER_LIBRARY_PATH` 必须填写 **Emby/Jellyfin API 返回的那一侧绝对路径**，不能填写浏览器路径或任意替代路径。
 
 | 环境变量 | 含义 |
 | --- | --- |

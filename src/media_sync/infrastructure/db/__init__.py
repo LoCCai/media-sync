@@ -86,6 +86,7 @@ from .repositories import (
     NotFoundError,
     RepositoryError,
     StaleCheckpointError,
+    SubscriptionRemovalError,
     SubscriptionRepository,
     SyncRunRepository,
 )
@@ -165,6 +166,7 @@ __all__ = [
     "SchedulerLane",
     "StaleCheckpointError",
     "Subscription",
+    "SubscriptionRemovalError",
     "SubscriptionRepository",
     "SyncRun",
     "SyncRunRepository",

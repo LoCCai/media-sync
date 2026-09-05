@@ -150,6 +150,8 @@ class SubscriptionAssetSelector:
             subscription = SubscriptionRepository(session).get(canonical_subscription_id)
             if subscription is None:
                 raise SubscriptionPipelineError("pipeline_subscription_not_found")
+            if subscription.deleted_at is not None:
+                raise SubscriptionPipelineError("pipeline_subscription_invalid")
             account = subscription.account
             author = subscription.author
             if (

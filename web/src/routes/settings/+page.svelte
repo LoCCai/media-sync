@@ -113,7 +113,7 @@
             <dd class="mono">{settings.archive_dir}</dd>
           </div>
           <div class="key-value-row">
-            <dt>媒体库目录</dt>
+            <dt>本地导出目录</dt>
             <dd class="mono">{settings.export_dir}</dd>
           </div>
           <div class="key-value-row">
@@ -128,7 +128,17 @@
       {/if}
     </Panel>
 
-    <Panel title="媒体服务器" description="环境变量托管的只读脱敏配置">
+    <Panel
+      title="可选媒体服务器联动"
+      description="环境变量托管的只读脱敏配置；不是下载、归档或本地导出的前置条件"
+    >
+      <div class="notice" style="margin-bottom:14px">
+        <FolderCog size={17} />
+        <div>
+          无需连接 API：把本地导出目录挂载给 Emby /
+          Jellyfin，添加剧集库并在媒体服务器中扫描。定时扫描须由媒体服务器自行配置；本后台不会因完成导出而自动请求刷新。
+        </div>
+      </div>
       {#if settingsLoading && !settings}
         <div class="settings-skeleton">
           {#each Array(6) as _}<div class="skeleton"></div>{/each}
@@ -138,7 +148,9 @@
           <span class="preference-icon"><Server size={19} /></span>
           <div>
             <strong>{settings.media_server.provider?.toUpperCase() ?? '未配置媒体服务器'}</strong>
-            <p>{settings.media_server.origin ?? '通过 MEDIA_SYNC_MEDIA_SERVER_* 环境变量配置'}</p>
+            <p>
+              {settings.media_server.origin ?? '按需配置 MEDIA_SYNC_MEDIA_SERVER_*，全部省略即可只用本地目录'}
+            </p>
           </div>
           <StatusBadge
             status={settings.media_server.configured
@@ -180,7 +192,8 @@
           </div>
         </dl>
         <div class="notice" style="margin-top:14px">
-          <ShieldCheck size={17} />本页不能修改 URL、Library、网络范围或凭据。修改环境变量并重启后才会生效。
+          <ShieldCheck size={17} />仅需后台探测、主动刷新或核验时再配置联动。本页不能修改
+          URL、Library、网络范围或凭据；相关配置须完整填写，修改后重启才会生效。
         </div>
       {/if}
     </Panel>

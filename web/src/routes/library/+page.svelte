@@ -310,7 +310,7 @@
 </script>
 
 <div class="page">
-  <PageHeader title="媒体库" description="按作者搜索媒体目录，并下钻到对应内容与资产。">
+  <PageHeader title="本地媒体库" description="按作者导出 Emby / Jellyfin 兼容目录；无需配置媒体服务器连接。">
     <svelte:fragment slot="actions">
       <button class="button secondary" type="button" on:click={refreshAll} disabled={loading}>
         <RefreshCw class={loading ? 'spin' : ''} size={15} />刷新
@@ -341,7 +341,18 @@
     </div>
   </section>
 
-  <Panel title="Emby / Jellyfin 连接" description="只使用服务端环境变量中的固定目标与网络策略">
+  <div class="notice">
+    <FolderCheck size={17} />
+    <div>
+      本地导出保留归档校验与文件保护，不要求服务器连接或播放确认。将导出目录挂载给 Emby /
+      Jellyfin，添加为剧集库后在媒体服务器中扫描即可；是否定时扫描由媒体服务器自身设置决定。
+    </div>
+  </div>
+
+  <Panel
+    title="可选：Emby / Jellyfin 联动"
+    description="仅用于连接探测、主动刷新与服务器侧核验，不影响本地导出"
+  >
     {#if mediaServerError}
       <div class="notice danger">{mediaServerError}</div>
     {:else if !mediaServer}
@@ -351,7 +362,7 @@
         <span class="server-icon"><Server size={21} /></span>
         <div class="server-identity">
           <strong>{mediaServer.configuration.provider?.toUpperCase() ?? '未配置媒体服务器'}</strong>
-          <span>{mediaServer.configuration.origin ?? '请在部署环境中配置固定服务器'}</span>
+          <span>{mediaServer.configuration.origin ?? '无需配置即可下载、归档和导出本地目录'}</span>
         </div>
         <StatusBadge status={serverPosture.tone} label={serverPosture.label} />
         <div class="server-evidence">
@@ -384,14 +395,16 @@
         </div>
       </div>
       {#if !mediaServer.configuration.configured}
-        <div class="notice server-note">未配置时不会联网；请在设置页查看所需的只读配置姿态。</div>
+        <div class="notice server-note">
+          未配置时不会连接媒体服务器。只有需要从本后台探测或主动请求刷新时，才需在部署环境中配置可选联动。
+        </div>
       {:else if !mediaServer.configuration.operations_enabled}
         <div class="notice warning server-note">
-          服务端操作门默认关闭；启用前请确认固定目标、凭据与允许 CIDR。
+          联动操作门默认关闭，本地导出仍可用；启用联动前请确认固定目标、凭据与允许 CIDR。
         </div>
       {:else}
         <div class="notice server-note">
-          顶部刷新只证明服务器接受请求，不证明项目已出现、provider 任务完成或媒体可播放。
+          服务器接受刷新请求，不代表已完成扫描或可以播放；请在媒体服务器中核对。
         </div>
       {/if}
     {/if}
@@ -530,8 +543,8 @@
   </Panel>
 
   <div class="notice deferred-note">
-    <FolderCheck size={17} />“已接受”不等于“已观察”；“已观察”不等于 provider task completion，也不等于
-    playable。本页只呈现完整精确查找与持久观察证据，不会把离线测试显示为真人通过。
+    <FolderCheck size={17} />服务器接受刷新请求，不代表已完成扫描或可以播放；请在媒体服务器中核对。
+    未配置联动不影响本地导出。
   </div>
 </div>
 

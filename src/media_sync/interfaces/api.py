@@ -68,6 +68,7 @@ from media_sync.application.authentication import (
 )
 from media_sync.application.emby import EmbyExportRequest, EmbyExportService, export_error_is_retryable
 from media_sync.application.explorer import CatalogExplorerError, ContentAssetExplorer
+from media_sync.application.job_diagnostics import JobDiagnosticError, JobDiagnosticService
 from media_sync.application.library import LibraryInspection, LibraryInspectionError, LibraryInspectionService
 from media_sync.application.login_diagnostics import latest_session_login_diagnostic, login_operation_error_code
 from media_sync.application.media_server import MediaServerError, MediaServerService
@@ -84,6 +85,7 @@ from media_sync.application.playback_evidence_query import (
     validate_evidence_query,
 )
 from media_sync.application.qualifications import QualificationError, QualificationService
+from media_sync.application.subscription_removal import SubscriptionRemovalError, SubscriptionRemovalService
 from media_sync.application.support_bundle import SupportBundleError, SupportBundleService
 from media_sync.config import Settings, get_settings
 from media_sync.domain import AssetKind, AssetStatus, ContentKind, JobStatus, LoginMethod, Platform
@@ -847,6 +849,8 @@ def create_api_app(
 
     def _workbench_error(error: WorkbenchError) -> HTTPException:
         status_code = 404 if error.code == "account_not_found" else 400
+        if error.code == "subscription_removed":
+            status_code = 409
         return HTTPException(status_code=status_code, detail=error.code)
 
     def _catalog_error(error: CatalogExplorerError) -> HTTPException:
@@ -2122,12 +2126,12 @@ def create_api_app(
     # --------------------------------------------------------- subscriptions
 
     @app.get("/api/v1/subscriptions")
-    def list_subscriptions() -> list[dict[str, object]]:
+    def list_subscriptions(deleted: bool = False) -> list[dict[str, object]]:
         database = _database()
         try:
             with database.session() as session:
                 payloads: list[dict[str, object]] = []
-                for subscription in SubscriptionRepository(session).list():
+                for subscription in SubscriptionRepository(session).list(deleted=deleted):
                     payload = _subscription_payload(subscription)
                     payload["policy_summary"] = _subscription_policy_summary_payload(subscription)
                     payloads.append(payload)
@@ -2187,6 +2191,8 @@ def create_api_app(
                 "run-now": service.run_now,
             }[action](str(subscription_id))
             return _scheduler_schedule_payload(schedule)
+        except SubscriptionRemovalError as error:
+            raise HTTPException(status_code=409, detail=error.code) from None
         except NotFoundError:
             raise HTTPException(status_code=404, detail="subscription not found") from None
         except (StaleLaneError, SQLAlchemyError, ValueError, TypeError):
@@ -2257,6 +2263,39 @@ def create_api_app(
             raise _bad_request("scheduler_operation_rejected") from None
         finally:
             database.dispose()
+
+    @app.get("/api/v1/scheduler/jobs/{job_id}/diagnostics")
+    def scheduler_job_diagnostics(job_id: UUID) -> dict[str, object]:
+        database = _database()
+        try:
+            return JobDiagnosticService(database, expected_revision=_EXPECTED_DATABASE_REVISION).build(str(job_id))
+        except JobDiagnosticError as error:
+            status_code = 404 if error.code == "job_diagnostic_not_found" else 503
+            raise HTTPException(status_code=status_code, detail=error.code) from None
+        finally:
+            database.dispose()
+
+    def _subscription_lifecycle(subscription_id: UUID, *, restore: bool) -> dict[str, object]:
+        database = _database()
+        try:
+            service = SubscriptionRemovalService(database)
+            result = service.restore(str(subscription_id)) if restore else service.remove(str(subscription_id))
+            return result.to_payload()
+        except SubscriptionRemovalError as error:
+            status_code = 404 if error.code == "subscription_not_found" else 409
+            raise HTTPException(status_code=status_code, detail=error.code) from None
+        except (SQLAlchemyError, ValueError, TypeError):
+            raise _bad_request("subscription_operation_rejected") from None
+        finally:
+            database.dispose()
+
+    @app.delete("/api/v1/subscriptions/{subscription_id}")
+    def delete_subscription(subscription_id: UUID) -> dict[str, object]:
+        return _subscription_lifecycle(subscription_id, restore=False)
+
+    @app.post("/api/v1/subscriptions/{subscription_id}/restore")
+    def restore_subscription(subscription_id: UUID) -> dict[str, object]:
+        return _subscription_lifecycle(subscription_id, restore=True)
 
     @app.post("/api/v1/assets/{asset_id}/download", status_code=202)
     def download_asset(asset_id: UUID, body: AssetDownload, request: Request) -> dict[str, object]:

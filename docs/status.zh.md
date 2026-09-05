@@ -2,7 +2,13 @@
 
 # 项目统一状态（单一事实来源）
 
-## 最新：可操作的调度诊断（2026-09-05）
+## 最新：订阅可用性与本地交付（2026-09-05）
+
+[执行 0056](executions/0056-subscription-usability/progress.zh.md)已实现本地目录/可选服务器说明、可恢复订阅删除与暂停恢复、业务优先 UI 和精确 Job 安全报告。迁移保留文件和历史，忙碌任务拒绝删除。API/CLI 与后端专项回归、440 项 Web 门及有界合成浏览器检查通过；[验证记录](executions/0056-subscription-usability/verification.zh.md)单独说明全量/发布状态与真实环境未跑门。
+
+自动获取创作者昵称/头像仍 **NOT_IMPLEMENTED**，是 0056 下一项必做工作；本地输入预览不是远程查询。粘贴 Cookie 登录、正确的 B 站有界历史覆盖及七平台采集/归档/Emby/Jellyfin 验收目标不变。本轮没有生产部署或重试，supervisor 仍由操作者停止。0056 未完成。
+
+## 上一检查点：可操作的调度诊断
 
 首次真实 B 站采集仍为 FAILED：终止的 schema_invalid Job、关联 running 且无错误的 Run、零内容。[本轮调度诊断](executions/0055-operator-auth-playback-evidence/scheduler-diagnostics/progress.zh.md)区分心跳失败、类型化 SQLite 写锁争用及收尾失败，不改变终止/熔断策略或改写历史 Run。API/CLI 与 Jobs 使用固定诊断投影，具体检查和边界见[验证](executions/0055-operator-auth-playback-evidence/scheduler-diagnostics/verification.zh.md)。实施和本地回归已通过（Python 联合 368、269 项，1 项 Windows 跳过；Web 343 项），不代表生产根因已修复或真人 PASS。supervisor 保持用户停止、测试订阅保持暂停；本增量不授权新采集。
 
