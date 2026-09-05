@@ -26,6 +26,9 @@ export function validCreatorLookupId(platform: unknown, value: unknown): value i
   if (platform === 'bili' || platform === 'wb') return validUid(value);
   if (typeof value !== 'string' || value.trim() !== value || value === '.' || value === '..') return false;
   if (platform === 'ks') return /^[A-Za-z0-9_-]{1,128}$/.test(value);
+  if (platform === 'dy') return /^[A-Za-z0-9_-]{1,255}$/.test(value);
+  if (platform === 'tieba')
+    return /^tb\.1\.[A-Za-z0-9._-]{28,31}$/.test(value) && !value.includes('..') && !value.endsWith('.');
   if (platform === 'zhihu') return /^[A-Za-z0-9._-]{1,255}$/.test(value);
   return false;
 }
@@ -35,7 +38,9 @@ function creatorProfileHomepage(identity: CreatorIdentity): string | null {
     bili: 'https://space.bilibili.com/',
     wb: 'https://weibo.com/u/',
     ks: 'https://www.kuaishou.com/profile/',
-    zhihu: 'https://www.zhihu.com/people/'
+    zhihu: 'https://www.zhihu.com/people/',
+    dy: 'https://www.douyin.com/user/',
+    tieba: 'https://tieba.baidu.com/home/main?id='
   };
   return isCreatorLookupPlatform(identity.platform)
     ? roots[identity.platform] + identity.creator_remote_id
@@ -51,7 +56,7 @@ const STATES = new Set<OperationState>([
   'interrupted'
 ]);
 export const CREATOR_LOOKUP_NOTICE =
-  '输入完成后自动查询一次 B 站、微博、快手或知乎作者资料；仅使用现有已认证保存会话或 Cookie，不扫码、不采集内容，无需确认全历史采集。B 站/微博支持可选头像；快手/知乎目前只接入准确昵称，头像尚待接入。小红书、抖音、贴吧资料仍待实现。资料成功不代表登录校验、内容抓取或播放成功。';
+  '输入完成后自动查询一次 B 站、微博、快手、知乎、抖音或贴吧作者资料；仅使用现有已认证保存会话或 Cookie，不扫码、不采集内容，无需确认全历史采集。B 站/微博/贴吧支持可选头像；快手/知乎/抖音目前只接入准确昵称，头像尚待接入。小红书资料仍待实现。资料成功不代表登录校验、内容抓取或播放成功。';
 export const CREATOR_LOOKUP_UNAVAILABLE = '暂时无法确认本次作者资料查询结果；未自动重试。';
 export const CREATOR_LOOKUP_LICENSE_REQUIRED = '请先完成首次使用与许可证确认，本次未发起查询。';
 export const CREATOR_LOOKUP_WAIT_ENDED =
@@ -73,7 +78,7 @@ const ERRORS: Record<string, string> = {
   creator_profile_auth_required: '平台会话需要重新登录。请到账户页面手动处理；本次不会启动扫码。',
   creator_profile_account_ineligible:
     '该账户当前不满足已接入平台的已认证 Cookie／保存会话查询条件；未启动扫码。',
-  creator_profile_unsupported: '当前支持 B 站、微博、快手和知乎的作者昵称查询；小红书、抖音、贴吧尚未接入。',
+  creator_profile_unsupported: '当前支持 B 站、微博、快手、知乎、抖音和贴吧的作者昵称查询；小红书尚未接入。',
   creator_profile_not_found: '本次未取得该作者资料，请核对作者 ID。',
   creator_profile_rate_limited: '平台暂时限制查询；未自动重试，请稍后手动处理。',
   creator_profile_timed_out: '本次作者资料查询超过服务端执行期限；没有自动重试。',
@@ -120,8 +125,17 @@ export function creatorIdentityMatches(value: CreatorIdentity, identity: Creator
   );
 }
 
-export function isCreatorLookupPlatform(value: unknown): value is 'bili' | 'wb' | 'ks' | 'zhihu' {
-  return value === 'bili' || value === 'wb' || value === 'ks' || value === 'zhihu';
+export function isCreatorLookupPlatform(
+  value: unknown
+): value is 'bili' | 'wb' | 'ks' | 'zhihu' | 'dy' | 'tieba' {
+  return (
+    value === 'bili' ||
+    value === 'wb' ||
+    value === 'ks' ||
+    value === 'zhihu' ||
+    value === 'dy' ||
+    value === 'tieba'
+  );
 }
 
 export function creatorLookupIdentity(account: Account | null, creatorId: string): CreatorIdentity | null {
@@ -142,7 +156,7 @@ export function creatorLookupIdentity(account: Account | null, creatorId: string
 export function creatorLookupEligibility(account: Account | null): string {
   if (!account) return '请先选择平台账户。';
   if (!isCreatorLookupPlatform(account.platform))
-    return '此平台的远端作者资料查询尚未接入；当前支持 B 站、微博、快手和知乎，仍可填写本地备注并校验订阅。';
+    return '此平台的远端作者资料查询尚未接入；当前支持 B 站、微博、快手、知乎、抖音和贴吧，仍可填写本地备注并校验订阅。';
   if (account.adapter !== 'mediacrawler' || !['saved_session', 'cookie'].includes(account.login_method ?? ''))
     return '当前只支持 MediaCrawler 已认证 Cookie 凭据或已保存会话；此处不会启动扫码或其他登录方式。';
   if (account.auth_status !== 'authenticated')

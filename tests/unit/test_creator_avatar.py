@@ -19,7 +19,29 @@ from media_sync.media.network import NetworkLimits, SafeHttpClient, ValidatedTar
 URL = "https://i1.hdslb.com/bfs/face/" + "a" * 40 + ".jpg"
 # These are synthetic policy examples, not observed or upstream-qualified avatars.
 WB_URL = "https://tvax1.sinaimg.cn/crop.0.0.512.512.1024/avatar_Test-123.jpg"
-AVATAR_URLS = [pytest.param(URL, id="bili"), pytest.param(WB_URL, id="wb")]
+TB_PORTRAIT = "tb.1." + "a" * 28
+TB_URL = "https://gss0.bdstatic.com/6LZ1dD3d1sgCo2Kml5_Y_D3/sys/portrait/item/" + TB_PORTRAIT
+AVATAR_URLS = [
+    pytest.param(URL, id="bili"),
+    pytest.param(WB_URL, id="wb"),
+    pytest.param(TB_URL, id="tieba"),
+    pytest.param(TB_URL + "?t=1234567890", id="tieba-timestamp"),
+]
+
+
+@pytest.mark.parametrize("suffix", ["", "?t=1234567890"])
+def test_tieba_source_backed_shape_is_bound_to_exact_creator(suffix: str) -> None:
+    url = TB_URL + suffix
+    assert avatar.validate_creator_avatar_url(url) == url
+    assert avatar.validate_creator_avatar_url(url, platform="tieba", creator_remote_id=TB_PORTRAIT) == url
+    for platform, creator in [
+        ("bili", TB_PORTRAIT),
+        ("wb", TB_PORTRAIT),
+        ("tieba", None),
+        ("tieba", "tb.1." + "b" * 28),
+    ]:
+        with pytest.raises(ValueError, match="creator_avatar_url_invalid"):
+            avatar.validate_creator_avatar_url(url, platform=platform, creator_remote_id=creator)
 
 
 @pytest.mark.parametrize("host", [f"{prefix}{index}" for prefix in ("tva", "tvax") for index in range(1, 5)])
@@ -116,6 +138,28 @@ def _png(*, animated: bool = False) -> bytes:
         WB_URL.replace(".jpg", ".gif"),
         WB_URL.replace(".jpg", ".JPG"),
         WB_URL + "/private",
+        TB_URL.replace("https://", "http://"),
+        TB_URL.replace("gss0.", "gss1."),
+        TB_URL.replace("bdstatic.com", "bdstatic.com.evil.test"),
+        TB_URL.replace("gss0.bdstatic.com", "127.0.0.1"),
+        TB_URL.replace("gss0.bdstatic.com", "user@gss0.bdstatic.com"),
+        TB_URL.replace("gss0.bdstatic.com", "gss0.bdstatic.com:443"),
+        TB_URL.replace("/item/", "/small/"),
+        TB_URL + ".jpg",
+        TB_URL + "/private",
+        TB_URL + "?token=private",
+        TB_URL + "?t=123456789",
+        TB_URL + "?t=12345678901",
+        TB_URL + "?t=\uff11\uff12\uff13\uff14\uff15\uff16\uff17\uff18\uff19\uff10",
+        TB_URL + "?t=1234567890&t=1234567890",
+        TB_URL + "?t=1234567890&token=private",
+        TB_URL + "?t=%31%32%33%34%35%36%37%38%39%30",
+        TB_URL + "#fragment",
+        TB_URL + "\n",
+        TB_URL[:-1] + ".",
+        TB_URL[:-3] + "..a",
+        TB_URL.replace(TB_PORTRAIT, "tb.1." + "a" * 27),
+        TB_URL.replace(TB_PORTRAIT, "tb.1." + "a" * 32),
     ],
 )
 def test_url_closed_before_process_or_network(url: str, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -273,8 +317,9 @@ def test_parent_deadline_and_private_environment(url: str, monkeypatch: pytest.M
         b"http://127.0.0.1/x",
         (WB_URL + "?token=private").encode("ascii"),
         WB_URL.replace(".jpg", ".svg").encode("ascii"),
+        (TB_URL + "?t=1234567890&cookie=private").encode("ascii"),
     ],
-    ids=["private-url", "wb-query", "wb-svg"],
+    ids=["private-url", "wb-query", "wb-svg", "tieba-extra-query"],
 )
 def test_real_isolated_worker_rejects_invalid_input_without_network(raw: bytes) -> None:
     worker = Path(avatar.__file__).with_name("creator_avatar_worker.py")

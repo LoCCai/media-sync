@@ -26,6 +26,10 @@ from media_sync.integrations.mediacrawler.creator_profile_runner import (
         (Platform.WB, "123", "https://weibo.com/u/123"),
         (Platform.KS, "3xSynthetic_ID-9", "https://www.kuaishou.com/profile/3xSynthetic_ID-9"),
         (Platform.ZHIHU, "test.user-token_9", "https://www.zhihu.com/people/test.user-token_9"),
+        (Platform.DY, "MS4wSynthetic_ID-9", "https://www.douyin.com/user/MS4wSynthetic_ID-9"),
+        (Platform.DY, "a" * 255, "https://www.douyin.com/user/" + "a" * 255),
+        (Platform.TIEBA, "tb.1." + "a" * 28, "https://tieba.baidu.com/home/main?id=tb.1." + "a" * 28),
+        (Platform.TIEBA, "tb.1." + "a" * 31, "https://tieba.baidu.com/home/main?id=tb.1." + "a" * 31),
     ],
 )
 def test_exact_platform_identity_survives_all_boundaries(platform: Platform, remote_id: str, homepage: str) -> None:
@@ -56,7 +60,7 @@ def test_exact_platform_identity_survives_all_boundaries(platform: Platform, rem
         )
 
 
-@pytest.mark.parametrize("platform", [Platform.KS, Platform.ZHIHU])
+@pytest.mark.parametrize("platform", [Platform.KS, Platform.ZHIHU, Platform.DY, Platform.TIEBA])
 @pytest.mark.parametrize(
     "value", ["", ".", "..", "a/b", "a%2fb", "a?x=1", "a#x", "a\\b", " a", "a\n", "中文", 123, True, None]
 )
@@ -68,7 +72,20 @@ def test_opaque_identity_never_normalizes_urls_or_path_segments(platform: Platfo
 
 
 @pytest.mark.parametrize(
-    "platform,value", [(Platform.KS, "a.b"), (Platform.KS, "a" * 129), (Platform.ZHIHU, "a" * 256)]
+    "platform,value",
+    [
+        (Platform.KS, "a.b"),
+        (Platform.KS, "a" * 129),
+        (Platform.ZHIHU, "a" * 256),
+        (Platform.DY, "a.b"),
+        (Platform.DY, "a" * 256),
+        (Platform.TIEBA, "123"),
+        (Platform.TIEBA, "tb.1." + "a" * 27),
+        (Platform.TIEBA, "tb.1." + "a" * 32),
+        (Platform.TIEBA, "tb.1." + "a" * 27 + "."),
+        (Platform.TIEBA, "tb.1." + "a" * 26 + "..a"),
+        (Platform.TIEBA, "tb.1." + "a" * 28 + "?t=1234567890"),
+    ],
 )
 def test_opaque_platform_shapes_are_not_interchangeable(platform: Platform, value: str) -> None:
     with pytest.raises(ValueError):

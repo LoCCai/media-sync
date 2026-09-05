@@ -350,9 +350,10 @@ def test_capabilities_distinguish_supported_remote_proofs(environment: Any) -> N
     assert len(rows) == 7
 
 
-@pytest.mark.parametrize("platform", ["bili", "wb", "zhihu"])
+@pytest.mark.parametrize("platform", ["bili", "wb", "zhihu", "tieba"])
 def test_saved_cookie_feeds_profile_receipt_and_subscription(environment: Any, platform: str) -> None:
     client, database, account_id, _, _ = environment
+    creator = "tb.1." + "a" * 28 if platform == "tieba" else "123"
     with database.session() as session:
         session.get(Account, account_id).platform = platform
     assert submit(environment, body(platform=platform))["state"] == "succeeded"
@@ -378,7 +379,7 @@ def test_saved_cookie_feeds_profile_receipt_and_subscription(environment: Any, p
         f"/api/v1/accounts/{account_id}/creator-lookups",
         json={
             "platform": platform,
-            "creator_remote_id": "123",
+            "creator_remote_id": creator,
             "frontend_generation": str(uuid4()),
             "enable_mediacrawler": True,
             "accept_mediacrawler_license": True,
@@ -392,7 +393,7 @@ def test_saved_cookie_feeds_profile_receipt_and_subscription(environment: Any, p
         json={
             "account_id": account_id,
             "platform": platform,
-            "creator_remote_id": "123",
+            "creator_remote_id": creator,
             "profile_lookup_id": operation_id,
             "allow_full_history": True,
         },

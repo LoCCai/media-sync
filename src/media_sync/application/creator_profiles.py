@@ -178,7 +178,9 @@ class CreatorProfileService:
             # text or the older avatar. All remote work precedes the DB effect.
             try:
                 if result.profile.avatar_url is not None:
-                    validate_creator_avatar_url(result.profile.avatar_url, platform=platform)
+                    validate_creator_avatar_url(
+                        result.profile.avatar_url, platform=platform, creator_remote_id=creator_remote_id
+                    )
                 avatar = self.avatar_fetcher(result.profile.avatar_url)
             except Exception:
                 avatar = None

@@ -1067,7 +1067,15 @@ def _worker_entry() -> int:
         return 20
     try:
         with _silenced_upstream():
-            if request.platform is Platform.KS:
+            if request.platform is Platform.DY:
+                from media_sync.integrations.mediacrawler.douyin_creator_profile import lookup_douyin
+
+                lookup = lookup_douyin
+            elif request.platform is Platform.TIEBA:
+                from media_sync.integrations.mediacrawler.tieba_creator_profile import lookup_tieba
+
+                lookup = lookup_tieba
+            elif request.platform is Platform.KS:
                 from media_sync.integrations.mediacrawler.kuaishou_creator_profile import lookup_kuaishou
 
                 lookup = lookup_kuaishou

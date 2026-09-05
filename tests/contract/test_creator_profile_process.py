@@ -116,9 +116,13 @@ async def lookup(checkout, profile, remote_id, deadline, *, cookie=None):
 module._run_guardian = guardian
 module._lookup_bili = lookup
 module._lookup_weibo = lookup
-from media_sync.integrations.mediacrawler import kuaishou_creator_profile, zhihu_creator_profile
+from media_sync.integrations.mediacrawler import (
+    kuaishou_creator_profile, zhihu_creator_profile, douyin_creator_profile, tieba_creator_profile
+)
 kuaishou_creator_profile.lookup_kuaishou = lookup
 zhihu_creator_profile.lookup_zhihu = lookup
+douyin_creator_profile.lookup_douyin = lookup
+tieba_creator_profile.lookup_tieba = lookup
 raise SystemExit(module._guardian_entry() if sys.argv[1] == "--guardian" else module._worker_entry())
 """
 
@@ -188,7 +192,9 @@ def _request(timeout: float = 8) -> MediaCrawlerCreatorProfileRequest:
 
 
 @pytest.mark.parametrize("login_method", ["cookie", "saved_session"])
-@pytest.mark.parametrize("platform", [Platform.BILI, Platform.WB, Platform.KS, Platform.ZHIHU])
+@pytest.mark.parametrize(
+    "platform", [Platform.BILI, Platform.WB, Platform.KS, Platform.ZHIHU, Platform.DY, Platform.TIEBA]
+)
 def test_real_private_frames_reach_worker_without_cookie_output_or_saved_profile_dependency(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -216,7 +222,7 @@ def test_real_private_frames_reach_worker_without_cookie_output_or_saved_profile
     request = MediaCrawlerCreatorProfileRequest(
         ACCOUNT,
         platform,
-        "123",
+        "tb.1." + "a" * 28 if platform is Platform.TIEBA else "123",
         uuid4(),
         timeout_seconds=12,
         cookie=SecretValue(_PRIVATE_COOKIE) if has_cookie else None,

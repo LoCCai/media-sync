@@ -446,6 +446,10 @@ def test_avatar_network_scope_is_bound_to_profile_platform(
         ("zhihu", "test.user-token", "https://www.zhihu.com/people/test.user-token"),
         ("ks", "x" * 128, "https://www.kuaishou.com/profile/" + "x" * 128),
         ("zhihu", "x" * 255, "https://www.zhihu.com/people/" + "x" * 255),
+        ("dy", "MS4wSynthetic_ID", "https://www.douyin.com/user/MS4wSynthetic_ID"),
+        ("dy", "x" * 255, "https://www.douyin.com/user/" + "x" * 255),
+        ("tieba", "tb.1." + "a" * 28, "https://tieba.baidu.com/home/main?id=tb.1." + "a" * 28),
+        ("tieba", "tb.1." + "a" * 31, "https://tieba.baidu.com/home/main?id=tb.1." + "a" * 31),
     ],
 )
 def test_opaque_creator_lookup_receipt_and_subscription_preserve_identity(
@@ -470,7 +474,8 @@ def test_opaque_creator_lookup_receipt_and_subscription_preserve_identity(
     preview = client.post("/api/v1/subscriptions/preview", json=draft)
     assert preview.status_code == 200, preview.text
     assert preview.json()["creator_display_name"] == runner.name
-    wrong = client.post("/api/v1/subscriptions", json={**draft, "creator_remote_id": "different" + creator[9:]})
+    wrong_creator = "tb.1." + "b" * 28 if platform == "tieba" else "different" + creator[9:]
+    wrong = client.post("/api/v1/subscriptions", json={**draft, "creator_remote_id": wrong_creator})
     assert wrong.status_code in {400, 409}, wrong.text
     created = client.post("/api/v1/subscriptions", json=draft)
     assert created.status_code == 201, created.text
@@ -487,7 +492,10 @@ def test_opaque_creator_lookup_receipt_and_subscription_preserve_identity(
         assert session.scalar(select(LoginSession)) is None
 
 
-@pytest.mark.parametrize("platform,creator", [("ks", "3xSynthetic"), ("zhihu", "test-user")])
+@pytest.mark.parametrize(
+    "platform,creator",
+    [("ks", "3xSynthetic"), ("zhihu", "test-user"), ("dy", "MS4wSynthetic"), ("tieba", "tb.1." + "a" * 28)],
+)
 @pytest.mark.parametrize("failure", ["result_invalid", "auth_expired", "auth_changed"])
 def test_new_platform_failed_or_stale_lookup_preserves_previous_observation(
     environment: Any, platform: str, creator: str, failure: str
@@ -524,6 +532,11 @@ def test_new_platform_failed_or_stale_lookup_preserves_previous_observation(
         ("zhihu", "%2e%2e", 400),
         ("zhihu", "x" * 256, 422),
         ("bili", "1" * 21, 400),
+        ("dy", "user.name", 400),
+        ("dy", "x" * 256, 422),
+        ("tieba", "123", 400),
+        ("tieba", "tb.1." + "a" * 28 + "?t=1234567890", 400),
+        ("tieba", "tb.1." + "a" * 27 + ".", 400),
     ],
 )
 def test_invalid_opaque_profile_request_never_starts_runner(
@@ -539,3 +552,47 @@ def test_invalid_opaque_profile_request_never_starts_runner(
     assert runner.calls == []
     with database.session() as session:
         assert session.scalar(select(Operation)) is None
+
+
+@pytest.mark.parametrize("suffix", ["", "?t=1234567890"])
+@pytest.mark.parametrize("wrong", ["creator", "query", "timestamp", "platform", "fetch_failure"])
+def test_tieba_avatar_is_exact_creator_scoped_and_optional_failure_retains_bytes(
+    environment: Any, suffix: str, wrong: str
+) -> None:
+    client, database, account_id, runner = environment
+    creator = "tb.1." + "a" * 28
+    root = "https://gss0.bdstatic.com/6LZ1dD3d1sgCo2Kml5_Y_D3/sys/portrait/item/"
+    with database.session() as session:
+        session.get(Account, account_id).platform = "tieba"
+    output = io.BytesIO()
+    Image.new("RGB", (2, 2), "red").save(output, format="PNG")
+    png = output.getvalue()
+    received: list[str] = []
+
+    def fetch(url: str) -> bytes | None:
+        received.append(url)
+        return png if len(received) == 1 else None
+
+    client.app.state.creator_profile_service.avatar_fetcher = fetch
+    runner.avatar = root + creator + suffix
+    first = _lookup(client, account_id, platform="tieba", creator_remote_id=creator)
+    assert first["state"] == "succeeded" and first["profile"]["avatar_state"] == "current"
+    assert received == [root + creator + suffix]
+    local_url = first["profile"]["avatar_url"]
+    assert local_url.startswith("/api/v1/creator-profiles/")
+    assert client.get(local_url).content == png
+    runner.avatar = {
+        "creator": root + "tb.1." + "b" * 28 + suffix,
+        "query": root + creator + "?t=1234567890&token=private",
+        "timestamp": root + creator + "?t=123456789",
+        "platform": "https://i1.hdslb.com/bfs/face/" + "a" * 40 + ".jpg",
+        "fetch_failure": root + creator + suffix,
+    }[wrong]
+    runner.name = "更新后的贴吧昵称"
+    second = _lookup(client, account_id, platform="tieba", creator_remote_id=creator)
+    assert second["state"] == "succeeded" and second["profile"]["nickname"] == runner.name
+    assert second["profile"]["avatar_state"] == "retained" and second["profile"]["avatar_url"] == local_url
+    assert len(received) == (2 if wrong == "fetch_failure" else 1)
+    assert client.get(local_url).content == png
+    with database.session() as session:
+        assert session.get(Account, account_id).auth_status == "authenticated"

@@ -172,9 +172,9 @@ async def test_no_post_retry_or_request_after_finished(response: tuple[dict[str,
     "platform,expected",
     [
         (Platform.XHS, module.MediaCrawlerCreatorProfileStatus.UNSUPPORTED),
-        (Platform.DY, module.MediaCrawlerCreatorProfileStatus.UNSUPPORTED),
+        (Platform.DY, module.MediaCrawlerCreatorProfileStatus.AUTH_EXPIRED),
         (Platform.KS, module.MediaCrawlerCreatorProfileStatus.AUTH_EXPIRED),
-        (Platform.TIEBA, module.MediaCrawlerCreatorProfileStatus.UNSUPPORTED),
+        (Platform.TIEBA, module.MediaCrawlerCreatorProfileStatus.AUTH_EXPIRED),
         (Platform.ZHIHU, module.MediaCrawlerCreatorProfileStatus.AUTH_EXPIRED),
     ],
 )
@@ -190,7 +190,8 @@ def test_other_platform_support_and_missing_credentials(
         enabled=True,
         license_acknowledged=True,
     )
-    request = module.MediaCrawlerCreatorProfileRequest(uuid4(), platform, UID, uuid4())
+    creator = "tb.1." + "a" * 28 if platform is Platform.TIEBA else UID
+    request = module.MediaCrawlerCreatorProfileRequest(uuid4(), platform, creator, uuid4())
     assert runner.run(request).status is expected
 
 

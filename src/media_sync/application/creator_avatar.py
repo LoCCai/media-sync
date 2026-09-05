@@ -1,4 +1,4 @@
-"""Bounded, isolated Bili/Weibo avatar retrieval; no arbitrary URL proxy."""
+"""Bounded, isolated supported avatar retrieval; no arbitrary URL proxy."""
 
 from __future__ import annotations
 
@@ -22,6 +22,14 @@ _WEIBO_AVATAR = re.compile(
     r"(?:crop\.[0-9]{1,5}\.[0-9]{1,5}\.[0-9]{1,5}\.[0-9]{1,5}\.[0-9]{1,5}|"
     r"(?:large|bmiddle|small|thumbnail))/[A-Za-z0-9_-]{1,128}\.(?:jpg|jpeg|png|webp)\Z"
 )
+# Exact portrait fallback in the locked Tieba helper and the source-backed
+# historical creator consumer. The optional timestamp is part of the returned
+# portrait shape, not an arbitrary query or a credential-bearing signed URL.
+_TIEBA_AVATAR = re.compile(
+    r"https://gss0\.bdstatic\.com/6LZ1dD3d1sgCo2Kml5_Y_D3/sys/portrait/item/"
+    r"(?P<portrait>(?![A-Za-z0-9._-]*\.\.)tb\.1\.[A-Za-z0-9._-]{27,30}[A-Za-z0-9_-])"
+    r"(?:\?t=[0-9]{10})?\Z"
+)
 
 
 def validate_bili_avatar_url(value: object) -> str:
@@ -30,15 +38,21 @@ def validate_bili_avatar_url(value: object) -> str:
     return value
 
 
-def validate_creator_avatar_url(value: object, *, platform: str | None = None) -> str:
+def validate_creator_avatar_url(
+    value: object, *, platform: str | None = None, creator_remote_id: str | None = None
+) -> str:
     if type(value) is not str or len(value) > 256:
         raise ValueError("creator_avatar_url_invalid")
-    rules = {"bili": _BILI_AVATAR, "wb": _WEIBO_AVATAR}
+    rules = {"bili": _BILI_AVATAR, "wb": _WEIBO_AVATAR, "tieba": _TIEBA_AVATAR}
     if platform is not None and platform not in rules:
         raise ValueError("creator_avatar_url_invalid")
     allowed = tuple(rules.values()) if platform is None else (rules[platform],)
     if not any(rule.fullmatch(value) is not None for rule in allowed):
         raise ValueError("creator_avatar_url_invalid")
+    if platform == "tieba":
+        match = _TIEBA_AVATAR.fullmatch(value)
+        if match is None or creator_remote_id != match.group("portrait"):
+            raise ValueError("creator_avatar_url_invalid")
     return value
 
 

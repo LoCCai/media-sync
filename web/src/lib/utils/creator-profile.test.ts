@@ -140,7 +140,7 @@ describe.each([account, weiboAccount])('$platform eligibility and closed profile
 
   it.each([
     null,
-    { ...account, platform: 'dy' },
+    { ...account, platform: 'xhs' },
     { ...account, adapter: 'fake' },
     { ...account, login_method: 'qr' },
     { ...account, login_method: null },
@@ -597,7 +597,7 @@ describe.each([scope, weiboScope])('$platform bounded controller and race fences
 });
 
 describe('closed supported profile platforms', () => {
-  it.each(['xhs', 'dy', 'tieba'] as const)(
+  it.each(['xhs'] as const)(
     'does not enable %s even with a valid numeric UID and authenticated Cookie',
     async (platform) => {
       const candidate: Account = { ...account, platform, login_method: 'cookie' };
@@ -698,8 +698,8 @@ describe('creation, image and operation presentation integration', () => {
     expect(source).not.toContain('creatorName = next.profile');
     expect(source).not.toMatch(/api\([^\n]*(?:\/login|\/contents|\/qr)/);
     expect(CREATOR_LOOKUP_NOTICE).toContain('不扫码、不采集内容');
-    expect(CREATOR_LOOKUP_NOTICE).toContain('B 站、微博、快手或知乎');
-    expect(CREATOR_LOOKUP_NOTICE).toContain('小红书、抖音、贴吧资料仍待实现');
+    expect(CREATOR_LOOKUP_NOTICE).toContain('B 站、微博、快手、知乎、抖音或贴吧');
+    expect(CREATOR_LOOKUP_NOTICE).toContain('小红书资料仍待实现');
     expect(CREATOR_LOOKUP_NOTICE).toContain('头像尚待接入');
     expect(CREATOR_LOOKUP_NOTICE).toContain('无需确认全历史采集');
     const completedInput = source.slice(
@@ -712,8 +712,10 @@ describe('creation, image and operation presentation integration', () => {
     expect(source).toContain('isCreatorLookupPlatform(selectedAccount.platform)');
     const accounts = readFileSync(new URL('../../routes/accounts/+page.svelte', import.meta.url), 'utf8');
     expect(accounts).toContain('isCreatorLookupPlatform(selectedAccount.platform)');
-    expect(accounts.replace(/\s+/g, ' ')).toContain('B 站、微博、快手和知乎 Cookie 作者昵称查询已接入');
-    expect(accounts).toContain('快手/知乎目前仅昵称，头像尚未接入');
+    expect(accounts.replace(/\s+/g, ' ')).toContain(
+      'B 站、微博、快手、知乎、抖音和贴吧 Cookie 作者昵称查询已接入'
+    );
+    expect(accounts).toContain('快手/知乎/抖音目前仅昵称，头像尚未接入');
   });
 
   it('allows WB profile lookup without the independently required full-history capture acknowledgement', async () => {

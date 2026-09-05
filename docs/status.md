@@ -2,7 +2,15 @@
 
 # Unified project status (single source of truth)
 
-## Latest: Tieba Cookie and KS/Zhihu creator nicknames (0063, offline verified)
+## Latest: DY/Tieba creator profiles and Tieba avatars (0064, offline verified)
+
+[Execution0064](executions/0064-douyin-tieba-profiles/progress.md) wires the real single signed DY profile and Tieba PC profile paths, requiring exact returned identities/raw nicknames. Optional Tieba avatars use a source-backed fixed path, same-creator portrait, one timestamp suffix and the existing isolated downloader/same-origin PNG boundary. Failure retains nickname/previous avatar. Six nickname platforms are wired; pasted-Cookie self validation stays at five, with no account authentication mutation from target-profile success.
+
+Final complete unit/contract/integration directories passed5841 with37 environment skips; Web passed699, static/types/build/docs passed and both packages match149 application Python files byte-for-byte. Exact durations, early failures/corrections and publication checks are in0064 verification; overlapping selections are not summed.
+
+XHS returned profile identity still lacks reliable evidence; filling the request ID back into output is not success. DY/KS self validators, DY/KS/Zhihu avatars, remaining media and current Linux/live qualification stay required. Standalone lookup does not crawl, need full-history acknowledgement or an Emby/Jellyfin connection. Source is frozen; [0064 verification](executions/0064-douyin-tieba-profiles/verification.md) controls final regression/publication status. No production action, deployment or supervisor restart; the historical Bili canary is unresolved.
+
+## Previous: Tieba Cookie and KS/Zhihu creator nicknames (0063, offline verified)
 
 [Execution0063](executions/0063-platform-access-and-profiles/progress.md) adds strict positive Tieba self validation to the existing private Cookie save/atomic account workflow and exact KS/Zhihu nickname lookup through isolated workers, API, UI and subscription receipts. Pasted validators now cover Bili/XHS/WB/Zhihu/Tieba; creator nickname lookup covers Bili/WB/KS/Zhihu. KS lookup is a creator observation, not self-authentication evidence. Shared identity, long-ID API and real script-worker dispatch issues were reproduced and corrected.
 

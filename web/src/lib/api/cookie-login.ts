@@ -18,7 +18,7 @@ export const COOKIE_LOGIN_LICENSE_REQUIRED = '请先完成首次使用与许可�
 export const COOKIE_LOGIN_SUCCESS =
   'Cookie 已通过平台认证校验并保存。本结果不代表作者资料查询、内容采集、下载、导出或播放已经成功。';
 export const COOKIE_LOGIN_FOLLOW_UP =
-  '支持 B 站、小红书、微博、知乎、贴吧；抖音、快手的粘贴 Cookie 校验尚未接入。作者资料查询在订阅页面独立执行；贴吧资料查询仍待实现。真实平台端到端验收尚未运行。';
+  '支持 B 站、小红书、微博、知乎、贴吧；抖音、快手的粘贴 Cookie 校验尚未接入。作者资料查询在订阅页面独立执行；贴吧昵称与可选头像已接入，小红书资料仍待实现。真实平台端到端验收尚未运行。';
 const ERRORS: Record<string, string> = {
   cookie_login_request_invalid: '输入或请求格式不符合要求；请使用请求 Cookie 头的值。',
   cookie_login_body_too_large: '输入超出限制；Cookie 最多 16 KiB。',

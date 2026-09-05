@@ -6,16 +6,15 @@
 
 ## Current status
 
-The single source of truth is [`docs/status.md`](docs/status.md). Summary at the current execution 0055 incremental implementation checkpoint:
+Current implementation and verification are tracked in [`docs/status.md`](docs/status.md); the latest increment is [0064 creator profiles](docs/executions/0064-douyin-tieba-profiles/progress.md). Source support is not live platform qualification.
 
-| Dimension | State |
+| Area | Current scope |
 | --- | --- |
-| Offline implementation | Authentication, revision `0008`/ledger, browser confirmation and author evidence/qualification v3 are published (projection `2e1949f`); secure Web login/session/CSRF and pre-migration checks are implemented and verified with local synthetic-browser fixtures. Playback confirmation UI remains pending |
-| Offline verification | Current Python: 3155 passed, 22 skipped, one existing warning in 670.16s; Web: 114 tests in 9 files, Svelte check 0 errors/warnings and build passed; exact results are in [secure-console verification](docs/executions/0055-operator-auth-playback-evidence/secure-console/verification.md); the 2999-test projection result is historical for `2e1949f`. Docker/Linux UID and real PostgreSQL remain unexecuted on this workstation |
-| REST API + web console | Safe console and startup preflight are implemented and locally verified, including synthetic-browser checks; serialized session bootstrap, memory-only CSRF, logout/expiry/401 and QR/SSE wiring are implemented. Private pages mount only after successful session bootstrap; `/legacy` is a protected migration notice, and a missing v2 build leaves a build/CLI notice at root. Local video evidence is loading/decoding only, with no play click or live-playback qualification |
-| Docker packaging | The example Compose deployment mounts a host-provided operator credential as a Docker secret and explicitly permits only the host-loopback browser origin while binding `0.0.0.0` inside the container. The 0047 Linux restart/restore/process evidence remains `NOT_RUN` |
-| Live qualification | **Every implemented live platform/CDN/media-server row remains `NOT_RUN`**. Schema v3 marks playback evidence IMPLEMENTED and evaluates one explicitly requested author. Only revalidated durable attestation yields scoped PASS; provider completion and automatic scan remain NOT_IMPLEMENTED |
-| Release blockers | The exact current Linux image and authorized Bilibili/XHS canaries; P1 confirmation UI does not block CLI live workflows. See [current verification](docs/executions/0055-operator-auth-playback-evidence/secure-console/verification.md) and [status](docs/status.md) |
+| Local media library | Archive and Emby/Jellyfin-compatible directories work independently of optional server connections; text/gallery sidecars are not a claim of native video playback |
+| Accounts and creators | Five pasted-Cookie validators; six-platform exact nickname lookup. Bili/Weibo/Tieba have optional avatars. Seven-platform QR entry points remain subject to real-environment qualification |
+| Subscriptions and operations | Reversible subscription removal preserves media/history; platform profiles, local aliases, safe Job reports and user-oriented status/next actions are implemented |
+| Verification | Exact current test/build/package results, failures and environment skips are in [0064 verification](docs/executions/0064-douyin-tieba-profiles/verification.md), not inherited historical counts |
+| Remaining | XHS profiles; DY/KS pasted self validators; DY/KS/Zhihu avatars; remaining media shapes and current Linux/platform/archive/playback qualification. The failed historical Bili canary remains unresolved |
 
 Per-execution detail, evidence and exact commands live in [`docs/executions/`](docs/README.md) — this README intentionally does not stack execution narratives.
 

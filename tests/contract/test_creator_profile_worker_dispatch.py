@@ -23,6 +23,8 @@ original_import = builtins.__import__
 targets = {
     "media_sync.integrations.mediacrawler.kuaishou_creator_profile": "lookup_kuaishou",
     "media_sync.integrations.mediacrawler.zhihu_creator_profile": "lookup_zhihu",
+    "media_sync.integrations.mediacrawler.douyin_creator_profile": "lookup_douyin",
+    "media_sync.integrations.mediacrawler.tieba_creator_profile": "lookup_tieba",
 }
 def import_platform(name, globals=None, locals=None, fromlist=(), level=0):
     module = original_import(name, globals, locals, fromlist, level)
@@ -44,7 +46,10 @@ runpy.run_path(script, run_name="__main__")
 """
 
 
-@pytest.mark.parametrize("platform,remote_id", [("ks", "3xSynthetic"), ("zhihu", "test-user")])
+@pytest.mark.parametrize(
+    "platform,remote_id",
+    [("ks", "3xSynthetic"), ("zhihu", "test-user"), ("dy", "MS4wSynthetic"), ("tieba", "tb.1." + "a" * 28)],
+)
 @pytest.mark.parametrize("outcome", ["succeeded", "result_invalid"])
 def test_script_worker_platform_dto_and_exception_match_parent_contract(
     tmp_path: Path, platform: str, remote_id: str, outcome: str

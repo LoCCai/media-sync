@@ -8,7 +8,7 @@ Build a self-hosted service that can authenticate against all platforms supporte
 
 ## Phases
 
-Current checkpoint (0056–0063): local output remains independent of optional server connections; reversible subscription removal, safe Job reports, Bili/Weibo profiles and bounded Bili upload/dynamic capture are implemented offline. [0063](executions/0063-platform-access-and-profiles/progress.md) adds fifth-platform Tieba pasted self validation and exact KS/Zhihu nickname lookup through workers/UI/receipts. KS/Zhihu avatars, DY/KS paste validators, XHS/DY/Tieba profiles, remaining media and current Linux/live qualification remain required. The earlier authorized Bili canary failed and is unresolved; no deployment or supervisor restart is implied. Follow [current status](status.md) and [0063 verification](executions/0063-platform-access-and-profiles/verification.md), not historical phase counts below.
+Current checkpoint (0056–0064): local directory output remains independent of optional server connections; reversible removal, safe Job reports and bounded Bili uploads/dynamics are implemented offline. [0064](executions/0064-douyin-tieba-profiles/progress.md) adds DY/Tieba exact nicknames and optional Tieba avatars, expanding standalone nickname lookup to six platforms without enabling DY/KS pasted self authentication. XHS profiles, those two validators, DY/KS/Zhihu avatars, remaining media and current Linux/live qualification remain required. The failed historical Bili canary is unresolved; no deployment or supervisor restart is implied. Follow [status](status.md) and [0064 verification](executions/0064-douyin-tieba-profiles/verification.md), not historical counts below.
 
 ### Phase 0 — Baseline and legal boundary
 

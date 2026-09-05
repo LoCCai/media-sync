@@ -14,7 +14,13 @@ const profileId = '33333333-3333-4333-8333-333333333333';
 const generationId = '44444444-4444-4444-8444-444444444444';
 const cases = [
   { platform: 'ks', id: '3xSynthetic_ID-9', homepage: 'https://www.kuaishou.com/profile/3xSynthetic_ID-9' },
-  { platform: 'zhihu', id: 'test.user-token_9', homepage: 'https://www.zhihu.com/people/test.user-token_9' }
+  { platform: 'zhihu', id: 'test.user-token_9', homepage: 'https://www.zhihu.com/people/test.user-token_9' },
+  { platform: 'dy', id: 'MS4wSynthetic_ID-9', homepage: 'https://www.douyin.com/user/MS4wSynthetic_ID-9' },
+  {
+    platform: 'tieba',
+    id: 'tb.1.' + 'a'.repeat(28),
+    homepage: 'https://tieba.baidu.com/home/main?id=tb.1.' + 'a'.repeat(28)
+  }
 ] as const;
 
 describe.each(cases)('$platform exact opaque creator workflow', ({ platform, id, homepage }) => {
@@ -122,12 +128,13 @@ describe.each(cases)('$platform exact opaque creator workflow', ({ platform, id,
     const pending = controller.query();
     await Promise.resolve();
     expect(read).toHaveBeenCalledTimes(1);
-    controller.setIdentity({ ...identity, creator_remote_id: id + 'new' });
+    const nextId = platform === 'tieba' ? 'tb.1.' + 'b'.repeat(28) : id + 'new';
+    controller.setIdentity({ ...identity, creator_remote_id: nextId });
     resolve(result(sent!));
     await pending;
     expect(controller.snapshot.profile).toBeNull();
     expect(controller.snapshot.receipt).toBeNull();
-    expect(controller.snapshot.scope?.creator_remote_id).toBe(id + 'new');
+    expect(controller.snapshot.scope?.creator_remote_id).toBe(nextId);
     controller.dispose();
   });
 });
@@ -140,4 +147,17 @@ it('keeps platform-specific opaque bounds separate from canonical numeric IDs', 
   expect(validCreatorLookupId('zhihu', 'a'.repeat(255))).toBe(true);
   expect(validCreatorLookupId('bili', '3xSynthetic')).toBe(false);
   expect(validCreatorLookupId('wb', '18446744073709551616')).toBe(false);
+  expect(validCreatorLookupId('dy', 'a'.repeat(255))).toBe(true);
+  expect(validCreatorLookupId('dy', 'a'.repeat(256))).toBe(false);
+  expect(validCreatorLookupId('dy', 'user.name')).toBe(false);
+  expect(validCreatorLookupId('tieba', 'tb.1.' + 'a'.repeat(31))).toBe(true);
+  for (const value of [
+    '123',
+    'tb.1.' + 'a'.repeat(27),
+    'tb.1.' + 'a'.repeat(32),
+    'tb.1.' + 'a'.repeat(27) + '.',
+    'tb.1.' + 'a'.repeat(26) + '..a',
+    'tb.1.' + 'a'.repeat(28) + '?t=1234567890'
+  ])
+    expect(validCreatorLookupId('tieba', value)).toBe(false);
 });

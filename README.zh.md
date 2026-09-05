@@ -6,16 +6,15 @@
 
 ## 当前状态
 
-单一事实来源是 [`docs/status.zh.md`](docs/status.zh.md)。当前执行 0055 增量实现检查点摘要：
+当前实现和验证以 [`docs/status.zh.md`](docs/status.zh.md) 为准；最新增量是[0064作者资料](docs/executions/0064-douyin-tieba-profiles/progress.zh.md)。源码已支持不等于真实平台验收通过。
 
-| 维度 | 状态 |
+| 方面 | 当前范围 |
 | --- | --- |
-| 离线实现 | 鉴权、revision `0008`／账本、浏览器确认及作者证据／资格 v3 已发布（投影 `2e1949f`）；当前安全 Web login/session/CSRF 与迁移前预检已实现且本地合成浏览器门禁已通过。播放确认 UI 仍待实现 |
-| 离线验证 | 当前 Python 为 3155 项通过、22 项跳过、1 个既有 warning（670.16 秒）；Web 9 文件／114 项、Svelte check 零 error/warning 与 build 通过；准确结果见[安全控制台验证](docs/executions/0055-operator-auth-playback-evidence/secure-console/verification.zh.md)；投影 2999 项属于 `2e1949f` 历史门。本工作站 Docker／Linux UID 与真实 PostgreSQL 尚未执行 |
-| REST API + Web 控制台 | 安全控制台与启动预检已实现，本地离线与合成浏览器门禁已通过；会话串行初始化、内存 CSRF、退出／过期／401、QR／SSE 已接线。私有页面仅在 session 成功后挂载；`/legacy` 为受保护迁移提示，没有 v2 构建时根页只提示构建／CLI  本地视频只验证加载／解码，未点击播放，不等于真人播放资格 |
-| Docker 打包 | 示例 Compose 把宿主机提供的操作者凭据挂载为 Docker secret，容器内绑定 `0.0.0.0` 时只显式允许宿主机回环浏览器 origin；0047 Linux 重启/恢复/进程证据仍为 `NOT_RUN` |
-| 真人验收 | **全部已实现平台/CDN/媒体服务器真人行保持 `NOT_RUN`**。Schema v3 将播放证据标为 IMPLEMENTED，只评估显式指定的一个作者；仅重验通过的持久确认可产生该作者范围 PASS。Provider completion 与自动扫描仍为 NOT_IMPLEMENTED |
-| 发布阻塞 | 精确当前 Linux 镜像及 Bilibili／小红书获授权金丝雀；P1 确认 UI 不阻塞 CLI 真人流程。见[当前验证](docs/executions/0055-operator-auth-playback-evidence/secure-console/verification.zh.md)与[状态](docs/status.zh.md) |
+| 本地媒体库 | 归档和Emby/Jellyfin兼容目录独立于可选服务器连接；图文/图集sidecar不等于原生视频播放 |
+| 账户与作者 | 五平台粘贴Cookie校验、六平台准确昵称查询；B站/微博/贴吧有可选头像。七平台扫码入口仍需真实环境验收 |
+| 订阅与任务 | 可恢复移除订阅保留媒体/历史；平台资料、本地备注、安全Job报告和面向用户的状态/下一步说明已实现 |
+| 验证 | 当前精确测试、构建、打包结果、失败与环境跳过见[0064验证](docs/executions/0064-douyin-tieba-profiles/verification.zh.md)，不继承旧测试数 |
+| 待实现/验收 | 小红书资料、抖音/快手粘贴本人校验、抖音/快手/知乎头像、剩余媒体形状及当前Linux/平台/归档/播放验收；历史B站采集失败仍未解决 |
 
 逐执行细节、证据与准确命令都在 [`docs/executions/`](docs/README.zh.md)——本 README 有意不堆叠执行叙事。
 
