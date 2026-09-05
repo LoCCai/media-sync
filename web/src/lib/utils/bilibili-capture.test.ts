@@ -7,6 +7,38 @@ import {
   safeBiliScanSummaryRows
 } from './bilibili-capture';
 
+describe('explicit dynamic scopes', () => {
+  it('explains two-record budget and local export without a server', () => {
+    const notice = biliCaptureNotice(2, 'both');
+    expect(notice).toContain('至少为 2');
+    expect(notice).toContain('不需要连接 Emby/Jellyfin');
+    expect(notice).toContain('发现页');
+  });
+
+  it('projects only typed multifeed counters without raw state', () => {
+    const value = {
+      version: 2,
+      feed: 'both',
+      unit_item_limit: 2,
+      history_complete: false,
+      status: 'verified',
+      state: {
+        version: 2,
+        scope: 'both',
+        next_feed: 'dynamics',
+        uploads: { pending_count: 1, next_lane: 'head' },
+        dynamics: { pending_count: 3, next_lane: 'history', raw: 'PRIVATE_BODY_COOKIE_URL' }
+      }
+    };
+    const rows = safeBiliScanSummaryRows(value);
+    expect(rows.some((row) => row.label === '动态进展' && row.value.includes('3'))).toBe(true);
+    expect(JSON.stringify(rows)).not.toContain('PRIVATE_BODY_COOKIE_URL');
+    expect(
+      safeBiliScanSummaryRows({ ...value, state: { ...value.state, next_feed: 'PRIVATE_BAD_FEED' } })
+    ).toEqual([{ label: 'B站覆盖证据', value: '不可用；未声明历史完整，也不从旧水位推断覆盖。' }]);
+  });
+});
+
 const capability = {
   platform: 'bili',
   requires_full_history_acknowledgement: false,

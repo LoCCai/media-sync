@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session
 
 from media_sync.domain import AssetSnapshot, AuthorSnapshot, ContentSnapshot, Platform, RunStatus, freeze_mapping
 from media_sync.integrations.mediacrawler.normalizers import NormalizedMediaRecord
+from media_sync.integrations.mediacrawler.subscription_policy import from_subscription_policy
 from media_sync.media.locator import AdapterRefreshLocator
 
 from .asset_identity import asset_source_hint, stable_asset_key
@@ -83,6 +84,14 @@ class _ContinuationUnset:
 
 
 _CONTINUATION_UNSET = _ContinuationUnset()
+
+
+@dataclass(frozen=True, slots=True)
+class _BiliScopeUnset:
+    """Legacy direct calls differ from an explicit v1 (None) policy fence."""
+
+
+_BILI_SCOPE_UNSET = _BiliScopeUnset()
 
 
 def _database_id(value: str | UUID) -> str:
@@ -359,6 +368,7 @@ class MediaCrawlerIngestionService:
         next_cursor: str,
         crawl_revision_before: int | None = None,
         ownership_guard: Callable[[Session], None] | None = None,
+        bili_scope: str | _BiliScopeUnset | None = _BILI_SCOPE_UNSET,
     ) -> MediaCrawlerIngestionResult:
         """Publish one validated upload-scan unit in exactly one transaction.
 
@@ -413,16 +423,6 @@ class MediaCrawlerIngestionService:
                 or run.checkpoint_revision_before != origin_revision
             ):
                 raise RepositoryError("bounded Bili ingestion scope does not match its input")
-            if len(materialized) > subscription.max_items:
-                raise RepositoryError("bounded Bili ingestion exceeds the subscription item limit")
-            for record in unique_records:
-                if (
-                    record.author.platform is not Platform.BILI
-                    or record.author.remote_id != subscription.author.remote_id
-                    or record.content.remote_type != "content"
-                ):
-                    raise RepositoryError("bounded Bili record does not belong to the subscription upload feed")
-
             if run.status == RunStatus.SUCCEEDED.value:
                 if (
                     run.checkpoint_revision_after != origin_revision + 1
@@ -445,6 +445,35 @@ class MediaCrawlerIngestionService:
                     watermarked_at=subscription.watermarked_at,
                     watermark_remote_ids=tuple(subscription.watermark_remote_ids),
                 )
+
+            if len(materialized) > subscription.max_items:
+                raise RepositoryError("bounded Bili ingestion exceeds the subscription item limit")
+            dynamic_allowed = False
+            if not isinstance(bili_scope, _BiliScopeUnset):
+                try:
+                    current_scope = (
+                        from_subscription_policy(subscription.policy).bili_scope if subscription.policy else None
+                    )
+                    if bili_scope != current_scope:
+                        raise ValueError("Bili scope changed before publication")
+                except ValueError:
+                    raise RepositoryError("bounded Bili subscription policy changed") from None
+            if isinstance(bili_scope, str) or any(record.content.remote_type == "dynamic" for record in unique_records):
+                try:
+                    policy = from_subscription_policy(subscription.policy)
+                    policy.validate_bili_max_items(subscription.max_items)
+                    if isinstance(bili_scope, str) and policy.bili_scope != bili_scope:
+                        raise ValueError("Bili scope changed before publication")
+                    dynamic_allowed = policy.effective_bili_scope in {"dynamics", "both"}
+                except ValueError:
+                    raise RepositoryError("bounded Bili subscription has no valid dynamic policy") from None
+            for record in unique_records:
+                if (
+                    record.author.platform is not Platform.BILI
+                    or record.author.remote_id != subscription.author.remote_id
+                    or record.content.remote_type not in ({"content", "dynamic"} if dynamic_allowed else {"content"})
+                ):
+                    raise RepositoryError("bounded Bili record does not belong to the subscription feed")
 
             if origin_revision != expected_revision or subscription.checkpoint_revision != expected_revision:
                 raise StaleCheckpointError(database_subscription_id, origin_revision, subscription.checkpoint_revision)

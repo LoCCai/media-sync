@@ -335,12 +335,43 @@ async def test_real_detail_entry_installs_policy_before_pinned_main_dispatch(
         platform=platform,
         login_method=LoginMethod.COOKIE,
         detail_reference="fixture-reference",
+        bili_dynamic_detail=False,
         cookie="session=fixture",
     )
 
     assert await detail_runner._run_upstream(request) == (fixture.main, None)
     assert fixture.events == ["install", "cookie-reuse", f"factory:{platform.value}", "start", "browser"]
     assert fixture.policy_modes == [False]
+
+
+async def test_explicit_dynamic_detail_dispatch_precedes_numeric_aid(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, pinned_nodes: Any
+) -> None:
+    fixture = _runtime(tmp_path, monkeypatch, pinned_nodes, Platform.BILI)
+    monkeypatch.setattr(detail_runner, "_configure_upstream", lambda *_args: None)
+    _disable_capture_hooks(monkeypatch)
+    result = detail_runner._BiliDynamicDetailResult(b"private-in-memory-fixture")
+
+    async def dynamic(main: object, request: object) -> detail_runner._BiliDynamicDetailResult:
+        assert main is fixture.main
+        fixture.events.append("dynamic-detail")
+        return result
+
+    async def aid(*args: object) -> None:
+        raise AssertionError("numeric DID must never enter numeric AID dispatch")
+
+    monkeypatch.setattr(detail_runner, "_run_bilibili_dynamic", dynamic)
+    monkeypatch.setattr(detail_runner, "_run_bilibili_aid", aid)
+    request = SimpleNamespace(
+        checkout_root=fixture.checkout,
+        platform=Platform.BILI,
+        login_method=LoginMethod.COOKIE,
+        detail_reference="123456789012345678",
+        bili_dynamic_detail=True,
+        cookie="session=fixture",
+    )
+    assert await detail_runner._run_upstream(request) == (fixture.main, result)
+    assert fixture.events == ["install", "cookie-reuse", "dynamic-detail"]
 
 
 async def test_real_bilibili_aid_detail_branch_uses_same_installed_factory(
@@ -354,6 +385,7 @@ async def test_real_bilibili_aid_detail_branch_uses_same_installed_factory(
         login_method=LoginMethod.COOKIE,
         detail_reference="123",
         bili_progressive_detail=False,
+        bili_dynamic_detail=False,
         cookie="session=fixture",
     )
 

@@ -1309,6 +1309,9 @@ def mediacrawler_dry_run(
         typer.Option(help="Acknowledge platforms whose upstream creator path ignores item caps."),
     ] = False,
     max_items: Annotated[int, typer.Option(min=1, max=1_000)] = 30,
+    bili_scope: Annotated[
+        str | None, typer.Option(help="Bili uploads, dynamics or both; dynamics require max-items >= 2.")
+    ] = None,
     json_output: Annotated[bool, typer.Option("--json", help="Emit machine-readable JSON.")] = False,
 ) -> None:
     """Prepare, inspect, and discard a secret-free bridge job without spawning it."""
@@ -1347,6 +1350,7 @@ def mediacrawler_dry_run(
                     headless=True,
                     max_items=max_items,
                     bili_bounded_capture=platform is Platform.BILI,
+                    bili_scope=bili_scope,
                 )
             )
             payload: dict[str, object] = {
@@ -1621,6 +1625,9 @@ def add_subscription(
     ] = None,
     interval_seconds: Annotated[int, typer.Option(min=60, help="Polling interval in seconds.")] = 21_600,
     max_items: Annotated[int, typer.Option(min=1, max=1_000, help="Maximum items per run.")] = 30,
+    bili_scope: Annotated[
+        str | None, typer.Option(help="Bili uploads, dynamics or both; dynamics require max-items >= 2.")
+    ] = None,
     allow_full_history: Annotated[
         bool,
         typer.Option(help="Acknowledge MediaCrawler creator modes that can scan full history."),
@@ -1655,6 +1662,7 @@ def add_subscription(
                     creator_secret_ref=normalized_creator_reference_ref,
                     interval_seconds=interval_seconds,
                     max_items=max_items,
+                    bili_scope=bili_scope,
                     allow_full_history=allow_full_history,
                     request_delay_seconds=request_delay_seconds,
                     headless=headless,
@@ -1682,6 +1690,33 @@ def list_subscriptions(
             for subscription in SubscriptionRepository(session).list(deleted=deleted)
         ]
     _emit_list(records, json_output=json_output, label="subscriptions")
+
+
+@subscription_app.command("bili-scope")
+def set_subscription_bili_scope(
+    subscription_id: Annotated[UUID, typer.Option(help="Paused idle Bili subscription UUID.")],
+    scope: Annotated[str, typer.Option(help="uploads, dynamics or both.")],
+    max_items: Annotated[int, typer.Option(min=1, max=1_000)],
+    expected_schedule_revision: Annotated[int, typer.Option(min=0)],
+    json_output: Annotated[bool, typer.Option("--json")] = False,
+) -> None:
+    """Change scope without erasing checkpoints or starting work."""
+    from media_sync.application.bilibili_subscription_scope import change_bilibili_scope
+
+    try:
+        with _scheduler_runtime() as (database, _service):
+            result = change_bilibili_scope(
+                database,
+                subscription_id,
+                scope=scope,
+                max_items=max_items,
+                expected_schedule_revision=expected_schedule_revision,
+            )
+    except (ValueError, RepositoryError):
+        raise typer.BadParameter(
+            "bili_scope_update_rejected: pause subscription, finish pending work and use current revision"
+        ) from None
+    _emit_record(result, json_output=json_output, label="Bili subscription scope")
 
 
 @subscription_app.command("delete")
@@ -2699,6 +2734,15 @@ def ingest_mediacrawler_output(
                 job_id,
             )
             manifest = RunnerManifest.load(paths.manifest_path)
+            from media_sync.integrations.mediacrawler.bilibili_multifeed import BiliMultiFeedState
+            from media_sync.integrations.mediacrawler.subscription_policy import from_subscription_policy
+
+            if manifest.bili_scan is not None:
+                current_bili_scope = (
+                    from_subscription_policy(subscription_policy).bili_scope if subscription_policy else None
+                )
+                if current_bili_scope != getattr(manifest.bili_scan, "scope", None):
+                    raise MediaCrawlerPolicyError("runner Bili scope does not match the subscription")
             expected_author_fingerprint = hashlib.sha256(creator_remote_id.encode("utf-8")).hexdigest()
             if (
                 manifest.account_id != account_id
@@ -2782,6 +2826,9 @@ def ingest_mediacrawler_output(
                         crawl_revision_before=manifest.checkpoint_revision_before,
                         input_cursor=manifest.bili_scan_input_cursor,
                         next_cursor=normalized_output.bili_coverage.next_state.to_cursor(),
+                        bili_scope=manifest.bili_scan.scope
+                        if isinstance(manifest.bili_scan, BiliMultiFeedState)
+                        else None,
                     )
                 except Exception as error:
                     ingestion_error = error

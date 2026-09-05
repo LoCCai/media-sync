@@ -195,6 +195,11 @@ def runtime(checkout: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> A
         assert request.method == "GET"
         assert request.url.host == "api.bilibili.com"
         assert request.headers["Cookie"] == "SESSDATA=PRIVATE_TEST_ONLY"
+        dynamic_transport = behavior.get("dynamic_transport")
+        if callable(dynamic_transport):
+            response = dynamic_transport(request)
+            if response is not None:
+                return response
         query = parse_qs(request.url.query.decode())
         if request.url.path == "/x/web-interface/nav":
             # Locked get_wbi_keys calls request without headers. Set below only for this branch.
@@ -273,6 +278,8 @@ def runtime(checkout: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> A
     monkeypatch.setattr(bilibili_capture.asyncio, "sleep", sleep)
     account = UUID("a45dd777-9633-4168-b432-677e6c7b97be")
     fingerprint = hashlib.sha256(b"42").hexdigest()
+    account_root = tmp_path / "accounts"
+    account_root.mkdir()
     manifest = SimpleNamespace(
         bili_scan=BiliScanState.initial(account, fingerprint, checkout.commit),
         platform=SimpleNamespace(value="bili"),
@@ -280,6 +287,7 @@ def runtime(checkout: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> A
         author_remote_id_fingerprint_sha256=fingerprint,
         upstream_sha=checkout.commit,
         checkout_root=root,
+        account_root=account_root,
         output_root=tmp_path,
         max_items=1,
         request_delay_seconds=0.01,

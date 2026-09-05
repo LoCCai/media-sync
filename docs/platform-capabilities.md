@@ -22,7 +22,7 @@ Evidence: login enum at `cmd_arg/arg.py:52-57`; XHS call site `media_platform/xh
 
 ### media-sync 0.x exposure
 
-Execution [0058](executions/0058-cookie-login/progress.md) adds explicit pasted-Cookie remote validation and immutable private save for **Bili, XHS, WB and Zhihu**. DY/Tieba local pong markers and KS result-only GraphQL are not sufficient authenticated-identity proof, so their paste validators remain unavailable. The seven-platform upstream Cookie source column above is not a claim that all seven can be verified by this UI. Cookie reuse now injects all pairs into fresh nonpersistent contexts; Bili's single-creator profile flow accepts validated Cookie accounts. Other six-platform profiles and live end-to-end gates remain open.
+Execution [0058](executions/0058-cookie-login/progress.md) adds explicit pasted-Cookie remote validation and immutable private save for **Bili, XHS, WB and Zhihu**. DY/Tieba local pong markers and KS result-only GraphQL are not sufficient authenticated-identity proof, so their paste validators remain unavailable. The seven-platform upstream Cookie source column above is not a claim that all seven can be verified by this UI. Cookie reuse now injects all pairs into fresh nonpersistent contexts. Bili and [Weibo](executions/0060-weibo-creator-profile/progress.md) single-creator profiles accept validated Cookie and saved-session accounts; other five-platform profiles and live end-to-end gates remain open.
 
 The execution 0012 worktree exposes an explicit, blocking QR-login command for one eligible initial MediaCrawler QR account or one exact `saved_session/expired` account across all seven platform identifiers. Both `--enable-mediacrawler` and `--accept-mediacrawler-license` are required before settings, database or child work. The isolated login-only child forces a headed browser and saved state; reauthentication start atomically becomes `qr/authenticating`, successful durable handoff changes the account to derived per-account `saved_session/authenticated`, and non-success leaves a retryable QR state. The child remains under START/CANCEL/EOF parent control and a post-result guardian until complete-tree shutdown. Cookie remains a non-interactive secret-reference path, saved sessions are background/headless outside this explicit reauthentication flow, and phone is **not** exposed. This intentionally differs from the overly broad upstream enum.
 
@@ -44,10 +44,12 @@ Creator-mode dispatch exists for all seven platforms (`media_platform/*/core.py:
 
 ### Bridge policy
 
+Current media-sync overlay: the table above describes the pinned upstream, not all product behavior. Executions0059–0062 add independent bounded Bili upload/dynamic continuations and explicit uploads/dynamics/both scope (legacy stays uploads-only), exact WORD/DRAW/full OPUS and owned AV references, private retained page snapshots, exact image refresh and offline archive/local Emby-compatible output. Local export needs no media-server connection; text/gallery HTML is not native video-playback qualification. Reposts, unknown/paid/live/column components and live end-to-end qualification remain unsupported or `NOT_RUN` as detailed in [0062](executions/0062-bili-dynamic-workflow/progress.md).
+
 - Preserve the user-supplied remote creator ID and a user-provided display label in the independent `media-sync` database.
 - Give every run a hard wall-clock timeout and output-item watchdog.
-- Require an explicit `allow_full_history` acknowledgement only for an audited creator path that remains unbounded. Executions 0019 and 0020 install verified bounded Zhihu-answer and Tieba-thread loops; Zhihu is removed from that acknowledgement set, while Tieba already had an upstream maximum check and is now hardened to exact successful work.
-- Stop incremental ingestion at known IDs/publish watermark even if the child emitted older records; never treat downstream truncation as proof that upstream traffic was bounded.
+- Require an explicit `allow_full_history` acknowledgement only for an audited creator path that remains unbounded. Executions0019/0020 install bounded Zhihu-answer/Tieba-thread loops; new bounded Bili requests in0059/0062 also omit the acknowledgement, while legacy unbounded artifacts retain their gate.
+- Legacy ingestion may stop at known IDs/publish watermark, but Bili continuation-based history never uses that old watermark as coverage. Independent pending page/detail progress is retained; never treat downstream truncation or a source-end observation as proof of complete history.
 - Work around Zhihu creator input in the external runner without editing the upstream checkout.
 
 ## Media behavior

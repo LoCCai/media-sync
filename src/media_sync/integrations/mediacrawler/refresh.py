@@ -8,6 +8,7 @@ normalizer as ingestion.  No persistence API is reachable from this layer.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -28,6 +29,12 @@ from media_sync.media import (
 )
 from media_sync.security import SecretValue
 
+from .bilibili_dynamic import (
+    BILI_DYNAMIC_MAX_IMAGES,
+    BILI_DYNAMIC_SOURCE_FIELD,
+    BiliDynamicSource,
+    validate_bili_dynamic_image_url,
+)
 from .bilibili_media import BILIBILI_MAX_PAGES, bilibili_video_cid
 from .detail_runner import (
     MediaCrawlerDetailPayloadRunner,
@@ -36,6 +43,7 @@ from .detail_runner import (
     _is_tieba_detail_reference,
     _is_weibo_detail_reference,
     _is_zhihu_detail_reference,
+    _validate_bili_dynamic_mode,
 )
 from .normalizers import NormalizationContext, normalize_jsonl_bytes
 from .policies import WatchdogLimits
@@ -78,6 +86,9 @@ class MediaCrawlerRefreshContext:
     headless: bool = True
     request_delay_seconds: float = 2.0
     watchdogs: WatchdogLimits = field(default_factory=WatchdogLimits)
+    bili_dynamic_type: str | None = None
+    bili_dynamic_pub_ts: int | None = None
+    bili_dynamic_image_remote_ids: tuple[str, ...] = field(default=(), repr=False)
 
     def __post_init__(self) -> None:
         if not all(isinstance(value, UUID) for value in (self.asset_id, self.account_id, self.subscription_id)):
@@ -127,6 +138,47 @@ class MediaCrawlerRefreshContext:
             object.__setattr__(self, "bili_video_remote_ids", bili_video_remote_ids)
         elif bili_video_remote_ids:
             raise MediaDownloadError("locator_refresh_configuration_invalid")
+        dynamic_slot = platform is Platform.BILI and self.content_remote_type == "dynamic"
+        try:
+            _validate_bili_dynamic_mode(
+                enabled=dynamic_slot,
+                platform=platform,
+                did=self.content_remote_id,
+                author=self.author_remote_id,
+                dynamic_type=self.bili_dynamic_type,
+                pub_ts=self.bili_dynamic_pub_ts,
+                detail_reference=self.detail_reference,
+                progressive=bili_video_slot,
+                cid=None,
+            )
+            dynamic_ids = self.bili_dynamic_image_remote_ids
+            if type(dynamic_ids) is not tuple:
+                raise ValueError
+            if dynamic_slot:
+                if (
+                    asset_kind is not AssetKind.IMAGE
+                    or self.bili_dynamic_type != "DYNAMIC_TYPE_DRAW"
+                    or not 1 <= len(dynamic_ids) <= BILI_DYNAMIC_MAX_IMAGES
+                    or self.asset_position >= len(dynamic_ids)
+                    or dynamic_ids[self.asset_position] != self.asset_remote_id
+                ):
+                    raise ValueError
+                validate_bili_dynamic_image_url(self.source_hint)
+                fingerprints: set[str] = set()
+                for position, remote_id in enumerate(dynamic_ids):
+                    prefix = f"dynamic:{self.content_remote_id}:image:{position}:"
+                    if type(remote_id) is not str or not remote_id.startswith(prefix):
+                        raise ValueError
+                    fingerprint = remote_id.removeprefix(prefix)
+                    if re.fullmatch("[0-9a-f]{64}", fingerprint) is None:
+                        raise ValueError
+                    fingerprints.add(fingerprint)
+                if len(fingerprints) != 1:
+                    raise ValueError
+            elif dynamic_ids or (platform is Platform.BILI and asset_kind is AssetKind.IMAGE):
+                raise ValueError
+        except (TypeError, ValueError) as exc:
+            raise MediaDownloadError("locator_refresh_configuration_invalid") from exc
         expected_key = stable_asset_key(
             platform=platform.value,
             content_remote_type=self.content_remote_type,
@@ -283,6 +335,9 @@ class MediaCrawlerRefreshContext:
         except ValueError as exc:  # pragma: no cover - __post_init__ already fences this
             raise MediaDownloadError("locator_refresh_configuration_invalid") from exc
 
+    def _bili_dynamic_detail(self) -> bool:
+        return self.platform is Platform.BILI and self.content_remote_type == "dynamic"
+
     def detail_request(self) -> MediaCrawlerDetailRequest:
         """Project only child/runtime facts; discovery metadata stays parent-side."""
 
@@ -301,6 +356,9 @@ class MediaCrawlerRefreshContext:
             request_delay_seconds=self.request_delay_seconds,
             bili_progressive_detail=self._bili_progressive_detail(),
             bili_video_cid=self._bili_video_cid(),
+            bili_dynamic_detail=self._bili_dynamic_detail(),
+            bili_dynamic_type=self.bili_dynamic_type,
+            bili_dynamic_pub_ts=self.bili_dynamic_pub_ts,
             watchdogs=self.watchdogs,
         )
 
@@ -371,6 +429,36 @@ class MediaCrawlerLocatorRefresher:
             raise MediaDownloadError("locator_refresh_asset_not_found")
         if len(matching_content) != 1:
             raise MediaDownloadError("locator_refresh_asset_mismatch")
+        if context._bili_dynamic_detail():
+            target = matching_content[0]
+            envelope = target.content.raw
+            source_record = envelope.get("record") if isinstance(envelope, Mapping) else None
+            source = source_record.get(BILI_DYNAMIC_SOURCE_FIELD) if isinstance(source_record, Mapping) else None
+            try:
+                parsed_source = BiliDynamicSource.from_mapping(source)
+                identity = parsed_source.identity
+                if (
+                    len(batch.records) != 1
+                    or target.content.kind is not ContentKind.DYNAMIC
+                    or identity.did != context.content_remote_id
+                    or identity.author_mid != int(context.author_remote_id)
+                    or identity.dynamic_type != context.bili_dynamic_type
+                    or identity.pub_ts != context.bili_dynamic_pub_ts
+                    or parsed_source.video_reference is not None
+                    or parsed_source.image_remote_ids != context.bili_dynamic_image_remote_ids
+                    or len(target.assets) != len(context.bili_dynamic_image_remote_ids)
+                    or any(
+                        asset.kind is not AssetKind.IMAGE or asset.position != position or asset.remote_id != remote_id
+                        for position, (asset, remote_id) in enumerate(
+                            zip(target.assets, context.bili_dynamic_image_remote_ids, strict=True)
+                        )
+                    )
+                ):
+                    raise ValueError
+                for asset in target.assets:
+                    validate_bili_dynamic_image_url(asset.source_url)
+            except (TypeError, ValueError) as exc:
+                raise MediaDownloadError("locator_refresh_schema_changed") from exc
         if context.platform is Platform.ZHIHU:
             target = matching_content[0]
             expected_zhihu_hints = context.zhihu_image_source_hints
@@ -473,7 +561,11 @@ class MediaCrawlerLocatorRefresher:
             if asset.remote_id == context.asset_remote_id
             and asset.kind is context.asset_kind
             and asset.position == context.asset_position
-            and (context._bili_progressive_detail() or asset_source_hint(asset.source_url) == context.source_hint)
+            and (
+                context._bili_progressive_detail()
+                or context._bili_dynamic_detail()
+                or asset_source_hint(asset.source_url) == context.source_hint
+            )
         ]
         if len(candidates) != 1:
             raise MediaDownloadError("locator_refresh_asset_mismatch")
@@ -520,7 +612,9 @@ class MediaCrawlerLocatorRefresher:
                 raise MediaDownloadError("locator_refresh_result_invalid")
             return runtime_target
         profile = (
-            MediaRequestProfile.BILIBILI_MEDIA if context._bili_progressive_detail() else MediaRequestProfile.DEFAULT
+            MediaRequestProfile.BILIBILI_MEDIA
+            if context._bili_progressive_detail() or context._bili_dynamic_detail()
+            else MediaRequestProfile.DEFAULT
         )
         try:
             return ResolvedLocator(source_url, profile)
@@ -533,7 +627,7 @@ def _supported_kinds(platform: Platform) -> frozenset[AssetKind]:
         Platform.XHS: frozenset({AssetKind.IMAGE, AssetKind.VIDEO}),
         Platform.DY: frozenset({AssetKind.IMAGE, AssetKind.VIDEO, AssetKind.AUDIO, AssetKind.COVER}),
         Platform.KS: frozenset({AssetKind.VIDEO, AssetKind.COVER, AssetKind.IMAGE}),
-        Platform.BILI: frozenset({AssetKind.VIDEO, AssetKind.COVER}),
+        Platform.BILI: frozenset({AssetKind.VIDEO, AssetKind.COVER, AssetKind.IMAGE}),
         Platform.WB: frozenset({AssetKind.IMAGE, AssetKind.VIDEO, AssetKind.COVER}),
         Platform.TIEBA: frozenset({AssetKind.IMAGE}),
         Platform.ZHIHU: frozenset({AssetKind.IMAGE}),

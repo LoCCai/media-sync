@@ -25,7 +25,7 @@ from collections.abc import AsyncIterator, Mapping, Sequence
 from contextlib import asynccontextmanager, suppress
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 from fastapi import FastAPI, HTTPException, Query, Request, Response
@@ -588,6 +588,7 @@ class SubscriptionCreate(BaseModel):
     allow_full_history: bool = False
     request_delay_seconds: float = Field(default=5.0, gt=0, le=MAX_REQUEST_DELAY_SECONDS)
     headless: bool = True
+    bili_scope: Literal["uploads", "dynamics", "both"] | None = None
 
 
 class CreatorLookupStart(BaseModel):
@@ -598,6 +599,14 @@ class CreatorLookupStart(BaseModel):
     frontend_generation: UUID
     enable_mediacrawler: bool = Field(default=False, strict=True)
     accept_mediacrawler_license: bool = Field(default=False, strict=True)
+
+
+class BiliScopeUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    scope: Literal["uploads", "dynamics", "both"]
+    max_items: int = Field(ge=1, le=1_000, strict=True)
+    expected_schedule_revision: int = Field(ge=0, strict=True)
 
 
 def _subscription_policy_summary_payload(subscription: Subscription) -> dict[str, object]:
@@ -619,7 +628,8 @@ def _subscription_policy_summary_payload(subscription: Subscription) -> dict[str
         }
     return {
         "adapter": adapter,
-        "schema_version": SUBSCRIPTION_POLICY_SCHEMA_VERSION,
+        "schema_version": 2 if policy.bili_scope is not None else SUBSCRIPTION_POLICY_SCHEMA_VERSION,
+        **({"bili_scope": policy.bili_scope} if policy.bili_scope is not None else {}),
         "allow_full_history": policy.allow_full_history,
         "request_delay_seconds": policy.request_delay_seconds,
         "headless": policy.headless,
@@ -641,23 +651,33 @@ def _bili_scan_summary_payload(subscription: Subscription, lock_path: Path) -> d
         "history_complete": False,
         "state": None,
     }
+    try:
+        policy = from_subscription_policy(subscription.policy)
+        if policy.bili_scope is not None:
+            payload["version"] = 2
+            payload["feed"] = policy.bili_scope
+    except ValueError:
+        pass
     if subscription.cursor is None:
         return payload
     try:
-        from media_sync.integrations.mediacrawler.bilibili_scan import BiliScanState
+        from media_sync.integrations.mediacrawler.bilibili_multifeed import BiliMultiFeedState, state_from_cursor
 
         cursor = subscription.cursor
         if type(cursor) is not dict or set(cursor) != {"value"} or type(cursor["value"]) is not str:
             return payload
         if type(subscription.cursor_version) is not int or subscription.cursor_version != 1:
             return payload
-        state = BiliScanState.from_cursor(cursor["value"])
+        state = state_from_cursor(cursor["value"])
         state.require_binding(
             account_id=UUID(subscription.account_id),
             author_fingerprint_sha256=hashlib.sha256(subscription.author.remote_id.encode("utf-8")).hexdigest(),
             upstream_sha=load_mediacrawler_lock(lock_path).commit,
         )
         payload["state"] = state.public_summary()
+        if isinstance(state, BiliMultiFeedState):
+            payload["version"] = 2
+            payload["feed"] = state.scope
         payload["status"] = "verified"
     except (OSError, ValueError, TypeError, KeyError):
         # Unknown versions, mismatched identities or unavailable locked source
@@ -2476,6 +2496,7 @@ def create_api_app(
             allow_full_history=body.allow_full_history,
             request_delay_seconds=body.request_delay_seconds,
             headless=body.headless,
+            bili_scope=body.bili_scope,
         )
 
     @app.post("/api/v1/subscriptions/preview")
@@ -2725,6 +2746,26 @@ def create_api_app(
             )
         )
         return _operation_start_payload(submission)
+
+    @app.post("/api/v1/subscriptions/{subscription_id}/bili-scope")
+    def update_bili_scope(subscription_id: UUID, body: BiliScopeUpdate) -> dict[str, object]:
+        from media_sync.application.bilibili_subscription_scope import change_bilibili_scope
+
+        database = _database()
+        try:
+            return change_bilibili_scope(
+                database,
+                subscription_id,
+                scope=body.scope,
+                max_items=body.max_items,
+                expected_schedule_revision=body.expected_schedule_revision,
+            )
+        except (ValueError, RepositoryError):
+            raise HTTPException(status_code=409, detail="bili_scope_update_rejected") from None
+        except SQLAlchemyError:
+            raise _bad_request("database_operation_failed") from None
+        finally:
+            database.dispose()
 
     @app.post("/api/v1/subscriptions/{subscription_id}/pause")
     def pause_subscription(subscription_id: UUID) -> dict[str, object]:

@@ -169,3 +169,36 @@ def test_constructor_enforces_same_closed_value_boundaries() -> None:
         MediaCrawlerSubscriptionPolicy(False, 2, 1)  # type: ignore[arg-type]
     with pytest.raises(MediaCrawlerSubscriptionPolicyError, match="secret_ref"):
         MediaCrawlerSubscriptionPolicy(False, 2, True, "https://example.test/raw")
+
+
+@pytest.mark.parametrize("scope", ["uploads", "dynamics", "both"])
+def test_explicit_bili_scope_round_trips_closed_v2_and_enforces_record_budget(scope: str) -> None:
+    policy = MediaCrawlerSubscriptionPolicy(False, 2, True, bili_scope=scope)
+    assert policy.effective_bili_scope == scope
+    assert policy.to_payload() == _payload(schema_version=2, bili_scope=scope)
+    assert MediaCrawlerSubscriptionPolicy.from_payload(policy.to_payload()) == policy
+    policy.validate_bili_max_items(2)
+    if scope == "uploads":
+        policy.validate_bili_max_items(1)
+    else:
+        with pytest.raises(MediaCrawlerSubscriptionPolicyError, match="at least 2"):
+            policy.validate_bili_max_items(1)
+
+
+def test_legacy_v1_never_silently_enables_dynamic_capture() -> None:
+    policy = MediaCrawlerSubscriptionPolicy.from_payload(_payload())
+    assert policy.bili_scope is None and policy.effective_bili_scope == "uploads"
+    assert policy.to_payload() == _payload()
+    policy.validate_bili_max_items(1)
+
+
+@pytest.mark.parametrize("scope", [None, True, 1, [], {}, "", "video", "DYNAMICS", " uploads"])
+def test_v2_scope_is_required_and_closed(scope: object) -> None:
+    with pytest.raises(MediaCrawlerSubscriptionPolicyError):
+        MediaCrawlerSubscriptionPolicy.from_payload(_payload(schema_version=2, bili_scope=scope))
+
+
+def test_v1_rejects_scope_and_v2_rejects_unknown_fields() -> None:
+    for payload in (_payload(bili_scope="both"), _payload(schema_version=2, bili_scope="both", extra=True)):
+        with pytest.raises(MediaCrawlerSubscriptionPolicyError):
+            MediaCrawlerSubscriptionPolicy.from_payload(payload)

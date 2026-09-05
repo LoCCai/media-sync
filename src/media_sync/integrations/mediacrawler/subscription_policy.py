@@ -10,6 +10,8 @@ from typing import Final
 from media_sync.security import InvalidSecretReferenceError, SecretReference
 
 SUBSCRIPTION_POLICY_SCHEMA_VERSION: Final = 1
+BILI_SUBSCRIPTION_POLICY_SCHEMA_VERSION: Final = 2
+BILI_SCOPES: Final = frozenset({"uploads", "dynamics", "both"})
 MAX_REQUEST_DELAY_SECONDS: Final = 300.0
 
 
@@ -49,18 +51,21 @@ def _boolean(value: object, *, name: str) -> bool:
 
 @dataclass(frozen=True, slots=True)
 class MediaCrawlerSubscriptionPolicy:
-    """Closed v1 controls persisted inside ``Subscription.policy.mediacrawler``."""
+    """Closed v1 controls, or explicit v2 Bili capture scope; no implicit expansion."""
 
     allow_full_history: bool
     request_delay_seconds: float
     headless: bool
     creator_secret_ref: str | None = field(default=None, repr=False)
+    bili_scope: str | None = None
 
     def __post_init__(self) -> None:
         if type(self.allow_full_history) is not bool:
             raise MediaCrawlerSubscriptionPolicyError("allow_full_history must be boolean")
         if type(self.headless) is not bool:
             raise MediaCrawlerSubscriptionPolicyError("headless must be boolean")
+        if self.bili_scope is not None and (type(self.bili_scope) is not str or self.bili_scope not in BILI_SCOPES):
+            raise MediaCrawlerSubscriptionPolicyError("bili_scope must be uploads, dynamics or both")
         object.__setattr__(self, "request_delay_seconds", _request_delay(self.request_delay_seconds))
         if self.creator_secret_ref is not None:
             object.__setattr__(
@@ -70,17 +75,33 @@ class MediaCrawlerSubscriptionPolicy:
             )
 
     def to_payload(self) -> dict[str, object]:
-        """Return the exact JSON-compatible v1 MediaCrawler region."""
+        """Return v1 unchanged unless the caller explicitly selected Bili scope."""
 
         payload: dict[str, object] = {
-            "schema_version": SUBSCRIPTION_POLICY_SCHEMA_VERSION,
+            "schema_version": (
+                SUBSCRIPTION_POLICY_SCHEMA_VERSION
+                if self.bili_scope is None
+                else BILI_SUBSCRIPTION_POLICY_SCHEMA_VERSION
+            ),
             "allow_full_history": self.allow_full_history,
             "request_delay_seconds": self.request_delay_seconds,
             "headless": self.headless,
         }
         if self.creator_secret_ref is not None:
             payload["creator_input"] = {"secret_ref": self.creator_secret_ref}
+        if self.bili_scope is not None:
+            payload["bili_scope"] = self.bili_scope
         return payload
+
+    @property
+    def effective_bili_scope(self) -> str:
+        return self.bili_scope or "uploads"
+
+    def validate_bili_max_items(self, max_items: int) -> None:
+        if type(max_items) is not int or not 1 <= max_items <= 1_000:
+            raise MediaCrawlerSubscriptionPolicyError("max_items must be an integer between 1 and 1000")
+        if self.effective_bili_scope != "uploads" and max_items < 2:
+            raise MediaCrawlerSubscriptionPolicyError("Bili dynamics and both scopes require max_items at least 2")
 
     @classmethod
     def from_payload(cls, payload: Mapping[str, object]) -> MediaCrawlerSubscriptionPolicy:
@@ -94,12 +115,16 @@ class MediaCrawlerSubscriptionPolicy:
             "request_delay_seconds",
             "headless",
         }
+        schema_version = payload.get("schema_version")
+        if type(schema_version) is not int or schema_version not in {1, 2}:
+            raise MediaCrawlerSubscriptionPolicyError("MediaCrawler policy is not closed schema v1 or v2")
+        if schema_version == 2:
+            required.add("bili_scope")
+            if type(payload.get("bili_scope")) is not str or payload.get("bili_scope") not in BILI_SCOPES:
+                raise MediaCrawlerSubscriptionPolicyError("bili_scope must be uploads, dynamics or both")
         supplied = set(payload)
         if supplied not in (required, required | {"creator_input"}):
-            raise MediaCrawlerSubscriptionPolicyError("MediaCrawler policy is not closed schema v1")
-        schema_version = payload.get("schema_version")
-        if type(schema_version) is not int or schema_version != SUBSCRIPTION_POLICY_SCHEMA_VERSION:
-            raise MediaCrawlerSubscriptionPolicyError("MediaCrawler policy is not closed schema v1")
+            raise MediaCrawlerSubscriptionPolicyError("MediaCrawler policy is not closed schema v1 or v2")
 
         creator_secret_ref: str | None = None
         if "creator_input" in payload:
@@ -113,6 +138,7 @@ class MediaCrawlerSubscriptionPolicy:
             request_delay_seconds=_request_delay(payload.get("request_delay_seconds")),
             headless=_boolean(payload.get("headless"), name="headless"),
             creator_secret_ref=creator_secret_ref,
+            bili_scope=str(payload["bili_scope"]) if schema_version == 2 else None,
         )
 
 
@@ -144,6 +170,8 @@ def from_subscription_policy(
 
 
 __all__ = [
+    "BILI_SCOPES",
+    "BILI_SUBSCRIPTION_POLICY_SCHEMA_VERSION",
     "MAX_REQUEST_DELAY_SECONDS",
     "SUBSCRIPTION_POLICY_SCHEMA_VERSION",
     "MediaCrawlerSubscriptionPolicy",

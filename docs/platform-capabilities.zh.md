@@ -23,7 +23,7 @@
 
 ### media-sync 0.x 对外能力
 
-执行[0058](executions/0058-cookie-login/progress.zh.md)为**B站、小红书、微博、知乎**新增明确粘贴Cookie、远程认证验证和不可变私密保存。抖音/贴吧的本地pong标记及快手仅返回result的GraphQL不足以证明已认证身份，因此暂不开放这三平台粘贴校验。上表七平台的上游Cookie源码列不代表本UI均可验证。Cookie复用改为向全新非持久上下文注入完整键值对；B站单作者资料流程支持已验证Cookie账户。其他六平台资料及真实端到端验收仍开放。
+执行[0058](executions/0058-cookie-login/progress.zh.md)为**B站、小红书、微博、知乎**新增明确粘贴Cookie、远程认证验证和不可变私密保存。抖音/贴吧的本地pong标记及快手仅返回result的GraphQL不足以证明已认证身份，因此暂不开放这三平台粘贴校验。上表七平台的上游Cookie源码列不代表本UI均可验证。Cookie复用改为向全新非持久上下文注入完整键值对。B站与[微博](executions/0060-weibo-creator-profile/progress.zh.md)单作者资料均支持已验证Cookie和保存会话；其他五平台资料及真实端到端验收仍开放。
 
 执行 0012 当前工作树已为七个平台标识开放针对一个合格初始 MediaCrawler QR 账户或精确 `saved_session/expired` 账户的显式阻塞登录命令。在读取设置、数据库或启动 child 前，必须同时提供 `--enable-mediacrawler` 与 `--accept-mediacrawler-license`。隔离的仅登录 child 强制有头浏览器并保存状态；重认证启动时原子变为 `qr/authenticating`，持久成功交接会把账户切换为派生的逐账户 `saved_session/authenticated`，非成功则留在可重试 QR 状态。Child 会一直处于 START/CANCEL/EOF 父进程控制及结果 guardian 下，直到完整树关停。Cookie 继续走非交互密钥引用，显式重认证之外的 saved session 只允许后台无头使用，且**不开放手机号登录**。这一点有意区别于上游过宽的枚举声明。
 
@@ -45,10 +45,12 @@
 
 ### 桥接策略
 
+当前media-sync覆盖：上表描述锁定上游，不等于产品全部能力。0059–0062增加独立有界B站投稿/动态续抓及显式投稿/动态/两者范围（旧订阅仍仅投稿），精确WORD/DRAW/完整OPUS和自有AV引用、私密整页断点、精确图片刷新及离线归档/Emby兼容目录输出。本地导出无需连接媒体服务器；图文HTML不等于原生视频播放验收。转发原文、未知/付费/直播/专栏组件及真实闭环仍按[0062](executions/0062-bili-dynamic-workflow/progress.zh.md)区分不支持与 `NOT_RUN`。
+
 - 在独立数据库保存用户输入的远端作者 ID 与用户提供的显示名称。
 - 每次任务设置硬超时和输出条数看门狗。
-- 只对审计后仍然无界的 creator 路径要求显式确认 `allow_full_history`。执行 0019 与 0020 分别安装校验过的有界知乎回答与贴吧主题循环；知乎已从该确认集合移除，贴吧原本已有上游最大值检查，现又加固为精确成功工作量边界。
-- 即使子进程产生旧数据，导入也在已知内容 ID/发布时间水位处停止；但不得把“导入截断”冒充“上游请求已受限”。
+- 只对审计后仍然无界的creator路径要求显式确认 `allow_full_history`。0019/0020安装有界知乎回答/贴吧主题循环；0059/0062的新有界B站请求也不再要求确认，旧无界artifact仍保留门禁。
+- 旧导入可能在已知ID/发布时间水位停止，但B站continuation历史不把旧水位当覆盖证明；保留独立待处理页/详情进度。不得把导入截断或本轮源末尾观察冒充完整历史。
 - 在外部运行器中兼容知乎作者参数，不修改上游检出。
 
 ## 媒体行为

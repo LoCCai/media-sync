@@ -10,6 +10,13 @@ from datetime import datetime
 from pathlib import PurePosixPath
 
 from media_sync.domain import ContentKind, Platform
+from media_sync.integrations.mediacrawler.bilibili_dynamic import BILI_DYNAMIC_FIELD, BiliDynamicPayload
+from media_sync.integrations.mediacrawler.bilibili_multifeed import (
+    BiliDynamicSnapshotStore,
+    BiliMultiFeedCoverage,
+    BiliMultiFeedState,
+    coverage_from_json_line,
+)
 from media_sync.integrations.mediacrawler.bilibili_scan import BiliIdentity, BiliScanCoverage
 from media_sync.integrations.mediacrawler.bridge import RunnerManifest
 from media_sync.integrations.mediacrawler.normalizers import (
@@ -31,7 +38,31 @@ class NormalizedMediaCrawlerOutput:
     records: tuple[NormalizedMediaRecord, ...]
     output_fingerprint_sha256: str
     input_records: int
-    bili_coverage: BiliScanCoverage | None = field(default=None, repr=False)
+    bili_coverage: BiliScanCoverage | BiliMultiFeedCoverage | None = field(default=None, repr=False)
+
+
+def validate_bili_record_keys(
+    coverage: BiliScanCoverage | BiliMultiFeedCoverage,
+    *,
+    input_state: object,
+    max_items: int,
+    records: tuple[NormalizedMediaRecord, ...],
+) -> None:
+    """Namespaces must not collapse a numeric DID into an ordinary AID."""
+    if isinstance(coverage, BiliMultiFeedCoverage):
+        if not isinstance(input_state, BiliMultiFeedState):
+            raise MediaCrawlerOutputRejected("Bili coverage version differs")
+        coverage.validate(
+            input_state,
+            max_items,
+            normalized_records=tuple((record.content.remote_type, record.content.remote_id) for record in records),
+        )
+    else:
+        from media_sync.integrations.mediacrawler.bilibili_scan import BiliScanState
+
+        if not isinstance(input_state, BiliScanState):
+            raise MediaCrawlerOutputRejected("Bili coverage version differs")
+        coverage.validate(input_state, max_items, normalized_remote_ids=tuple(row.content.remote_id for row in records))
 
 
 def _closed_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
@@ -95,6 +126,7 @@ def load_normalized_output(
     records_seen = 0
     bili_coverage = None
     bili_identities: list[BiliIdentity] = []
+    dynamic_payloads: dict[str, BiliDynamicPayload] = {}
     for jsonl_file in snapshot.files:
         if PurePosixPath(jsonl_file.relative_path).name == "_media_sync_bili_coverage.jsonl":
             if (
@@ -103,12 +135,26 @@ def load_normalized_output(
                 or bili_coverage is not None
             ):
                 raise MediaCrawlerOutputRejected("unexpected Bili coverage sidecar")
-            bili_coverage = BiliScanCoverage.from_json_line(jsonl_file.payload.decode("utf-8"))
+            bili_coverage = coverage_from_json_line(jsonl_file.payload.decode("utf-8"))
             continue
         if manifest.bili_scan is not None:
+            upload_lines: list[bytes] = []
+            for line in jsonl_file.payload.splitlines():
+                if not line.strip():
+                    continue
+                raw = json.loads(line, object_pairs_hook=_closed_object)
+                if isinstance(raw, dict) and BILI_DYNAMIC_FIELD in raw:
+                    if not isinstance(manifest.bili_scan, BiliMultiFeedState):
+                        raise MediaCrawlerOutputRejected("legacy Bili scan cannot acquire dynamic records")
+                    dynamic = BiliDynamicPayload.from_mapping(raw[BILI_DYNAMIC_FIELD])
+                    if dynamic.identity.did in dynamic_payloads:
+                        raise MediaCrawlerOutputRejected("duplicate dynamic source identity")
+                    dynamic_payloads[dynamic.identity.did] = dynamic
+                else:
+                    upload_lines.append(line)
             bili_identities.extend(
                 _bili_content_identities(
-                    jsonl_file.payload, author_fingerprint_sha256=manifest.author_remote_id_fingerprint_sha256
+                    b"\n".join(upload_lines), author_fingerprint_sha256=manifest.author_remote_id_fingerprint_sha256
                 )
             )
         batch = normalize_jsonl_bytes(
@@ -130,12 +176,53 @@ def load_normalized_output(
             != manifest.author_remote_id_fingerprint_sha256
         ):
             raise MediaCrawlerOutputRejected("bounded Bili creator scope differs")
-        bili_coverage.validate(
+        validate_bili_record_keys(
+            bili_coverage,
             input_state=manifest.bili_scan,
             max_items=manifest.max_items,
-            normalized_remote_ids=tuple(record.content.remote_id for record in records),
+            records=tuple(records),
         )
-        expected = {identity.aid: identity for identity in bili_coverage.consumed}
+        expected_dynamic = {}
+        if isinstance(bili_coverage, BiliMultiFeedCoverage):
+            if bili_coverage.feed == "dynamics":
+                if bili_coverage.page is None:
+                    raise MediaCrawlerOutputRejected("dynamic snapshot is missing")
+                snapshot_store = BiliDynamicSnapshotStore(
+                    manifest.account_root,
+                    account_id=manifest.account_id,
+                    author_fingerprint_sha256=manifest.author_remote_id_fingerprint_sha256,
+                    upstream_sha=manifest.upstream_sha,
+                    creator_id=int(creator_remote_id),
+                )
+                if snapshot_store.load(bili_coverage.page.ref) != bili_coverage.page:
+                    raise MediaCrawlerOutputRejected("dynamic snapshot and coverage differ")
+                expected_dynamic = {row.identity.did: row for row in bili_coverage.dynamic_consumed}
+                expected = {
+                    row.video_identity.aid: row.video_identity
+                    for row in bili_coverage.dynamic_consumed
+                    if row.video_identity is not None
+                }
+            else:
+                if bili_coverage.upload_coverage is None:
+                    raise MediaCrawlerOutputRejected("upload coverage missing")
+                expected = {identity.aid: identity for identity in bili_coverage.upload_coverage.consumed}
+        else:
+            expected = {identity.aid: identity for identity in bili_coverage.consumed}
+        if set(expected_dynamic) != set(dynamic_payloads):
+            raise MediaCrawlerOutputRejected("dynamic coverage and source differ")
+        for did, consumption in expected_dynamic.items():
+            dynamic = dynamic_payloads[did]
+            video = consumption.video_identity
+            if (
+                dynamic.identity != consumption.identity
+                or ((dynamic.video_reference is None) != (video is None))
+                or (
+                    video is not None
+                    and dynamic.video_reference is not None
+                    and (video.aid, video.bvid) != (dynamic.video_reference.aid, dynamic.video_reference.bvid)
+                )
+            ):
+                raise MediaCrawlerOutputRejected("dynamic detail and coverage identity differ")
         if (
             len(records) != records_seen
             or len(bili_identities) != len(expected)
@@ -144,11 +231,25 @@ def load_normalized_output(
         ):
             raise MediaCrawlerOutputRejected("bounded Bili coverage and content differ")
         for record in records:
+            if record.content.remote_type == "dynamic":
+                observed_dynamic = expected_dynamic.get(record.content.remote_id)
+                if (
+                    observed_dynamic is None
+                    or record.content.platform is not Platform.BILI
+                    or record.content.kind is not ContentKind.DYNAMIC
+                    or record.author.remote_id != creator_remote_id
+                    or str(observed_dynamic.identity.author_mid) != creator_remote_id
+                    or record.content.published_at is None
+                    or record.content.published_at.timestamp() != observed_dynamic.identity.pub_ts
+                ):
+                    raise MediaCrawlerOutputRejected("bounded Bili normalized dynamic identity differs")
+                continue
             identity = expected.get(record.content.remote_id)
             if (
                 identity is None
                 or record.content.platform is not Platform.BILI
                 or record.content.kind is not ContentKind.VIDEO
+                or record.content.remote_type != "content"
                 or record.author.remote_id != creator_remote_id
                 or record.content.published_at is None
                 or record.content.published_at.timestamp() != identity.pubdate

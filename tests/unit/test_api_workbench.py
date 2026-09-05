@@ -62,6 +62,36 @@ def _row_counts(client: TestClient) -> tuple[int, int]:
         database.dispose()
 
 
+def test_bili_dynamic_scope_preview_and_paused_revision_update(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    account = _account(client, "bili", "scope-fixture")
+    draft = {
+        "account_id": account["id"],
+        "platform": "bili",
+        "creator_remote_id": "42",
+        "display_name": "Fixture",
+        "bili_scope": "dynamics",
+        "max_items": 2,
+    }
+    preview = client.post("/api/v1/subscriptions/preview", json=draft)
+    assert preview.status_code == 200
+    assert preview.json()["policy_summary"]["bili_scope"] == "dynamics"
+    assert client.post("/api/v1/subscriptions/preview", json={**draft, "max_items": 1}).status_code == 400
+    created = client.post("/api/v1/subscriptions", json=draft)
+    assert created.status_code == 201
+    identifier = created.json()["id"]
+    detail = client.get(f"/api/v1/subscriptions/{identifier}").json()
+    revision = detail["schedule"]["schedule_revision"]
+    update = {"scope": "both", "max_items": 2, "expected_schedule_revision": revision}
+    assert client.post(f"/api/v1/subscriptions/{identifier}/bili-scope", json=update).status_code == 409
+    assert client.post(f"/api/v1/subscriptions/{identifier}/pause").status_code == 200
+    response = client.post(f"/api/v1/subscriptions/{identifier}/bili-scope", json=update)
+    assert response.status_code == 200 and response.json()["checkpoint_preserved"] is True
+    assert response.json()["enabled"] is False
+    assert client.post(f"/api/v1/subscriptions/{identifier}/bili-scope", json=update).status_code == 409
+    assert _row_counts(client) == (1, 1)
+
+
 def test_platform_capabilities_are_complete_versioned_and_path_free(tmp_path: Path) -> None:
     client = _client(tmp_path)
 

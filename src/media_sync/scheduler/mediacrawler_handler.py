@@ -20,6 +20,7 @@ from media_sync.application.mediacrawler import (
     MediaCrawlerOutputRejected,
     NormalizedMediaCrawlerOutput,
     load_normalized_output,
+    validate_bili_record_keys,
 )
 from media_sync.domain import AuthStatus, LoginMethod, Platform, RunStatus
 from media_sync.infrastructure.db import (
@@ -123,6 +124,9 @@ _RECOVERED_ARTIFACT_KEYS = frozenset(
 
 _PROCESS_FAILURES: Mapping[MediaCrawlerProcessStatus, str] = {
     MediaCrawlerProcessStatus.AUTH_EXPIRED: "auth_expired",
+    MediaCrawlerProcessStatus.BILI_DYNAMIC_UNSUPPORTED: "bili_dynamic_unsupported",
+    MediaCrawlerProcessStatus.BILI_DYNAMIC_IDENTITY: "bili_dynamic_identity_mismatch",
+    MediaCrawlerProcessStatus.BILI_DYNAMIC_SCHEMA: "bili_dynamic_schema_invalid",
     MediaCrawlerProcessStatus.ACCOUNT_BUSY: "account_busy",
     MediaCrawlerProcessStatus.TIMED_OUT: "upstream_timeout",
     MediaCrawlerProcessStatus.START_FAILED: "upstream_unavailable",
@@ -184,6 +188,7 @@ class _IngestionService(Protocol):
         next_cursor: str,
         crawl_revision_before: int | None = None,
         ownership_guard: Callable[[Session], None] | None = None,
+        bili_scope: str | None = None,
     ) -> MediaCrawlerIngestionResult: ...
 
     def ingest(
@@ -980,10 +985,11 @@ class MediaCrawlerScheduledHandler:
             # Revalidate the pure transition even when a custom normalizer was
             # injected. Filesystem/content validation precedes this DB boundary.
             try:
-                output.bili_coverage.validate(
+                validate_bili_record_keys(
+                    output.bili_coverage,
                     input_state=manifest.bili_scan,
                     max_items=manifest.max_items,
-                    normalized_remote_ids=tuple(record.content.remote_id for record in output.records),
+                    records=output.records,
                 )
             except ValueError:
                 return await self._fail_attempt(context, prepared, attempt_paths, "output_security_failed")
@@ -996,6 +1002,7 @@ class MediaCrawlerScheduledHandler:
                 crawl_revision_before=manifest.checkpoint_revision_before,
                 input_cursor=manifest.bili_scan_input_cursor,
                 next_cursor=output.bili_coverage.next_state.to_cursor(),
+                bili_scope=getattr(manifest.bili_scan, "scope", None),
                 ownership_guard=guarded,
             )
         else:
@@ -1140,6 +1147,7 @@ class MediaCrawlerScheduledHandler:
             or manifest.login_method is not context.account.login_method
             or manifest.max_items != context.max_items
             or manifest.allow_full_history is not policy.allow_full_history
+            or getattr(manifest.bili_scan, "scope", None) != policy.bili_scope
             or manifest.headless is not policy.headless
             or manifest.request_delay_seconds != policy.request_delay_seconds
             or manifest.watchdogs != self.watchdogs
@@ -1248,6 +1256,9 @@ class MediaCrawlerScheduledHandler:
             if context.account.adapter != "mediacrawler":
                 raise ValueError("scheduled handler received another adapter")
             policy = from_subscription_policy(context.subscription_policy)
+            if policy.bili_scope is not None and context.account.platform is not Platform.BILI:
+                raise ValueError("Bili scope is invalid for this platform")
+            policy.validate_bili_max_items(context.max_items)
             if context.account.login_method not in {
                 LoginMethod.QR,
                 LoginMethod.COOKIE,
@@ -1376,6 +1387,7 @@ class MediaCrawlerScheduledHandler:
             request_delay_seconds=policy.request_delay_seconds,
             bili_bounded_capture=context.account.platform is Platform.BILI,
             bili_scan_cursor_before=prepared.cursor_before if context.account.platform is Platform.BILI else None,
+            bili_scope=policy.bili_scope,
         )
         try:
             await self._require_cleanup_unblocked(attempt_paths)

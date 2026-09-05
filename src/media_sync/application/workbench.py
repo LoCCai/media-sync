@@ -160,6 +160,7 @@ class SubscriptionDraft:
     allow_full_history: bool = False
     request_delay_seconds: float = 5.0
     headless: bool = True
+    bili_scope: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -172,6 +173,7 @@ class SubscriptionPolicySummary:
     request_delay_seconds: float | None = None
     headless: bool | None = None
     creator_reference_configured: bool = False
+    bili_scope: str | None = None
 
     def to_payload(self) -> dict[str, object]:
         payload: dict[str, object] = {"adapter": self.adapter}
@@ -185,6 +187,8 @@ class SubscriptionPolicySummary:
                     "creator_reference_configured": self.creator_reference_configured,
                 }
             )
+        if self.bili_scope is not None:
+            payload["bili_scope"] = self.bili_scope
         return payload
 
 
@@ -553,6 +557,13 @@ class SubscriptionWorkbenchService:
             raise WorkbenchError("platform_conflict")
         if account.adapter not in SUPPORTED_WORKBENCH_ADAPTERS:
             raise WorkbenchError("adapter_not_supported")
+        if draft.bili_scope is not None and (
+            platform is not Platform.BILI
+            or account.adapter != MEDIACRAWLER_ADAPTER
+            or draft.bili_scope not in {"uploads", "dynamics", "both"}
+            or (draft.bili_scope != "uploads" and draft.max_items < 2)
+        ):
+            raise WorkbenchError("subscription_options_invalid")
 
         if account.adapter == MEDIACRAWLER_ADAPTER:
             try:
@@ -589,17 +600,19 @@ class SubscriptionWorkbenchService:
                     request_delay_seconds=draft.request_delay_seconds,
                     headless=draft.headless,
                     creator_secret_ref=creator_secret_ref,
+                    bili_scope=draft.bili_scope,
                 )
             except MediaCrawlerSubscriptionPolicyError:
                 raise WorkbenchError("subscription_options_invalid") from None
             policy = {"mediacrawler": media_crawler_policy.to_payload()}
             policy_summary = SubscriptionPolicySummary(
                 adapter=MEDIACRAWLER_ADAPTER,
-                schema_version=SUBSCRIPTION_POLICY_SCHEMA_VERSION,
+                schema_version=2 if media_crawler_policy.bili_scope is not None else SUBSCRIPTION_POLICY_SCHEMA_VERSION,
                 allow_full_history=media_crawler_policy.allow_full_history,
                 request_delay_seconds=media_crawler_policy.request_delay_seconds,
                 headless=media_crawler_policy.headless,
                 creator_reference_configured=media_crawler_policy.creator_secret_ref is not None,
+                bili_scope=media_crawler_policy.bili_scope,
             )
 
         author_repository = AuthorRepository(self._session)

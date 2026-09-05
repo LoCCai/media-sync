@@ -2,9 +2,9 @@
 
 # 项目工作日志
 
-当前推进：[0058 Cookie登录](executions/0058-cookie-login/progress.zh.md)实现B站/小红书/微博/知乎的明确远程校验、私密保存和全新上下文复用，并接入B站Cookie昵称/头像查询。[0057](executions/0057-creator-profile-lookup/progress.zh.md)交付B站saved-session资料和独立备注；[0056](executions/0056-subscription-usability/progress.zh.md)交付可恢复删除/暂停恢复、单Job报告和独立本地输出。三平台粘贴验证器、六平台资料、有界采集及真实归档/播放验收仍须完成。见[0058验证](executions/0058-cookie-login/verification.zh.md)，整体目标未完成。
+当前推进：[0062 B站动态闭环](executions/0062-bili-dynamic-workflow/progress.zh.md)接通显式范围、私密断点、精确动态正文/图片/自有视频引用、原子入库及离线本地输出；[0061](executions/0061-bili-dynamic-authority/progress.zh.md)保留内容归属，[0060](executions/0060-weibo-creator-profile/progress.zh.md)补微博作者资料。最终测试/发布见[0062验证](executions/0062-bili-dynamic-workflow/verification.zh.md)。三平台粘贴验证器、五平台资料和真实采集/归档/播放验收仍须完成，整体目标未完成。
 
-最新P0后续：[首次真实B站采集失败](executions/0055-operator-auth-playback-evidence/bili-success-followup/verification.zh.md)后的[调度失败诊断](executions/0055-operator-auth-playback-evidence/scheduler-diagnostics/progress.zh.md)。登录成功和Worker完成不等于采集成功；[统一状态](status.zh.md)区分已实现与待实现。有界B站采集仍须完成，七平台目标不变。
+生产未决：[首次真实B站采集失败](executions/0055-operator-auth-playback-evidence/bili-success-followup/verification.zh.md)及其[调度失败诊断](executions/0055-operator-auth-playback-evidence/scheduler-diagnostics/progress.zh.md)。登录成功和Worker完成不等于采集成功；[统一状态](status.zh.md)区分已实现与待实现。新有界能力的离线通过不替代生产验收，七平台目标不变。
 
 本目录是项目的长期审计记录。每个执行里程碑固定保存四类文件：目标、计划、推进结果和验证过程。自执行 0028 起，每份文档维护两种语言版本：英文 `<name>.md` 与中文 `<name>.zh.md`，两个版本顶部互相链接。
 

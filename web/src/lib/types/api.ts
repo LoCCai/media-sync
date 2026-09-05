@@ -206,6 +206,7 @@ export interface SubscriptionPolicySummary extends Record<string, unknown> {
   adapter: string;
   schema_version?: number | null;
   allow_full_history?: boolean | null;
+  bili_scope?: 'uploads' | 'dynamics' | 'both';
   request_delay_seconds?: number | null;
   headless?: boolean | null;
   creator_reference_configured?: boolean;

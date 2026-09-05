@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import parse_qs, urlsplit
 
 from media_sync.integrations.mediacrawler.bilibili_media import parse_bilibili_view_pages
+from media_sync.integrations.mediacrawler.bilibili_multifeed import BiliMultiFeedState, wrap_upload_coverage
 from media_sync.integrations.mediacrawler.bilibili_scan import (
     BILI_SCAN_COVERAGE_FILENAME,
     BILI_SCAN_IDENTITY_FIELD,
@@ -179,10 +180,30 @@ def install_bilibili_capture_shim(manifest: RunnerManifest) -> None:
             or config.ENABLE_IP_PROXY is not False
         ):
             raise _failure()
-        unit = BiliScanUnit(state, manifest.max_items)
         client = crawler.bili_client
         if not isinstance(client, client_class):
             raise _failure()
+        if isinstance(state, BiliMultiFeedState) and state.next_feed == "dynamics":
+            from media_sync.integrations.mediacrawler.bilibili_dynamic_capture import capture_dynamic_unit
+
+            async def store_video(detail: Any, identity: BiliIdentity) -> None:
+                token = _ACTIVE_IDENTITY.set(identity)
+                author_token = _ACTIVE_AUTHOR.set(state.author_fingerprint_sha256)
+                try:
+                    await store.update_bilibili_video(detail)
+                finally:
+                    _ACTIVE_AUTHOR.reset(author_token)
+                    _ACTIVE_IDENTITY.reset(token)
+
+            dynamic_coverage = await capture_dynamic_unit(manifest, client, creator_id, store_video)
+            output = manifest.output_root / BILI_SCAN_COVERAGE_FILENAME
+            if manifest.output_root.is_symlink() or output.is_symlink():
+                raise _failure()
+            with output.open("x", encoding="utf-8", newline="\n") as stream:
+                stream.write(dynamic_coverage.to_json_line())
+            return
+        upload_state = state.uploads if isinstance(state, BiliMultiFeedState) else state
+        unit = BiliScanUnit(upload_state, manifest.max_items)
         original_request = client.request
         list_attempts = detail_attempts = 0
         nav_attempts = 0
@@ -267,12 +288,16 @@ def install_bilibili_capture_shim(manifest: RunnerManifest) -> None:
             coverage = unit.coverage()
             if (list_attempts, detail_attempts) != (coverage.list_attempts, coverage.detail_attempts):
                 raise _failure()
-            coverage.validate(state, manifest.max_items)
+            coverage.validate(upload_state, manifest.max_items)
             output = manifest.output_root / BILI_SCAN_COVERAGE_FILENAME
             if manifest.output_root.is_symlink() or output.is_symlink():
                 raise _failure()
             with output.open("x", encoding="utf-8", newline="\n") as stream:
-                stream.write(coverage.to_json_line())
+                stream.write(
+                    wrap_upload_coverage(state, coverage).to_json_line()
+                    if isinstance(state, BiliMultiFeedState)
+                    else coverage.to_json_line()
+                )
         finally:
             client.request = original_request
 

@@ -49,6 +49,9 @@ EXIT_OUTPUT_TREE = 26
 EXIT_CANCELLED = 27
 EXIT_AUTH_EXPIRED = 28
 EXIT_UPSTREAM = 30
+EXIT_BILI_DYNAMIC_UNSUPPORTED = 31
+EXIT_BILI_DYNAMIC_IDENTITY = 32
+EXIT_BILI_DYNAMIC_SCHEMA = 33
 
 
 class MediaCrawlerProcessStatus(StrEnum):
@@ -68,6 +71,9 @@ class MediaCrawlerProcessStatus(StrEnum):
     ACCOUNT_BUSY = "account_busy"
     CANCELLED = "cancelled"
     AUTH_EXPIRED = "auth_expired"
+    BILI_DYNAMIC_UNSUPPORTED = "bili_dynamic_unsupported"
+    BILI_DYNAMIC_IDENTITY = "bili_dynamic_identity_mismatch"
+    BILI_DYNAMIC_SCHEMA = "bili_dynamic_schema_invalid"
 
 
 class AttemptCleanupStatus(StrEnum):
@@ -130,6 +136,9 @@ _STATUS_MESSAGES = {
     MediaCrawlerProcessStatus.ACCOUNT_BUSY: "MediaCrawler account profile is already in use",
     MediaCrawlerProcessStatus.CANCELLED: "MediaCrawler child execution was cancelled",
     MediaCrawlerProcessStatus.AUTH_EXPIRED: "MediaCrawler saved session is no longer authenticated",
+    MediaCrawlerProcessStatus.BILI_DYNAMIC_UNSUPPORTED: "Bili dynamic has unsupported components; pending preserved",
+    MediaCrawlerProcessStatus.BILI_DYNAMIC_IDENTITY: "Bili dynamic identity changed; pending preserved",
+    MediaCrawlerProcessStatus.BILI_DYNAMIC_SCHEMA: "Bili dynamic schema was rejected; pending preserved",
 }
 
 
@@ -490,6 +499,9 @@ def _status_for_returncode(returncode: int) -> MediaCrawlerProcessStatus:
         EXIT_OUTPUT_TREE: MediaCrawlerProcessStatus.OUTPUT_TREE_INVALID,
         EXIT_CANCELLED: MediaCrawlerProcessStatus.CANCELLED,
         EXIT_AUTH_EXPIRED: MediaCrawlerProcessStatus.AUTH_EXPIRED,
+        EXIT_BILI_DYNAMIC_UNSUPPORTED: MediaCrawlerProcessStatus.BILI_DYNAMIC_UNSUPPORTED,
+        EXIT_BILI_DYNAMIC_IDENTITY: MediaCrawlerProcessStatus.BILI_DYNAMIC_IDENTITY,
+        EXIT_BILI_DYNAMIC_SCHEMA: MediaCrawlerProcessStatus.BILI_DYNAMIC_SCHEMA,
     }.get(returncode, MediaCrawlerProcessStatus.UPSTREAM_FAILED)
 
 
@@ -1532,6 +1544,18 @@ async def _execute_child(
         except (_ChildCancelledError, _ChildWatchdogError):
             raise
         except Exception as error:
+            from media_sync.integrations.mediacrawler.bilibili_dynamic import (
+                BiliDynamicError,
+                BiliDynamicIdentityError,
+                BiliDynamicUnsupportedError,
+            )
+
+            if isinstance(error, BiliDynamicUnsupportedError):
+                return EXIT_BILI_DYNAMIC_UNSUPPORTED
+            if isinstance(error, BiliDynamicIdentityError):
+                return EXIT_BILI_DYNAMIC_IDENTITY
+            if isinstance(error, BiliDynamicError):
+                return EXIT_BILI_DYNAMIC_SCHEMA
             if manifest.login_method.value == "saved_session":
                 from media_sync.integrations.mediacrawler.login_runner import (
                     SavedSessionQrFallbackBlocked,
@@ -1568,6 +1592,9 @@ def _emit_fixed_status(returncode: int) -> None:
         EXIT_OUTPUT_TREE: "output_tree_invalid",
         EXIT_CANCELLED: "cancelled",
         EXIT_AUTH_EXPIRED: "auth_expired",
+        EXIT_BILI_DYNAMIC_UNSUPPORTED: "bili_dynamic_unsupported",
+        EXIT_BILI_DYNAMIC_IDENTITY: "bili_dynamic_identity_mismatch",
+        EXIT_BILI_DYNAMIC_SCHEMA: "bili_dynamic_schema_invalid",
     }.get(returncode, "upstream_failed")
     encoded = json.dumps({"status": status}, separators=(",", ":")).encode("ascii") + b"\n"
     with contextlib.suppress(OSError):

@@ -21,6 +21,7 @@ from media_sync.domain import LoginMethod, Platform
 from media_sync.integrations.mediacrawler.browser_environment import browser_child_environment
 from media_sync.security import SecretValue, redact_text, secret_url_components
 
+from .bilibili_multifeed import BiliMultiFeedState, state_for_cursor, state_from_cursor
 from .bilibili_scan import BiliScanState
 from .checkout import (
     MEDIACRAWLER_LICENSE,
@@ -112,9 +113,16 @@ class BridgeRequest:
     sync_run_id: UUID | None = None
     request_delay_seconds: float = 2.0
     bili_bounded_capture: bool = False
+    bili_scope: str | None = None
     bili_scan_cursor_before: str | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
+        if self.bili_scope is not None and (
+            not self.bili_bounded_capture
+            or self.bili_scope not in {"uploads", "dynamics", "both"}
+            or (self.bili_scope != "uploads" and self.max_items < 2)
+        ):
+            raise BridgeConfigurationError("Bili scope requires bounded capture; dynamics require max_items >= 2")
         if type(self.bili_bounded_capture) is not bool or (
             self.bili_bounded_capture
             and (self.platform is not Platform.BILI or self.intended_mode != MediaCrawlerRunMode.FORWARD)
@@ -206,7 +214,7 @@ class RunnerManifest:
     request_delay_seconds: float | None = 2.0
     license_name: str | None = MEDIACRAWLER_LICENSE
     license_sha256: str | None = MEDIACRAWLER_LICENSE_SHA256
-    bili_scan: BiliScanState | None = field(default=None, repr=False)
+    bili_scan: BiliScanState | BiliMultiFeedState | None = field(default=None, repr=False)
     bili_scan_input_cursor: str | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
@@ -216,7 +224,7 @@ class RunnerManifest:
             raise BridgeConfigurationError("bounded Bili manifest input cursor is invalid")
         if self.bili_scan is not None:
             if (
-                not isinstance(self.bili_scan, BiliScanState)
+                not isinstance(self.bili_scan, BiliScanState | BiliMultiFeedState)
                 or self.platform is not Platform.BILI
                 or self.schema_version != MANIFEST_SCHEMA_VERSION
                 or self.intended_mode != MediaCrawlerRunMode.FORWARD
@@ -228,12 +236,19 @@ class RunnerManifest:
                     author_fingerprint_sha256=self.author_remote_id_fingerprint_sha256,
                     upstream_sha=self.upstream_sha,
                 )
-                expected_scan = BiliScanState.for_cursor(
+                expected_scan = state_for_cursor(
                     self.bili_scan_input_cursor,
                     account_id=self.account_id,
                     author_fingerprint_sha256=self.author_remote_id_fingerprint_sha256,
                     upstream_sha=self.upstream_sha,
+                    scope=self.bili_scan.scope if isinstance(self.bili_scan, BiliMultiFeedState) else None,
                 )
+                if (
+                    isinstance(self.bili_scan, BiliMultiFeedState)
+                    and self.bili_scan.scope != "uploads"
+                    and self.max_items < 2
+                ):
+                    raise ValueError("dynamic record budget is too small")
                 if self.bili_scan != expected_scan:
                     raise ValueError("scan input mismatch")
             except ValueError:
@@ -594,7 +609,7 @@ class RunnerManifest:
             ):
                 raise BridgeConfigurationError("bounded Bili manifest contract is invalid")
             try:
-                bili_scan = BiliScanState.from_cursor(scan_contract["state"])
+                bili_scan = state_from_cursor(scan_contract["state"])
             except ValueError:
                 raise BridgeConfigurationError("bounded Bili manifest state is invalid") from None
             bili_scan_input_cursor = scan_contract["input_cursor"]
@@ -843,11 +858,12 @@ class MediaCrawlerBridge:
         bili_scan = None
         if request.bili_bounded_capture:
             try:
-                bili_scan = BiliScanState.for_cursor(
+                bili_scan = state_for_cursor(
                     request.bili_scan_cursor_before,
                     account_id=request.account_id,
                     author_fingerprint_sha256=hashlib.sha256(request.author_remote_id.encode("utf-8")).hexdigest(),
                     upstream_sha=checkout.commit,
+                    scope=request.bili_scope,
                 )
             except ValueError:
                 raise BridgeConfigurationError("bounded Bili input state is invalid") from None

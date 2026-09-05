@@ -196,6 +196,9 @@ _TERMINAL_CODES: Final = frozenset(
         "handler_unsupported",
         "output_security_failed",
         "schema_invalid",
+        "bili_dynamic_unsupported",
+        "bili_dynamic_identity_mismatch",
+        "bili_dynamic_schema_invalid",
         "scheduler_heartbeat_failed",
         "scheduler_heartbeat_storage_busy",
         "scheduler_finalize_failed",
@@ -216,9 +219,14 @@ def classify_failure(code: str) -> FailureClassification:
         return FailureClassification(code, FailureDisposition.WAITING_AUTH, True)
     if code in _WAITING_USER_CODES:
         return FailureClassification(code, FailureDisposition.WAITING_USER, False)
-    if code == "content_ownership_conflict":
-        # Immutable content ownership is a source/subscription conflict, not
-        # account authentication or transient upstream health evidence.
+    if code in {
+        "content_ownership_conflict",
+        "bili_dynamic_unsupported",
+        "bili_dynamic_identity_mismatch",
+        "bili_dynamic_schema_invalid",
+    }:
+        # Source/attachment contracts are not account authentication or
+        # transient upstream health evidence.
         return FailureClassification(code, FailureDisposition.TERMINAL, False)
     if code in _TERMINAL_CODES:
         return FailureClassification(code, FailureDisposition.TERMINAL, True)

@@ -30,6 +30,12 @@ from media_sync.media.locator import (
     ResolvedSegmentsLocator,
 )
 
+from .bilibili_dynamic import (
+    BILI_DYNAMIC_FIELD,
+    BILI_DYNAMIC_SOURCE_FIELD,
+    BiliDynamicPayload,
+    bili_dynamic_image_remote_ids,
+)
 from .bilibili_media import (
     BILIBILI_DASH_PAGE_FIELD,
     BILIBILI_MAX_DURL_SEGMENTS,
@@ -90,6 +96,8 @@ _BILI_PROGRESSIVE_FIELD = "__media_sync_bili_progressive_url"
 _PRIVATE_MEDIA_FIELDS = frozenset(
     {
         "__media_sync_bili_scan_identity",
+        BILI_DYNAMIC_FIELD,
+        BILI_DYNAMIC_SOURCE_FIELD,
         BILIBILI_PAGES_FIELD,
         BILIBILI_DASH_PAGE_FIELD,
         BILIBILI_PROGRESSIVE_BACKUPS_FIELD,
@@ -976,7 +984,41 @@ def _bili_component_locator(value: Mapping[str, object]) -> ResolvedLocator:
         raise ValueError("invalid Bilibili DASH component") from exc
 
 
-def _normalize_bili(record: Mapping[str, object], *, allow_progressive_detail: bool = False) -> _ContentParts:
+def _normalize_bili(
+    record: Mapping[str, object],
+    *,
+    allow_progressive_detail: bool = False,
+    creator_remote_id: str | None = None,
+) -> _ContentParts:
+    if BILI_DYNAMIC_FIELD in record:
+        payload = BiliDynamicPayload.from_mapping(record[BILI_DYNAMIC_FIELD])
+        if (
+            creator_remote_id != str(payload.identity.author_mid)
+            or record.get("dynamic_id") != payload.identity.did
+            or record.get("text") != payload.text
+            or type(record.get("pub_ts")) is not int
+            or record.get("pub_ts") != payload.identity.pub_ts
+            or record.get("type") != payload.identity.dynamic_type
+            or "video_id" in record
+        ):
+            raise RecordNormalizationError(QuarantineReason.INVALID_RECORD)
+        remote_ids = bili_dynamic_image_remote_ids(payload.identity.did, payload.images)
+        return _ContentParts(
+            remote_id=payload.identity.did,
+            kind=ContentKind.DYNAMIC,
+            title=payload.title if payload.title else _summary(payload.text),
+            body=payload.text,
+            canonical_url=f"https://t.bilibili.com/{payload.identity.did}",
+            published_at=datetime.fromtimestamp(payload.identity.pub_ts, tz=UTC),
+            metrics={},
+            asset_groups=((AssetKind.IMAGE, tuple(image.url for image in payload.images)),),
+            asset_remote_ids={AssetKind.IMAGE: remote_ids},
+            runtime_asset_targets={
+                remote_id: ResolvedLocator(image.url, MediaRequestProfile.BILIBILI_MEDIA)
+                for remote_id, image in zip(remote_ids, payload.images, strict=True)
+            },
+            remote_type="dynamic",
+        )
     if _text(record.get("dynamic_id")) is not None:
         remote_id = _required_id(record, "dynamic_id")
         body = _text(record.get("text"))
@@ -1299,7 +1341,11 @@ def normalize_record(record: Mapping[str, object], context: NormalizationContext
         raise RecordNormalizationError(QuarantineReason.UNKNOWN_RECORD)
     try:
         if context.platform is Platform.BILI:
-            parts = _normalize_bili(record, allow_progressive_detail=context.allow_bili_progressive_detail)
+            parts = _normalize_bili(
+                record,
+                allow_progressive_detail=context.allow_bili_progressive_detail,
+                creator_remote_id=context.creator_remote_id,
+            )
         else:
             parts = _NORMALIZERS[context.platform](record)
         sanitized_record = _strip_private_media_fields(record)
@@ -1309,6 +1355,18 @@ def normalize_record(record: Mapping[str, object], context: NormalizationContext
             sanitized_record = _strip_dy_media_url_ephemera(sanitized_record)
         elif context.platform is Platform.KS:
             sanitized_record = _strip_ks_media_url_ephemera(sanitized_record)
+        elif context.platform is Platform.BILI and BILI_DYNAMIC_FIELD in record:
+            payload = BiliDynamicPayload.from_mapping(record[BILI_DYNAMIC_FIELD])
+            # Rebuild the persisted record from the validated closed payload;
+            # arbitrary echoed source fields cannot leak URL authority or
+            # manufacture refresh metadata. URLs only survive in asset runtime.
+            sanitized_record = {
+                "dynamic_id": payload.identity.did,
+                "text": payload.text,
+                "pub_ts": payload.identity.pub_ts,
+                "type": payload.identity.dynamic_type,
+                BILI_DYNAMIC_SOURCE_FIELD: payload.source_mapping(),
+            }
         envelope = MediaCrawlerEnvelope(
             platform=context.platform,
             upstream_sha=context.upstream_sha,

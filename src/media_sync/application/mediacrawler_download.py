@@ -9,6 +9,7 @@ for a signed locator.
 from __future__ import annotations
 
 import contextlib
+from collections.abc import Mapping
 from pathlib import Path
 from threading import Lock
 from uuid import UUID
@@ -30,6 +31,11 @@ from media_sync.integrations.mediacrawler import (
     MediaCrawlerDetailProcessRunner,
     MediaCrawlerLocatorRefresher,
     MediaCrawlerRefreshContext,
+)
+from media_sync.integrations.mediacrawler.bilibili_dynamic import (
+    BILI_DYNAMIC_SOURCE_FIELD,
+    BiliDynamicSource,
+    validate_bili_dynamic_image_url,
 )
 from media_sync.integrations.mediacrawler.bilibili_media import (
     BILIBILI_MAX_PAGES,
@@ -190,16 +196,76 @@ class LazyMediaCrawlerLocatorRefresher:
             author = content.author
             policy = from_subscription_policy(subscription.policy)
             platform = Platform(asset.platform)
+            if policy.bili_scope is not None and platform is not Platform.BILI:
+                raise MediaDownloadError("locator_refresh_configuration_invalid")
             if account.login_method is None:
                 raise MediaDownloadError("locator_refresh_configuration_invalid")
             login_method = LoginMethod(account.login_method)
             asset_kind = AssetKind(asset.kind)
             bili_video_remote_ids: tuple[str, ...] = ()
+            bili_dynamic_type: str | None = None
+            bili_dynamic_pub_ts: int | None = None
+            bili_dynamic_image_remote_ids: tuple[str, ...] = ()
             tieba_image_source_hints: tuple[str, ...] = ()
             zhihu_image_source_hints: tuple[str, ...] = ()
             locator = parse_locator(asset.locator)
             if not isinstance(locator, AdapterRefreshLocator) or locator.adapter != "mediacrawler":
                 raise MediaDownloadError("locator_refresh_source_mismatch")
+            if platform is Platform.BILI and content.remote_type == "dynamic":
+                envelope = content.raw
+                source_record = envelope.get("record") if isinstance(envelope, Mapping) else None
+                raw_source = (
+                    source_record.get(BILI_DYNAMIC_SOURCE_FIELD) if isinstance(source_record, Mapping) else None
+                )
+                try:
+                    dynamic_source = BiliDynamicSource.from_mapping(raw_source)
+                    identity = dynamic_source.identity
+                    if (
+                        content.kind != ContentKind.DYNAMIC.value
+                        or identity.did != content.remote_id
+                        or str(identity.author_mid) != author.remote_id
+                        or identity.dynamic_type != "DYNAMIC_TYPE_DRAW"
+                        or asset_kind is not AssetKind.IMAGE
+                        or dynamic_source.video_reference is not None
+                        or not dynamic_source.image_remote_ids
+                        or asset.position >= len(dynamic_source.image_remote_ids)
+                        or dynamic_source.image_remote_ids[asset.position] != asset.remote_id
+                    ):
+                        raise ValueError
+                    # The safe source defines the current complete attachment.
+                    # Shrinking a gallery may retain historical tail slots, but
+                    # those old remote IDs cannot resolve a current image.
+                    current_images = tuple(
+                        session.scalars(
+                            select(Asset)
+                            .where(
+                                Asset.content_id == content.id,
+                                Asset.remote_id.in_(dynamic_source.image_remote_ids),
+                            )
+                            .order_by(Asset.position, Asset.id)
+                        ).all()
+                    )
+                    if len(current_images) != len(dynamic_source.image_remote_ids):
+                        raise ValueError
+                    for position, (sibling, remote_id) in enumerate(
+                        zip(current_images, dynamic_source.image_remote_ids, strict=True)
+                    ):
+                        if (
+                            sibling.platform != platform.value
+                            or sibling.kind != AssetKind.IMAGE.value
+                            or sibling.position != position
+                            or sibling.remote_id != remote_id
+                            or asset_source_hint(sibling.source_url) != sibling.source_url
+                        ):
+                            raise ValueError
+                        validate_bili_dynamic_image_url(sibling.source_url)
+                    if current_images[asset.position].id != asset.id:
+                        raise ValueError
+                    bili_dynamic_type = identity.dynamic_type
+                    bili_dynamic_pub_ts = identity.pub_ts
+                    bili_dynamic_image_remote_ids = dynamic_source.image_remote_ids
+                except (TypeError, ValueError) as exc:
+                    raise MediaDownloadError("locator_refresh_configuration_invalid") from exc
             if platform is Platform.ZHIHU:
                 if type(asset.source_url) is not str:
                     raise MediaDownloadError("locator_refresh_configuration_invalid")
@@ -384,6 +450,9 @@ class LazyMediaCrawlerLocatorRefresher:
                     source_hint=source_hint,
                     locator=locator,
                     bili_video_remote_ids=bili_video_remote_ids,
+                    bili_dynamic_type=bili_dynamic_type,
+                    bili_dynamic_pub_ts=bili_dynamic_pub_ts,
+                    bili_dynamic_image_remote_ids=bili_dynamic_image_remote_ids,
                     tieba_image_source_hints=tieba_image_source_hints,
                     zhihu_image_source_hints=zhihu_image_source_hints,
                     detail_reference=detail_reference,

@@ -8,6 +8,8 @@ Build a self-hosted service that can authenticate against all platforms supporte
 
 ## Phases
 
+Current checkpoint (0056–0062): local-directory output is independent of optional media-server connections; reversible subscription removal, safe Job reports, Bili/Weibo creator profiles, four pasted-Cookie validators, bounded Bili uploads and explicit dynamic capture are implemented offline. [0062](executions/0062-bili-dynamic-workflow/progress.md) adds WORD/DRAW/full OPUS and owned AV references, private resumable snapshots and exact image refresh through archive/local export. The other five profiles, DY/KS/Tieba pasted-Cookie validators, remaining media shapes and current Linux/live qualification remain required. The earlier authorized Bili canary failed and is unresolved; no deployment or supervisor restart is implied. Follow [current status](status.md) and [0062 verification](executions/0062-bili-dynamic-workflow/verification.md), not the historical phase counts below.
+
 ### Phase 0 — Baseline and legal boundary
 
 - Pin both upstream repositories and capture their licenses.
@@ -24,7 +26,7 @@ Build a self-hosted service that can authenticate against all platforms supporte
 
 ### Phase 2 — MediaCrawler bridge
 
-- Status: offline command construction, fixture normalization and sealed ingestion were delivered; the authorized live smoke test remains `NOT_RUN` because no account or interactive challenge was authorized.
+- Status: offline command construction, fixture normalization and sealed ingestion were delivered and extended by the current checkpoint above. The historical authorized Bili capture failed; fresh live qualification of the current implementation remains `NOT_RUN`.
 
 - Discover and validate a pinned external MediaCrawler checkout.
 - Translate login mode and creator subscription into isolated crawler jobs.

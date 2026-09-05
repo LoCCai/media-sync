@@ -4,6 +4,18 @@
 
 本指南使用内含锁定 MediaCrawler 运行时的自托管容器部署 media-sync，要求 Linux 主机与 Docker Compose v2。当前 0055 安全控制台与启动预检已实现，本地离线与合成浏览器门禁已通过；准确状态见[验证](executions/0055-operator-auth-playback-evidence/secure-console/verification.zh.md)。后端鉴权、Web session／内存 CSRF、退出／过期与二维码／SSE 已接线，`/legacy` 仅提供受保护迁移提示；无 v2 构建时根页仅提示构建／CLI。当前 Linux 镜像、运行用户权限与平台／媒体服务器真人流程仍为 NOT_RUN，不能用旧 0050 镜像 PASS 或公开 health 成功替代。
 
+## B站动态范围与私密断点（0062）
+
+更新代码并重新构建后，新建B站订阅可选择仅投稿、仅动态或两者；旧订阅仍仅投稿。动态/两者的max_items至少2，每单元最多min(max_items,30)条规范化记录，自有AV引用预留动态DID和普通AID两条。每Job只推进一个来源/通道；发现页可以成功保存断点但新增0条，后续才验证详情。该上限不是下载队列上限，也不是完整历史保证。
+
+修改已有范围：先暂停并结束待办采集，在订阅详情选择新范围并保存；不会删除归档、清空断点或自动恢复。CLI等价入口为`subscription bili-scope --subscription-id <UUID> --scope uploads|dynamics|both --max-items <数量> --expected-schedule-revision <当前修订> --json`。API为`POST /api/v1/subscriptions/<UUID>/bili-scope`，参数为scope、max_items、expected_schedule_revision。修订过期或仍有活动工作时拒绝；不要手工改数据库。
+
+私密页位于账户运行目录的`dynamic-snapshots/`，由账户/作者/SHA绑定的摘要定位。需要将整个`/data/mediacrawler`与`/data/state`一同私密备份，保护目录权限；不要只备份数据库后删除快照。当前不做自动GC，磁盘增长需由管理员监视。不要把快照正文、图片地址或Cookie发到公开issue；安全Job报告只包含固定错误与计数。
+
+`bili_dynamic_unsupported`表示未支持组件，`bili_dynamic_identity_mismatch`表示详情身份/版本变化，`bili_dynamic_schema_invalid`表示结构校验失败。不会消费出错pending或把截断正文称完整。暂停订阅核查报告；需要继续仅投稿时，在任务空闲后显式切范围。失败任务后续周期仍可能再尝试，暂停才会停止新增周期。
+
+归档与Emby/Jellyfin兼容目录输出不依赖服务器地址或API key；连接服务器只是可选刷新控制。WORD和图集可输出HTML/JSON/NFO及图片，不代表任意图文被Emby/Jellyfin原生播放。当前验证仅离线，尚未替用户更新容器、运行生产采集或恢复supervisor。
+
 ## 内容归属冲突（0061）
 
 `content_ownership_conflict`表示新观察内容身份与数据库已有作者归属冲突。拒绝写入，不移动原内容或修改其元数据/资产；同作者仍可更新。该Job终止，不自动重试、不累计到账户熔断；未来正常订阅调度另计，需要停止新周期时请暂停订阅。保留数据库/文件和精确Job安全报告，再检查所选作者及来源。不要为了消除错误删除媒体、更换Cookie或手工改数据库归属。

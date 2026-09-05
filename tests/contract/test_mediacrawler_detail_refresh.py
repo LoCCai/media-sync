@@ -2226,6 +2226,9 @@ def test_weibo_detail_child_rejects_mismatched_numeric_reference(tmp_path: Path)
             "request_delay_seconds": 0.25,
             "bili_progressive_detail": False,
             "bili_video_cid": None,
+            "bili_dynamic_detail": False,
+            "bili_dynamic_type": None,
+            "bili_dynamic_pub_ts": None,
             "watchdogs": {
                 "max_seconds": limits.max_seconds,
                 "max_output_bytes": limits.max_output_bytes,
@@ -2324,6 +2327,9 @@ def test_zhihu_detail_child_revalidates_canonical_answer_identity(tmp_path: Path
         "request_delay_seconds": 0.25,
         "bili_progressive_detail": False,
         "bili_video_cid": None,
+        "bili_dynamic_detail": False,
+        "bili_dynamic_type": None,
+        "bili_dynamic_pub_ts": None,
         "watchdogs": {
             "max_seconds": limits.max_seconds,
             "max_output_bytes": limits.max_output_bytes,
@@ -2418,6 +2424,9 @@ def test_tieba_detail_child_revalidates_canonical_thread_identity(tmp_path: Path
         "request_delay_seconds": 0.25,
         "bili_progressive_detail": False,
         "bili_video_cid": None,
+        "bili_dynamic_detail": False,
+        "bili_dynamic_type": None,
+        "bili_dynamic_pub_ts": None,
         "watchdogs": {
             "max_seconds": limits.max_seconds,
             "max_output_bytes": limits.max_output_bytes,
@@ -2469,6 +2478,9 @@ def test_xhs_detail_child_revalidates_creator_authority_xor_and_bounds(tmp_path:
         "request_delay_seconds": 0.25,
         "bili_progressive_detail": False,
         "bili_video_cid": None,
+        "bili_dynamic_detail": False,
+        "bili_dynamic_type": None,
+        "bili_dynamic_pub_ts": None,
         "watchdogs": {
             "max_seconds": limits.max_seconds,
             "max_output_bytes": limits.max_output_bytes,

@@ -313,7 +313,9 @@ MEDIACRAWLER_PLATFORM_CAPABILITIES: Final = (
         (
             "New upload units consume at most min(max_items, 30) verified details and two list HTTP attempts.",
             "Browser/auth setup and up to two WBI key reads are separate; this is not a download or full-history cap.",
-            "Only ordinary uploads are scanned; dynamics, fans, follows and comments are excluded.",
+            "Default scope remains uploads; explicit v2 dynamics/both supports WORD/DRAW/OPUS and owned AV references.",
+            "Dynamics require max_items >= 2; discovery pages can commit zero records. "
+            "Reposts and unknown components fail closed.",
             "Legacy artifacts remain gated by full-history acknowledgement. Numeric UIDs are recommended.",
             "Transcoding, pages above 64, paid, bangumi, and live media remain unsupported.",
             _LIVE_LIMITATION,

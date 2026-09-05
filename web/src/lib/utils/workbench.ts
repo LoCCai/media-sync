@@ -188,6 +188,10 @@ function booleanLabel(value: boolean): string {
 
 export function safePolicySummaryRows(summary: SubscriptionPolicySummary): SafeSummaryRow[] {
   const rows: SafeSummaryRow[] = [{ label: '适配器', value: summary.adapter }];
+  if (summary.bili_scope) {
+    const scopes = { uploads: '仅投稿', dynamics: '仅动态', both: '投稿与动态' };
+    rows.push({ label: 'B站采集范围', value: scopes[summary.bili_scope] ?? '不可用' });
+  }
   if (summary.schema_version !== undefined) {
     rows.push({
       label: '策略版本',

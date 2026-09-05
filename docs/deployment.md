@@ -4,6 +4,18 @@
 
 This guide deploys media-sync with the pinned MediaCrawler runtime on a Linux host with Docker Compose v2. The current 0055 secure console and startup preflight are implemented and locally verified, including synthetic-browser checks; exact status is in [verification](executions/0055-operator-auth-playback-evidence/secure-console/verification.md). Backend authentication, Web session/memory-only CSRF, logout/expiry and QR/SSE are wired; `/legacy` is a protected migration notice, while root without a v2 build offers only a build/CLI notice. The current Linux image, runtime-user permissions and live platform/media-server workflows remain NOT_RUN; neither historical 0050 image PASS nor public health success substitutes for them.
 
+## Bili dynamic scopes and private checkpoints (0062)
+
+After updating and rebuilding, new Bili subscriptions can select uploads/dynamics/both; old subscriptions remain uploads-only. Dynamics/both require max_items>=2; each unit accepts at most min(max_items,30) normalized records, reserving two for an owned AV dynamic DID plus ordinary AID. Each Job advances one feed/lane. Discovery may successfully save a checkpoint with zero new records before later exact details. This is neither a download-queue cap nor proof of complete history.
+
+To change an existing scope, pause and finish pending capture work, then save the desired scope in subscription details. This preserves archive/checkpoints and never resumes automatically. CLI: `subscription bili-scope --subscription-id <UUID> --scope uploads|dynamics|both --max-items <count> --expected-schedule-revision <current> --json`. API: `POST /api/v1/subscriptions/<UUID>/bili-scope` with scope, max_items and expected_schedule_revision. Stale revisions or active work are rejected; do not edit database rows manually.
+
+Private pages live under the account runtime directory's `dynamic-snapshots/`, digest-addressed and bound to account/creator/SHA. Back up all `/data/mediacrawler` alongside `/data/state` privately with protected permissions; do not retain only the DB and delete referenced snapshots. No automatic GC is implemented; operators must monitor disk usage. Never publish snapshot bodies, image URLs or Cookies in issues. Safe Job reports contain fixed errors and counters only.
+
+`bili_dynamic_unsupported` means unsupported components, `bili_dynamic_identity_mismatch` means changed identity/version, and `bili_dynamic_schema_invalid` means rejected structure. Failed pending entries are not consumed, and truncated bodies are not called complete. Pause to inspect reports; explicitly switch to uploads once idle if desired. Future scheduled cycles can retry the source unless the subscription is paused.
+
+Archive and Emby/Jellyfin-compatible directory export require no server address/API key; server connection is optional refresh control. WORD/gallery exports include HTML/JSON/NFO/images, not a guarantee of native media-server playback for arbitrary text/gallery files. Qualification remains offline; no operator container update, production capture or supervisor restart was performed.
+
 ## Content ownership conflicts (0061)
 
 `content_ownership_conflict` means a newly observed content identity conflicts with its stored creator. The write is rejected without moving the original content or altering its metadata/assets; same-creator updates are still allowed. The Job is terminal, not automatically retried or counted toward an account circuit. Normal future subscription scheduling is separate; pause the subscription if investigation should stop new cycles. Preserve the database/files and exact safe Job report, then check the selected creator and source. Do not delete media, change Cookies or edit database ownership just to clear this error.

@@ -23,6 +23,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from types import MethodType
 from typing import Any, Protocol
+from urllib.parse import parse_qs, urlsplit
 from uuid import UUID, uuid4
 
 # ``-I path/to/detail_runner.py --child`` intentionally starts without the
@@ -97,7 +98,7 @@ from media_sync.media.errors import MediaDownloadError
 from media_sync.security import SecretValue
 from media_sync.security.secrets import MAX_SECRET_BYTES
 
-DETAIL_RUNNER_SCHEMA_VERSION = 9
+DETAIL_RUNNER_SCHEMA_VERSION = 10
 MAX_DETAIL_REQUEST_BYTES = 128 * 1024
 MAX_DETAIL_FRAME_OVERHEAD = 8 * 1024
 
@@ -153,6 +154,46 @@ def _is_tieba_detail_reference(value: object, content_remote_id: str) -> bool:
         return False
 
 
+def _validate_bili_dynamic_mode(
+    *,
+    enabled: object,
+    platform: Platform,
+    did: str,
+    author: str,
+    dynamic_type: object,
+    pub_ts: object,
+    detail_reference: object,
+    progressive: bool,
+    cid: int | None,
+) -> None:
+    """A numeric DID is meaningful only with an explicit, fenced namespace."""
+
+    if type(enabled) is not bool:
+        raise ValueError("invalid Bilibili dynamic mode")
+    if not enabled:
+        if dynamic_type is not None or pub_ts is not None:
+            raise ValueError("unexpected Bilibili dynamic identity")
+        return
+    if (
+        platform is not Platform.BILI
+        or progressive
+        or cid is not None
+        or dynamic_type not in {"DYNAMIC_TYPE_WORD", "DYNAMIC_TYPE_DRAW"}
+        or type(pub_ts) is not int
+        or not 1 <= pub_ts <= 253_402_300_799
+        or (detail_reference is not None and (type(detail_reference) is not str or detail_reference != did))
+    ):
+        raise ValueError("invalid Bilibili dynamic identity")
+    for identifier in (did, author):
+        if (
+            not identifier.isascii()
+            or not identifier.isdecimal()
+            or not 1 <= int(identifier) <= 2**63 - 1
+            or str(int(identifier)) != identifier
+        ):
+            raise ValueError("invalid Bilibili dynamic identity")
+
+
 def _validate_xhs_request_authority(
     *,
     detail_reference: object,
@@ -200,6 +241,9 @@ class MediaCrawlerDetailRequest:
     bili_progressive_detail: bool = False
     bili_video_cid: int | None = None
     watchdogs: WatchdogLimits = field(default_factory=WatchdogLimits)
+    bili_dynamic_detail: bool = False
+    bili_dynamic_type: str | None = None
+    bili_dynamic_pub_ts: int | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.account_id, UUID) or not isinstance(self.subscription_id, UUID):
@@ -254,6 +298,20 @@ class MediaCrawlerDetailRequest:
             or not self.bili_progressive_detail
         ):
             raise MediaDownloadError("locator_refresh_configuration_invalid")
+        try:
+            _validate_bili_dynamic_mode(
+                enabled=self.bili_dynamic_detail,
+                platform=platform,
+                did=content_remote_id,
+                author=author_remote_id,
+                dynamic_type=self.bili_dynamic_type,
+                pub_ts=self.bili_dynamic_pub_ts,
+                detail_reference=self.detail_reference,
+                progressive=self.bili_progressive_detail,
+                cid=self.bili_video_cid,
+            )
+        except (TypeError, ValueError) as exc:
+            raise MediaDownloadError("locator_refresh_configuration_invalid") from exc
         delay = self.request_delay_seconds
         if isinstance(delay, bool) or not isinstance(delay, int | float) or not 0 < float(delay) <= 60:
             raise MediaDownloadError("locator_refresh_configuration_invalid")
@@ -430,6 +488,9 @@ class MediaCrawlerDetailProcessRunner:
                 "request_delay_seconds": request.request_delay_seconds,
                 "bili_progressive_detail": request.bili_progressive_detail,
                 "bili_video_cid": request.bili_video_cid,
+                "bili_dynamic_detail": request.bili_dynamic_detail,
+                "bili_dynamic_type": request.bili_dynamic_type,
+                "bili_dynamic_pub_ts": request.bili_dynamic_pub_ts,
                 "watchdogs": {
                     "max_seconds": limits.max_seconds,
                     "max_output_bytes": limits.max_output_bytes,
@@ -659,6 +720,9 @@ class _ChildRequest:
     bili_progressive_detail: bool = False
     bili_video_cid: int | None = None
     watchdogs: WatchdogLimits = field(default_factory=WatchdogLimits)
+    bili_dynamic_detail: bool = False
+    bili_dynamic_type: str | None = None
+    bili_dynamic_pub_ts: int | None = None
 
     @classmethod
     def load(cls, payload: bytes) -> _ChildRequest:
@@ -685,6 +749,9 @@ class _ChildRequest:
             "request_delay_seconds",
             "bili_progressive_detail",
             "bili_video_cid",
+            "bili_dynamic_detail",
+            "bili_dynamic_type",
+            "bili_dynamic_pub_ts",
             "watchdogs",
         }
         if (
@@ -737,6 +804,20 @@ class _ChildRequest:
                 type(bili_video_cid) is not int or not 1 <= bili_video_cid <= 2**63 - 1 or not bili_progressive_detail
             ):
                 raise _ChildConfigurationError
+            bili_dynamic_detail = raw["bili_dynamic_detail"]
+            bili_dynamic_type = raw["bili_dynamic_type"]
+            bili_dynamic_pub_ts = raw["bili_dynamic_pub_ts"]
+            _validate_bili_dynamic_mode(
+                enabled=bili_dynamic_detail,
+                platform=platform,
+                did=content_remote_id,
+                author=author_remote_id,
+                dynamic_type=bili_dynamic_type,
+                pub_ts=bili_dynamic_pub_ts,
+                detail_reference=detail_reference,
+                progressive=bili_progressive_detail,
+                cid=bili_video_cid,
+            )
         except (KeyError, TypeError, ValueError, OSError) as exc:
             raise _ChildConfigurationError from exc
         if platform not in _SUPPORTED_PLATFORMS or login_method is LoginMethod.PHONE:
@@ -791,6 +872,9 @@ class _ChildRequest:
             request_delay_seconds=float(delay),
             bili_progressive_detail=bili_progressive_detail,
             bili_video_cid=bili_video_cid,
+            bili_dynamic_detail=bili_dynamic_detail,
+            bili_dynamic_type=bili_dynamic_type,
+            bili_dynamic_pub_ts=bili_dynamic_pub_ts,
             watchdogs=watchdogs,
         )
 
@@ -1203,7 +1287,189 @@ async def _run_bilibili_aid(upstream_main: Any, request: _ChildRequest) -> _Bili
     return playback
 
 
-async def _run_upstream(request: _ChildRequest) -> tuple[Any, _BiliPlaybackResult | None]:
+@dataclass(frozen=True, slots=True)
+class _BiliDynamicDetailResult:
+    jsonl: bytes = field(repr=False)
+
+
+async def _run_bilibili_dynamic(upstream_main: Any, request: _ChildRequest) -> _BiliDynamicDetailResult:
+    """One DID detail and, only for OPUS, its same-DID full attachment.
+
+    The locked crawler still owns account authentication and browser cleanup;
+    its content callback is replaced before start so no AID, author feed,
+    comments, store or ordinary View request is reachable from this callback.
+    """
+
+    from media_sync.integrations.mediacrawler.bilibili_dynamic import (
+        BILI_DYNAMIC_DETAIL_FEATURES,
+        BILI_DYNAMIC_DETAIL_PATH,
+        BILI_OPUS_DETAIL_FEATURES,
+        BILI_OPUS_DETAIL_PATH,
+        BiliDynamicUnsupportedError,
+        parse_bili_dynamic_detail,
+        parse_dynamic_identity,
+    )
+
+    _validate_bili_dynamic_mode(
+        enabled=request.bili_dynamic_detail,
+        platform=request.platform,
+        did=request.content_remote_id,
+        author=request.author_remote_id,
+        dynamic_type=request.bili_dynamic_type,
+        pub_ts=request.bili_dynamic_pub_ts,
+        detail_reference=request.detail_reference,
+        progressive=request.bili_progressive_detail,
+        cid=request.bili_video_cid,
+    )
+    if not request.bili_dynamic_detail:
+        raise _ChildConfigurationError
+    crawler = upstream_main.CrawlerFactory.create_crawler(platform=request.platform.value)
+    result: _BiliDynamicDetailResult | None = None
+    callback_called = False
+
+    async def get_specified_videos(instance: Any, references: list[str]) -> None:
+        nonlocal result, callback_called
+        if callback_called or references != [request.content_remote_id]:
+            raise ValueError("invalid Bilibili dynamic dispatch")
+        callback_called = True
+        client = getattr(instance, "bili_client", None)
+        if client is None:
+            raise _ChildConfigurationError
+        get = getattr(client, "get", None)
+        original_request = getattr(client, "request", None)
+        original_keys = getattr(client, "get_wbi_keys", None)
+        if not callable(get) or not callable(original_request) or not callable(original_keys):
+            raise _ChildConfigurationError
+        request_started = False
+        nav_seen = False
+        keys: tuple[str, str] | None = None
+
+        async def cached_keys() -> tuple[str, str]:
+            nonlocal keys
+            if keys is None:
+                candidate = await original_keys()
+                if (
+                    not isinstance(candidate, tuple)
+                    or len(candidate) != 2
+                    or any(
+                        type(value) is not str
+                        or len(value) != 32
+                        or any(character not in "0123456789abcdefABCDEF" for character in value)
+                        for value in candidate
+                    )
+                ):
+                    raise ValueError("invalid Bilibili dynamic signing keys")
+                keys = candidate
+            return keys
+
+        async def fetch_item(path: str, features: str) -> Mapping[str, Any]:
+            endpoint_seen = False
+
+            async def guarded_request(method: str, url: str, **kwargs: Any) -> Any:
+                nonlocal nav_seen, endpoint_seen, request_started
+                parsed_url = urlsplit(url)
+                query = parse_qs(parsed_url.query, keep_blank_values=True)
+                if (
+                    method != "GET"
+                    or parsed_url.scheme != "https"
+                    or parsed_url.netloc != "api.bilibili.com"
+                    or parsed_url.fragment
+                    or any(len(values) != 1 for values in query.values())
+                ):
+                    raise ValueError("invalid Bilibili dynamic request")
+                if parsed_url.path == "/x/web-interface/nav":
+                    if nav_seen or endpoint_seen or query or keys is not None:
+                        raise ValueError("Bilibili dynamic signing budget exceeded")
+                    nav_seen = True
+                elif (
+                    parsed_url.path != path
+                    or endpoint_seen
+                    or set(query) != {"id", "features", "wts", "w_rid"}
+                    or query.get("id") != [request.content_remote_id]
+                    or query.get("features") != [features]
+                    or len(query["w_rid"][0]) != 32
+                    or any(character not in "0123456789abcdef" for character in query["w_rid"][0])
+                    or not 1 <= len(query["wts"][0]) <= 12
+                    or not query["wts"][0].isascii()
+                    or not query["wts"][0].isdecimal()
+                ):
+                    raise ValueError("invalid Bilibili dynamic request")
+                else:
+                    endpoint_seen = True
+                if request_started:
+                    await asyncio.sleep(request.request_delay_seconds)
+                request_started = True
+                return await original_request(method=method, url=url, **kwargs)
+
+            client.request, client.get_wbi_keys = guarded_request, cached_keys
+            try:
+                response = await get(
+                    path,
+                    {"id": request.content_remote_id, "features": features},
+                    enable_params_sign=True,
+                )
+                if not endpoint_seen:
+                    raise ValueError("Bilibili dynamic request was not observed")
+            finally:
+                client.request, client.get_wbi_keys = original_request, original_keys
+            if response is None:
+                raise _ChildTemporaryError
+            if not isinstance(response, Mapping):
+                raise ValueError("invalid Bilibili dynamic response")
+            serialized = json.dumps(response, ensure_ascii=True, allow_nan=False, separators=(",", ":")).encode()
+            if len(serialized) > request.watchdogs.max_output_bytes:
+                raise ValueError("Bilibili dynamic response budget exceeded")
+            item = response.get("item")
+            if not isinstance(item, Mapping):
+                raise ValueError("invalid Bilibili dynamic response")
+            return item
+
+        item = await fetch_item(BILI_DYNAMIC_DETAIL_PATH, BILI_DYNAMIC_DETAIL_FEATURES)
+        identity = parse_dynamic_identity(item, creator_id=int(request.author_remote_id))
+        if (identity.did, identity.dynamic_type, identity.pub_ts) != (
+            request.content_remote_id,
+            request.bili_dynamic_type,
+            request.bili_dynamic_pub_ts,
+        ):
+            raise ValueError("Bilibili dynamic identity changed")
+        modules = item.get("modules")
+        module_dynamic = modules.get("module_dynamic") if isinstance(modules, Mapping) else None
+        major = module_dynamic.get("major") if isinstance(module_dynamic, Mapping) else None
+        opus_item = None
+        if isinstance(major, Mapping) and major.get("type") == "MAJOR_TYPE_OPUS":
+            if (
+                identity.dynamic_type not in {"DYNAMIC_TYPE_WORD", "DYNAMIC_TYPE_DRAW"}
+                or item.get("orig") is not None
+                or item.get("visible") is not True
+                or not isinstance(module_dynamic, Mapping)
+                or module_dynamic.get("additional") is not None
+            ):
+                raise BiliDynamicUnsupportedError
+            cookies = getattr(client, "cookie_dict", None)
+            if not isinstance(cookies, dict) or type(cookies.get("buvid3")) is not str or not cookies["buvid3"]:
+                raise _ChildConfigurationError
+            opus_item = await fetch_item(BILI_OPUS_DETAIL_PATH, BILI_OPUS_DETAIL_FEATURES)
+        parsed = parse_bili_dynamic_detail(
+            item, creator_id=int(request.author_remote_id), expected_identity=identity, opus_item=opus_item
+        )
+        if not parsed.images or parsed.video_reference is not None:
+            raise ValueError("Bilibili dynamic image attachment is unavailable")
+        payload = (
+            json.dumps(parsed.to_record(), ensure_ascii=True, allow_nan=False, separators=(",", ":")) + "\n"
+        ).encode()
+        if len(payload) > min(request.watchdogs.max_line_bytes, request.watchdogs.max_output_bytes):
+            raise ValueError("Bilibili dynamic detail output budget exceeded")
+        result = _BiliDynamicDetailResult(payload)
+
+    crawler.get_specified_videos = MethodType(get_specified_videos, crawler)
+    upstream_main.crawler = crawler
+    await crawler.start()
+    if not callback_called or result is None:
+        raise ValueError("Bilibili dynamic detail callback did not complete")
+    return result
+
+
+async def _run_upstream(request: _ChildRequest) -> tuple[Any, _BiliPlaybackResult | _BiliDynamicDetailResult | None]:
     os.chdir(request.checkout_root)
     if str(request.checkout_root) not in sys.path:
         sys.path.insert(0, str(request.checkout_root))
@@ -1234,7 +1500,9 @@ async def _run_upstream(request: _ChildRequest) -> tuple[Any, _BiliPlaybackResul
 
         install_cookie_reuse(request.checkout_root, request.platform, request.cookie or "")
 
-    async def dispatch() -> _BiliPlaybackResult | None:
+    async def dispatch() -> _BiliPlaybackResult | _BiliDynamicDetailResult | None:
+        if request.bili_dynamic_detail:
+            return await _run_bilibili_dynamic(upstream_main, request)
         if (
             request.platform is Platform.BILI
             and request.detail_reference is not None
@@ -1259,7 +1527,7 @@ async def _run_upstream(request: _ChildRequest) -> tuple[Any, _BiliPlaybackResul
     return upstream_main, progressive
 
 
-async def _watch_upstream(request: _ChildRequest) -> tuple[Any, _BiliPlaybackResult | None]:
+async def _watch_upstream(request: _ChildRequest) -> tuple[Any, _BiliPlaybackResult | _BiliDynamicDetailResult | None]:
     deadline = time.monotonic() + request.watchdogs.max_seconds
     task = asyncio.create_task(_run_upstream(request))
     try:
@@ -1435,8 +1703,12 @@ async def _execute_child(request: _ChildRequest) -> tuple[str, bytes]:
     try:
         upstream_main, progressive = await _watch_upstream(request)
         payload = _read_content_jsonl(request)
-        if request.bili_progressive_detail:
-            if progressive is None:
+        if request.bili_dynamic_detail:
+            if not isinstance(progressive, _BiliDynamicDetailResult) or payload:
+                raise ValueError("invalid Bilibili dynamic detail result")
+            payload = progressive.jsonl
+        elif request.bili_progressive_detail:
+            if not isinstance(progressive, _BiliPlaybackResult):
                 raise _ChildTemporaryError
             else:
                 payload = _augment_bili_progressive_jsonl(payload, progressive, request.watchdogs)
@@ -1454,6 +1726,10 @@ async def _execute_child(request: _ChildRequest) -> tuple[str, bytes]:
     except TimeoutError:
         return "temporary", b""
     except Exception as error:
+        from media_sync.integrations.mediacrawler.bilibili_dynamic import BiliDynamicUnsupportedError
+
+        if request.bili_dynamic_detail and isinstance(error, BiliDynamicUnsupportedError):
+            return "unsupported", b""
         if request.login_method is LoginMethod.SAVED_SESSION:
             from media_sync.integrations.mediacrawler.login_runner import (
                 SavedSessionQrFallbackBlocked,

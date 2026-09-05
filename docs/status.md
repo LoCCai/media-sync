@@ -2,7 +2,17 @@
 
 # Unified project status (single source of truth)
 
-## Latest: content ownership and durable conflict handling (0061)
+## Latest: Bili dynamic capture and local output (0062, offline verified)
+
+[Execution0062](executions/0062-bili-dynamic-workflow/progress.md) wires explicit uploads/dynamics/both scope, resumable private page snapshots, exact WORD/DRAW/OPUS bodies and owned AV references through the locked client, sealed output, CLI, scheduler and atomic ingestion. Dynamic and upload identities/budgets remain distinct; old subscriptions never silently expand. Paused idle subscriptions may change scope at the current revision while preserving checkpoints/media.
+
+Exact image refresh and real offline download/archive/Emby-compatible directory output/replay have passed focused checks; no Emby/Jellyfin server connection is required. Text/gallery output is for local reading and media preservation, not a claim that arbitrary HTML/galleries are playable videos. Current regression and publication truth is in [verification](executions/0062-bili-dynamic-workflow/verification.md), not inherited from0061.
+
+Final frozen-source affected regression passed1250 with15 environment skips; Web passed642, static/build/docs gates passed and both packages match all144 application Python sources. Earlier complete-directory snapshots and their corrected route-inventory failure are recorded separately, not summed as a latest-source full suite. Crash-safe snapshot publication and scope/replay fences are included in the final selection.
+
+Pending: current Linux image and live capture/download/playback qualification; DY/KS/Tieba paste-Cookie remote self-validation, remaining five-platform profiles, and other-platform capture gaps. Bili repost originals, unknown/paid/live/column subtypes are not claimed supported; unknown OPUS paragraphs are never silently dropped. Retained pages and bounded progress do not prove complete history. The seven-platform goal remains active; no deployment or supervisor restart.
+
+## Previous checkpoint: content ownership and durable conflict handling (0061)
 
 [Execution 0061](executions/0061-bili-dynamic-authority/progress.md) prevents a previously stored content identity from moving to another creator during upsert. SQLite/PostgreSQL enforce the owner in the actual conflict update; same-owner metadata refresh and separate dynamic/upload identities remain supported. The fixed `content_ownership_conflict` explains retained ownership instead of degrading to schema_invalid or a Cookie error. It terminates that Job without automatic retry or account-circuit impact; future normal subscription cycles remain separate.
 

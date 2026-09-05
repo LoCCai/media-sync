@@ -230,6 +230,23 @@ def test_content_ownership_conflict_does_not_retry_reauthenticate_or_open_circui
 
 
 @pytest.mark.parametrize(
+    "returncode,code",
+    [
+        (31, "bili_dynamic_unsupported"),
+        (32, "bili_dynamic_identity_mismatch"),
+        (33, "bili_dynamic_schema_invalid"),
+    ],
+)
+def test_dynamic_process_failure_preserves_fixed_non_circuit_terminal_code(returncode, code) -> None:
+    from media_sync.integrations.mediacrawler.runner import _status_for_returncode
+
+    assert _status_for_returncode(returncode).value == code
+    classified = classify_failure(code)
+    assert classified.code == code and classified.disposition is FailureDisposition.TERMINAL
+    assert classified.affects_circuit is False
+
+
+@pytest.mark.parametrize(
     "snapshot",
     [
         CircuitSnapshot,

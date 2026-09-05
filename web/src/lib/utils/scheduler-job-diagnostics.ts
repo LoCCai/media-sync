@@ -33,6 +33,21 @@ interface Explanation {
 
 // Exact classify_failure vocabulary, not arbitrary stable-looking error strings.
 const EXPLANATIONS: Record<string, Explanation> = {
+  bili_dynamic_unsupported: {
+    title: '动态包含暂不支持的内容',
+    detail: '正文或媒体包含尚未实现的组件；未把不完整内容当成功，待处理断点保留。',
+    next: '暂停此订阅并导出安全诊断给开发者；可在任务空闲后改为仅投稿，不要连续重试。'
+  },
+  bili_dynamic_identity_mismatch: {
+    title: '动态身份或内容版本发生变化',
+    detail: '详情与待处理快照的作者、动态编号、类型或时间不一致；未推进该断点。',
+    next: '保留诊断与私密快照供本地排查，不要删除数据库或把原始 Cookie 发给开发者。'
+  },
+  bili_dynamic_schema_invalid: {
+    title: '动态详情格式未通过校验',
+    detail: '返回结构或媒体身份不满足当前支持合同；不代表登录成功或采集成功。',
+    next: '提供安全诊断和版本号给开发者；原始正文、图片地址和凭据不包含在诊断中。'
+  },
   scheduler_heartbeat_failed: {
     title: '调度心跳维护失败',
     detail: '任务执行期间的调度心跳维护未能完成；这不说明平台凭据失效或网络故障。',

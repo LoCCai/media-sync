@@ -108,6 +108,9 @@
   let creatorReferenceRef = '';
   let intervalSeconds = 21_600;
   let maxItems = 30;
+  let biliScope: 'uploads' | 'dynamics' | 'both' = 'uploads';
+  let editedScope: 'uploads' | 'dynamics' | 'both' = 'uploads';
+  let scopeSaving = false;
   let requestDelaySeconds = 5;
   let fullHistory = false;
   let headless = true;
@@ -174,10 +177,34 @@
       creator_reference_ref: creatorReferenceRef.trim() || null,
       interval_seconds: intervalSeconds,
       max_items: maxItems,
+      ...(selectedAccount.platform === 'bili' && biliScope !== 'uploads' ? { bili_scope: biliScope } : {}),
       allow_full_history: fullHistory,
       request_delay_seconds: requestDelaySeconds,
       headless
     };
+  }
+
+  async function saveBiliScope(): Promise<void> {
+    if (!detail || scopeSaving || detail.enabled || isRemovedSubscription(detail)) return;
+    const target = detail;
+    scopeSaving = true;
+    try {
+      await api(`/api/v1/subscriptions/${target.id}/bili-scope`, {
+        method: 'POST',
+        body: JSON.stringify({
+          scope: editedScope,
+          max_items: Math.max(editedScope === 'uploads' ? 1 : 2, target.max_items),
+          expected_schedule_revision: target.schedule.schedule_revision
+        })
+      });
+      if (detail?.id === target.id)
+        detail = await api<SubscriptionDetail>(`/api/v1/subscriptions/${target.id}`);
+      toast('采集范围已保存，仍保持暂停；断点和已有媒体保留。', 'success');
+    } catch {
+      toast('未修改：请保持订阅暂停、结束待办采集任务，并重新打开详情后再试。', 'danger');
+    } finally {
+      scopeSaving = false;
+    }
   }
 
   async function load(): Promise<void> {
@@ -291,6 +318,9 @@
       value.account_id === payload.account_id &&
       value.platform === payload.platform &&
       value.creator_remote_id === payload.creator_remote_id &&
+      value.interval_seconds === payload.interval_seconds &&
+      value.max_items === payload.max_items &&
+      value.policy_summary.bili_scope === payload.bili_scope &&
       (payload.profile_lookup_id
         ? value.profile_lookup_id === payload.profile_lookup_id && value.local_alias === payload.local_alias
         : (value.local_alias ?? value.creator_display_name) === payload.local_alias)
@@ -451,7 +481,10 @@
     if (destroyed || !detailOpen || detailId !== requestedId || result.kind === 'superseded') return;
     detailLoading = false;
     if (result.kind === 'failed') detailError = result.failure.message;
-    else detail = result.value;
+    else {
+      detail = result.value;
+      editedScope = detail.policy_summary?.bili_scope ?? 'uploads';
+    }
   }
 
   async function switchView(deleted: boolean): Promise<void> {
@@ -1039,13 +1072,33 @@
             </div>
             <div class="field">
               <label for="max-items">单次上限</label>
-              <input id="max-items" class="input" type="number" min="1" max="1000" bind:value={maxItems} />
+              <input
+                id="max-items"
+                class="input"
+                type="number"
+                min={selectedAccount?.platform === 'bili' && biliScope !== 'uploads' ? 2 : 1}
+                max="1000"
+                bind:value={maxItems}
+              />
               {#if isBiliBoundedCapture(selectedCapability)}
                 <span class="field-help"
-                  >本轮实际最多 {biliUnitItemLimit(maxItems)} 条普通投稿详情；不是下载上限。</span
+                  >本轮实际最多 {biliUnitItemLimit(maxItems)} 条入库记录；不是下载上限。</span
                 >
               {/if}
             </div>
+            {#if selectedAccount?.platform === 'bili'}
+              <div class="field">
+                <label for="bili-scope">B站采集范围</label>
+                <select id="bili-scope" class="select" bind:value={biliScope} on:change={invalidatePreview}>
+                  <option value="uploads">仅投稿（原有行为）</option>
+                  <option value="dynamics">仅动态（文字、图集及自有视频引用）</option>
+                  <option value="both">投稿与动态</option>
+                </select>
+                {#if biliScope !== 'uploads'}<span class="field-help"
+                    >单次上限至少为 2；不采集转发原文，不声明全历史完整。</span
+                  >{/if}
+              </div>
+            {/if}
             <div class="field">
               <label for="request-delay">请求间隔（秒）</label>
               <input
@@ -1088,7 +1141,7 @@
           </div>
 
           {#if isBiliBoundedCapture(selectedCapability)}
-            <p class="notice warning">{biliCaptureNotice(maxItems)}</p>
+            <p class="notice warning">{biliCaptureNotice(maxItems, biliScope)}</p>
           {/if}
 
           <div class="policy-summary">
@@ -1097,7 +1150,7 @@
               >最多 {isBiliBoundedCapture(selectedCapability) ? biliUnitItemLimit(maxItems) : maxItems} 条{isBiliBoundedCapture(
                 selectedCapability
               )
-                ? '普通投稿详情'
+                ? '入库记录'
                 : ''}</span
             >
             <span>请求间隔 {requestDelaySeconds} 秒</span>
@@ -1217,6 +1270,28 @@
       </div>
     </dl>
 
+    {#if detail.platform === 'bili' && !isRemovedSubscription(detail)}
+      <section class="safe-summary">
+        <h3>修改采集范围</h3>
+        <p class="field-help">
+          先暂停订阅并结束待办采集任务。保留两种来源的断点，不删除媒体；动态上限不足 2 时调整为
+          2。保存后不会自动恢复。
+        </p>
+        <select
+          aria-label="新的B站采集范围"
+          class="select"
+          bind:value={editedScope}
+          disabled={detail.enabled || scopeSaving}
+        >
+          <option value="uploads">仅投稿</option><option value="dynamics">仅动态</option><option value="both"
+            >投稿与动态</option
+          >
+        </select>
+        <button class="btn secondary" disabled={detail.enabled || scopeSaving} on:click={saveBiliScope}
+          >保存范围（保持暂停）</button
+        >
+      </section>
+    {/if}
     <div class="safe-summary-grid">
       {#if detail.policy_summary}
         <section class="safe-summary">
@@ -1248,7 +1323,7 @@
     {#if detail.platform === 'bili' && detail.checkpoint_summary?.bili_scan}
       <section class="safe-summary" aria-label="B站有界采集覆盖">
         <h3>B站有界采集覆盖</h3>
-        <p class="field-help">{biliCaptureNotice(detail.max_items)}</p>
+        <p class="field-help">{biliCaptureNotice(detail.max_items, detail.policy_summary?.bili_scope)}</p>
         <dl>
           {#each safeBiliScanSummaryRows(detail.checkpoint_summary.bili_scan) as row}
             <div>
