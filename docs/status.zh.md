@@ -2,11 +2,17 @@
 
 # 项目统一状态（单一事实来源）
 
-## 最新：订阅可用性与本地交付（2026-09-05）
+## 最新：B 站单作者资料查询（2026-09-05）
+
+[执行0057](executions/0057-creator-profile-lookup/progress.zh.md)已实现 Bili saved-session 的独立单资料 runner、账户隔离昵称/头像、订阅本地备注、成功资料凭单和实际订阅界面。资料成功与 Operation 成功同事务；认证/代际/租约/取消均复核。头像为受限同源 PNG，不放宽 CSP。完整离线检查点3972项通过（22项跳过），最终加固源码联合回归575项通过，Web492项通过；这些是覆盖重叠的检查点，不相加计算。具体范围、合成浏览器限制和发布状态见[验证记录](executions/0057-creator-profile-lookup/verification.zh.md)。
+
+其他六平台及 Cookie 模式资料查询仍待实现；粘贴 Cookie 登录、正确有界历史覆盖、实际采集/归档/Emby/Jellyfin 验收仍开放。未部署生产、未真人查询，未恢复 supervisor。0056 和整体七平台目标保持开放。
+
+## 上一检查点：订阅可用性与本地交付
 
 [执行 0056](executions/0056-subscription-usability/progress.zh.md)已实现本地目录/可选服务器说明、可恢复订阅删除与暂停恢复、业务优先 UI 和精确 Job 安全报告。迁移保留文件和历史，忙碌任务拒绝删除。API/CLI 与后端专项回归、440 项 Web 门及有界合成浏览器检查通过；[验证记录](executions/0056-subscription-usability/verification.zh.md)单独说明全量/发布状态与真实环境未跑门。
 
-自动获取创作者昵称/头像仍 **NOT_IMPLEMENTED**，是 0056 下一项必做工作；本地输入预览不是远程查询。粘贴 Cookie 登录、正确的 B 站有界历史覆盖及七平台采集/归档/Emby/Jellyfin 验收目标不变。本轮没有生产部署或重试，supervisor 仍由操作者停止。0056 未完成。
+自动获取创作者昵称/头像在 **0056发布时尚未实现**；[0057](executions/0057-creator-profile-lookup/progress.zh.md)已实现 Bili saved-session 首片，其他平台/模式仍须完成。仅本地输入预览不等于远程查询。粘贴 Cookie 登录、正确的 B 站有界历史覆盖及七平台采集/归档/Emby/Jellyfin 验收目标不变。本轮没有生产部署或重试，supervisor 仍由操作者停止。0056 未完成。
 
 ## 上一检查点：可操作的调度诊断
 

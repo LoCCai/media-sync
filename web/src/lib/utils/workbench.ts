@@ -30,6 +30,7 @@ export interface SubscriptionWizardState {
   capability: PlatformCapability | null;
   creatorId: string;
   creatorName: string;
+  profileLookupId?: string | null;
   preview: SubscriptionPreview | null;
   fullHistoryAcknowledged: boolean;
 }
@@ -146,14 +147,18 @@ export function accountCompositeState(
 
 export function subscriptionWizardGates(state: SubscriptionWizardState): SubscriptionWizardGates {
   const accountReady = Boolean(state.accountId && state.capability);
-  const creatorReady = accountReady && Boolean(state.creatorId.trim() && state.creatorName.trim());
+  const creatorReady =
+    accountReady && Boolean(state.creatorId.trim() && (state.creatorName.trim() || state.profileLookupId));
   const confirmationRequired = Boolean(state.capability?.requires_full_history_acknowledgement);
   const previewMatches = Boolean(
     state.preview &&
       state.preview.account_id === state.accountId &&
       state.preview.platform === state.capability?.platform &&
       state.preview.creator_remote_id === state.creatorId.trim() &&
-      state.preview.creator_display_name === state.creatorName.trim()
+      (state.profileLookupId
+        ? state.preview.profile_lookup_id === state.profileLookupId &&
+          (state.preview.local_alias ?? '') === state.creatorName.trim()
+        : (state.preview.local_alias ?? state.preview.creator_display_name) === state.creatorName.trim())
   );
   return {
     canContinueFromAccount: accountReady,

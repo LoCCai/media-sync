@@ -681,6 +681,7 @@
           <select class="select" bind:value={operationKindFilter}>
             <option value="all">全部类型</option>
             <option value="account-login">账户登录</option>
+            <option value="creator-profile">作者资料查询</option>
             <option value="asset-download">资产下载</option>
             <option value="scheduler-run">订阅同步</option>
             <option value="pipeline-run">下载 / 导出</option>

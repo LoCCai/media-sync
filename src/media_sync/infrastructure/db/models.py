@@ -13,6 +13,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    LargeBinary,
     String,
     Text,
     UniqueConstraint,
@@ -79,6 +80,7 @@ ASSET_REFRESH_OBSERVATION_KINDS = frozenset({"ingested", "legacy_unique_inferred
 OPERATION_KINDS = frozenset(
     {
         "account-login",
+        "creator-profile",
         "asset-download",
         "emby-export",
         "media-server-probe",
@@ -188,6 +190,7 @@ class Account(TimestampMixin, Base):
             name="login_method",
         ),
         Index("ix_accounts_platform_auth_status", "platform", "auth_status"),
+        CheckConstraint("auth_revision >= 0", name="auth_revision_nonnegative"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
@@ -199,6 +202,7 @@ class Account(TimestampMixin, Base):
     profile_path: Mapped[str | None] = mapped_column(Text)
     auth_status: Mapped[str] = mapped_column(String(32), nullable=False, default="unknown", server_default="unknown")
     auth_updated_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    auth_revision: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0, server_default="0")
 
     login_sessions: Mapped[list[LoginSession]] = relationship(
         back_populates="account",
@@ -298,6 +302,7 @@ class Subscription(TimestampMixin, Base):
     )
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default=text("1"))
     deleted_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    local_alias: Mapped[str | None] = mapped_column(String(512))
     interval_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=21_600, server_default="21600")
     max_items: Mapped[int] = mapped_column(Integer, nullable=False, default=30, server_default="30")
     cursor: Mapped[dict[str, Any] | None] = mapped_column(JSON)
@@ -330,6 +335,59 @@ class Subscription(TimestampMixin, Base):
         cascade="all, delete-orphan",
         passive_deletes=True,
     )
+
+
+class CreatorProfile(TimestampMixin, Base):
+    """Account-scoped last success, distinct from the latest lookup attempt."""
+
+    __tablename__ = "creator_profiles"
+    __table_args__ = (
+        UniqueConstraint("account_id", "platform", "creator_remote_id"),
+        CheckConstraint(f"platform IN ({_quoted_values(PLATFORMS)})", name="platform"),
+        CheckConstraint("generation >= 0 AND revision >= 0 AND avatar_revision >= 0", name="revisions_nonnegative"),
+        CheckConstraint("avatar_png IS NULL OR length(avatar_png) <= 2097152", name="avatar_size"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    account_id: Mapped[str] = mapped_column(ForeignKey("accounts.id", ondelete="CASCADE"), nullable=False)
+    platform: Mapped[str] = mapped_column(String(32), nullable=False)
+    creator_remote_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    generation: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0, server_default="0")
+    latest_operation_id: Mapped[str | None] = mapped_column(ForeignKey("operations.id", ondelete="RESTRICT"))
+    latest_frontend_generation: Mapped[str | None] = mapped_column(String(36))
+    credential_snapshot_digest: Mapped[str | None] = mapped_column(String(64))
+    nickname: Mapped[str | None] = mapped_column(String(512))
+    canonical_homepage: Mapped[str | None] = mapped_column(String(1024))
+    upstream_commit: Mapped[str | None] = mapped_column(String(40))
+    observed_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    revision: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0, server_default="0")
+    last_success_operation_id: Mapped[str | None] = mapped_column(ForeignKey("operations.id", ondelete="RESTRICT"))
+    avatar_png: Mapped[bytes | None] = mapped_column(LargeBinary, deferred=True)
+    avatar_revision: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0, server_default="0")
+    avatar_profile_revision: Mapped[int | None] = mapped_column(BigInteger)
+    avatar_observed_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+
+
+class CreatorProfileLookup(Base):
+    """One exact durable Operation's immutable identity and bounded result."""
+
+    __tablename__ = "creator_profile_lookups"
+    __table_args__ = (
+        UniqueConstraint("profile_id", "generation"),
+        CheckConstraint("generation > 0", name="generation_positive"),
+        CheckConstraint("state IN ('pending', 'succeeded', 'failed')", name="state"),
+    )
+
+    operation_id: Mapped[str] = mapped_column(ForeignKey("operations.id", ondelete="RESTRICT"), primary_key=True)
+    profile_id: Mapped[str] = mapped_column(ForeignKey("creator_profiles.id", ondelete="CASCADE"), nullable=False)
+    generation: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    frontend_generation: Mapped[str] = mapped_column(String(36), nullable=False)
+    credential_snapshot_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    state: Mapped[str] = mapped_column(String(16), nullable=False, default="pending", server_default="pending")
+    requested_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    completed_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    result_revision: Mapped[int | None] = mapped_column(BigInteger)
+    error_code: Mapped[str | None] = mapped_column(String(128))
 
 
 class Content(TimestampMixin, Base):

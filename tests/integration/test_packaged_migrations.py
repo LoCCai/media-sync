@@ -34,7 +34,6 @@ from media_sync.application.downloads import (
 from media_sync.application.emby import EmbyExportRequest, EmbyExportService
 from media_sync.exporters.emby import EmbyExporter, ExportError
 from media_sync.infrastructure.db import (
-    AccountRepository,
     Asset,
     AssetRepository,
     AssetUpsert,
@@ -53,7 +52,7 @@ from media_sync.infrastructure.db.migration import MIGRATIONS_PACKAGE, upgrade_d
 from media_sync.media import AdapterRefreshLocator, SafeHttpClient, SecureMediaDownloader, ValidatedTarget
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
-HEAD_REVISION = "0009_subscription_removal"
+HEAD_REVISION = "0010_creator_profiles"
 
 
 class _PublicResolver:
@@ -195,6 +194,7 @@ def test_built_wheel_contains_and_runs_packaged_migrations(tmp_path: Path) -> No
             "media_sync/infrastructure/db/migrations/versions/0007_media_server_operations.py",
             "media_sync/infrastructure/db/migrations/versions/0008_playback_evidence.py",
             "media_sync/infrastructure/db/migrations/versions/0009_subscription_removal.py",
+            "media_sync/infrastructure/db/migrations/versions/0010_creator_profiles.py",
         }
         assert required_resources <= wheel_names
         wheel.extractall(installed_root)
@@ -220,7 +220,7 @@ try:
     if "accounts" not in inspect(engine).get_table_names():
         raise AssertionError("packaged migration did not create accounts")
     with engine.connect() as connection:
-        if connection.scalar(text("SELECT version_num FROM alembic_version")) != "0009_subscription_removal":
+        if connection.scalar(text("SELECT version_num FROM alembic_version")) != "0010_creator_profiles":
             raise AssertionError("unexpected migration revision")
 finally:
     engine.dispose()
@@ -587,6 +587,7 @@ def test_0005_roundtrip_conservatively_backfills_only_unique_mediacrawler_source
     seeded = Database(database_url)
     try:
         assert "deleted_at" not in {column["name"] for column in inspect(seeded.engine).get_columns("subscriptions")}
+        assert "auth_revision" not in {column["name"] for column in inspect(seeded.engine).get_columns("accounts")}
         with seeded.session() as session:
 
             def seed_asset(
@@ -600,17 +601,20 @@ def test_0005_roundtrip_conservatively_backfills_only_unique_mediacrawler_source
                 )
                 subscription_ids = []
                 for index, adapter in enumerate(adapters):
-                    account = AccountRepository(session).create(
-                        platform="xhs",
-                        adapter=adapter,
-                        display_name=f"account-{suffix}-{index}",
+                    account_id = str(uuid4())
+                    session.execute(
+                        text(
+                            "INSERT INTO accounts (id, platform, adapter, display_name) "
+                            "VALUES (:id, 'xhs', :adapter, :name)"
+                        ),
+                        {"id": account_id, "adapter": adapter, "name": f"account-{suffix}-{index}"},
                     )
                     # This is a 0004 fixture: do not insert through today's
                     # Subscription model, which includes later migration fields.
                     subscription_id = str(uuid4())
                     session.execute(
                         text("INSERT INTO subscriptions (id, account_id, author_id) VALUES (:id, :account, :author)"),
-                        {"id": subscription_id, "account": account.id, "author": author.id},
+                        {"id": subscription_id, "account": account_id, "author": author.id},
                     )
                     subscription_ids.append(subscription_id)
                 content = contents[0]

@@ -69,6 +69,8 @@ from media_sync.infrastructure.db.models import (
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 ALEMBIC_INI = REPOSITORY_ROOT / "alembic.ini"
 DOMAIN_TABLES = {
+    "creator_profiles",
+    "creator_profile_lookups",
     "accounts",
     "asset_refresh_sources",
     "assets",

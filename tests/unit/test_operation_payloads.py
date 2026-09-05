@@ -33,6 +33,7 @@ PUBLICATION_FINGERPRINT = "d" * 64
 SELECTOR_FINGERPRINT = "e" * 64
 ITEM_FINGERPRINT = "f" * 64
 KIND_ROUTES = {
+    "creator-profile": "/api/v1/accounts/{account_id}/creator-lookups",
     "account-login": "/api/v1/accounts/{account_id}/login",
     "asset-download": "/api/v1/assets/{asset_id}/download",
     "scheduler-run": "/api/v1/scheduler/run",
@@ -42,6 +43,7 @@ KIND_ROUTES = {
     "media-server-scan": "/api/v1/media-server/scan",
 }
 KIND_TARGET_TYPES = {
+    "creator-profile": "account",
     "account-login": "account",
     "asset-download": "asset",
     "scheduler-run": None,
@@ -57,6 +59,8 @@ def _request_parameters(kind: str) -> dict[str, object]:
         "enable_mediacrawler": True,
         "accept_mediacrawler_license": True,
     }
+    if kind == "creator-profile":
+        return {**common, "identity_digest": REFERENCE_DIGEST, "frontend_generation": SUBJECT_ID}
     if kind == "account-login":
         return {**common, "timeout_microseconds": 30_000_000}
     if kind == "asset-download":

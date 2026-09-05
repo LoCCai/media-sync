@@ -263,7 +263,7 @@ describe('honest subscription confirmation and local preview copy', () => {
       expect(SUBSCRIPTION_RESTORE_NOTICE).toContain(text);
   });
   it('local preview is not remote nickname/avatar lookup or creator identity verification', () => {
-    for (const text of ['本地格式', '不访问平台', '不会自动获取真实昵称或头像', '本地备注'])
+    for (const text of ['本地格式', '不会访问平台', '独立的资料查询', '本地备注', '不代表内容已采集'])
       expect(LOCAL_CREATOR_PREVIEW_NOTICE).toContain(text);
   });
 });

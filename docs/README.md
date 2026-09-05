@@ -2,7 +2,7 @@
 
 # media-sync project journal
 
-Current delivery: [0056 subscription usability](executions/0056-subscription-usability/progress.md) adds reversible removal/paused restore, a per-Job report and clear local-directory delivery independent of optional server linkage. Automatic creator nickname/avatar lookup remains the next required, unimplemented slice. See [verification](executions/0056-subscription-usability/verification.md) for exact tests and limits; this execution is not complete.
+Current work: [0057 creator profiles](executions/0057-creator-profile-lookup/progress.md) connects Bili saved-session nickname/avatar lookup, separate local notes and profile receipts. [0056 subscription usability](executions/0056-subscription-usability/progress.md) delivered reversible removal/paused restore, per-Job reports and independent local-output guidance. Six other platforms, Cookie profiles/login and real capture/archive qualification remain pending. See [0057 verification](executions/0057-creator-profile-lookup/verification.md) for actual tests/publication limits; the first slice does not complete the overall goal.
 
 Latest P0 follow-up: [scheduler failure diagnostics](executions/0055-operator-auth-playback-evidence/scheduler-diagnostics/progress.md) after the [failed real Bili canary](executions/0055-operator-auth-playback-evidence/bili-success-followup/verification.md), with bilingual goals/plans/progress/verification. Login success and Worker completion do not prove capture success. See [unified status](status.md) for implemented and pending work. Bounded Bili capture and pasted-Cookie validation/persistence/reuse remain pending; the seven-platform goal is unchanged.
 

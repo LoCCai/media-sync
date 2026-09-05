@@ -2,7 +2,7 @@ import { ApiError, LatestRequestGate } from '../api/client';
 import type { Subscription, SubscriptionLifecycleResult } from '$lib/types/api';
 
 export const LOCAL_CREATOR_PREVIEW_NOTICE =
-  '这里只做本地格式与订阅策略校验，不访问平台确认作者身份，也不会自动获取真实昵称或头像。显示名称是你填写的本地备注。';
+  '本地格式与订阅策略校验不会访问平台。远端昵称与头像来自独立的资料查询，本地备注仍由你填写；资料查询成功不代表内容已采集。';
 export const SUBSCRIPTION_REMOVAL_NOTICE =
   '删除后停止此订阅的后续调度，并取消符合条件的未开始采集和流水线任务。作者、内容、媒体文件、导出目录、任务历史和检查点全部保留，不会清理磁盘文件。';
 export const SUBSCRIPTION_RESTORE_NOTICE =
@@ -19,6 +19,8 @@ const ERRORS: Record<string, string> = {
   account_not_found: '所选账户不存在，请刷新账户列表后重新选择。',
   platform_conflict: '账户与作者平台不一致，请重新选择。',
   creator_display_name_invalid: '请填写有效的本地备注名称。',
+  creator_profile_receipt_invalid: '作者资料凭单已失效，请重新查询或填写本地备注后再校验。',
+  creator_profile_receipt_expired: '作者资料凭单已过期，请重新查询或填写本地备注后再校验。',
   creator_remote_id_must_be_stable_id: '作者标识必须是稳定 ID，不能包含链接、参数或秘密信息。',
   creator_secret_ref_not_supported: '所选平台不支持作者权限引用。',
   invalid_creator_secret_reference: '作者权限引用格式无效，请使用受支持的不透明引用。',

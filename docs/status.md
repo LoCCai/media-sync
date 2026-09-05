@@ -2,11 +2,17 @@
 
 # Unified project status (single source of truth)
 
-## Latest: subscription usability and local delivery (2026-09-05)
+## Latest: Bili single-creator profiles (2026-09-05)
+
+[Execution 0057](executions/0057-creator-profile-lookup/progress.md) implements a standalone Bili saved-session profile runner, account-scoped nickname/avatar storage, subscription local notes, successful-profile receipts and the subscription UI. Profile publication and Operation success share one transaction with authentication/generation/lease/cancel fences. Avatars are restricted same-origin PNGs without weakening CSP. The full offline checkpoint passed 3972 tests (22 skipped); final hardened-source regression passed 575, and Web passed 492. These are overlapping checkpoints, not summed coverage. See [verification](executions/0057-creator-profile-lookup/verification.md) for exact scope, synthetic browser limits and publication status.
+
+The other six platforms and Cookie-mode profiles remain unimplemented. Pasted-Cookie login, correct bounded history coverage, real capture/archive/Emby/Jellyfin qualification remain open. No production deployment, live lookup or supervisor restart occurred. 0056 and the overall seven-platform goal stay open.
+
+## Previous checkpoint: subscription usability and local delivery
 
 [Execution 0056](executions/0056-subscription-usability/progress.md) implements local-directory/optional-server guidance, reversible subscription removal and paused restoration, and an exact-Job safe report with business-first UI. The migration retains files and history; busy work rejects removal. Focused API/CLI and backend regression passed, as did the 440-test Web gate and bounded synthetic browser checks; [verification](executions/0056-subscription-usability/verification.md) distinguishes full-suite/publication state and real-world exclusions.
 
-Automatic creator nickname/avatar retrieval is still **NOT_IMPLEMENTED** and is the next mandatory part of 0056; local input preview is not remote lookup. Pasted-Cookie login, correct bounded Bili history coverage and the seven-platform capture/archive/Emby/Jellyfin qualification goal remain unchanged. No production deployment or retry occurred; supervisor remains operator-stopped. 0056 is not complete.
+Automatic creator nickname/avatar retrieval was **NOT_IMPLEMENTED at the 0056 release**; [0057](executions/0057-creator-profile-lookup/progress.md) implements the first Bili saved-session slice, while other platforms/modes remain required. Local input preview alone is not remote lookup. Pasted-Cookie login, correct bounded Bili history coverage and the seven-platform capture/archive/Emby/Jellyfin qualification goal remain unchanged. No production deployment or retry occurred; supervisor remains operator-stopped. 0056 is not complete.
 
 ## Previous checkpoint: actionable scheduler diagnostics
 

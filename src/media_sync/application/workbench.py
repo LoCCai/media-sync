@@ -26,6 +26,7 @@ from media_sync.infrastructure.db import (
     Subscription,
     SubscriptionRepository,
 )
+from media_sync.infrastructure.db.creator_profile_repository import CreatorProfileError, CreatorProfileRepository
 from media_sync.integrations.mediacrawler.capabilities import (
     MediaCrawlerCapabilityError,
     capability_for,
@@ -65,6 +66,8 @@ _ERROR_MESSAGES: Final = {
     ),
     "subscription_exists_with_different_options": ("the subscription already exists with different scheduling options"),
     "subscription_removed": "the subscription was removed; restore it explicitly before making changes",
+    "creator_profile_receipt_invalid": "the creator profile receipt is no longer valid for this exact request",
+    "creator_profile_receipt_expired": "the creator profile receipt has expired; perform a new lookup",
 }
 WORKBENCH_ERROR_CODES: Final = frozenset(_ERROR_MESSAGES)
 
@@ -148,6 +151,8 @@ class SubscriptionDraft:
     creator_remote_id: str
     display_name: str
     creator_secret_ref: str | None = field(default=None, repr=False)
+    local_alias: str | None = None
+    profile_lookup_id: UUID | None = None
     interval_seconds: int = 21_600
     max_items: int = 30
     allow_full_history: bool = False
@@ -194,6 +199,8 @@ class SubscriptionDraftPreview:
     max_items: int
     policy_summary: SubscriptionPolicySummary
     exists: bool
+    local_alias: str | None = None
+    profile_lookup_id: str | None = None
 
     def to_payload(self) -> dict[str, object]:
         return {
@@ -206,6 +213,8 @@ class SubscriptionDraftPreview:
             "max_items": self.max_items,
             "policy_summary": self.policy_summary.to_payload(),
             "exists": self.exists,
+            "local_alias": self.local_alias,
+            "profile_lookup_id": self.profile_lookup_id,
         }
 
 
@@ -229,6 +238,8 @@ class SubscriptionWorkbenchResult:
     next_run_at: datetime | None
     created: bool
     deleted_at: datetime | None = None
+    local_alias: str | None = None
+    profile_lookup_id: str | None = None
 
     def to_payload(self) -> dict[str, object]:
         return {
@@ -241,6 +252,8 @@ class SubscriptionWorkbenchResult:
             "creator_display_name": self.creator_display_name,
             "enabled": self.enabled,
             "deleted_at": _iso_datetime(self.deleted_at),
+            "local_alias": self.local_alias,
+            "profile_lookup_id": self.profile_lookup_id,
             "interval_seconds": self.interval_seconds,
             "max_items": self.max_items,
             "policy_summary": self.policy_summary.to_payload(),
@@ -276,6 +289,8 @@ class _ValidatedSubscriptionDraft:
     platform: Platform
     creator_remote_id: str
     display_name: str
+    local_alias: str | None
+    profile_lookup_id: str | None
     creator_secret_ref: str | None = field(repr=False)
     interval_seconds: int
     max_items: int
@@ -295,6 +310,8 @@ class _ValidatedSubscriptionDraft:
             max_items=self.max_items,
             policy_summary=self.policy_summary,
             exists=self.existing_subscription is not None,
+            local_alias=self.local_alias,
+            profile_lookup_id=self.profile_lookup_id,
         )
 
 
@@ -368,6 +385,7 @@ def _subscription_result(
     *,
     policy_summary: SubscriptionPolicySummary,
     created: bool,
+    profile_lookup_id: str | None = None,
 ) -> SubscriptionWorkbenchResult:
     return SubscriptionWorkbenchResult(
         id=subscription.id,
@@ -385,6 +403,8 @@ def _subscription_result(
         last_success_at=subscription.last_success_at,
         next_run_at=subscription.next_run_at,
         created=created,
+        local_alias=subscription.local_alias,
+        profile_lookup_id=profile_lookup_id,
     )
 
 
@@ -463,24 +483,16 @@ class SubscriptionWorkbenchService:
         validated = self._validated(draft)
         existing = validated.existing_subscription
         if existing is not None:
-            should_refresh_author = (
-                validated.existing_author is not None
-                and validated.existing_author.display_name != validated.display_name
+            existing.local_alias = validated.local_alias
+            self._session.flush()
+            return _subscription_result(
+                existing,
+                policy_summary=validated.policy_summary,
+                created=False,
+                profile_lookup_id=validated.profile_lookup_id,
             )
-            if should_refresh_author:
-                AuthorRepository(self._session).upsert(
-                    AuthorUpsert(
-                        platform=validated.platform.value,
-                        remote_id=validated.creator_remote_id,
-                        display_name=validated.display_name,
-                    )
-                )
-                refreshed = SubscriptionRepository(self._session).get(existing.id)
-                if refreshed is not None:  # pragma: no branch - row identity was just validated
-                    existing = refreshed
-            return _subscription_result(existing, policy_summary=validated.policy_summary, created=False)
 
-        author = AuthorRepository(self._session).upsert(
+        author = validated.existing_author or AuthorRepository(self._session).create_if_missing(
             AuthorUpsert(
                 platform=validated.platform.value,
                 remote_id=validated.creator_remote_id,
@@ -494,7 +506,14 @@ class SubscriptionWorkbenchService:
             max_items=validated.max_items,
             policy=validated.policy,
         )
-        return _subscription_result(subscription, policy_summary=validated.policy_summary, created=True)
+        subscription.local_alias = validated.local_alias
+        self._session.flush()
+        return _subscription_result(
+            subscription,
+            policy_summary=validated.policy_summary,
+            created=True,
+            profile_lookup_id=validated.profile_lookup_id,
+        )
 
     def _validated(self, draft: SubscriptionDraft) -> _ValidatedSubscriptionDraft:
         if not isinstance(draft, SubscriptionDraft):
@@ -502,10 +521,20 @@ class SubscriptionWorkbenchService:
         if not isinstance(draft.account_id, UUID):
             raise WorkbenchError("account_not_found")
         platform = _platform(draft.platform)
-        display_name = _required_text(
-            draft.display_name,
-            code="creator_display_name_invalid",
-            maximum=512,
+        if draft.profile_lookup_id is not None and not isinstance(draft.profile_lookup_id, UUID):
+            raise WorkbenchError("creator_profile_receipt_invalid")
+        if type(draft.display_name) is not str or (
+            draft.local_alias is not None and type(draft.local_alias) is not str
+        ):
+            raise WorkbenchError("creator_display_name_invalid")
+        alias_input = draft.local_alias if draft.local_alias is not None else draft.display_name
+        local_alias = (
+            _required_text(alias_input, code="creator_display_name_invalid", maximum=512) if alias_input else None
+        )
+        display_name = (
+            _required_text(draft.display_name, code="creator_display_name_invalid", maximum=512)
+            if draft.profile_lookup_id is None
+            else ""
         )
         if type(draft.interval_seconds) is not int or draft.interval_seconds < 60:
             raise WorkbenchError("subscription_options_invalid")
@@ -580,6 +609,22 @@ class SubscriptionWorkbenchService:
             )
         if existing_subscription is not None and existing_subscription.deleted_at is not None:
             raise WorkbenchError("subscription_removed")
+        if draft.profile_lookup_id is not None:
+            try:
+                profile = CreatorProfileRepository(self._session).require_receipt(
+                    str(draft.profile_lookup_id),
+                    account.id,
+                    platform.value,
+                    creator_remote_id,
+                )
+            except CreatorProfileError as error:
+                code = (
+                    "creator_profile_receipt_expired"
+                    if error.code == "creator_profile_receipt_expired"
+                    else "creator_profile_receipt_invalid"
+                )
+                raise WorkbenchError(code) from None
+            display_name = profile.nickname
         if existing_subscription is not None and (
             existing_subscription.interval_seconds != draft.interval_seconds
             or existing_subscription.max_items != draft.max_items
@@ -592,6 +637,8 @@ class SubscriptionWorkbenchService:
             platform=platform,
             creator_remote_id=creator_remote_id,
             display_name=display_name,
+            local_alias=local_alias,
+            profile_lookup_id=str(draft.profile_lookup_id) if draft.profile_lookup_id is not None else None,
             creator_secret_ref=creator_secret_ref,
             interval_seconds=draft.interval_seconds,
             max_items=draft.max_items,

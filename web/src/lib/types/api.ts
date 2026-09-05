@@ -19,6 +19,7 @@ export type AccountLoginMethod = LoginMethod | 'phone';
 export type CreatorInputKind = 'profile_id' | 'sec_user_id' | 'user_id' | 'uid' | 'portrait_id' | 'url_token';
 export type OperationKind =
   | 'account-login'
+  | 'creator-profile'
   | 'asset-download'
   | 'scheduler-run'
   | 'pipeline-run'
@@ -137,6 +138,8 @@ export interface Subscription {
   author_id: string;
   creator_remote_id: string;
   creator_display_name: string;
+  local_alias?: string | null;
+  creator_profile?: CreatorProfile | null;
   enabled: boolean;
   deleted_at: string | null;
   interval_seconds: number;
@@ -207,10 +210,49 @@ export interface SubscriptionPreview {
   account_display_name: string;
   creator_remote_id: string;
   creator_display_name: string;
+  local_alias?: string | null;
+  profile_lookup_id?: string | null;
   interval_seconds: number;
   max_items: number;
   policy_summary: SubscriptionPolicySummary;
   exists: boolean;
+}
+
+export interface CreatorIdentity {
+  account_id: string;
+  platform: Platform;
+  creator_remote_id: string;
+}
+
+export interface CreatorLookupScope extends CreatorIdentity {
+  frontend_generation: string;
+}
+
+export interface CreatorProfile extends CreatorIdentity {
+  id: string;
+  nickname: string;
+  profile_url: string;
+  revision: number;
+  observed_at: string;
+  avatar_revision: number;
+  avatar_observed_at: string | null;
+  avatar_state: 'current' | 'retained' | 'absent';
+  avatar_url: string | null;
+}
+
+export interface CreatorLookupResponse {
+  operation_id: string;
+  state: OperationState;
+  error_code: string | null;
+  lookup:
+    | (CreatorLookupScope & {
+        generation: number;
+        operation_id: string;
+        result_profile_revision: number | null;
+      })
+    | null;
+  profile: CreatorProfile | null;
+  profile_source: 'lookup_result' | 'previous_success' | null;
 }
 
 export interface Job {

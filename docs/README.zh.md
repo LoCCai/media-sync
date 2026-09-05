@@ -2,7 +2,7 @@
 
 # 项目工作日志
 
-当前交付：[0056 订阅可用性](executions/0056-subscription-usability/progress.zh.md)增加可恢复删除/暂停恢复、单 Job 报告，明确本地目录交付不依赖可选服务器联动。自动获取创作者昵称/头像仍是下一项必做、未实现切片。实际测试与边界见[验证记录](executions/0056-subscription-usability/verification.zh.md)，本执行未完成。
+当前推进：[0057 创作者资料](executions/0057-creator-profile-lookup/progress.zh.md)接入 Bili saved-session 的昵称/头像查询、独立本地备注和资料凭单。[0056 订阅可用性](executions/0056-subscription-usability/progress.zh.md)已交付可恢复删除/暂停恢复、单 Job 报告和独立本地输出说明。其他六平台及 Cookie 资料/登录、真实采集归档仍待验收；实际测试与发布边界见[0057验证](executions/0057-creator-profile-lookup/verification.zh.md)，不据首片宣称完整目标完成。
 
 最新 P0 后续：[首次真实 B 站采集失败](executions/0055-operator-auth-playback-evidence/bili-success-followup/verification.zh.md)后的[调度失败诊断](executions/0055-operator-auth-playback-evidence/scheduler-diagnostics/progress.zh.md)，保存双语目标/计划/推进/验证。登录成功和 Worker 完成不等于采集成功；已实现与待实现见[统一状态](status.zh.md)。有界 B 站采集与粘贴 Cookie 校验/保存/复用仍待实现，七平台目标不变。
 

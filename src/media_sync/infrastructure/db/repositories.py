@@ -15,6 +15,7 @@ from typing import Any, NoReturn, cast
 from uuid import UUID
 
 from sqlalchemy import and_, case, exists, func, or_, select, update
+from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.orm import Session, aliased, joinedload
@@ -301,7 +302,9 @@ class AccountRepository:
         account = self.session.execute(
             update(Account)
             .where(Account.id == account_id, Account.auth_status == expected_status)
-            .values(auth_status=status, auth_updated_at=current, updated_at=current)
+            .values(
+                auth_status=status, auth_updated_at=current, auth_revision=Account.auth_revision + 1, updated_at=current
+            )
             .returning(Account)
             .execution_options(synchronize_session="fetch", populate_existing=True)
         ).scalar_one_or_none()
@@ -533,6 +536,7 @@ class LoginSessionRepository:
                 .values(
                     auth_status="required",
                     auth_updated_at=current,
+                    auth_revision=Account.auth_revision + 1,
                     updated_at=current,
                 )
                 .returning(Account.id)
@@ -589,6 +593,7 @@ class LoginSessionRepository:
                     login_method="qr",
                     auth_status="authenticating",
                     auth_updated_at=current,
+                    auth_revision=Account.auth_revision + 1,
                     updated_at=current,
                 )
                 .returning(Account)
@@ -747,6 +752,7 @@ class LoginSessionRepository:
             account_values: dict[str, Any] = {
                 "auth_status": account_auth_status,
                 "auth_updated_at": current,
+                "auth_revision": Account.auth_revision + 1,
                 "updated_at": current,
             }
             if saved_session:
@@ -853,6 +859,34 @@ class AuthorRepository:
             statement = statement.where(Author.platform == platform)
         statement = statement.order_by(Author.platform, Author.display_name, Author.remote_id)
         return list(self.session.scalars(statement).all())
+
+    def create_if_missing(self, value: AuthorUpsert, *, seen_at: datetime | None = None) -> Author:
+        """Initialize subscription naming once; a competing creator never renames it."""
+
+        now = _aware_utc(seen_at)
+        dialect = self.session.get_bind().dialect.name
+        if dialect not in {"sqlite", "postgresql"}:
+            raise RepositoryError("author create-if-missing dialect is unsupported")
+        insertion = sqlite_insert(Author) if dialect == "sqlite" else postgresql_insert(Author)
+        statement = insertion.values(
+            id=new_uuid(),
+            platform=value.platform,
+            remote_id=value.remote_id,
+            display_name=value.display_name,
+            handle=value.handle,
+            profile_url=_safe_text(value.profile_url),
+            avatar_url=_safe_text(value.avatar_url),
+            raw=_json(value.raw),
+            first_seen_at=now,
+            last_seen_at=now,
+            created_at=now,
+            updated_at=now,
+        ).on_conflict_do_nothing(index_elements=[Author.platform, Author.remote_id])
+        self.session.execute(statement)
+        author = self.get_by_remote(value.platform, value.remote_id)
+        if author is None:
+            raise RepositoryError("author create-if-missing result is unavailable")
+        return author
 
     def upsert(self, value: AuthorUpsert, *, seen_at: datetime | None = None) -> Author:
         now = _aware_utc(seen_at)

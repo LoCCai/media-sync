@@ -23,6 +23,7 @@ from uuid import UUID
 from media_sync.ports.media_server import validate_media_server_version
 
 OperationKind: TypeAlias = Literal[
+    "creator-profile",
     "account-login",
     "asset-download",
     "scheduler-run",
@@ -60,6 +61,7 @@ MAX_IDEMPOTENCY_KEY_LENGTH: Final = 128
 
 OPERATION_KINDS: Final = frozenset(
     {
+        "creator-profile",
         "account-login",
         "asset-download",
         "scheduler-run",
@@ -88,6 +90,7 @@ OPERATION_EVENT_CODES: Final = frozenset(
 
 _KIND_TARGET_TYPES: Final = MappingProxyType(
     {
+        "creator-profile": "account",
         "account-login": "account",
         "asset-download": "asset",
         "scheduler-run": None,
@@ -99,6 +102,7 @@ _KIND_TARGET_TYPES: Final = MappingProxyType(
 )
 _KIND_ROUTES: Final = MappingProxyType(
     {
+        "creator-profile": "/api/v1/accounts/{account_id}/creator-lookups",
         "account-login": "/api/v1/accounts/{account_id}/login",
         "asset-download": "/api/v1/assets/{asset_id}/download",
         "scheduler-run": "/api/v1/scheduler/run",
@@ -181,6 +185,9 @@ _RECONCILIATION_STATES: Final = (
 
 _REQUEST_PARAMETER_FIELDS: Final = MappingProxyType(
     {
+        "creator-profile": frozenset(
+            {"identity_digest", "frontend_generation", "enable_mediacrawler", "accept_mediacrawler_license"}
+        ),
         "account-login": frozenset({"timeout_microseconds", "enable_mediacrawler", "accept_mediacrawler_license"}),
         "asset-download": frozenset(
             {
@@ -641,11 +648,19 @@ def _media_server_observation_summary(payload: Mapping[str, object]) -> dict[str
 
 
 def operation_result_summary(kind: object, payload: object) -> dict[str, object]:
-    """Return the sole durable result shape for one of the seven operation kinds."""
+    """Return the sole durable result shape for an allowed operation kind."""
 
     normalized_kind = _kind(kind)
     normalized_payload = _mapping(payload, error_code="operation_result_invalid")
-    if normalized_kind == "account-login":
+    if normalized_kind == "creator-profile":
+        error_code = "operation_result_invalid"
+        _exact_fields(normalized_payload, {"profile_id", "generation", "revision"}, error_code=error_code)
+        result = {
+            "profile_id": _uuid(normalized_payload["profile_id"], error_code=error_code),
+            "generation": _count(normalized_payload["generation"], error_code=error_code, minimum=1),
+            "revision": _count(normalized_payload["revision"], error_code=error_code, minimum=1),
+        }
+    elif normalized_kind == "account-login":
         result = _account_login_summary(normalized_payload)
     elif normalized_kind == "asset-download":
         result = _asset_download_summary(normalized_payload)
@@ -782,6 +797,13 @@ def _request_parameters(kind: OperationKind, parameters: object) -> dict[str, ob
     _exact_fields(payload, expected, error_code="operation_request_identity_invalid")
     error_code = "operation_request_identity_invalid"
 
+    if kind == "creator-profile":
+        return {
+            "identity_digest": _sha256(payload["identity_digest"], error_code=error_code),
+            "frontend_generation": _uuid(payload["frontend_generation"], error_code=error_code),
+            "enable_mediacrawler": _bool(payload["enable_mediacrawler"], error_code=error_code),
+            "accept_mediacrawler_license": _bool(payload["accept_mediacrawler_license"], error_code=error_code),
+        }
     if kind == "account-login":
         return {
             "accept_mediacrawler_license": _bool(payload["accept_mediacrawler_license"], error_code=error_code),

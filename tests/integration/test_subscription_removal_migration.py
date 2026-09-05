@@ -12,8 +12,7 @@ from alembic import command
 from alembic.config import Config
 from sqlalchemy import inspect, text
 
-from media_sync.application.subscription_removal import SubscriptionRemovalService
-from media_sync.infrastructure.db import Database, Subscription, upgrade_database
+from media_sync.infrastructure.db import Database, upgrade_database
 from media_sync.infrastructure.db.migration import MIGRATIONS_PACKAGE
 
 HEAD = "0009_subscription_removal"
@@ -58,7 +57,7 @@ def test_populated_upgrade_preserves_unique_key_cursor_history_and_nullable_defa
                 ),
                 {"id": subscription_id, "account": account_id, "author": author_id, "cursor": '{"head":"retained"}'},
             )
-        upgrade_database(url)
+        upgrade_database(url, HEAD)
         inspector = inspect(database.engine)
         deleted = next(column for column in inspector.get_columns("subscriptions") if column["name"] == "deleted_at")
         assert deleted["nullable"]
@@ -66,29 +65,31 @@ def test_populated_upgrade_preserves_unique_key_cursor_history_and_nullable_defa
             set(key["column_names"]) == {"account_id", "author_id"}
             for key in inspector.get_unique_constraints("subscriptions")
         )
-        with database.session() as session:
-            subscription = session.get(Subscription, subscription_id)
-            assert subscription is not None and subscription.deleted_at is None
-            assert subscription.enabled and subscription.checkpoint_revision == 7
-            assert subscription.cursor == {"head": "retained"}
         with database.engine.connect() as connection:
+            row = connection.execute(
+                text("SELECT enabled,checkpoint_revision,cursor,deleted_at FROM subscriptions")
+            ).one()
+            assert tuple(row) == (1, 7, '{"head":"retained"}', None)
             assert connection.scalar(text("SELECT version_num FROM alembic_version")) == HEAD
             assert connection.scalar(text("SELECT COUNT(*) FROM accounts")) == 1
             assert connection.scalar(text("SELECT COUNT(*) FROM authors")) == 1
-        service = SubscriptionRemovalService(database)
-        service.remove(subscription_id)
+        # This is an exact historical schema test: current ORM/service models
+        # may contain columns introduced after 0009.
+        with database.engine.begin() as connection:
+            connection.execute(text("UPDATE subscriptions SET deleted_at=CURRENT_TIMESTAMP, enabled=0"))
         with pytest.raises(RuntimeError, match="removed_subscriptions_prevent_downgrade"):
             _downgrade(url)
-        with database.session() as session:
-            assert session.get(Subscription, subscription_id).deleted_at is not None
-        service.restore(subscription_id)
+        with database.engine.begin() as connection:
+            assert connection.scalar(text("SELECT deleted_at FROM subscriptions")) is not None
+            connection.execute(text("UPDATE subscriptions SET deleted_at=NULL"))
         _downgrade(url)
         assert "deleted_at" not in {column["name"] for column in inspect(database.engine).get_columns("subscriptions")}
-        upgrade_database(url)
-        with database.session() as session:
-            subscription = session.get(Subscription, subscription_id)
-            assert subscription is not None and subscription.deleted_at is None and not subscription.enabled
-            assert subscription.checkpoint_revision == 7 and subscription.cursor == {"head": "retained"}
+        upgrade_database(url, HEAD)
+        with database.engine.connect() as connection:
+            row = connection.execute(
+                text("SELECT enabled,checkpoint_revision,cursor,deleted_at FROM subscriptions")
+            ).one()
+            assert tuple(row) == (0, 7, '{"head":"retained"}', None)
     finally:
         database.dispose()
 

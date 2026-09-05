@@ -183,6 +183,7 @@ export function operationLabel(kind: string): string {
   return (
     {
       'account-login': '账户登录',
+      'creator-profile': '作者资料查询',
       'asset-download': '资产下载',
       'emby-export': '媒体库导出',
       'media-server-probe': '媒体服务器探测',

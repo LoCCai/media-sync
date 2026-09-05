@@ -6,6 +6,14 @@ outer transaction so callers can combine multiple repository operations.
 
 from .asset_identity import ASSET_IDENTITY_VERSION, AssetFingerprints, asset_fingerprints
 from .base import Base, UTCDateTime, new_uuid, utc_now
+from .creator_profile_repository import (
+    CreatorProfileError,
+    CreatorProfileRepository,
+    LookupSnapshot,
+    LookupTicket,
+    ProfileSnapshot,
+    ProfileValue,
+)
 from .database import Database, create_database_engine
 from .mediacrawler_ingestion import (
     IngestionMode,
@@ -28,6 +36,8 @@ from .models import (
     AssetRefreshSource,
     Author,
     Content,
+    CreatorProfile,
+    CreatorProfileLookup,
     ExportRecord,
     Job,
     LoginSession,
@@ -121,6 +131,10 @@ __all__ = [
     "Base",
     "Content",
     "ContentUpsert",
+    "CreatorProfile",
+    "CreatorProfileError",
+    "CreatorProfileLookup",
+    "CreatorProfileRepository",
     "Database",
     "ExpiredLoginSessionCandidate",
     "ExportRecord",
@@ -134,6 +148,8 @@ __all__ = [
     "LoginSessionConflictError",
     "LoginSessionRepository",
     "LoginSessionState",
+    "LookupSnapshot",
+    "LookupTicket",
     "MediaCrawlerIngestionResult",
     "MediaCrawlerIngestionService",
     "NotFoundError",
@@ -160,6 +176,8 @@ __all__ = [
     "PlaybackEvidenceRepository",
     "PlaybackEvidenceResult",
     "PlaybackEvidenceTransactionError",
+    "ProfileSnapshot",
+    "ProfileValue",
     "RepositoryError",
     "RunEvent",
     "SQLAlchemySyncRepository",

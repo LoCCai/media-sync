@@ -32,7 +32,7 @@ from media_sync.infrastructure.db.models import (
 )
 
 NOW = datetime(2026, 9, 4, 1, 2, 3, tzinfo=UTC)
-REVISION = "0009_subscription_removal"
+REVISION = "0010_creator_profiles"
 
 
 def _database_url(path: Path) -> str:
@@ -171,6 +171,7 @@ def test_bundle_has_only_closed_keys_and_aggregate_counts(database: Database) ->
         "succeeded": 0,
     }
     assert kind_counts | {} == {
+        "creator-profile": 0,
         "account-login": 0,
         "asset-download": 1,
         "emby-export": 1,

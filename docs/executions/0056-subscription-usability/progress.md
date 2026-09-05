@@ -4,7 +4,7 @@
 
 Implementation is in progress under planning commit `fe54aba`; this execution and the seven-platform product goal are not complete.
 
-The implemented slice is published as `57c447c`; a fresh fetch verified equality with `origin/main`. Automatic creator profiles remain pending as described below.
+The implemented slice is published as `57c447c`; a fresh fetch at publication verified equality with `origin/main`. Automatic creator profiles were pending then; the Bili-first implementation and remaining scope are described below.
 
 ## Implemented in this slice
 
@@ -15,7 +15,7 @@ The implemented slice is published as `57c447c`; a fresh fetch verified equality
 
 ## Still required
 
-Automatic creator nickname/avatar lookup is **not implemented**. It remains the next mandatory part of 0056: freeze a separate bounded single-profile protocol/storage/avatar contract, implement Bili first, then qualify each platform. Preserve a separate local alias and prevent ordinary ingestion from clearing profile data; do not substitute full creator crawling or an arbitrary remote-avatar proxy.
+Automatic creator nickname/avatar lookup was **not implemented** at the 0056 release. [0057](../0057-creator-profile-lookup/progress.md) has since frozen the plan and implemented the first Bili saved-session slice; consult that execution for qualification/publication. The other six platforms and Cookie mode remain required. Preserve a separate local alias and prevent ordinary ingestion from clearing profile data; do not substitute full creator crawling or an arbitrary remote-avatar proxy.
 
 Pasted-Cookie remote validation/private persistence/reuse, bounded Bili history coverage without watermark skips, actual capture/archive and media-server qualification remain required. No production deployment, login, retry, download/export or supervisor restart occurred. Local synthetic tests do not remedy or reclassify the historical failed real canary.
 

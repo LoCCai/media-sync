@@ -193,6 +193,10 @@ export function safeOperationResult(operation: Operation): SafeOperationResult |
     copyString(source, result, 'runner_status', LOGIN_RUNNER_STATUSES);
     copyString(source, result, 'login_session_status', LOGIN_SESSION_STATUSES);
     copyString(source, result, 'auth_status', AUTH_STATUSES);
+  } else if (operation.kind === 'creator-profile') {
+    copyString(source, result, 'profile_id', UUID);
+    copyCount(source, result, 'generation');
+    copyCount(source, result, 'revision');
   } else if (operation.kind === 'asset-download') {
     copyString(source, result, 'asset_id', UUID);
     copyString(source, result, 'job_id', UUID);
@@ -269,6 +273,13 @@ export function operationProgressPercent(operation: Operation): number | null {
 }
 
 export function operationTruthNotice(operation: Operation): OperationTruthNotice | null {
+  if (operation.kind === 'creator-profile') {
+    return {
+      tone: operation.state === 'succeeded' ? 'success' : 'info',
+      title: operation.state === 'succeeded' ? '作者资料查询已完成' : '作者资料查询状态',
+      detail: '只查询指定作者资料，不扫码、不抓取内容。查询成功不代表内容已采集；昵称与头像请在订阅页面核对。'
+    };
+  }
   if (!operationIsMediaServerObservation(operation)) return null;
   if (operation.error_code === 'media_server_scan_observation_precondition_failed') {
     return {

@@ -194,7 +194,7 @@ app.add_typer(asset_app, name="asset")
 app.add_typer(emby_app, name="emby")
 app.add_typer(pipeline_app, name="pipeline")
 
-_EXPECTED_DATABASE_REVISION = "0009_subscription_removal"
+_EXPECTED_DATABASE_REVISION = "0010_creator_profiles"
 _REQUIRED_DATABASE_TABLES = frozenset(str(name) for name in Base.metadata.tables)
 
 
@@ -732,6 +732,7 @@ def _subscription_payload(
         "author_id": subscription.author_id,
         "creator_remote_id": subscription.author.remote_id,
         "creator_display_name": subscription.author.display_name,
+        "local_alias": subscription.local_alias,
         "enabled": subscription.enabled,
         "deleted_at": _iso_datetime(subscription.deleted_at),
         "interval_seconds": subscription.interval_seconds,

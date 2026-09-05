@@ -76,6 +76,7 @@ _REVISIONS = frozenset(
         "0007_media_server_operations",
         "0008_playback_evidence",
         "0009_subscription_removal",
+        "0010_creator_profiles",
     }
 )
 

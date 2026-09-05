@@ -17,6 +17,7 @@ from datetime import UTC, datetime
 from typing import Literal, Protocol, TypeVar
 from uuid import UUID, uuid4
 
+from sqlalchemy import update
 from sqlalchemy.orm import Session
 
 from media_sync.infrastructure.db import (
@@ -25,6 +26,7 @@ from media_sync.infrastructure.db import (
     Database,
     Job,
     LoginSession,
+    Operation,
     OperationEventSnapshot,
     OperationLease,
     OperationLeaseLostError,
@@ -59,6 +61,7 @@ _DEFAULT_JOIN_TIMEOUT_SECONDS = 5.0
 _WRITE_ATTEMPTS = 4
 _WRITE_RETRY_SECONDS = 0.01
 _KIND_TARGET_TYPES: Mapping[str, str | None] = {
+    "creator-profile": "account",
     "account-login": "account",
     "asset-download": "asset",
     "scheduler-run": None,
@@ -315,6 +318,21 @@ class OperationExecutionContext:
         if snapshot.cancel_requested_at is not None and not self.cancellation.is_set():
             self._coordinator._observe_cancel(self.operation_id, self._handle)
         return snapshot
+
+    def commit_effect(self, action: Callable[[Session], _T]) -> _T:
+        """Commit a short database-only profile effect under the live lease.
+
+        Network, filesystem and subprocess work must finish before this call.
+        The callback may be retried on a transaction conflict and must not
+        perform effects outside the supplied SQLAlchemy transaction.
+        """
+
+        return self._coordinator._commit_effect(self._handle, self.operation_id, action)
+
+    def commit_success(self, action: Callable[[Session], Mapping[str, object]]) -> Mapping[str, object]:
+        """Publish the final profile and terminal safe result in one transaction."""
+
+        return self._coordinator._commit_effect(self._handle, self.operation_id, action, finish_success=True)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1029,6 +1047,68 @@ class OperationCoordinator:
             )
 
         return self._run_write(checkpoint)
+
+    def _commit_effect(
+        self,
+        handle: _OperationHandle,
+        operation_id: str,
+        action: Callable[[Session], _T],
+        *,
+        finish_success: bool = False,
+    ) -> _T:
+        def commit(session: Session) -> _T:
+            def fence() -> datetime:
+                if handle.cancellation.is_set():
+                    raise OperationStateConflictError("operation_cancel_precedes_effect", operation_id)
+                # First statement is a write: reserve SQLite's writer before
+                # reads and lock the exact Operation before account/profile rows.
+                checked_at = self._now()
+                changed = session.execute(
+                    update(Operation)
+                    .where(
+                        Operation.id == operation_id,
+                        Operation.kind == "creator-profile",
+                        Operation.state == "running",
+                        Operation.lease_owner == handle.lease_owner,
+                        Operation.lease_token == handle.lease_token,
+                        Operation.lease_expires_at > checked_at,
+                        Operation.cancel_requested_at.is_(None),
+                    )
+                    .values(revision=Operation.revision + 1)
+                    .returning(Operation.id)
+                    .execution_options(synchronize_session=False)
+                ).scalar_one_or_none()
+                if changed != operation_id:
+                    raise OperationLeaseLostError("operation_lease_lost", operation_id)
+                return checked_at
+
+            fence()
+            result = action(session)
+            session.flush()
+            # Roll back both the domain effect and first fence if the callback
+            # outlived its lease or observed a process-local cancellation.
+            linearized_at = fence()
+            if finish_success:
+                summary = operation_result_summary("creator-profile", result)
+                # A callback may keep an ORM Operation alive in the identity
+                # map. Refresh the exact row after synchronize_session=False
+                # fences, otherwise its cached revision can reject final CAS.
+                session.get(Operation, operation_id, populate_existing=True)
+                repository = OperationRepository(session)
+                snapshot = repository.require_for_update(operation_id)
+                repository.finish_succeeded(
+                    operation_id,
+                    expected_revision=snapshot.revision,
+                    lease_owner=handle.lease_owner,
+                    lease_token=handle.lease_token,
+                    result_summary=summary,
+                    # The second fenced write is this transaction's success
+                    # linearization point; the row remains locked until commit.
+                    at=linearized_at,
+                )
+            return result
+
+        return self._run_write(commit)
 
     def _link_subject(
         self,

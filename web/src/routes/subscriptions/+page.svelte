@@ -16,6 +16,7 @@
   } from '@lucide/svelte';
 
   import { api } from '$lib/api/client';
+  import CreatorProfileCard from '$lib/components/CreatorProfileCard.svelte';
   import EmptyState from '$lib/components/EmptyState.svelte';
   import Modal from '$lib/components/Modal.svelte';
   import PageHeader from '$lib/components/PageHeader.svelte';
@@ -23,6 +24,8 @@
   import PlatformMark from '$lib/components/PlatformMark.svelte';
   import StatusBadge from '$lib/components/StatusBadge.svelte';
   import { toast } from '$lib/stores/toast';
+  import { mediaCrawlerGate, onboardingAccepted } from '$lib/stores/onboarding';
+  import { operatorAuth } from '$lib/stores/operator-auth';
   import type {
     Account,
     PlatformCapabilities,
@@ -33,6 +36,16 @@
     SubscriptionPreview
   } from '$lib/types/api';
   import { formatDate, formatDateLong, intervalLabel, PLATFORM_META, shortId } from '$lib/utils/format';
+  import {
+    CREATOR_LOOKUP_NOTICE,
+    CreatorLookupController,
+    creatorLookupButtonLabel,
+    creatorLookupEligibility,
+    creatorLookupIdentity,
+    initialCreatorLookupView,
+    subscriptionCreatorLabel,
+    subscriptionCreatorProfile
+  } from '$lib/utils/creator-profile';
   import {
     capabilityByPlatform,
     safeCheckpointSummaryRows,
@@ -92,6 +105,29 @@
   let fullHistory = false;
   let headless = true;
   let preview: SubscriptionPreview | null = null;
+  let lookupView = initialCreatorLookupView();
+  const lookupController = new CreatorLookupController(
+    {
+      licenseConfirmed: () => $onboardingAccepted,
+      start: (scope, signal) =>
+        api(`/api/v1/accounts/${scope.account_id}/creator-lookups`, {
+          method: 'POST',
+          body: JSON.stringify({
+            platform: scope.platform,
+            creator_remote_id: scope.creator_remote_id,
+            frontend_generation: scope.frontend_generation,
+            ...mediaCrawlerGate()
+          }),
+          signal
+        }),
+      read: (operationId, signal) => api(`/api/v1/creator-lookups/${operationId}`, { signal })
+    },
+    (next) => {
+      const changedReceipt = lookupView.receipt !== next.receipt;
+      lookupView = next;
+      if (changedReceipt) invalidatePreview();
+    }
+  );
 
   $: enabledCount = subscriptions.filter((item) => item.enabled).length;
   $: if (!detailOpen) detailRequests.cancel();
@@ -102,11 +138,20 @@
   $: if (!confirmOpen && !acting) confirmTarget = null;
   $: selectedAccount = accounts.find((item) => item.id === accountId) ?? null;
   $: selectedCapability = capabilityByPlatform(capabilities, selectedAccount?.platform);
+  $: lookupEligibility = creatorLookupEligibility(selectedAccount);
+  $: lookupBusy = lookupView.phase === 'submitting' || lookupView.phase === 'waiting';
+  $: lookupController.setIdentity(
+    addOpen && wizardStep >= 2 && $operatorAuth.phase === 'authenticated'
+      ? creatorLookupIdentity(selectedAccount, creatorId)
+      : null,
+    $operatorAuth.epoch
+  );
   $: wizardGates = subscriptionWizardGates({
     accountId,
     capability: selectedCapability,
     creatorId,
     creatorName,
+    profileLookupId: lookupView.receipt,
     preview,
     fullHistoryAcknowledged: fullHistory
   });
@@ -117,7 +162,8 @@
       account_id: selectedAccount.id,
       platform: selectedAccount.platform,
       creator_remote_id: creatorId.trim(),
-      display_name: creatorName.trim(),
+      local_alias: creatorName.trim() || null,
+      profile_lookup_id: lookupView.receipt,
       creator_reference_ref: creatorReferenceRef.trim() || null,
       interval_seconds: intervalSeconds,
       max_items: maxItems,
@@ -172,6 +218,7 @@
   }
 
   function resetWizard(): void {
+    lookupController.setIdentity(null);
     previewRequests.cancel();
     createRequests.cancel();
     previewing = false;
@@ -196,6 +243,7 @@
   }
 
   function accountChanged(): void {
+    lookupController.setIdentity(null);
     invalidatePreview();
     fullHistory = false;
     creatorReferenceRef = '';
@@ -208,13 +256,37 @@
     wizardFailure = null;
   }
 
+  function creatorInputChanged(event: Event): void {
+    creatorId = (event.currentTarget as HTMLInputElement).value;
+    lookupController.setIdentity(
+      $operatorAuth.phase === 'authenticated' ? creatorLookupIdentity(selectedAccount, creatorId) : null,
+      $operatorAuth.epoch
+    );
+    invalidatePreview();
+  }
+
+  function completeCreatorInput(manual = false): void {
+    if (destroyed || !addOpen || wizardStep !== 2 || saving || $operatorAuth.phase !== 'authenticated')
+      return;
+    lookupController.setIdentity(creatorLookupIdentity(selectedAccount, creatorId), $operatorAuth.epoch);
+    void lookupController.query(manual);
+  }
+
+  function creatorInputKeydown(event: KeyboardEvent): void {
+    if (event.key !== 'Enter' || event.isComposing) return;
+    event.preventDefault();
+    completeCreatorInput();
+  }
+
   function previewMatchesDraft(value: SubscriptionPreview, payload: Record<string, unknown>): boolean {
     return (
       !!value &&
       value.account_id === payload.account_id &&
       value.platform === payload.platform &&
       value.creator_remote_id === payload.creator_remote_id &&
-      value.creator_display_name === payload.display_name
+      (payload.profile_lookup_id
+        ? value.profile_lookup_id === payload.profile_lookup_id && value.local_alias === payload.local_alias
+        : (value.local_alias ?? value.creator_display_name) === payload.local_alias)
     );
   }
 
@@ -227,12 +299,13 @@
   }
 
   async function requestPreview(): Promise<SubscriptionPreview | null> {
+    if (lookupView.phase === 'submitting' || lookupView.phase === 'waiting') return null;
     const payload = draftPayload();
     if (!payload || !wizardGates.canRequestPreview) {
       toast(
         wizardGates.confirmationRequired && !fullHistory
           ? '该平台必须先确认全历史边界，服务端才会接受预览。'
-          : '请填写完整的作者标识与显示名称。',
+          : '请填写作者标识，并完成资料查询或填写本地备注。',
         'danger'
       );
       return null;
@@ -444,6 +517,7 @@
   onMount(() => void load());
   onDestroy(() => {
     destroyed = true;
+    lookupController.dispose();
     for (const requests of [listRequests, detailRequests, previewRequests, createRequests, actionRequests])
       requests.cancel();
   });
@@ -594,12 +668,20 @@
           </thead>
           <tbody>
             {#each subscriptions as subscription}
+              {@const savedProfile = subscriptionCreatorProfile(subscription)}
               <tr>
                 <td>
                   <div class="inline-identity">
                     <PlatformMark platform={subscription.platform} />
                     <div>
-                      <span class="cell-main">{subscription.creator_display_name}</span>
+                      <span class="cell-main">{subscriptionCreatorLabel(subscription)}</span>
+                      {#if savedProfile}
+                        <CreatorProfileCard
+                          profile={savedProfile}
+                          contextKey={`${subscription.id}:${$operatorAuth.epoch}`}
+                          compact
+                        />
+                      {/if}
                       <span class="cell-sub">
                         {subscription.account_display_name} · {subscription.creator_remote_id}
                       </span>
@@ -680,12 +762,12 @@
 <Modal
   bind:open={addOpen}
   title="添加创作者订阅"
-  description={`第 ${wizardStep} 步，共 3 步 · ${['选择账户', '本地格式校验', '确认策略'][wizardStep - 1]}`}
+  description={`第 ${wizardStep} 步，共 3 步 · ${['选择账户', '作者资料与校验', '确认策略'][wizardStep - 1]}`}
   dismissible={!saving}
   wide
 >
   <ol class="wizard-steps" aria-label="订阅创建进度">
-    {#each ['账户与平台', '本地格式校验', '策略确认'] as label, index}
+    {#each ['账户与平台', '作者资料与校验', '策略确认'] as label, index}
       <li class:active={wizardStep === index + 1} class:complete={wizardStep > index + 1}>
         <span>{wizardStep > index + 1 ? '✓' : index + 1}</span>
         <strong>{label}</strong>
@@ -769,7 +851,7 @@
             <PlatformMark platform={selectedAccount.platform} />
             <div>
               <strong>{selectedCapability.display_name} · {selectedAccount.display_name}</strong>
-              <span>只做本地格式与策略校验，不验证平台上的作者身份。</span>
+              <span>平台资料查询与本地订阅校验相互独立，不会在此采集内容。</span>
             </div>
           </div>
           <div class="form-grid">
@@ -781,23 +863,25 @@
                 bind:value={creatorId}
                 placeholder={selectedCapability.creator_input.placeholder}
                 maxlength="255"
-                on:input={invalidatePreview}
+                on:input={creatorInputChanged}
+                on:blur={() => completeCreatorInput()}
+                on:keydown={creatorInputKeydown}
               />
               {#if selectedCapability.creator_input.examples.length}
                 <span class="field-help">示例：{selectedCapability.creator_input.examples.join(' · ')}</span>
               {/if}
             </div>
             <div class="field">
-              <label for="creator-name">显示名称（本地备注）</label>
+              <label for="creator-name">本地备注（有查询资料时可不填）</label>
               <input
                 id="creator-name"
                 class="input"
                 bind:value={creatorName}
-                placeholder="自行备注，不是自动获取的平台昵称"
+                placeholder="可选别名，不会被平台昵称覆盖"
                 maxlength="200"
                 on:input={invalidatePreview}
               />
-              <span class="field-help">仅用于本地识别；真实昵称和头像自动查询尚未提供。</span>
+              <span class="field-help">备注由你填写；没有有效查询结果时，需要填写备注才能继续。</span>
             </div>
             {#if selectedCapability.creator_input.allows_secret_reference}
               <div class="field wide">
@@ -816,6 +900,51 @@
                 <span class="field-help"
                   >仅发送不透明引用；预览和详情只显示“已配置/未配置”，不会回显其值。</span
                 >
+              </div>
+            {/if}
+          </div>
+          <div class="creator-lookup" aria-live="polite" aria-busy={lookupBusy}>
+            {#if lookupEligibility}
+              <div class="notice warning">{lookupEligibility}</div>
+              {#if selectedAccount.platform === 'bili'}<a class="field-help" href="/accounts"
+                  >到账户页面核对登录</a
+                >{/if}
+            {:else}
+              <p class="field-help">{CREATOR_LOOKUP_NOTICE}</p>
+              {#if lookupBusy}
+                <p class="lookup-state">
+                  <RefreshCw class="spin" size={15} />{lookupView.phase === 'submitting'
+                    ? '正在提交资料查询…'
+                    : '正在等待本次作者资料…'}
+                </p>
+              {:else if lookupView.phase === 'succeeded'}
+                <p class="lookup-state">
+                  <CheckCircle2 size={15} />本次平台资料查询成功，创建时使用服务器保存的资料凭单。
+                </p>
+              {:else if lookupView.phase === 'idle'}
+                <p class="field-help">填写有效数字 UID 后离开输入框或按 Enter，将自动查询一次。</p>
+              {/if}
+              {#if lookupView.message}
+                <div class="notice warning" role="status">{lookupView.message}</div>
+              {/if}
+              {#if lookupView.profile}
+                <CreatorProfileCard
+                  profile={lookupView.profile}
+                  contextKey={`${lookupView.scope?.frontend_generation}:${lookupView.operation_id}:${lookupView.generation}:${$operatorAuth.epoch}`}
+                  previous={lookupView.profile_source === 'previous_success'}
+                />
+              {/if}
+              <div class="lookup-actions">
+                <button
+                  class="button secondary small"
+                  type="button"
+                  disabled={!lookupView.scope || lookupBusy || previewing}
+                  on:click={() => completeCreatorInput(true)}
+                >
+                  <RefreshCw size={14} />{creatorLookupButtonLabel(lookupView.phase)}
+                </button>
+                {#if lookupView.operation_id}<a class="button ghost small" href="/jobs">到任务页面核对</a
+                  >{/if}
               </div>
             {/if}
           </div>
@@ -858,7 +987,7 @@
               </div>
               <div>
                 <dt>本地备注名称</dt>
-                <dd>{preview.creator_display_name}</dd>
+                <dd>{creatorName.trim() || '未设置（使用已查询的平台昵称）'}</dd>
               </div>
               <div>
                 <dt>作者权限引用</dt>
@@ -868,6 +997,13 @@
               </div>
             </dl>
           </div>
+          {#if lookupView.profile}
+            <CreatorProfileCard
+              profile={lookupView.profile}
+              contextKey={`${lookupView.scope?.frontend_generation}:${lookupView.operation_id}:${lookupView.generation}:${$operatorAuth.epoch}`}
+              previous={lookupView.profile_source === 'previous_success'}
+            />
+          {/if}
           <p class="field-help">{LOCAL_CREATOR_PREVIEW_NOTICE}</p>
 
           <div class="form-grid policy-grid">
@@ -965,7 +1101,7 @@
         class="button"
         type="button"
         on:click={continueToPolicy}
-        disabled={!wizardGates.canRequestPreview || previewing}
+        disabled={!wizardGates.canRequestPreview || previewing || lookupBusy}
       >
         {previewing ? '本地校验中…' : '校验格式并继续'}
       </button>
@@ -984,7 +1120,7 @@
 
 <Modal
   bind:open={detailOpen}
-  title={detail ? detail.creator_display_name : '订阅详情'}
+  title={detail ? subscriptionCreatorLabel(detail) : '订阅详情'}
   description={detail ? `${PLATFORM_META[detail.platform].name} · ${shortId(detail.id)}` : '正在读取…'}
   wide
 >
@@ -993,7 +1129,15 @@
   {:else if detailError}
     <div class="notice danger" role="alert">{detailError}</div>
   {:else if detail}
+    {@const savedProfile = subscriptionCreatorProfile(detail)}
+    {#if savedProfile}
+      <CreatorProfileCard profile={savedProfile} contextKey={`${detail.id}:${$operatorAuth.epoch}`} />
+    {/if}
     <dl class="key-value-list">
+      <div class="key-value-row">
+        <dt>本地备注</dt>
+        <dd>{detail.local_alias ?? '未设置'}</dd>
+      </div>
       <div class="key-value-row">
         <dt>状态</dt>
         <dd>
@@ -1098,7 +1242,9 @@
 <Modal
   bind:open={confirmOpen}
   title={confirmAction === 'delete' ? '删除订阅，保留媒体' : '恢复订阅并保持暂停'}
-  description={confirmTarget ? `${confirmTarget.creator_display_name} · ${shortId(confirmTarget.id)}` : null}
+  description={confirmTarget
+    ? `${subscriptionCreatorLabel(confirmTarget)} · ${shortId(confirmTarget.id)}`
+    : null}
   dismissible={!acting}
 >
   <p>{confirmAction === 'delete' ? SUBSCRIPTION_REMOVAL_NOTICE : SUBSCRIPTION_RESTORE_NOTICE}</p>
@@ -1132,6 +1278,22 @@
 </Modal>
 
 <style>
+  .creator-lookup {
+    margin-top: 16px;
+  }
+  .lookup-state,
+  .lookup-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .lookup-state {
+    font-size: 12px;
+    color: var(--text-secondary);
+  }
+  .lookup-actions {
+    margin-top: 10px;
+  }
   .view-controls {
     display: flex;
     align-items: center;

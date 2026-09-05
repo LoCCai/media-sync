@@ -66,6 +66,7 @@ from media_sync.application.authentication import (
     AccountLoginRequest,
     MediaCrawlerQrLoginService,
 )
+from media_sync.application.creator_profiles import CreatorProfileService, lookup_error_code, profile_payload
 from media_sync.application.emby import EmbyExportRequest, EmbyExportService, export_error_is_retryable
 from media_sync.application.explorer import CatalogExplorerError, ContentAssetExplorer
 from media_sync.application.job_diagnostics import JobDiagnosticError, JobDiagnosticService
@@ -111,7 +112,13 @@ from media_sync.infrastructure.db import (
     SubscriptionRepository,
     SyncRun,
 )
+from media_sync.infrastructure.db.creator_profile_repository import (
+    CreatorProfileError,
+    CreatorProfileRepository,
+    ProfileSnapshot,
+)
 from media_sync.integrations.mediacrawler import platform_capabilities_payload
+from media_sync.integrations.mediacrawler.creator_profile_runner import MediaCrawlerCreatorProfileProcessRunner
 from media_sync.integrations.mediacrawler.login_runner import (
     LOGIN_QR_IMAGE_NAME,
     MediaCrawlerLoginProcessRunner,
@@ -567,13 +574,25 @@ class SubscriptionCreate(BaseModel):
     account_id: UUID
     platform: Platform
     creator_remote_id: str = Field(min_length=1, max_length=255)
-    display_name: str = Field(min_length=1, max_length=200)
+    display_name: str | None = Field(default=None, min_length=1, max_length=200)
+    local_alias: str | None = Field(default=None, max_length=512)
+    profile_lookup_id: UUID | None = None
     creator_reference_ref: str | None = None
     interval_seconds: int = Field(default=21_600, ge=60)
     max_items: int = Field(default=30, ge=1, le=1_000)
     allow_full_history: bool = False
     request_delay_seconds: float = Field(default=5.0, gt=0, le=MAX_REQUEST_DELAY_SECONDS)
     headless: bool = True
+
+
+class CreatorLookupStart(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    platform: Platform
+    creator_remote_id: str = Field(min_length=1, max_length=20, strict=True)
+    frontend_generation: UUID
+    enable_mediacrawler: bool = Field(default=False, strict=True)
+    accept_mediacrawler_license: bool = Field(default=False, strict=True)
 
 
 def _subscription_policy_summary_payload(subscription: Subscription) -> dict[str, object]:
@@ -737,6 +756,18 @@ def create_api_app(
         staging_root=resolved.job_dir / "emby-export",
     )
     library_inspection_service = LibraryInspectionService(operation_database, emby_exporter)
+    creator_profile_service = CreatorProfileService(
+        operation_database,
+        MediaCrawlerCreatorProfileProcessRunner(
+            lock_path=resolved.mediacrawler_lock_path,
+            integration_root=resolved.resolved_mediacrawler_runtime_dir,
+            python_executable=resolved.mediacrawler_python_executable,
+            enabled=True,
+            license_acknowledged=True,
+        )
+        if resolved.mediacrawler_python_executable is not None
+        else None,
+    )
     media_server_profile = resolved.media_server_profile
     media_server_observation_service = (
         MediaServerObservationService(
@@ -784,6 +815,7 @@ def create_api_app(
     app.state.playback_evidence_service = playback_evidence_service
     app.state.playback_evidence_query = playback_evidence_query
     app.state.library_inspection_service = library_inspection_service
+    app.state.creator_profile_service = creator_profile_service
     deep_readiness_cache: dict[bool, tuple[float, dict[str, object]]] = {}
     deep_readiness_lock = threading.Lock()
     web_root = _resolve_web_root()
@@ -2123,7 +2155,156 @@ def create_api_app(
         )
         return _operation_start_payload(submission)
 
+    # ----------------------------------------------- creator profile lookup
+
+    @app.post("/api/v1/accounts/{account_id}/creator-lookups", status_code=202)
+    def start_creator_lookup(account_id: UUID, body: CreatorLookupStart, request: Request) -> dict[str, object]:
+        if not body.enable_mediacrawler:
+            raise _bad_request("mediacrawler_not_enabled")
+        if not body.accept_mediacrawler_license:
+            raise _bad_request("license_acknowledgement_required")
+        fingerprint, key_hash = _operation_identity(
+            request,
+            "creator-profile",
+            target_id=str(account_id),
+            parameters={
+                "identity_digest": hashlib.sha256(
+                    f"{body.platform.value}\0{body.creator_remote_id}".encode()
+                ).hexdigest(),
+                "frontend_generation": str(body.frontend_generation),
+                "enable_mediacrawler": body.enable_mediacrawler,
+                "accept_mediacrawler_license": body.accept_mediacrawler_license,
+            },
+        )
+        replay = _idempotent_replay("creator-profile", key_hash=key_hash, request_fingerprint=fingerprint)
+        if replay is not None:
+            return _operation_start_payload(replay)
+        try:
+            digest = creator_profile_service.preflight(str(account_id), body.platform.value, body.creator_remote_id)
+        except CreatorProfileError as error:
+            raise _bad_request(error.code) from None
+        except SQLAlchemyError:
+            raise HTTPException(status_code=503, detail="creator_profile_unavailable") from None
+        return _operation_start_payload(
+            _submit_operation(
+                OperationExecution(
+                    kind="creator-profile",
+                    request_fingerprint=fingerprint,
+                    idempotency_key_hash=key_hash,
+                    exclusive_key=f"creator-profile:{account_id}",
+                    target_type="account",
+                    target_id=str(account_id),
+                    phase="preparing",
+                    execute=lambda context: creator_profile_service.execute(
+                        context,
+                        account_id=str(account_id),
+                        platform=body.platform.value,
+                        creator_remote_id=body.creator_remote_id,
+                        frontend_generation=str(body.frontend_generation),
+                        credential_digest=digest,
+                    ),
+                )
+            )
+        )
+
+    def _verified_profile_payload(session: Any, profile: ProfileSnapshot | None) -> dict[str, object] | None:
+        if profile is None:
+            return None
+        observed = session.get(Operation, profile.last_success_operation_id)
+        if (
+            observed is None
+            or observed.kind != "creator-profile"
+            or observed.state != "succeeded"
+            or observed.target_type != "account"
+            or observed.target_id != profile.account_id
+            or observed.result_summary.get("profile_id") != profile.profile_id
+            or observed.result_summary.get("revision") != profile.revision
+        ):
+            return None
+        return profile_payload(profile)
+
+    @app.get("/api/v1/creator-lookups/{operation_id}")
+    def creator_lookup(operation_id: UUID) -> dict[str, object]:
+        try:
+            with operation_database.session() as session:
+                operation = session.get(Operation, str(operation_id))
+                if operation is None or operation.kind != "creator-profile" or operation.target_type != "account":
+                    raise HTTPException(status_code=404, detail="creator_profile_not_found")
+                lookup = CreatorProfileRepository(session).read_lookup(str(operation_id))
+                identity: dict[str, object] | None = None
+                profile = None
+                source = None
+                if lookup is not None:
+                    ticket = lookup.ticket
+                    if ticket.account_id != operation.target_id or ticket.operation_id != operation.id:
+                        raise _bad_request("creator_profile_identity_mismatch")
+                    identity = {
+                        "account_id": ticket.account_id,
+                        "platform": ticket.platform,
+                        "creator_remote_id": ticket.creator_remote_id,
+                        "frontend_generation": ticket.frontend_generation,
+                        "generation": ticket.generation,
+                        "operation_id": ticket.operation_id,
+                        "result_profile_revision": lookup.result_revision,
+                    }
+                    profile = _verified_profile_payload(session, lookup.profile)
+                    if profile is not None:
+                        source = (
+                            "lookup_result"
+                            if (
+                                operation.state == "succeeded"
+                                and lookup.state == "succeeded"
+                                and lookup.result_revision == profile["revision"]
+                                and lookup.profile is not None
+                                and lookup.profile.last_success_operation_id == operation.id
+                            )
+                            else "previous_success"
+                        )
+                return {
+                    "operation_id": operation.id,
+                    "state": operation.state,
+                    "error_code": lookup_error_code(operation.error_code),
+                    "lookup": identity,
+                    "profile": profile,
+                    "profile_source": source,
+                }
+        except CreatorProfileError as error:
+            raise _bad_request(error.code) from None
+        except SQLAlchemyError:
+            raise HTTPException(status_code=503, detail="creator_profile_unavailable") from None
+
+    @app.get("/api/v1/creator-profiles/{profile_id}/avatar/{revision}")
+    def creator_avatar(profile_id: UUID, revision: int) -> Response:
+        try:
+            with operation_database.session() as session:
+                payload = CreatorProfileRepository(session).get_avatar(str(profile_id), revision)
+            if payload is None:
+                raise HTTPException(status_code=404, detail="creator_avatar_not_found")
+            return Response(
+                payload,
+                media_type="image/png",
+                headers={
+                    "Cache-Control": "private, no-store",
+                    "X-Content-Type-Options": "nosniff",
+                    "Cross-Origin-Resource-Policy": "same-origin",
+                },
+            )
+        except CreatorProfileError as error:
+            raise _bad_request(error.code) from None
+        except SQLAlchemyError:
+            raise HTTPException(status_code=503, detail="creator_profile_unavailable") from None
+
     # --------------------------------------------------------- subscriptions
+
+    def _add_creator_profile(session: Any, subscription: Subscription, payload: dict[str, object]) -> None:
+        payload["creator_profile"] = _verified_profile_payload(
+            session,
+            CreatorProfileRepository(session).get_profile(
+                subscription.account_id,
+                subscription.account.platform,
+                subscription.author.remote_id,
+            ),
+        )
 
     @app.get("/api/v1/subscriptions")
     def list_subscriptions(deleted: bool = False) -> list[dict[str, object]]:
@@ -2134,6 +2315,7 @@ def create_api_app(
                 for subscription in SubscriptionRepository(session).list(deleted=deleted):
                     payload = _subscription_payload(subscription)
                     payload["policy_summary"] = _subscription_policy_summary_payload(subscription)
+                    _add_creator_profile(session, subscription, payload)
                     payloads.append(payload)
                 return payloads
         except SQLAlchemyError:
@@ -2146,7 +2328,9 @@ def create_api_app(
             account_id=body.account_id,
             platform=body.platform,
             creator_remote_id=body.creator_remote_id,
-            display_name=body.display_name,
+            display_name=body.display_name or "",
+            local_alias=body.local_alias,
+            profile_lookup_id=body.profile_lookup_id,
             creator_secret_ref=body.creator_reference_ref,
             interval_seconds=body.interval_seconds,
             max_items=body.max_items,
@@ -2209,6 +2393,7 @@ def create_api_app(
                 if subscription is None:
                     raise HTTPException(status_code=404, detail="subscription not found")
                 payload = _subscription_payload(subscription)
+                _add_creator_profile(session, subscription, payload)
                 payload["policy_summary"] = _subscription_policy_summary_payload(subscription)
                 payload["checkpoint_summary"] = _subscription_checkpoint_summary_payload(subscription)
                 payload["schedule"] = _scheduler_schedule_payload(
