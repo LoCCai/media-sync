@@ -25,6 +25,8 @@ if __name__ == "__main__" and (__package__ is None or __package__ == ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from media_sync.domain import Platform
+from media_sync.integrations.mediacrawler.browser_environment import browser_child_environment
+from media_sync.integrations.mediacrawler.browser_policy import install_bundled_chromium_policy
 from media_sync.integrations.mediacrawler.checkout import (
     VerifiedCheckout,
     VerifiedPython,
@@ -70,32 +72,6 @@ _LOGIN_REQUEST_LENGTH_BYTES = 4
 _LOGIN_RESULT_LENGTH_BYTES = 4
 _LOGIN_CONTROL_POLL_SECONDS = 0.02
 
-_CHILD_ENV_ALLOWLIST = frozenset(
-    {
-        "APPDATA",
-        "COMSPEC",
-        "DISPLAY",
-        "HOMEDRIVE",
-        "HOMEPATH",
-        "HOME",
-        "LANG",
-        "LC_ALL",
-        "LOCALAPPDATA",
-        "PATH",
-        "PATHEXT",
-        "PROGRAMFILES",
-        "PROGRAMFILES(X86)",
-        "PROGRAMW6432",
-        "SYSTEMROOT",
-        "TEMP",
-        "TMP",
-        "USERPROFILE",
-        "WAYLAND_DISPLAY",
-        "WINDIR",
-        "XAUTHORITY",
-        "XDG_RUNTIME_DIR",
-    }
-)
 _CLIENT_FACTORY_NAMES = {
     Platform.XHS: "create_xhs_client",
     Platform.DY: "create_douyin_client",
@@ -268,7 +244,7 @@ class MediaCrawlerLoginProcessRunner:
         upstream_sha: str,
     ) -> MediaCrawlerLoginResult:
         command = (str(executable), "-I", "-u", "-B", str(Path(__file__).resolve()), "--child")
-        environment = {name: value for name, value in os.environ.items() if name.upper() in _CHILD_ENV_ALLOWLIST}
+        environment = browser_child_environment()
         environment.update(
             {
                 _CONTROL_ENV: _CONTROL_VERSION,
@@ -767,6 +743,7 @@ async def _run_upstream(request: _ChildRequest) -> MediaCrawlerLoginStatus:
     upstream_main: Any = importlib.import_module("main")
     if not _module_belongs_to_checkout(upstream_main, request.checkout_root):
         raise _ChildConfigurationError
+    install_bundled_chromium_policy(upstream_main)
     crawler = upstream_main.CrawlerFactory.create_crawler(platform=request.platform.value)
     upstream_main.crawler = crawler
     _install_client_guard(crawler, request.platform)

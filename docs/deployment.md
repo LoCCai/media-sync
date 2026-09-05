@@ -120,6 +120,22 @@ MediaCrawler-enabled workers disabled.
 
 `runtime_invalid / runtime_imports_missing` on the first `4c6d0bf` image was caused by dereferencing the normal venv launcher symlink to the base Python. Pull the launcher repair and rebuild without cache. Keep `MEDIA_SYNC_MEDIACRAWLER_PYTHON_EXECUTABLE=/opt/mediacrawler-venv/bin/python`; do not replace it with the resolved base interpreter path.
 
+### 2.2 Match the real QR browser launch
+
+The login-runtime repair makes login, creator and detail children share the approved browser environment, including `PLAYWRIGHT_BROWSERS_PATH`. All seven standard upstream browser launches explicitly use the installed Playwright Chromium; five upstream `channel="chrome"` selectors are adapted in memory, not by changing the locked checkout. A system Google Chrome installation is not required by this policy. Platform-specific network and anti-abuse behavior still needs live qualification.
+
+The image now includes `xdpyinfo` and waits for a live Xvfb connection before database initialization. `xvfb_probe_unavailable`, `xvfb_start_failed` or `xvfb_ready_timeout` stop startup with a nonzero exit before migration. Preserve the operator configuration preflight and restricted secrets; changing Origin or copying browsers into a user's home is not the fix.
+
+After rebuilding and recreating the service, run this credential-free check as its normal runtime UID:
+
+```bash
+docker compose exec -T media-sync /app/.venv/bin/python /app/scripts/check_login_browser.py --python /opt/mediacrawler-venv/bin/python
+```
+
+Success reports `ok: true`, `mode: headed-persistent`, a numeric browser version and `live_qualification: NOT_RUN`. The check launches an empty persistent browser using a disposable profile, visits no platform, reads no account profile and closes the browser tree before returning. Normal failures/timeouts are supervised; a forcibly killed POSIX parent is not covered by the preflight cleanup guarantee. The account login-preflight now performs the same headed check, while generic deep readiness stays headless. Neither blank-browser success nor public readiness proves that a QR code was displayed or an account authenticated.
+
+For an existing deployment, retain the private Compose/HTTPS Origin, secret mount and named volume. Back up state before upgrading, then run `git pull --ff-only`, `docker compose build media-sync`, the configuration-only preflight above, and `docker compose up -d --no-deps --force-recreate media-sync`. Do not run `down -v`. A restart alone cannot load these source/image changes. If the optional supervisor is enabled, recreate it from the same new image too. See the [repair verification and handoff](executions/0055-operator-auth-playback-evidence/login-runtime/verification.md) for actual evidence and remaining live gates.
+
 ## 3. Web and QR-login status at this checkpoint
 
 The backend now exposes strict operator login/session/logout contracts, an HttpOnly `SameSite=Strict` process-local cookie, and CSRF enforcement for cookie-authenticated unsafe requests. A successful login rotates the sole session; restart, logout, expiry, or credential change invalidates it. An optional, separately resolved Bearer credential may be configured for non-browser automation, but it cannot replace the browser-only confirmation authority planned later in 0055.

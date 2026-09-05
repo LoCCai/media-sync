@@ -237,8 +237,10 @@ def test_forward_maps_only_qr_fence_to_auth_expired_and_system_exit_cannot_succe
             watchdogs=WatchdogLimits(max_seconds=1, poll_seconds=0.01),
         ),
     )
-    from media_sync.integrations.mediacrawler import bridge
+    from media_sync.integrations.mediacrawler import bridge, browser_policy
 
+    # This fixture tests result mapping without constructing a browser crawler.
+    monkeypatch.setattr(browser_policy, "install_bundled_chromium_policy", lambda _main: None)
     monkeypatch.setattr(bridge, "verify_manifest_checkout", lambda _manifest: SimpleNamespace(root=checkout))
     monkeypatch.setattr(runner, "_configure_upstream", lambda *_args: None)
     monkeypatch.delitem(sys.modules, "config", raising=False)

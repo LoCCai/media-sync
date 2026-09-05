@@ -58,9 +58,11 @@ Items 1–30 retain historical implementation/verification through projection `2
 
 ## Still pending
 
+The deployed-console follow-up observed manual operator access and failed existing Bilibili/Douyin/XHS login sessions. The resulting shared-browser repair is tracked separately in [login-runtime progress](login-runtime/progress.md) and [verification](login-runtime/verification.md); its real Windows blank-browser launch is not a Linux or platform PASS.
+
 - Local synthetic-browser verification has passed. Publication closeout, the exact current Linux image and authorized Bilibili/XHS canaries remain; minimal confirmation UI is P1 follow-up, not a prerequisite for CLI live workflows.
 - Minimal current/history evidence display and matched-only confirmation interaction remain pending. Projection and qualification v3 backend are implemented; no requested author or no exact current evidence yields `IMPLEMENTED/NOT_RUN`, not a live qualification pass.
-- No user platform account or real Emby/Jellyfin playback flow has run. Real local browser authentication with disposable synthetic fixtures is recorded separately in secure-console verification; it does not qualify a platform, CDN or media server. A local ledger row, mock connector or endpoint test cannot grant human PASS; live playback remains `NOT_RUN`.
+- No successful user platform qualification or real Emby/Jellyfin playback flow has been verified. Failed user-created platform sessions have now been observed, as recorded above. Real local browser authentication with disposable synthetic fixtures does not qualify a platform, CDN or media server. A local ledger row, mock connector or endpoint test cannot grant human PASS; live playback remains `NOT_RUN`.
 
 ## Next checkpoint
 

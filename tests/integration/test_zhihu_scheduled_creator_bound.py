@@ -14,6 +14,7 @@ import pytest
 
 from media_sync.domain import LoginMethod, Platform
 from media_sync.integrations.mediacrawler import bridge as bridge_module
+from media_sync.integrations.mediacrawler import browser_policy
 from media_sync.integrations.mediacrawler import runner as runner_module
 from media_sync.integrations.mediacrawler.bridge import MediaCrawlerRunMode, RunnerManifest
 from media_sync.integrations.mediacrawler.policies import WatchdogLimits
@@ -171,6 +172,8 @@ async def test_scheduled_child_bounds_real_creator_callback_and_output_to_manife
         return candidate if candidate is not None else original_import(name, package)
 
     monkeypatch.setattr(importlib, "import_module", import_module)
+    # This callback-only fixture deliberately has no browser factory.
+    monkeypatch.setattr(browser_policy, "install_bundled_chromium_policy", lambda _main: None)
     monkeypatch.setattr(
         bridge_module,
         "verify_manifest_checkout",

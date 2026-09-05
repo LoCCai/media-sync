@@ -82,6 +82,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
       ffmpeg \
       xvfb \
       xauth \
+      x11-utils \
       fonts-noto-cjk \
       fonts-liberation \
       ca-certificates \

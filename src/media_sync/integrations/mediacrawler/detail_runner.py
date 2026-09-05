@@ -43,6 +43,8 @@ from media_sync.integrations.mediacrawler.bilibili_media import (
     BilibiliPageIdentity,
     parse_bilibili_view_pages,
 )
+from media_sync.integrations.mediacrawler.browser_environment import browser_child_environment
+from media_sync.integrations.mediacrawler.browser_policy import install_bundled_chromium_policy
 from media_sync.integrations.mediacrawler.checkout import (
     VerifiedCheckout,
     VerifiedPython,
@@ -111,30 +113,6 @@ _DETAIL_CONFIG_ATTRIBUTES = {
     Platform.TIEBA: "TIEBA_SPECIFIED_ID_LIST",
     Platform.ZHIHU: "ZHIHU_SPECIFIED_ID_LIST",
 }
-_CHILD_ENV_ALLOWLIST = frozenset(
-    {
-        "APPDATA",
-        "COMSPEC",
-        "DISPLAY",
-        "HOME",
-        "LANG",
-        "LC_ALL",
-        "LOCALAPPDATA",
-        "PATH",
-        "PATHEXT",
-        "PROGRAMFILES",
-        "PROGRAMFILES(X86)",
-        "PROGRAMW6432",
-        "SYSTEMROOT",
-        "TEMP",
-        "TMP",
-        "USERPROFILE",
-        "WAYLAND_DISPLAY",
-        "WINDIR",
-        "XAUTHORITY",
-        "XDG_RUNTIME_DIR",
-    }
-)
 
 
 class MediaCrawlerDetailPayloadRunner(Protocol):
@@ -476,7 +454,7 @@ class MediaCrawlerDetailProcessRunner:
         limits: WatchdogLimits,
     ) -> bytes:
         command = (str(executable), "-I", "-u", "-B", str(Path(__file__).resolve()), "--child")
-        environment = {name: value for name, value in os.environ.items() if name.upper() in _CHILD_ENV_ALLOWLIST}
+        environment = browser_child_environment()
         environment.update({"PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1", "PYTHONUNBUFFERED": "1"})
         try:
             if os.name == "nt":
@@ -1240,6 +1218,7 @@ async def _run_upstream(request: _ChildRequest) -> tuple[Any, _BiliPlaybackResul
     upstream_main = importlib.import_module("main")
     if not _module_belongs_to_checkout(upstream_main, request.checkout_root):
         raise _ChildConfigurationError
+    install_bundled_chromium_policy(upstream_main)
     if request.platform is Platform.WB:
         install_weibo_media_capture(request.checkout_root)
     elif request.platform is Platform.TIEBA:

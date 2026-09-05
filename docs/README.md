@@ -2,6 +2,8 @@
 
 # media-sync project journal
 
+Latest P0 follow-up: [login browser runtime repair](executions/0055-operator-auth-playback-evidence/login-runtime/progress.md), with bilingual frozen goal/plan and measured verification. Failed deployed login observations are not successful platform qualification.
+
 This directory is the durable audit trail for the project. Every execution milestone has four records: goal, plan, progress, and verification. Since execution 0028 every document is maintained as two editions — English `<name>.md` and Chinese `<name>.zh.md` — and each edition links to its counterpart in its header.
 
 ## Navigation

@@ -64,9 +64,17 @@ def test_login_preflight_is_ready_without_download_tools(tmp_path: Path, monkeyp
     settings = _settings(tmp_path)
     account_id = _account(settings)
     _pass_runtime(monkeypatch)
+    browser_calls: list[tuple[Path, bool]] = []
+
+    def browser_probe(executable: Path, *, interactive: bool = False) -> str:
+        browser_calls.append((executable, interactive))
+        return "151.0.7922.34"
+
+    monkeypatch.setattr("media_sync.application.login_preflight.verify_mediacrawler_browser", browser_probe)
 
     report = collect_account_login_preflight(settings, account_id, license_acknowledged=True)
 
+    assert browser_calls == [(settings.mediacrawler_python_executable, True)]
     assert report.ok is True
     assert report.code == "ready"
     assert report.platform is not None and report.platform.value == "bili"
@@ -134,6 +142,28 @@ def test_login_preflight_reports_exact_runtime_code(tmp_path: Path, monkeypatch:
         "detail_code": "runtime_imports_missing",
     }
     assert "sentinel" not in json.dumps(report.to_payload())
+
+
+def test_login_preflight_keeps_headed_browser_failure_redaction_safe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = _settings(tmp_path)
+    account_id = _account(settings)
+    _pass_runtime(monkeypatch)
+
+    def reject_browser(executable: Path, *, interactive: bool = False) -> str:
+        assert interactive is True
+        raise CheckoutValidationError("private browser path and credential", "browser_launch_failed")
+
+    monkeypatch.setattr("media_sync.application.login_preflight.verify_mediacrawler_browser", reject_browser)
+
+    report = collect_account_login_preflight(settings, account_id, license_acknowledged=True)
+
+    assert report.code == "browser_launch_failed"
+    assert report.retryable is True
+    assert next(check for check in report.checks if check.name == "browser").status == "fail"
+    assert next(check for check in report.checks if check.name == "profile").status == "not_run"
+    assert "private" not in json.dumps(report.to_payload())
 
 
 def test_login_preflight_rejects_ineligible_cookie_account_before_checkout(

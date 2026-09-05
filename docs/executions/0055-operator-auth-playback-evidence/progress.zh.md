@@ -58,9 +58,11 @@
 
 ## 仍待实现
 
+部署后台后续已观察操作者手工进入及现有 B 站/抖音/小红书登录会话失败。由此展开的共用浏览器修复单独记录于[登录运行环境推进](login-runtime/progress.zh.md)和[验证](login-runtime/verification.zh.md)；真实 Windows 空白浏览器启动不等于 Linux 或平台 PASS。
+
 - 当前本地合成浏览器门已通过；仍须发布收尾、验证精确当前 Linux 镜像并推进获授权 Bilibili／小红书金丝雀。最小确认 UI 是 P1 后续，不前置于 CLI 真人流程。
 - 仍须完成最小当前／历史证据展示与 matched-only 确认交互。投影与资格 v3 后端已实现，无指定作者或无精确当前证据时为 `IMPLEMENTED/NOT_RUN`；这不代表真人资格已经通过。
-- 尚未运行用户平台账户或真实 Emby/Jellyfin 播放流程。真实本地浏览器与可丢弃合成夹具的鉴权验证单独记录在 secure-console 验证中，不授予平台、CDN 或媒体服务器资格。本地账本行、mock connector 或 endpoint 测试都不能授予真人 PASS；真人播放仍为 `NOT_RUN`。
+- 尚未验证成功的用户平台资格或真实 Emby/Jellyfin 播放流程；现已观察到用户创建的平台失败会话，如上所记。真实本地浏览器与可丢弃合成夹具的鉴权验证不授予平台、CDN 或媒体服务器资格。本地账本行、mock connector 或 endpoint 测试都不能授予真人 PASS；真人播放仍为 `NOT_RUN`。
 
 ## 下一检查点
 

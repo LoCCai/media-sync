@@ -252,7 +252,7 @@ def collect_account_login_preflight(
     builder.passed("runtime")
 
     try:
-        verify_mediacrawler_browser(executable)
+        verify_mediacrawler_browser(executable, interactive=True)
     except CheckoutValidationError as error:
         return builder.failed("browser", error.code)
     builder.passed("browser")

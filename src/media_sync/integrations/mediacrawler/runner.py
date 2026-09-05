@@ -1396,6 +1396,7 @@ async def _execute_child(
     cleanup_seconds = min(5.0, max(0.05, manifest.watchdogs.max_seconds * 0.1))
     try:
         from media_sync.integrations.mediacrawler.bridge import verify_manifest_checkout
+        from media_sync.integrations.mediacrawler.browser_policy import install_bundled_chromium_policy
         from media_sync.integrations.mediacrawler.checkout import normalize_python_executable
 
         if cancellation is not None and cancellation.is_set():
@@ -1428,6 +1429,7 @@ async def _execute_child(
         upstream_main = importlib.import_module("main")
         if not _module_belongs_to_checkout(upstream_main, verified.root):
             return EXIT_CONFIGURATION
+        install_bundled_chromium_policy(upstream_main)
         if manifest.platform.value == "bili":
             from media_sync.integrations.mediacrawler.bilibili_media import (
                 install_bilibili_media_capture,

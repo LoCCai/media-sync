@@ -166,6 +166,9 @@ class {login_class}:
 
 
 class FakeCrawler:
+    async def launch_browser(self, chromium, *args, **kwargs):
+        raise AssertionError("non-browser login fixture must not launch Chromium")
+
     async def _create_client(self, *_args, **_kwargs):
         return FakeClient()
 
@@ -306,9 +309,7 @@ def _parse_result_wire(wire: bytes) -> MediaCrawlerLoginStatus:
 
 
 def _raw_child_environment() -> dict[str, str]:
-    environment = {
-        name: value for name, value in os.environ.items() if name.upper() in runner_module._CHILD_ENV_ALLOWLIST
-    }
+    environment = runner_module.browser_child_environment()
     environment.update(
         {
             runner_module._CONTROL_ENV: runner_module._CONTROL_VERSION,

@@ -11,7 +11,9 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
+from tempfile import TemporaryDirectory, TemporaryFile
 
+from .browser_environment import browser_child_environment
 from .policies import require_confined
 
 MEDIACRAWLER_NAME = "MediaCrawler"
@@ -44,11 +46,38 @@ from playwright.sync_api import sync_playwright
 
 with sync_playwright() as playwright:
     browser = playwright.chromium.launch(headless=True)
-    print(browser.version)
-    browser.close()
+    try:
+        print(browser.version)
+    finally:
+        browser.close()
+"""
+
+_INTERACTIVE_BROWSER_PROBE = """
+import sys
+if sys.stdin.buffer.read(1) != b"1":
+    raise SystemExit(44)
+from playwright.sync_api import sync_playwright
+
+with sync_playwright() as playwright:
+    chromium = playwright.chromium
+    context = chromium.launch_persistent_context(
+        user_data_dir=sys.argv[1],
+        executable_path=chromium.executable_path,
+        headless=False,
+        accept_downloads=True,
+        viewport={"width": 1920, "height": 1080},
+        timeout=30000,
+    )
+    try:
+        if context.browser is None:
+            raise SystemExit(43)
+        print(context.browser.version)
+    finally:
+        context.close()
 """
 
 _FULL_SHA = re.compile(r"[0-9a-f]{40}\Z")
+_BROWSER_VERSION = re.compile(r"[0-9]+(?:\.[0-9]+){1,3}\Z")
 
 
 class CheckoutValidationCode(StrEnum):
@@ -337,37 +366,114 @@ def verify_mediacrawler_python(python_executable: Path) -> VerifiedPython:
     return VerifiedPython(executable=executable)
 
 
-def verify_mediacrawler_browser(python_executable: Path) -> str:
-    """Launch the configured Playwright Chromium once and return its version."""
-
-    executable = normalize_python_executable(python_executable)
-    if not executable.is_file() or not os.access(executable, os.X_OK):
-        raise CheckoutValidationError(
-            "MediaCrawler Python executable is unavailable", CheckoutValidationCode.RUNTIME_UNAVAILABLE
-        )
-    try:
-        completed = subprocess.run(
-            (str(executable), "-I", "-c", _BROWSER_PROBE),
-            check=False,
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=45,
-            env=_git_environment(),
-        )
-    except (OSError, subprocess.TimeoutExpired) as error:
-        raise CheckoutValidationError(
-            "MediaCrawler Chromium launch probe could not complete",
-            CheckoutValidationCode.BROWSER_LAUNCH_FAILED,
-        ) from error
-    if completed.returncode != 0 or not completed.stdout.strip():
+def _browser_version(returncode: int, output: str) -> str:
+    version = output.strip()
+    if returncode != 0 or len(output) > 130 or len(version) > 128 or _BROWSER_VERSION.fullmatch(version) is None:
         raise CheckoutValidationError(
             "MediaCrawler Chromium could not launch",
             CheckoutValidationCode.BROWSER_LAUNCH_FAILED,
         )
-    return completed.stdout.strip().splitlines()[-1][:128]
+    return version
+
+
+def _run_browser_probe(executable: Path) -> str:
+    """Keep the existing generic headless readiness path."""
+
+    completed = subprocess.run(
+        (str(executable), "-I", "-c", _BROWSER_PROBE),
+        check=False,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=45,
+        env=browser_child_environment(),
+    )
+    return _browser_version(completed.returncode, completed.stdout)
+
+
+def _run_interactive_browser_probe(executable: Path, profile_dir: str) -> str:
+    """Contain and reap the headed browser tree before releasing its profile."""
+
+    # Import after checkout initialization: runner itself consumes checkout.
+    from .runner import _close_process_tree, _WindowsJob
+
+    arguments = (str(executable), "-I", "-c", _INTERACTIVE_BROWSER_PROBE, profile_dir)
+    with TemporaryFile() as output:
+        if os.name == "nt":
+            process = subprocess.Popen(
+                arguments,
+                env=browser_child_environment(),
+                shell=False,
+                stdin=subprocess.PIPE,
+                stdout=output,
+                stderr=subprocess.DEVNULL,
+                close_fds=True,
+                creationflags=(
+                    getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | getattr(subprocess, "CREATE_NO_WINDOW", 0)
+                ),
+            )
+        else:
+            process = subprocess.Popen(
+                arguments,
+                env=browser_child_environment(),
+                shell=False,
+                stdin=subprocess.PIPE,
+                stdout=output,
+                stderr=subprocess.DEVNULL,
+                close_fds=True,
+                start_new_session=True,
+            )
+        windows_job = None
+        try:
+            if os.name == "nt":
+                windows_job = _WindowsJob.attach(process)
+                if windows_job is None:
+                    raise CheckoutValidationError(
+                        "MediaCrawler Chromium containment is unavailable",
+                        CheckoutValidationCode.BROWSER_LAUNCH_FAILED,
+                    )
+            # The child cannot import Playwright or launch until containment
+            # succeeds. EOF or any other fixed token fails closed.
+            process.communicate(input=b"1", timeout=45)
+            returncode = process.returncode
+        finally:
+            if not _close_process_tree(process, windows_job):
+                raise CheckoutValidationError(
+                    "MediaCrawler Chromium cleanup could not complete",
+                    CheckoutValidationCode.BROWSER_LAUNCH_FAILED,
+                ) from None
+        output.seek(0)
+        # Never materialize an unbounded child log, even after a zero exit.
+        version_bytes = output.read(131)
+        return _browser_version(returncode, version_bytes.decode("utf-8", errors="replace"))
+
+
+def verify_mediacrawler_browser(python_executable: Path, *, interactive: bool = False) -> str:
+    """Probe headless readiness, or the disposable headed persistent login path.
+
+    Interactive checks never read an account profile or visit a platform. The
+    parent owns the temporary profile so failed or timed-out children do not
+    bypass cleanup. Ordinary readiness keeps Playwright's headless launch.
+    """
+
+    try:
+        executable = normalize_python_executable(python_executable)
+        if not executable.is_file() or not os.access(executable, os.X_OK):
+            raise CheckoutValidationError(
+                "MediaCrawler Python executable is unavailable", CheckoutValidationCode.RUNTIME_UNAVAILABLE
+            )
+        if interactive:
+            with TemporaryDirectory(prefix="media-sync-browser-preflight-") as profile_dir:
+                return _run_interactive_browser_probe(executable, profile_dir)
+        return _run_browser_probe(executable)
+    except (OSError, subprocess.TimeoutExpired):
+        raise CheckoutValidationError(
+            "MediaCrawler Chromium launch probe could not complete",
+            CheckoutValidationCode.BROWSER_LAUNCH_FAILED,
+        ) from None
 
 
 def verify_mediacrawler_checkout(

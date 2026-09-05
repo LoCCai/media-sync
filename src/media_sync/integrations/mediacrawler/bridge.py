@@ -18,6 +18,7 @@ from urllib.parse import parse_qsl, urlsplit
 from uuid import UUID
 
 from media_sync.domain import LoginMethod, Platform
+from media_sync.integrations.mediacrawler.browser_environment import browser_child_environment
 from media_sync.security import SecretValue, redact_text, secret_url_components
 
 from .checkout import (
@@ -50,31 +51,6 @@ MAX_MANIFEST_BYTES = 1_048_576
 RUNNER_SCRIPT = Path(__file__).with_name("runner.py").resolve()
 
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
-
-_CHILD_ENV_ALLOWLIST = frozenset(
-    {
-        "APPDATA",
-        "COMSPEC",
-        "DISPLAY",
-        "HOME",
-        "LANG",
-        "LC_ALL",
-        "LOCALAPPDATA",
-        "PATH",
-        "PATHEXT",
-        "PROGRAMFILES",
-        "PROGRAMFILES(X86)",
-        "PROGRAMW6432",
-        "SYSTEMROOT",
-        "TEMP",
-        "TMP",
-        "USERPROFILE",
-        "WAYLAND_DISPLAY",
-        "WINDIR",
-        "XAUTHORITY",
-        "XDG_RUNTIME_DIR",
-    }
-)
 
 
 def _strict_manifest_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
@@ -719,7 +695,7 @@ def _child_environment(
     *,
     creator_known_secrets: tuple[str | SecretValue, ...] = (),
 ) -> tuple[Mapping[str, str], tuple[str | SecretValue, ...]]:
-    environment = {name: value for name, value in os.environ.items() if name.upper() in _CHILD_ENV_ALLOWLIST}
+    environment = browser_child_environment()
     environment.update(
         {
             "PYTHONIOENCODING": "utf-8",

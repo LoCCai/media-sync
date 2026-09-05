@@ -2,6 +2,10 @@
 
 # 项目统一状态（单一事实来源）
 
+## 最新：部署登录修复（2026-09-05）
+
+操作者已手工成功进入部署后台。B 站、抖音和小红书的现有账户显示登录会话失败，共观察到六次历史登录操作失败；这是失败证据，不是真人验收通过。冻结计划 `204655d` 下已在本地修复共享浏览器缓存环境、五平台 Chrome 通道及有头预检不匹配，容器也会先确认 Xvfb 可连接再迁移。真实 Windows 空白有头 Chromium 启动通过（`151.0.7922.34`）。最终回归/发布证据和待办见[登录运行环境验证](executions/0055-operator-auth-playback-evidence/login-runtime/verification.zh.md)。修复后的 Linux 镜像、扫码、会话复用、采集和 Emby/Jellyfin 金丝雀仍待验证，七平台总体目标保持开放。下文旧检查点结果除该记录明确更新外均为历史证据。
+
 已推送的执行 0055 后端鉴权实现为提交 `f19bfaa`（冻结规划基线为 `4564b2a`）。它会在绑定端口前解析必需的类型化操作者凭据，支持可选且不同的 Bearer 凭据，强制精确 Host/Origin 策略，轮换进程内 HttpOnly `SameSite=Strict` session Cookie，对 Cookie 鉴权的不安全方法强制 CSRF，以精确匿名白名单配合默认拒绝的 ASGI 保护，只接受严格有界的登录 JSON，并把凭据/origin 契约接入 Docker Compose。其 190 项 auth/API 专项与完整离线回归（`2811 passed, 14 skipped, 1 warning in 561.43s`）通过，69 项 Web 测试及本机可用的静态/构建/docs/打包门也通过。3 项跳过为 Windows/POSIX 差异；本工作站无法运行 11 项真实 PostgreSQL 竞态与 Docker 验证，因此不作通过声明。
 
 确认后端已发布为 `13de3b7`。已发布 `2e1949f` 的[投影检查点](executions/0055-operator-auth-playback-evidence/evidence-projection/progress.zh.md)增加有界作者证据读取与资格 schema v3。先在 publication/profile 权威稳定时完成一次新 lookup，再打开短读取事务；当前证据独立查询，历史默认 20 行、最多 50 行，总物化账本行不超过 `limit + 2`。历史页截断不否定独立当前行；远端 lookup 截断则不能 PASS。远端不确定使历史未知，完整不存在使其过期；只有精确持久确认可授予作者范围 PASS。无作者则 scope 为 `not_requested`，不查询证据或远端。Web login/session/CSRF 现已实现且本地合成浏览器门禁已通过；确认 UI 仍待实现。仓库真人资格继续为 `NOT_RUN`，provider completion 与自动扫描仍为 `NOT_IMPLEMENTED`。历史证据见[投影验证](executions/0055-operator-auth-playback-evidence/evidence-projection/verification.zh.md)，执行 0047 继续作为操作者门。
@@ -29,7 +33,7 @@
 | 静态与制品门 | 当前 Ruff/format、mypy、compileall、Web、docs／上游与包检查结果统一见[验证](executions/0055-operator-auth-playback-evidence/secure-console/verification.zh.md) | 执行 0055 安全控制台 |
 | Docker 镜像构建 | 0050/0047 镜像预检仍是历史 `PASS`；当前 0055 鉴权版 Compose 接线已代码审查，但本工作站没有 Docker CLI，故为 `NOT_RUN` | 执行 0050/0047 与 0055-A 验证 |
 | 容器就绪 / 重启持久性 / 备份恢复演练 | 旧镜像深度预检为历史 `PASS`；当前镜像就绪、重启持久性与备份恢复 `NOT_RUN` | 执行 0047；docs/operations.zh.md 流程就绪 |
-| 真人登录（任一平台） | `NOT_RUN`——操作者（阶段 C 金丝雀：Bilibili + 小红书） | 执行 0047 |
+| 真人登录（任一平台） | 已观察 B 站/抖音/小红书历史失败会话；修复版本尚未真人验证，无平台 PASS | [失败证据](executions/0055-operator-auth-playback-evidence/secure-console/login-runtime-triage.zh.md)；执行 0047 仍为金丝雀门槛 |
 | 真人抓取 / 下载 / 增量性 | `NOT_RUN`——操作者（阶段 C–E） | 执行 0047 |
 | 真实 Emby/Jellyfin 连接、Library 发现与定向刷新接受 | `NOT_RUN`——0054-A 已实现，但未使用获授权真实服务器 | 执行 0054 与 0047 |
 | Provider/path 项目查找与刷新后项目观察 | `IMPLEMENTED / NOT_RUN`——本地/mock 门禁通过，但未使用获授权真实 Emby/Jellyfin 服务器 | 执行 0054-B 验证 |

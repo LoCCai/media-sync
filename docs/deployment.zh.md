@@ -115,6 +115,22 @@ checkout 的逐项状态、稳定 `detail_code`、实际 Chromium 版本和构�
 
 首个 `4c6d0bf` 镜像若显示 `runtime_invalid / runtime_imports_missing`，根因是正常的 venv launcher 符号链接被解引用成基础 Python。请拉取启动器修复并无缓存重建。保持 `MEDIA_SYNC_MEDIACRAWLER_PYTHON_EXECUTABLE=/opt/mediacrawler-venv/bin/python`，不要替换为解引用后的基础解释器路径。
 
+### 2.2 检查真实扫码浏览器启动方式
+
+本次登录运行环境修复让登录、作者和详情子进程共用批准的浏览器环境，包含 `PLAYWRIGHT_BROWSERS_PATH`。七平台常规上游启动显式使用已安装的 Playwright Chromium；五个平台的 `channel="chrome"` 在内存适配，不修改锁定 checkout。此策略无需另外安装系统 Google Chrome；平台网络和风控兼容仍须真人验收。
+
+镜像新增 `xdpyinfo`，数据库初始化前等待 Xvfb 真实连接成功。`xvfb_probe_unavailable`、`xvfb_start_failed` 或 `xvfb_ready_timeout` 会在迁移前以非零状态停止启动。保留后台配置预检和受限凭据，不通过改 Origin 或把浏览器复制到用户目录来修复。
+
+重建镜像并重新创建服务后，按默认运行 UID 执行这个不接触凭据的检查：
+
+```bash
+docker compose exec -T media-sync /app/.venv/bin/python /app/scripts/check_login_browser.py --python /opt/mediacrawler-venv/bin/python
+```
+
+成功返回 `ok: true`、`mode: headed-persistent`、数字浏览器版本及 `live_qualification: NOT_RUN`。检查以临时 profile 启动空白持久浏览器，不访问平台、不读取账户 profile，返回前关闭浏览器进程树。普通失败/超时有监督；POSIX 父进程被强杀不在预检清理保证范围内。账户登录预检已使用相同有头检查，通用深度 readiness 仍是无头。空白浏览器成功和公开 readiness 都不证明二维码已显示或账户已认证。
+
+既有部署须保留个人 Compose/HTTPS Origin、secret 挂载及命名卷。升级前备份状态，再依次执行 `git pull --ff-only`、`docker compose build media-sync`、上面的仅配置预检、`docker compose up -d --no-deps --force-recreate media-sync`。不要执行 `down -v`，仅 restart 无法加载这次源码/镜像变更。如启用了可选 supervisor，也要从同一新镜像重建该服务。实际证据及待跑真人门槛见[修复验证与交接](executions/0055-operator-auth-playback-evidence/login-runtime/verification.zh.md)。
+
 ## 3. 当前检查点的 Web 与扫码登录状态
 
 后端现已提供严格的操作者 login/session/logout 契约、HttpOnly `SameSite=Strict` 进程内 Cookie，以及对 Cookie 鉴权不安全请求的 CSRF 强制。登录成功会轮换唯一 session；重启、退出、过期或凭据变化都会使其失效。非浏览器自动化可以另配独立解析的 Bearer 凭据，但它不能替代 0055 后续规划的浏览器专属确认权限。

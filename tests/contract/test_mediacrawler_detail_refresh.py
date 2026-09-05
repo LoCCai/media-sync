@@ -120,6 +120,9 @@ crawler = None
 
 
 class FakeCrawler:
+    async def launch_browser(self, chromium, *args, **kwargs):
+        raise AssertionError("non-browser detail fixture must not launch Chromium")
+
     async def start(self):
         assert config.PLATFORM == "dy"
         assert config.LOGIN_TYPE == "cookie"
@@ -200,6 +203,9 @@ RECORDS = __RECORDS__
 
 
 class FakeCrawler:
+    async def launch_browser(self, chromium, *args, **kwargs):
+        raise AssertionError("non-browser detail fixture must not launch Chromium")
+
     async def start(self):
         assert config.PLATFORM == "xhs"
         assert config.LOGIN_TYPE == "qrcode"
@@ -326,6 +332,9 @@ def _profile():
 
 
 class FakeCrawler:
+    async def launch_browser(self, chromium, *args, **kwargs):
+        raise AssertionError("non-browser detail fixture must not launch Chromium")
+
     async def start(self):
         assert config.PLATFORM == "ks"
         assert config.LOGIN_TYPE == "qrcode"
@@ -383,6 +392,9 @@ RECORDS = __KS_RECORDS__
 
 
 class FakeCrawler:
+    async def launch_browser(self, chromium, *args, **kwargs):
+        raise AssertionError("non-browser detail fixture must not launch Chromium")
+
     async def start(self):
         assert config.PLATFORM == "ks"
         assert config.LOGIN_TYPE == "qrcode"
@@ -463,6 +475,9 @@ class FakeBiliClient:
 
 
 class FakeCrawler:
+    async def launch_browser(self, chromium, *args, **kwargs):
+        raise AssertionError("non-browser detail fixture must not launch Chromium")
+
     def __init__(self):
         self.bili_client = FakeBiliClient()
 
@@ -567,6 +582,9 @@ def _profile():
 
 
 class FakeCrawler:
+    async def launch_browser(self, chromium, *args, **kwargs):
+        raise AssertionError("non-browser detail fixture must not launch Chromium")
+
     async def start(self):
         assert config.PLATFORM == "wb"
         assert config.LOGIN_TYPE == "qrcode"
@@ -693,6 +711,9 @@ crawler = None
 
 
 class FakeCrawler:
+    async def launch_browser(self, chromium, *args, **kwargs):
+        raise AssertionError("non-browser detail fixture must not launch Chromium")
+
     async def start(self):
         assert config.PLATFORM == "zhihu"
         assert config.LOGIN_TYPE == "qrcode"
@@ -724,9 +745,15 @@ class FakeCrawler:
         await zhihu_store.update_zhihu_content(content)
 
 
+class CrawlerFactory:
+    @staticmethod
+    def create_crawler(platform):
+        return FakeCrawler()
+
+
 async def main():
     global crawler
-    crawler = FakeCrawler()
+    crawler = CrawlerFactory.create_crawler(config.PLATFORM)
     await crawler.start()
 
 
@@ -806,6 +833,9 @@ crawler = None
 
 
 class FakeCrawler:
+    async def launch_browser(self, chromium, *args, **kwargs):
+        raise AssertionError("non-browser detail fixture must not launch Chromium")
+
     async def start(self):
         assert config.PLATFORM == "tieba"
         assert config.LOGIN_TYPE == "qrcode"
@@ -858,9 +888,15 @@ class FakeCrawler:
         await tieba_store.update_tieba_note(note)
 
 
+class CrawlerFactory:
+    @staticmethod
+    def create_crawler(platform):
+        return FakeCrawler()
+
+
 async def main():
     global crawler
-    crawler = FakeCrawler()
+    crawler = CrawlerFactory.create_crawler(config.PLATFORM)
     await crawler.start()
 
 

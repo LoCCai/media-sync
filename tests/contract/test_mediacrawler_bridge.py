@@ -122,6 +122,17 @@ ATTRIBUTES = (
 )
 
 
+class _FixtureCrawler:
+    async def launch_browser(self, chromium, *args, **kwargs):
+        raise AssertionError("browser launch is outside this non-browser fixture")
+
+
+class CrawlerFactory:
+    @staticmethod
+    def create_crawler(platform):
+        return _FixtureCrawler()
+
+
 def _selected_creator():
     selected = []
     for attribute in ATTRIBUTES:
@@ -146,6 +157,7 @@ def _append(path, value):
 
 async def main():
     global ACTIVE_CREATOR
+    CrawlerFactory.create_crawler(config.PLATFORM)
     attribute, creator = _selected_creator()
     ACTIVE_CREATOR = creator
     print(f"cookie={config.COOKIES} creator={creator}")
@@ -305,6 +317,17 @@ from store import weibo as weibo_store
 crawler = None
 
 
+class _FixtureCrawler:
+    async def launch_browser(self, chromium, *args, **kwargs):
+        raise AssertionError("browser launch is outside this non-browser fixture")
+
+
+class CrawlerFactory:
+    @staticmethod
+    def create_crawler(platform):
+        return _FixtureCrawler()
+
+
 def _profile():
     return Path(
         os.path.join(os.getcwd(), "browser_data", config.USER_DATA_DIR % config.PLATFORM)
@@ -416,6 +439,7 @@ NOTES = [
 
 
 async def main():
+    CrawlerFactory.create_crawler(config.PLATFORM)
     assert config.PLATFORM == "wb"
     assert config.LOGIN_TYPE == "qrcode"
     assert config.CRAWLER_TYPE == "creator"

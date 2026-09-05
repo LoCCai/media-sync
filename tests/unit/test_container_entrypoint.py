@@ -28,11 +28,26 @@ def _shell() -> str:
     return shell
 
 
-def _run_entrypoint(tmp_path: Path, args: list[str], *, preflight_exit: int = 0) -> tuple[int, list[str]]:
+def _run_entrypoint(
+    tmp_path: Path,
+    args: list[str],
+    *,
+    preflight_exit: int = 0,
+    xvfb_mode: str = "ready",
+    probe_mode: str = "ready",
+    expected_error: str = "",
+) -> tuple[int, list[str]]:
     shell = _shell()
+    actual_timeout = Path(shell).parent / ("timeout.exe" if os.name == "nt" else "timeout")
+    if probe_mode == "hang" and not actual_timeout.is_file():
+        found_timeout = shutil.which("timeout")
+        if found_timeout is None:
+            pytest.skip("GNU timeout unavailable; actual Linux timeout behavior is not implied")
+        actual_timeout = Path(found_timeout)
     cli_stub = tmp_path / "cli-stub.sh"
     cli_stub.write_text(
-        '#!/bin/sh\nprintf "cli" >> "$ENTRYPOINT_TEST_TRACE"\n'
+        '#!/bin/sh\nprintf "cli:%s\\n" "$*" >> "$ENTRYPOINT_TEST_ORDER"\n'
+        'printf "cli" >> "$ENTRYPOINT_TEST_TRACE"\n'
         'for argument do printf "|%s" "$argument" >> "$ENTRYPOINT_TEST_TRACE"; done\n'
         'printf "\\n" >> "$ENTRYPOINT_TEST_TRACE"\n'
         'for argument do [ "$argument" != "--check-config" ] || exit "$ENTRYPOINT_TEST_EXIT"; done\n'
@@ -41,13 +56,62 @@ def _run_entrypoint(tmp_path: Path, args: list[str], *, preflight_exit: int = 0)
         newline="\n",
     )
     xvfb_stub = tmp_path / "Xvfb"
-    xvfb_stub.write_text('#!/bin/sh\nprintf "xvfb\\n" >> "$ENTRYPOINT_TEST_XVFB"\n', encoding="utf-8", newline="\n")
+    xvfb_stub.write_text(
+        '#!/bin/sh\nprintf "xvfb\\n" >> "$ENTRYPOINT_TEST_ORDER"\n'
+        'printf "xvfb\\n" >> "$ENTRYPOINT_TEST_XVFB"\n'
+        'printf "%s\\n" "$$" > "$ENTRYPOINT_TEST_PID"\n'
+        '[ "$ENTRYPOINT_TEST_XVFB_MODE" != "exit" ] || exit 7\n'
+        'if [ "$ENTRYPOINT_TEST_XVFB_MODE" = "warning" ]; then\n'
+        '  printf "fixture-x11-warning-private-detail\\n" >&2\n'
+        "fi\n"
+        "trap 'exit 0' TERM INT\n"
+        "while :; do sleep 0.1; done\n",
+        encoding="utf-8",
+        newline="\n",
+    )
     xvfb_stub.chmod(0o700)
+    probe_stub = tmp_path / "xdpyinfo"
+    probe_stub.write_text(
+        '#!/bin/sh\nwhile [ ! -f "$ENTRYPOINT_TEST_PID" ]; do sleep 0.01; done\n'
+        'printf "probe:%s\\n" "$*" >> "$ENTRYPOINT_TEST_ORDER"\n'
+        'case "$ENTRYPOINT_TEST_PROBE_MODE" in\n'
+        '  fail|timeout) printf "fixture-probe-private-detail\\n" >&2; exit 1;;\n'
+        "  hang) trap '' TERM; while :; do sleep 0.1; done;;\n"
+        '  die) kill "$(cat "$ENTRYPOINT_TEST_PID")"; sleep 0.2;;\n'
+        '  delayed) if [ ! -f "$ENTRYPOINT_TEST_PROBE_FIRST" ]; then\n'
+        '    printf "first\\n" > "$ENTRYPOINT_TEST_PROBE_FIRST"; exit 1; fi;;\n'
+        "esac\n"
+        'printf "connected\\n" >> "$ENTRYPOINT_TEST_ORDER"\n',
+        encoding="utf-8",
+        newline="\n",
+    )
+    probe_stub.chmod(0o700)
+    if probe_mode == "missing":
+        probe_stub.unlink()
+    timeout_stub = tmp_path / "timeout"
+    timeout_stub.write_text(
+        '#!/bin/sh\nprintf "%s\\n" "$*" >> "$ENTRYPOINT_TEST_PROBE_COMMAND"\n'
+        '[ "$1" = "--kill-after=1s" ] && [ "$2" = "1s" ] || exit 97\n'
+        "shift 2\n"
+        'if [ "$ENTRYPOINT_TEST_PROBE_MODE" = "timeout" ]; then\n'
+        '  printf "probe-timeout\\n" >> "$ENTRYPOINT_TEST_ORDER"; exit 124\n'
+        "fi\n"
+        'if [ "$ENTRYPOINT_TEST_PROBE_MODE" = "hang" ]; then\n'
+        '  exec "$ENTRYPOINT_TEST_REAL_TIMEOUT" --kill-after=1s 1s "$@"\n'
+        "fi\n"
+        'exec "$@"\n',
+        encoding="utf-8",
+        newline="\n",
+    )
+    timeout_stub.chmod(0o700)
     entrypoint = tmp_path / "entrypoint.sh"
     entrypoint.write_text(
-        _ENTRYPOINT.read_text(encoding="utf-8").replace(
+        _ENTRYPOINT.read_text(encoding="utf-8")
+        .replace(
             "/app/.venv/bin/media-sync", f"{shlex.quote(Path(shell).as_posix())} {shlex.quote(cli_stub.as_posix())}"
-        ),
+        )
+        .replace("XVFB_READY_ATTEMPTS=10", "XVFB_READY_ATTEMPTS=3")
+        .replace("sleep 0.2", "sleep 0.1"),
         encoding="utf-8",
         newline="\n",
     )
@@ -55,17 +119,52 @@ def _run_entrypoint(tmp_path: Path, args: list[str], *, preflight_exit: int = 0)
     env = dict(os.environ)
     env.update(
         {
-            "PATH": str(tmp_path) + os.pathsep + env.get("PATH", ""),
+            "PATH": os.pathsep.join((str(tmp_path), str(Path(shell).parent), env.get("PATH", ""))),
             "ENTRYPOINT_TEST_TRACE": trace.as_posix(),
             "ENTRYPOINT_TEST_XVFB": (tmp_path / "xvfb.txt").as_posix(),
             "ENTRYPOINT_TEST_EXIT": str(preflight_exit),
+            "ENTRYPOINT_TEST_ORDER": (tmp_path / "order.txt").as_posix(),
+            "ENTRYPOINT_TEST_PID": (tmp_path / "xvfb.pid").as_posix(),
+            "ENTRYPOINT_TEST_XVFB_MODE": xvfb_mode,
+            "ENTRYPOINT_TEST_PROBE_MODE": probe_mode,
+            "ENTRYPOINT_TEST_PROBE_COMMAND": (tmp_path / "probe-command.txt").as_posix(),
+            "ENTRYPOINT_TEST_PROBE_FIRST": (tmp_path / "probe-first.txt").as_posix(),
+            "ENTRYPOINT_TEST_REAL_TIMEOUT": actual_timeout.as_posix(),
         }
     )
-    completed = subprocess.run(
-        [shell, str(entrypoint), *args], env=env, capture_output=True, text=True, check=False, timeout=15
-    )
-    assert completed.stderr == "", completed.stderr
-    return completed.returncode, trace.read_text(encoding="utf-8").splitlines()
+    if probe_mode == "missing":
+        # Isolate lookup from a developer machine that may have real xdpyinfo.
+        # The CLI still uses the absolute shell path substituted above.
+        env["PATH"] = str(tmp_path)
+    try:
+        completed = subprocess.run(
+            [shell, str(entrypoint), *args], env=env, capture_output=True, text=True, check=False, timeout=15
+        )
+    finally:
+        # A successful entrypoint exec transfers Xvfb ownership to the container.
+        # These are only shell stubs, so remove our exact recorded fixture PID.
+        pid_file = tmp_path / "xvfb.pid"
+        if pid_file.exists():
+            pid = pid_file.read_text(encoding="ascii").strip()
+            assert pid.isdecimal()
+            check = subprocess.run(
+                [shell, "-c", 'kill -0 "$1" 2>/dev/null', "fixture-liveness", pid],
+                env=env,
+                capture_output=True,
+                check=False,
+                timeout=5,
+            )
+            subprocess.run(
+                [shell, "-c", 'kill -KILL "$1" 2>/dev/null || true', "fixture-cleanup", pid],
+                env=env,
+                capture_output=True,
+                check=False,
+                timeout=5,
+            )
+            if expected_error:
+                assert check.returncode != 0, "entrypoint must clean up its Xvfb after startup failure"
+    assert completed.stderr.strip() == expected_error, completed.stderr
+    return completed.returncode, trace.read_text(encoding="utf-8").splitlines() if trace.exists() else []
 
 
 @pytest.mark.parametrize("global_terminator", [False, True])
@@ -83,6 +182,15 @@ def test_serve_preflight_preserves_arguments_and_precedes_migration(tmp_path: Pa
         "cli|serve|--host|0.0.0.0|--port|9017",
     ]
     assert (tmp_path / "xvfb.txt").read_text(encoding="utf-8") == "xvfb\n"
+    order = (tmp_path / "order.txt").read_text(encoding="utf-8").splitlines()
+    assert order == [
+        "cli:serve --host 0.0.0.0 --port 9017 --check-config",
+        "xvfb",
+        "probe:-display :99",
+        "connected",
+        "cli:db init",
+        "cli:serve --host 0.0.0.0 --port 9017",
+    ]
 
 
 @pytest.mark.parametrize("exit_code", [1, 2, 7])
@@ -129,6 +237,85 @@ def test_non_serve_workflow_retains_existing_initialization(tmp_path: Path, args
     assert code == 0
     assert calls == ["cli|db|init", "cli|" + "|".join(args)]
     assert (tmp_path / "xvfb.txt").read_text(encoding="utf-8") == "xvfb\n"
+
+
+@pytest.mark.parametrize("args", [["serve"], ["scheduler", "supervise"]])
+def test_xvfb_early_exit_is_fixed_failure_before_migration(tmp_path: Path, args: list[str]) -> None:
+    code, calls = _run_entrypoint(
+        tmp_path,
+        args,
+        xvfb_mode="exit",
+        probe_mode="fail",
+        expected_error='{"detail":"xvfb_start_failed"}',
+    )
+
+    assert code == 1
+    assert calls == (["cli|serve|--check-config"] if args[0] == "serve" else [])
+    assert "cli:db init" not in (tmp_path / "order.txt").read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("probe_mode", ["fail", "timeout", "hang"])
+def test_xvfb_probe_retries_are_bounded_and_never_migrate(tmp_path: Path, probe_mode: str) -> None:
+    code, calls = _run_entrypoint(
+        tmp_path,
+        ["serve"],
+        probe_mode=probe_mode,
+        expected_error='{"detail":"xvfb_ready_timeout"}',
+    )
+
+    assert code == 1
+    assert calls == ["cli|serve|--check-config"]
+    commands = (tmp_path / "probe-command.txt").read_text(encoding="utf-8").splitlines()
+    assert commands == ["--kill-after=1s 1s xdpyinfo -display :99"] * 3
+
+
+def test_successful_probe_cannot_hide_xvfb_exit_during_handshake(tmp_path: Path) -> None:
+    code, calls = _run_entrypoint(
+        tmp_path,
+        ["serve"],
+        probe_mode="die",
+        expected_error='{"detail":"xvfb_start_failed"}',
+    )
+
+    assert code == 1
+    assert calls == ["cli|serve|--check-config"]
+
+
+def test_xvfb_warning_is_not_failure_when_display_connects(tmp_path: Path) -> None:
+    code, calls = _run_entrypoint(tmp_path, ["serve"], xvfb_mode="warning")
+
+    assert code == 0
+    assert calls == ["cli|serve|--check-config", "cli|db|init", "cli|serve"]
+
+
+def test_missing_display_probe_is_fixed_failure_without_xvfb_or_migration(tmp_path: Path) -> None:
+    code, calls = _run_entrypoint(
+        tmp_path,
+        ["serve"],
+        probe_mode="missing",
+        expected_error='{"detail":"xvfb_probe_unavailable"}',
+    )
+
+    assert code == 1
+    assert calls == ["cli|serve|--check-config"]
+    assert not (tmp_path / "xvfb.txt").exists()
+
+
+def test_migration_waits_for_delayed_display_connection(tmp_path: Path) -> None:
+    code, calls = _run_entrypoint(tmp_path, ["serve"], probe_mode="delayed")
+
+    assert code == 0
+    assert calls == ["cli|serve|--check-config", "cli|db|init", "cli|serve"]
+    order = (tmp_path / "order.txt").read_text(encoding="utf-8").splitlines()
+    assert order == [
+        "cli:serve --check-config",
+        "xvfb",
+        "probe:-display :99",
+        "probe:-display :99",
+        "connected",
+        "cli:db init",
+        "cli:serve",
+    ]
 
 
 @pytest.mark.parametrize("check_only", [False, True])
