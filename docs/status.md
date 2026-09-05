@@ -2,7 +2,13 @@
 
 # Unified project status (single source of truth)
 
-## Latest: Bilibili success observation and follow-up (2026-09-05)
+## Latest: actionable scheduler diagnostics (2026-09-05)
+
+The first real Bili capture remains FAILED: terminal schema_invalid Job, attached running Run without an error, zero content. The [scheduler diagnostic increment](executions/0055-operator-auth-playback-evidence/scheduler-diagnostics/progress.md) separates heartbeat failure, typed SQLite writer contention and finalization failure, without changing terminal/circuit policy or rewriting historical Runs. API/CLI and Jobs use fixed diagnostic projections; detailed checks and limits are in [verification](executions/0055-operator-auth-playback-evidence/scheduler-diagnostics/verification.md). Implementation and local regression pass (Python unions 368 and 269, one Windows skip; Web 343), but are not a production remedy or live PASS. Supervisor remains operator-stopped and the test subscription paused; no new capture is authorized by this increment.
+
+Next product work remains bounded Bili creator capture, pasted-Cookie remote validation/private save/reuse, then the remaining platform/archive/Emby/Jellyfin gates. The seven-platform goal is unchanged.
+
+## Previous checkpoint: Bilibili success observation and follow-up
 
 The operator reports successful Bilibili QR login. Direct console inspection confirms one matching succeeded Operation/session and an authenticated saved_session account, but this is not yet fresh-process reuse or capture proof. The console incorrectly presents authenticated-account login-start ineligibility as a red failure. An independent synthetic reproduction also found that the QR Cookie-update hook can report success without a second remote pong. The bounded UI/BILI-only correction is frozen in [follow-up plan](executions/0055-operator-auth-playback-evidence/bili-success-followup/plan.md); [progress](executions/0055-operator-auth-playback-evidence/bili-success-followup/progress.md) and [verification](executions/0055-operator-auth-playback-evidence/bili-success-followup/verification.md) separate observation, implementation and live outcomes. This does not prove that the operator's particular login was false.
 

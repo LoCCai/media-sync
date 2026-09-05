@@ -290,6 +290,73 @@ def test_background_operation_gates(tmp_path: Path) -> None:
     database.dispose()
 
 
+@pytest.mark.parametrize(
+    ("status", "code", "expected"),
+    [
+        ("failed_terminal", "schema_invalid", "schema_invalid"),
+        ("failed_terminal", "scheduler_heartbeat_failed", "scheduler_heartbeat_failed"),
+        ("failed_terminal", "scheduler_heartbeat_storage_busy", "scheduler_heartbeat_storage_busy"),
+        ("failed_terminal", "scheduler_finalize_failed", "scheduler_finalize_failed"),
+        ("waiting_auth", "auth_expired", "auth_expired"),
+        ("failed_terminal", None, None),
+        ("failed_terminal", "SECRET_DIAGNOSTIC_SENTINEL", None),
+        ("failed_terminal", "unknown_fixed_code", None),
+        ("succeeded", "schema_invalid", None),
+        ("running", "scheduler_heartbeat_failed", None),
+    ],
+)
+def test_scheduler_api_diagnostics_are_fixed_across_list_detail_and_subscription(
+    tmp_path: Path, status: str, code: str | None, expected: str | None
+) -> None:
+    from media_sync.infrastructure.db.models import Job
+
+    client = _client(tmp_path)
+    account = client.post(
+        "/api/v1/accounts",
+        json={"platform": "bili", "display_name": "diagnostic account", "login_method": "qr"},
+    ).json()
+    subscription = client.post(
+        "/api/v1/subscriptions",
+        json={
+            "account_id": account["id"],
+            "platform": "bili",
+            "creator_remote_id": "2",
+            "display_name": "diagnostic fixture",
+            "allow_full_history": True,
+        },
+    ).json()
+    tick = client.post("/api/v1/scheduler/tick", json={})
+    assert tick.status_code == 200
+    job_id = tick.json()["cycles"][0]["job_id"]
+    settings = client.app.state.settings  # type: ignore[attr-defined]
+    database = Database(settings.resolved_database_url)
+    try:
+        with database.session() as session:
+            job = session.get(Job, job_id)
+            assert job is not None
+            job.status = status
+            job.last_error_code = code
+            job.last_error_message = "SECRET_DIAGNOSTIC_SENTINEL"
+            job.payload = {**job.payload, "secret": "SECRET_DIAGNOSTIC_SENTINEL"}
+        listed = client.get("/api/v1/scheduler/jobs")
+        detail = client.get(f"/api/v1/scheduler/jobs/{job_id}")
+        subscription_detail = client.get(f"/api/v1/subscriptions/{subscription['id']}")
+        assert listed.status_code == detail.status_code == subscription_detail.status_code == 200
+        projections = [listed.json()[0], detail.json(), subscription_detail.json()["recent_jobs"][0]]
+        for projection in projections:
+            assert projection["job_id"] == job_id
+            assert projection["last_error_code"] == expected
+            assert not {"last_error_message", "payload", "lease_token", "lease_owner"} & projection.keys()
+        for response in (listed, detail, subscription_detail):
+            assert "SECRET_DIAGNOSTIC_SENTINEL" not in response.text
+        # Reading diagnostics must not rewrite the stored historical/raw value.
+        with database.session() as session:
+            job = session.get(Job, job_id)
+            assert job is not None and job.last_error_code == code
+    finally:
+        database.dispose()
+
+
 def test_subscription_detail_job_detail_and_asset_download(tmp_path: Path) -> None:
     client = _client(tmp_path)
     account = client.post(

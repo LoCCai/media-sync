@@ -154,6 +154,7 @@ from media_sync.scheduler import (
     SubscriptionSchedule,
     SubscriptionWorker,
 )
+from media_sync.scheduler.policy import classify_failure
 from media_sync.security import (
     InvalidSecretReferenceError,
     OperatorAuthConfigurationError,
@@ -766,6 +767,24 @@ def _scheduler_cycle_payload(cycle: MaterializedCycle) -> dict[str, object]:
     }
 
 
+def _scheduler_error_code(status: object, code: object) -> str | None:
+    """Expose only an exact fixed diagnostic on an eligible failure observation."""
+
+    if type(status) is not str or status not in {
+        "failed_retryable",
+        "failed_terminal",
+        "retry_wait",
+        "waiting_auth",
+        "waiting_user",
+        "fenced",
+    }:
+        return None
+    if type(code) is not str:
+        return None
+    # Unknown inputs classify to a fallback for scheduling, not for disclosure.
+    return code if classify_failure(code).code == code else None
+
+
 def _scheduler_job_payload(job: SchedulerJobSummary) -> dict[str, object]:
     """Return the closed scheduler Job projection; never serialize Job payloads or leases."""
 
@@ -780,6 +799,7 @@ def _scheduler_job_payload(job: SchedulerJobSummary) -> dict[str, object]:
         "available_at": _iso_datetime(job.available_at),
         "scheduled_for": _iso_datetime(job.scheduled_for),
         "run_id": job.run_id,
+        "last_error_code": _scheduler_error_code(job.status, job.last_error_code),
         "created_at": _iso_datetime(job.created_at),
         "updated_at": _iso_datetime(job.updated_at),
         "started_at": _iso_datetime(job.started_at),
@@ -794,6 +814,7 @@ def _scheduler_worker_payload(result: SchedulerWorkerResult) -> dict[str, object
         "status": result.status,
         "attempt": result.attempt,
         "run_id": result.run_id,
+        "error_code": _scheduler_error_code(result.status, result.error_code),
     }
 
 

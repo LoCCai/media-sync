@@ -144,6 +144,9 @@ def test_retry_rejects_naive_time_and_datetime_overflow() -> None:
         ("captcha_required", FailureDisposition.WAITING_USER, False),
         ("license_acknowledgement_required", FailureDisposition.WAITING_USER, False),
         ("schema_invalid", FailureDisposition.TERMINAL, True),
+        ("scheduler_heartbeat_failed", FailureDisposition.TERMINAL, True),
+        ("scheduler_heartbeat_storage_busy", FailureDisposition.TERMINAL, True),
+        ("scheduler_finalize_failed", FailureDisposition.TERMINAL, True),
         ("unknown-provider-text", FailureDisposition.RETRY, True),
         ("raw exception\nsecret", FailureDisposition.RETRY, True),
     ],
@@ -165,8 +168,13 @@ def test_failure_classification_is_fixed_and_redaction_safe(
         "captcha_required",
         "license_acknowledgement_required",
         "schema_invalid",
+        "scheduler_heartbeat_failed",
+        "scheduler_heartbeat_storage_busy",
+        "scheduler_finalize_failed",
     }:
         assert classified.code == "unexpected_handler_failure"
+    else:
+        assert classified.code == code
 
 
 def test_closed_open_and_single_half_open_claim_decisions() -> None:

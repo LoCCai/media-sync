@@ -16,6 +16,7 @@
 
   import { api, apiMessage, LatestRequestGate } from '$lib/api/client';
   import { SessionStreamRecovery } from '$lib/api/session-stream';
+  import { SchedulerJobDetailReader } from '$lib/api/scheduler-job-detail';
   import { operatorAuth } from '$lib/stores/operator-auth';
   import EmptyState from '$lib/components/EmptyState.svelte';
   import Modal from '$lib/components/Modal.svelte';
@@ -36,6 +37,11 @@
   } from '$lib/types/api';
   import { formatDate, formatDateLong, operationLabel, shortId, statusLabel } from '$lib/utils/format';
   import { operationLoginExplanation } from '$lib/utils/login-diagnostics';
+  import {
+    isSchedulerJobId,
+    schedulerJobDetailRows,
+    schedulerJobDiagnostic
+  } from '$lib/utils/scheduler-job-diagnostics';
   import {
     schedulerWorkerNotice,
     schedulerWorkerStateLabel,
@@ -79,12 +85,16 @@
   let detailOpen = false;
   let detailTitle = '';
   let detailJob: Job | null = null;
+  let requestedJobId = '';
   let selectedOperation: Operation | null = null;
   let operationEvents: OperationEvent[] = [];
   let detailLoading = false;
   let detailError = '';
   let detailRequest = 0;
   const jobsRequest = new LatestRequestGate();
+  const jobDetailReader = new SchedulerJobDetailReader((id, signal) =>
+    api<Job>(`/api/v1/scheduler/jobs/${id}`, { signal })
+  );
   let cancellingOperationId = '';
 
   let jobsRefreshTimer: number | null = null;
@@ -130,6 +140,9 @@
     : null;
   $: selectedLoginExplanation =
     selectedOperation?.kind === 'account-login' ? operationLoginExplanation(selectedOperation) : null;
+  $: selectedJobDiagnostic = detailJob ? schedulerJobDiagnostic(detailJob, requestedJobId) : null;
+  $: selectedJobRows = detailJob ? schedulerJobDetailRows(detailJob) : [];
+  $: if (!detailOpen) jobDetailReader.invalidate();
 
   function eventLabel(code: string): string {
     if (selectedOperation?.kind === 'scheduler-run' && code === 'operation_succeeded') return 'Worker 已完成';
@@ -236,21 +249,27 @@
   }
 
   async function showJob(job: Job): Promise<void> {
-    detailTitle = `任务 ${shortId(job.job_id)}`;
+    const request = ++detailRequest;
+    requestedJobId = job.job_id;
+    detailTitle = isSchedulerJobId(job.job_id) ? `任务 ${shortId(job.job_id)}` : '任务详情';
     detailJob = null;
     selectedOperation = null;
     operationEvents = [];
     detailError = '';
     detailOpen = true;
     detailLoading = true;
-    try {
-      detailJob = await api<Job>(`/api/v1/scheduler/jobs/${job.job_id}`);
-    } catch (caught) {
-      toast(apiMessage(caught), 'danger');
-      detailOpen = false;
-    } finally {
-      detailLoading = false;
-    }
+    const result = await jobDetailReader.read(job.job_id);
+    if (
+      destroyed ||
+      !detailOpen ||
+      request !== detailRequest ||
+      requestedJobId !== job.job_id ||
+      result.kind === 'superseded'
+    )
+      return;
+    detailLoading = false;
+    if (result.kind === 'fulfilled') detailJob = result.job;
+    else detailError = result.message;
   }
 
   async function loadOperationDetail(operationId: string, silent = false): Promise<void> {
@@ -278,6 +297,8 @@
   }
 
   function showOperation(operation: Operation): void {
+    jobDetailReader.invalidate();
+    requestedJobId = '';
     detailTitle = operationLabel(operation.kind);
     detailJob = null;
     selectedOperation = operation;
@@ -436,6 +457,7 @@
 
   onDestroy(() => {
     destroyed = true;
+    jobDetailReader.invalidate();
     streamRecovery.dispose();
     operationStream?.close();
     jobsRequest.cancel();
@@ -586,7 +608,7 @@
                 ></tr
               ></thead
             ><tbody
-              >{#each filteredJobs as job}<tr
+              >{#each filteredJobs as job}{@const diagnostic = schedulerJobDiagnostic(job)}<tr
                   ><td
                     ><span class="cell-main mono">{shortId(job.job_id)}</span><span class="cell-sub mono"
                       >订阅 {shortId(job.subscription_id)}</span
@@ -595,9 +617,15 @@
                     >{#if job.platform}<div class="inline-identity compact">
                         <PlatformMark platform={job.platform} /><span>{job.platform}</span>
                       </div>{:else}—{/if}</td
-                  ><td><StatusBadge status={job.status} /></td><td>{job.attempt} / {job.max_attempts}</td><td
-                    >{formatDate(job.available_at)}</td
-                  ><td>{formatDate(job.updated_at)}</td><td class="actions"
+                  ><td
+                    ><StatusBadge status={job.status} />
+                    {#if diagnostic}
+                      <span class="cell-sub">{diagnostic.title}</span>
+                      {#if diagnostic.code}<span class="cell-sub mono">{diagnostic.code}</span>{/if}
+                    {/if}
+                  </td><td>{job.attempt} / {job.max_attempts}</td><td>{formatDate(job.available_at)}</td><td
+                    >{formatDate(job.updated_at)}</td
+                  ><td class="actions"
                     ><button class="button ghost small" type="button" on:click={() => showJob(job)}
                       ><Eye size={14} />详情</button
                     ></td
@@ -692,9 +720,22 @@
 >
   {#if detailLoading && !detailJob && !selectedOperation}
     <div class="detail-loading"><RefreshCw class="spin" size={20} />正在读取…</div>
+  {:else if requestedJobId && detailError && !detailJob && !selectedOperation}
+    <div class="notice warning" role="status">{detailError}</div>
   {:else if detailJob}
+    {#if selectedJobDiagnostic}
+      <div
+        class="notice observation-truth"
+        class:danger={selectedJobDiagnostic.tone === 'danger'}
+        class:warning={selectedJobDiagnostic.tone === 'warning'}
+      >
+        <strong>{selectedJobDiagnostic.title}</strong>
+        <span>{selectedJobDiagnostic.detail}</span>
+        <span>下一步：{selectedJobDiagnostic.next}</span>
+      </div>
+    {/if}
     <dl class="key-value-list">
-      {#each Object.entries(detailJob) as [key, value]}<div class="key-value-row">
+      {#each selectedJobRows as { key, value }}<div class="key-value-row">
           <dt>{key}</dt>
           <dd class:mono={key.includes('id')}>{value ?? '—'}</dd>
         </div>{/each}

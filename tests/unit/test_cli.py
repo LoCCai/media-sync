@@ -1074,7 +1074,8 @@ def test_scheduler_controls_are_bounded_and_redact_every_output_sink(
     worker_payload = json.loads(worker.output)
     assert len(worker_payload) == 1
     assert worker_payload[0]["status"] == "waiting_user"
-    assert set(worker_payload[0]) == {"job_id", "subscription_id", "status", "attempt", "run_id"}
+    assert set(worker_payload[0]) == {"job_id", "subscription_id", "status", "attempt", "run_id", "error_code"}
+    assert worker_payload[0]["error_code"] == "qr_required"
     idle_text = runner.invoke(app, ["scheduler", "run", "--max-jobs", "1"])
     assert idle_text.exit_code == 0, idle_text.output
     outputs.append(idle_text.output)
@@ -1115,7 +1116,9 @@ def test_scheduler_controls_are_bounded_and_redact_every_output_sink(
         "updated_at",
         "started_at",
         "finished_at",
+        "last_error_code",
     }
+    assert jobs[0]["last_error_code"] == "qr_required"
 
     resumed_job = runner.invoke(app, ["scheduler", "job", "resume", "--job-id", job_id, "--json"])
     cancelled_job = runner.invoke(app, ["scheduler", "job", "cancel", "--job-id", job_id, "--json"])
@@ -1215,7 +1218,7 @@ def test_scheduler_mediacrawler_enablement_and_license_are_explicit(
     assert len(result) == 1
     assert result[0]["status"] == "waiting_user"
     assert result[0]["run_id"] is None
-    assert "license_acknowledgement_required" not in worker.output
+    assert result[0]["error_code"] == "license_acknowledgement_required"
     assert not runtime_root.exists()
 
     database = Database(initialized_cli_database)

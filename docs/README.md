@@ -2,7 +2,7 @@
 
 # media-sync project journal
 
-Latest P0 follow-up: [Node/QR integration repair](executions/0055-operator-auth-playback-evidence/login-runtime-followup/progress.md) and [safe login diagnostics](executions/0055-operator-auth-playback-evidence/login-diagnostics/progress.md), with bilingual goals/plans and measured verification. The operator's Linux blank-browser PASS does not override newly observed platform login failures. Pasted-Cookie validation/persistence is accepted follow-up, not yet implemented.
+Latest P0 follow-up: [scheduler failure diagnostics](executions/0055-operator-auth-playback-evidence/scheduler-diagnostics/progress.md) after the [failed real Bili canary](executions/0055-operator-auth-playback-evidence/bili-success-followup/verification.md), with bilingual goals/plans/progress/verification. Login success and Worker completion do not prove capture success. See [unified status](status.md) for implemented and pending work. Bounded Bili capture and pasted-Cookie validation/persistence/reuse remain pending; the seven-platform goal is unchanged.
 
 This directory is the durable audit trail for the project. Every execution milestone has four records: goal, plan, progress, and verification. Since execution 0028 every document is maintained as two editions — English `<name>.md` and Chinese `<name>.zh.md` — and each edition links to its counterpart in its header.
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import math
 import random
+import sqlite3
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -13,6 +14,7 @@ from typing import Literal
 from uuid import UUID
 
 from sqlalchemy import select
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session, joinedload
 
 from media_sync.application.operations import DurableSubjectHook, DurableSubjectRef
@@ -42,6 +44,20 @@ from .repository import (
 
 def _utc_now() -> datetime:
     return datetime.now(UTC)
+
+
+def _heartbeat_failure_code(
+    error: Exception,
+) -> Literal["scheduler_heartbeat_failed", "scheduler_heartbeat_storage_busy"]:
+    if isinstance(error, OperationalError) and isinstance(error.orig, sqlite3.Error):
+        native_code = getattr(error.orig, "sqlite_errorcode", None)
+        if (
+            type(native_code) is int
+            and 0 <= native_code <= 2**31 - 1
+            and native_code & 0xFF in {sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED}
+        ):
+            return "scheduler_heartbeat_storage_busy"
+    return "scheduler_heartbeat_failed"
 
 
 @dataclass(frozen=True, slots=True)
@@ -361,7 +377,7 @@ class SubscriptionWorker:
         lease_seconds: int,
         heartbeat_interval_seconds: float,
         stop: asyncio.Event,
-    ) -> Literal["lease_lost", "heartbeat_failed"] | None:
+    ) -> Literal["lease_lost", "scheduler_heartbeat_failed", "scheduler_heartbeat_storage_busy"] | None:
         while True:
             try:
                 await asyncio.wait_for(stop.wait(), timeout=heartbeat_interval_seconds)
@@ -375,8 +391,8 @@ class SubscriptionWorker:
                     )
                 except SchedulerLeaseLostError:
                     return "lease_lost"
-                except Exception:
-                    return "heartbeat_failed"
+                except Exception as error:
+                    return _heartbeat_failure_code(error)
             else:
                 return None
 
@@ -388,6 +404,8 @@ class SubscriptionWorker:
             await task
         except asyncio.CancelledError:
             pass
+        except SchedulerLeaseLostError:
+            raise
         except Exception:
             pass
 
@@ -423,18 +441,20 @@ class SubscriptionWorker:
                     await self._cancel_task(handler_task)
                     if heartbeat_outcome == "lease_lost":
                         raise SchedulerLeaseLostError("scheduler lease ownership changed")
-                    return SubscriptionHandlerResult.failure("schema_invalid")
+                    return SubscriptionHandlerResult.failure(heartbeat_outcome)
             return await handler_task
         finally:
             stop.set()
-            if not handler_task.done():
-                await self._cancel_task(handler_task)
             try:
-                await heartbeat_task
-            except asyncio.CancelledError:
-                pass
-            except Exception:
-                pass
+                if not handler_task.done():
+                    await self._cancel_task(handler_task)
+            finally:
+                try:
+                    await heartbeat_task
+                except asyncio.CancelledError:
+                    pass
+                except Exception:
+                    pass
 
     def _validate_result_run(
         self,
@@ -546,6 +566,7 @@ class SubscriptionWorker:
         *,
         worker_id: str,
         result: SubscriptionHandlerResult | None = None,
+        failure_code: Literal["schema_invalid", "scheduler_finalize_failed"] = "schema_invalid",
     ) -> SchedulerWorkerResult:
         authoritative_success = self._authoritative_success(claim, result)
         if authoritative_success is not None:
@@ -561,7 +582,7 @@ class SubscriptionWorker:
                 # Once the attached run committed success, never replace that
                 # durable truth with a scheduler failure. Lease reclaim or an
                 # operator retry may safely reconcile the Job later.
-                return self._observed_or_fenced(claim, error_code="schema_invalid")
+                return self._observed_or_fenced(claim, error_code=failure_code)
             return self._worker_result(summary)
         try:
             fallback_time = self.clock()
@@ -577,14 +598,14 @@ class SubscriptionWorker:
             summary = self._finalize(
                 claim,
                 worker_id=worker_id,
-                result=SubscriptionHandlerResult.failure("schema_invalid"),
+                result=SubscriptionHandlerResult.failure(failure_code),
                 finished_at=fallback_time,
             )
         except SchedulerLeaseLostError:
             return self._observed_or_fenced(claim)
         except Exception:
             # An unavailable database is intentionally left for lease reclaim.
-            return self._observed_or_fenced(claim, error_code="schema_invalid")
+            return self._observed_or_fenced(claim, error_code=failure_code)
         return self._worker_result(summary)
 
     async def run_once(
@@ -639,11 +660,21 @@ class SubscriptionWorker:
                 handler_key=handler_key,
             )
             result = self._validate_result_run(started, result)
-            summary = self._finalize(started, worker_id=worker_id, result=result)
         except SchedulerLeaseLostError:
             return self._observed_or_fenced(started)
         except Exception:
             return self._fail_closed(started, worker_id=worker_id, result=result)
+        try:
+            summary = self._finalize(started, worker_id=worker_id, result=result)
+        except SchedulerLeaseLostError:
+            return self._observed_or_fenced(started)
+        except Exception:
+            return self._fail_closed(
+                started,
+                worker_id=worker_id,
+                result=result,
+                failure_code="scheduler_finalize_failed",
+            )
         return self._worker_result(summary)
 
     async def run_bounded(

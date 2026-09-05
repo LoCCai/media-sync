@@ -219,6 +219,7 @@ export interface Job {
   updated_at: string | null;
   started_at: string | null;
   finished_at: string | null;
+  last_error_code?: string | null;
 }
 
 export interface Operation {

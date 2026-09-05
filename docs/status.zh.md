@@ -2,7 +2,13 @@
 
 # 项目统一状态（单一事实来源）
 
-## 最新：B 站成功观察与后续修复（2026-09-05）
+## 最新：可操作的调度诊断（2026-09-05）
+
+首次真实 B 站采集仍为 FAILED：终止的 schema_invalid Job、关联 running 且无错误的 Run、零内容。[本轮调度诊断](executions/0055-operator-auth-playback-evidence/scheduler-diagnostics/progress.zh.md)区分心跳失败、类型化 SQLite 写锁争用及收尾失败，不改变终止/熔断策略或改写历史 Run。API/CLI 与 Jobs 使用固定诊断投影，具体检查和边界见[验证](executions/0055-operator-auth-playback-evidence/scheduler-diagnostics/verification.zh.md)。实施和本地回归已通过（Python 联合 368、269 项，1 项 Windows 跳过；Web 343 项），不代表生产根因已修复或真人 PASS。supervisor 保持用户停止、测试订阅保持暂停；本增量不授权新采集。
+
+后续产品工作仍是有界 B 站作者采集、粘贴 Cookie 远程校验/私密保存/复用，然后完成其他平台/归档/Emby/Jellyfin 验收；七平台目标不变。
+
+## 上一检查点：B 站成功观察与后续修复
 
 用户报告 B 站扫码成功；控制台直接核查确认精确匹配的成功 Operation/会话及 authenticated、saved_session 账户，但尚不能当新进程复用或采集证明。页面把已认证账户不能启动登录错误显示为红色失败；独立合成复现还发现扫码 Cookie 更新 hook 无需第二次远程 pong 就会报告成功。仅 UI/BILI 的有界修复已在[跟进计划](executions/0055-operator-auth-playback-evidence/bili-success-followup/plan.zh.md)冻结，[进展](executions/0055-operator-auth-playback-evidence/bili-success-followup/progress.zh.md)及[验证](executions/0055-operator-auth-playback-evidence/bili-success-followup/verification.zh.md)分别记录观察、实施和真人结果。不能据此断言用户此次是假成功。
 

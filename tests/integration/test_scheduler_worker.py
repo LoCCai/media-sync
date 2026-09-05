@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 from collections.abc import Callable, Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -12,6 +13,7 @@ from uuid import UUID, uuid4
 
 import pytest
 from sqlalchemy import func, select
+from sqlalchemy.exc import OperationalError
 
 from media_sync.adapters.fake import FakePlatformAdapter
 from media_sync.domain import (
@@ -30,22 +32,24 @@ from media_sync.infrastructure.db import (
     AuthorUpsert,
     Database,
     SubscriptionRepository,
+    SyncRunRepository,
 )
-from media_sync.infrastructure.db.models import Content, Job, SchedulerLane, Subscription, SyncRun
+from media_sync.infrastructure.db.models import Account, Content, Job, RunEvent, SchedulerLane, Subscription, SyncRun
 from media_sync.scheduler.handlers import (
     FakeSubscriptionHandler,
     SubscriptionHandlerRegistry,
     SubscriptionHandlerResult,
     SubscriptionJobContext,
 )
+from media_sync.scheduler.mediacrawler_handler import MediaCrawlerCleanupBlockedError
 from media_sync.scheduler.pipeline import (
     PIPELINE_PAYLOAD_SCHEMA_VERSION,
     PIPELINE_SUBSCRIPTION_JOB_TYPE,
     pipeline_subscription_natural_key,
 )
 from media_sync.scheduler.policy import RetryPolicy
-from media_sync.scheduler.repository import SchedulerClaim, SchedulerRepository
-from media_sync.scheduler.service import DurableSchedulerService, SubscriptionWorker
+from media_sync.scheduler.repository import SchedulerClaim, SchedulerLeaseLostError, SchedulerRepository
+from media_sync.scheduler.service import DurableSchedulerService, SubscriptionWorker, _heartbeat_failure_code
 
 NOW = datetime(2026, 8, 30, 5, 0, tzinfo=UTC)
 SECRET = "SENTINEL-scheduler-raw-exception-secret"
@@ -219,6 +223,36 @@ class _BlockingHandler:
             self.cancelled.set()
             raise
         return SubscriptionHandlerResult.success()
+
+
+class _AttachingBlockingHandler(_BlockingHandler):
+    def __init__(self, database: Database, *, committed_success: bool = False) -> None:
+        super().__init__()
+        self.database = database
+        self.committed_success = committed_success
+        self.task: asyncio.Task[object] | None = None
+
+    async def run(self, context: SubscriptionJobContext) -> SubscriptionHandlerResult:
+        self.task = asyncio.current_task()
+        if self.committed_success:
+            await _AttachingFakeHandler(self.database).run(context)
+        else:
+            with self.database.session() as session:
+                runs = SyncRunRepository(session)
+                run = runs.create(subscription_id=str(context.subscription_id), attempt=context.attempt)
+                assert context.run_attacher is not None
+                context.run_attacher(session, UUID(run.id), context.current_run_id)
+                runs.set_status(run.id, "claimed", expected_status="queued", at=NOW)
+                runs.set_status(run.id, "running", expected_status="claimed", at=NOW)
+        return await super().run(context)
+
+
+class _CleanupFenceHandler(_BlockingHandler):
+    async def run(self, context: SubscriptionJobContext) -> SubscriptionHandlerResult:
+        try:
+            return await super().run(context)
+        except asyncio.CancelledError:
+            raise MediaCrawlerCleanupBlockedError from None
 
 
 class _GuardedMutationHandler:
@@ -613,6 +647,226 @@ async def test_invalid_rng_terminalizes_as_schema_failure_instead_of_leaving_run
         assert SECRET not in repr([job.last_error_code, job.last_error_message])
 
 
+def _sqlite_operational_error(native_code: object) -> OperationalError:
+    original = sqlite3.OperationalError(SECRET)
+    original.sqlite_errorcode = native_code
+    return OperationalError(SECRET, {"private": SECRET}, original)
+
+
+@pytest.mark.parametrize("native_code", [sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED, 261, 262, 517, 773])
+def test_heartbeat_storage_busy_requires_typed_native_sqlite_code(native_code: int) -> None:
+    assert _heartbeat_failure_code(_sqlite_operational_error(native_code)) == "scheduler_heartbeat_storage_busy"
+
+
+@pytest.mark.parametrize("native_code", [None, True, False, "5", 5.0, -251, 2**40 + 5, sqlite3.SQLITE_ERROR])
+def test_heartbeat_diagnostic_rejects_untyped_or_unrelated_native_codes(native_code: object) -> None:
+    assert _heartbeat_failure_code(_sqlite_operational_error(native_code)) == "scheduler_heartbeat_failed"
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        RuntimeError(f"database is locked SQLITE_BUSY {SECRET}"),
+        sqlite3.OperationalError(f"database is locked {SECRET}"),
+        OperationalError(SECRET, None, RuntimeError(f"database is locked {SECRET}")),
+        OperationalError(SECRET, None, sqlite3.OperationalError(f"database is locked {SECRET}")),
+    ],
+    ids=["ordinary", "bare-sqlite", "non-sqlite-orig", "missing-native-code"],
+)
+def test_heartbeat_diagnostic_never_parses_exception_text(error: Exception) -> None:
+    assert _heartbeat_failure_code(error) == "scheduler_heartbeat_failed"
+
+
+def test_heartbeat_diagnostic_ignores_forged_code_on_non_sqlite_exception() -> None:
+    error = RuntimeError(SECRET)
+    error.sqlite_errorcode = sqlite3.SQLITE_BUSY  # type: ignore[attr-defined]
+    assert _heartbeat_failure_code(error) == "scheduler_heartbeat_failed"
+    assert _heartbeat_failure_code(OperationalError(SECRET, None, error)) == "scheduler_heartbeat_failed"
+
+
+@pytest.mark.asyncio
+async def test_generic_heartbeat_failure_preserves_running_run_and_authenticated_account(
+    database: Database,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    subscription_id = _seed(database)
+    clock = _Clock()
+    cycle = DurableSchedulerService(database, clock=clock).tick(limit=1).cycles[0]
+    handler = _AttachingBlockingHandler(database)
+    worker = SubscriptionWorker(database, SubscriptionHandlerRegistry({"fake": handler}), clock=clock)
+    original_finalize = worker._finalize
+
+    def fail_heartbeat(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError(f"database is locked {SECRET}")
+
+    def finalize_after_join(*args: object, **kwargs: object) -> object:
+        assert handler.cancelled.is_set()
+        assert handler.task is not None and handler.task.done()
+        return original_finalize(*args, **kwargs)
+
+    monkeypatch.setattr(worker, "_heartbeat", fail_heartbeat)
+    monkeypatch.setattr(worker, "_finalize", finalize_after_join)
+    result = await asyncio.wait_for(worker.run_once(worker_id="heartbeat-failure", heartbeat_interval_seconds=0.01), 2)
+
+    assert (result.status, result.error_code) == ("failed_terminal", "scheduler_heartbeat_failed")
+    assert result.run_id is not None
+    assert SECRET not in repr(result)
+    with database.session() as session:
+        job = session.get(Job, cycle.job_id)
+        subscription = session.get(Subscription, subscription_id)
+        run = session.get(SyncRun, result.run_id)
+        assert job is not None and run is not None and subscription is not None
+        account = session.get(Account, subscription.account_id)
+        assert account is not None and account.auth_status == "authenticated"
+        assert (job.status, job.last_error_code, job.last_error_message) == (
+            "failed_terminal",
+            "scheduler_heartbeat_failed",
+            None,
+        )
+        assert (job.run_id, job.attempts, job.lease_token) == (run.id, 1, None)
+        assert (run.status, run.error_code, run.error_message, run.finished_at) == ("running", None, None, None)
+        assert subscription.consecutive_failures == 1
+        assert subscription.checkpoint_revision == 0 and subscription.cursor is None
+        assert session.scalar(select(func.count()).select_from(Content)) == 0
+        events = session.scalars(select(RunEvent).where(RunEvent.run_id == run.id)).all()
+        assert sorted(event.to_status for event in events) == ["claimed", "queued", "running"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("storage_busy", [False, True], ids=["generic", "native-busy"])
+async def test_heartbeat_failure_cannot_overwrite_committed_success(
+    database: Database,
+    monkeypatch: pytest.MonkeyPatch,
+    storage_busy: bool,
+) -> None:
+    subscription_id = _seed(database)
+    clock = _Clock()
+    cycle = DurableSchedulerService(database, clock=clock).tick(limit=1).cycles[0]
+    handler = _AttachingBlockingHandler(database, committed_success=True)
+    worker = SubscriptionWorker(database, SubscriptionHandlerRegistry({"fake": handler}), clock=clock)
+
+    def fail_heartbeat(*_args: object, **_kwargs: object) -> None:
+        if storage_busy:
+            raise _sqlite_operational_error(sqlite3.SQLITE_BUSY)
+        raise RuntimeError(SECRET)
+
+    monkeypatch.setattr(worker, "_heartbeat", fail_heartbeat)
+    result = await asyncio.wait_for(worker.run_once(worker_id="heartbeat-success", heartbeat_interval_seconds=0.01), 2)
+
+    assert (result.status, result.error_code) == ("succeeded", None)
+    assert handler.cancelled.is_set() and handler.task is not None and handler.task.done()
+    with database.session() as session:
+        job = session.get(Job, cycle.job_id)
+        subscription = session.get(Subscription, subscription_id)
+        assert job is not None and subscription is not None and job.run_id is not None
+        run = session.get(SyncRun, job.run_id)
+        assert (job.status, job.last_error_code, job.lease_token) == ("succeeded", None, None)
+        assert run is not None and (run.status, run.error_code) == ("succeeded", None)
+        assert subscription.consecutive_failures == 0 and subscription.checkpoint_revision == 1
+        assert session.scalar(select(func.count()).select_from(Content)) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cleanup_fence", [False, True], ids=["lease-lost", "cleanup-fence"])
+async def test_heartbeat_failure_preserves_lease_and_cleanup_fences(
+    database: Database,
+    monkeypatch: pytest.MonkeyPatch,
+    cleanup_fence: bool,
+) -> None:
+    _seed(database)
+    clock = _Clock()
+    cycle = DurableSchedulerService(database, clock=clock).tick(limit=1).cycles[0]
+    handler = _CleanupFenceHandler() if cleanup_fence else _BlockingHandler()
+    worker = SubscriptionWorker(database, SubscriptionHandlerRegistry({"fake": handler}), clock=clock)
+
+    def fail_heartbeat(*_args: object, **_kwargs: object) -> None:
+        if cleanup_fence:
+            raise RuntimeError(SECRET)
+        raise SchedulerLeaseLostError(SECRET)
+
+    def unexpected_finalization(*_args: object, **_kwargs: object) -> None:
+        pytest.fail("a lease/cleanup fence must not reach finalization")
+
+    monkeypatch.setattr(worker, "_heartbeat", fail_heartbeat)
+    monkeypatch.setattr(worker, "_finalize", unexpected_finalization)
+    result = await asyncio.wait_for(worker.run_once(worker_id="heartbeat-fence", heartbeat_interval_seconds=0.01), 2)
+
+    assert (result.status, result.error_code) == ("fenced", None)
+    assert handler.cancelled.is_set()
+    with database.session() as session:
+        job = session.get(Job, cycle.job_id)
+        assert job is not None and (job.status, job.last_error_code) == ("running", None)
+        assert job.lease_token is not None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("already_done", [False, True], ids=["pending", "completed"])
+@pytest.mark.parametrize("fence", [False, True], ids=["ordinary-error", "cleanup-fence"])
+async def test_cancel_task_drains_ordinary_errors_but_propagates_cleanup_fence(already_done: bool, fence: bool) -> None:
+    started = asyncio.Event()
+
+    async def handler() -> SubscriptionHandlerResult:
+        started.set()
+        try:
+            if not already_done:
+                await asyncio.Event().wait()
+        finally:
+            if fence:
+                raise MediaCrawlerCleanupBlockedError
+            raise RuntimeError(SECRET)
+
+    task = asyncio.create_task(handler())
+    await started.wait()
+    if already_done:
+        assert task.done()
+    if fence:
+        with pytest.raises(MediaCrawlerCleanupBlockedError):
+            await SubscriptionWorker._cancel_task(task)
+    else:
+        await SubscriptionWorker._cancel_task(task)
+    assert task.done()
+
+
+@pytest.mark.asyncio
+async def test_simultaneously_completed_heartbeat_and_handler_preserve_cleanup_fence(
+    database: Database,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _seed(database)
+    clock = _Clock()
+    cycle = DurableSchedulerService(database, clock=clock).tick(limit=1).cycles[0]
+    worker = SubscriptionWorker(database, SubscriptionHandlerRegistry({"fake": _SuccessHandler()}), clock=clock)
+    original_wait = asyncio.wait
+    observed_both_done = False
+
+    async def failed_handler(*_args: object, **_kwargs: object) -> SubscriptionHandlerResult:
+        raise MediaCrawlerCleanupBlockedError
+
+    async def failed_heartbeat(*_args: object, **_kwargs: object) -> str:
+        return "scheduler_heartbeat_failed"
+
+    async def wait_for_both(tasks: object, **_kwargs: object) -> object:
+        nonlocal observed_both_done
+        done, pending = await original_wait(tasks, return_when=asyncio.ALL_COMPLETED)
+        observed_both_done = len(done) == 2 and not pending
+        return done, pending
+
+    def unexpected_finalization(*_args: object, **_kwargs: object) -> None:
+        pytest.fail("the completed handler cleanup fence must take precedence")
+
+    monkeypatch.setattr(worker, "_invoke", failed_handler)
+    monkeypatch.setattr(worker, "_heartbeat_loop", failed_heartbeat)
+    monkeypatch.setattr(worker, "_finalize", unexpected_finalization)
+    monkeypatch.setattr(asyncio, "wait", wait_for_both)
+    result = await worker.run_once(worker_id="simultaneous-fence")
+
+    assert observed_both_done
+    assert (result.status, result.error_code) == ("fenced", None)
+    with database.session() as session:
+        job = session.get(Job, cycle.job_id)
+        assert job is not None and (job.status, job.last_error_code) == ("running", None)
+
+
 @pytest.mark.asyncio
 async def test_worker_heartbeats_blocking_handler_then_cancel_returns_durable_terminal_state(
     database: Database,
@@ -803,6 +1057,57 @@ async def test_ownership_guard_prevents_handler_commit_after_independent_cancel(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("cleanup_fence", [False, True], ids=["cancelled", "cleanup-fence"])
+async def test_external_cancellation_joins_inflight_heartbeat_even_when_handler_cleanup_fences(
+    database: Database,
+    monkeypatch: pytest.MonkeyPatch,
+    cleanup_fence: bool,
+) -> None:
+    _seed(database)
+    clock = _Clock()
+    cycle = DurableSchedulerService(database, clock=clock).tick(limit=1).cycles[0]
+    handler = _CleanupFenceHandler() if cleanup_fence else _BlockingHandler()
+    worker = SubscriptionWorker(database, SubscriptionHandlerRegistry({"fake": handler}), clock=clock)
+    entered, release, finished = ThreadEvent(), ThreadEvent(), ThreadEvent()
+
+    def delayed_heartbeat(*_args: object, **_kwargs: object) -> None:
+        entered.set()
+        try:
+            assert release.wait(2), "test heartbeat release timed out"
+        finally:
+            finished.set()
+
+    def unexpected_finalization(*_args: object, **_kwargs: object) -> None:
+        pytest.fail("external cancellation must not publish a diagnostic")
+
+    monkeypatch.setattr(worker, "_heartbeat", delayed_heartbeat)
+    monkeypatch.setattr(worker, "_finalize", unexpected_finalization)
+    running = asyncio.create_task(worker.run_once(worker_id="cancel-inflight", heartbeat_interval_seconds=0.01))
+    try:
+        await asyncio.wait_for(handler.started.wait(), 2)
+        assert await asyncio.wait_for(asyncio.to_thread(entered.wait, 1), 2)
+        running.cancel()
+        await asyncio.wait_for(handler.cancelled.wait(), 2)
+        await asyncio.sleep(0)
+        assert not running.done()
+        assert not finished.is_set()
+    finally:
+        release.set()
+    if cleanup_fence:
+        result = await asyncio.wait_for(running, 2)
+        assert (result.status, result.error_code) == ("fenced", None)
+    else:
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(running, 2)
+    assert finished.is_set()
+    assert not any(task.get_coro().__qualname__ == "SubscriptionWorker._heartbeat_loop" for task in asyncio.all_tasks())
+    with database.session() as session:
+        job = session.get(Job, cycle.job_id)
+        assert job is not None and (job.status, job.last_error_code) == ("running", None)
+        assert job.lease_token is not None
+
+
+@pytest.mark.asyncio
 async def test_expired_reclaim_aba_cancels_old_handler_and_returns_new_terminal_outcome(database: Database) -> None:
     _seed(database, remote_id="worker-aba")
     clock = _Clock()
@@ -888,10 +1193,15 @@ async def test_worker_rejects_unknown_or_foreign_handler_run_id(database: Databa
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("fail_on", [{2}, {3}], ids=["start-clock", "finalize-clock"])
+@pytest.mark.parametrize(
+    ("fail_on", "expected_code"),
+    [({2}, "schema_invalid"), ({3}, "scheduler_finalize_failed")],
+    ids=["start-clock", "finalize-clock"],
+)
 async def test_post_claim_clock_failures_are_closed_without_raw_exception(
     database: Database,
     fail_on: set[int],
+    expected_code: str,
 ) -> None:
     _seed(database, remote_id=f"clock-failure-{next(iter(fail_on))}")
     DurableSchedulerService(database, clock=_Clock()).tick(limit=1)
@@ -903,7 +1213,7 @@ async def test_post_claim_clock_failures_are_closed_without_raw_exception(
         clock=clock,
     ).run_once(worker_id="clock-failure-worker")
 
-    assert (result.status, result.error_code) == ("failed_terminal", "schema_invalid")
+    assert (result.status, result.error_code) == ("failed_terminal", expected_code)
     assert SECRET not in repr(result)
     with database.session() as session:
         job = session.scalar(select(Job).where(Job.job_type == "sync.subscription"))
@@ -913,9 +1223,11 @@ async def test_post_claim_clock_failures_are_closed_without_raw_exception(
 
 
 @pytest.mark.asyncio
-async def test_context_exception_is_terminalized_as_fixed_schema_failure(
+@pytest.mark.parametrize("stage", ["_load_context", "_invoke_with_heartbeat", "_validate_result_run"])
+async def test_pre_finalize_exception_is_terminalized_as_fixed_schema_failure(
     database: Database,
     monkeypatch: pytest.MonkeyPatch,
+    stage: str,
 ) -> None:
     _seed(database, remote_id="context-failure")
     clock = _Clock()
@@ -929,11 +1241,54 @@ async def test_context_exception_is_terminalized_as_fixed_schema_failure(
     def fail_context(*_args: object, **_kwargs: object) -> object:
         raise RuntimeError(f"context failure contains {SECRET}")
 
-    monkeypatch.setattr(worker, "_load_context", fail_context)
+    monkeypatch.setattr(worker, stage, fail_context)
     result = await worker.run_once(worker_id="context-failure-worker")
 
     assert (result.status, result.error_code) == ("failed_terminal", "schema_invalid")
     assert SECRET not in repr(result)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("committed_success", [False, True], ids=["no-run", "succeeded-run"])
+async def test_first_finalization_failure_has_fixed_diagnostic_without_rewriting_success(
+    database: Database,
+    monkeypatch: pytest.MonkeyPatch,
+    committed_success: bool,
+) -> None:
+    _seed(database)
+    clock = _Clock()
+    cycle = DurableSchedulerService(database, clock=clock).tick(limit=1).cycles[0]
+    handler = _AttachingFakeHandler(database) if committed_success else _SuccessHandler()
+    worker = SubscriptionWorker(database, SubscriptionHandlerRegistry({"fake": handler}), clock=clock)
+    original_finalize = worker._finalize
+    calls = 0
+
+    def fail_once(*args: object, **kwargs: object) -> object:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError(f"first finalization {SECRET}")
+        return original_finalize(*args, **kwargs)
+
+    monkeypatch.setattr(worker, "_finalize", fail_once)
+    result = await worker.run_once(worker_id="first-finalization")
+
+    expected_status = "succeeded" if committed_success else "failed_terminal"
+    expected_code = None if committed_success else "scheduler_finalize_failed"
+    assert calls == 2
+    assert (result.status, result.error_code) == (expected_status, expected_code)
+    assert SECRET not in repr(result)
+    with database.session() as session:
+        job = session.get(Job, cycle.job_id)
+        assert job is not None
+        assert (job.status, job.last_error_code, job.last_error_message) == (expected_status, expected_code, None)
+        assert job.lease_token is None
+        if committed_success:
+            assert job.run_id is not None
+            run = session.get(SyncRun, job.run_id)
+            assert run is not None and (run.status, run.error_code) == ("succeeded", None)
+        else:
+            assert job.run_id is None
 
 
 @pytest.mark.asyncio
@@ -965,7 +1320,7 @@ async def test_database_outage_after_handler_leaves_fenced_lease_for_reclaim(
     )
     monkeypatch.setattr(database, "session", original_session)
 
-    assert (fenced.status, fenced.error_code) == ("fenced", "schema_invalid")
+    assert (fenced.status, fenced.error_code) == ("fenced", "scheduler_finalize_failed")
     assert SECRET not in repr(fenced)
     with database.session() as session:
         running = session.get(Job, cycle.job_id)
@@ -1009,7 +1364,7 @@ async def test_persistent_success_finalizer_outage_reconciles_on_lease_expiry(
         heartbeat_interval_seconds=0.2,
     )
 
-    assert (fenced.status, fenced.error_code) == ("fenced", "schema_invalid")
+    assert (fenced.status, fenced.error_code) == ("fenced", "scheduler_finalize_failed")
     assert SECRET not in repr(fenced)
     with database.session() as session:
         running = session.get(Job, cycle.job_id)
@@ -1055,7 +1410,7 @@ async def test_post_commit_cancel_reconciles_authoritative_succeeded_run(
         SubscriptionHandlerRegistry({"fake": _AttachingFakeHandler(database)}),
         clock=clock,
     ).run_once(worker_id="post-commit-cancel-worker")
-    assert (fenced.status, fenced.error_code) == ("fenced", "schema_invalid")
+    assert (fenced.status, fenced.error_code) == ("fenced", "scheduler_finalize_failed")
 
     reconciled = scheduler.cancel_job(cycle.job_id)
 
