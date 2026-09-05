@@ -31,3 +31,9 @@ Wheel SHA256: `ee89c711b3d227231f302f0207443d9fe28346158f0b0cb10ec5fd89ff1da470`
 All three final handles terminated exit0: unit92134 **3113 passed, 1 skipped, 1 existing warning in335.44s**; contract71009 **718 passed, 2 skipped in458.06s**; integration77951 **898 passed, 20 skipped in368.37s**. Together these disjoint directories cover all159 Python test files: **4729 passed, 23 skipped**. Skips are four Windows/POSIX distinctions and nineteen unconfigured PostgreSQL cases, not execution proof. No production/test source changed during these final runs; subsequent changes are documentation only. All test/build processes used for this execution have reported terminal results; no browser service was started.
 
 Final independent read-only recheck confirmed the profile-platform avatar guard and actual locked-client two-request contract tests, with no further reproducible blocker. Fresh fetch before implementation commit confirmed the remote unchanged and only the local frozen plan ahead (1 0). Final bilingual implementation/publication commits and push results are recorded next.
+
+## Publication
+
+Bilingual plan `83ff442` and implementation `315b2ff` were published with non-force `git -c http.sslBackend=schannel -c http.version=HTTP/1.1 push origin main` (exit0). Subsequent fresh fetch with the same transport options completed exit0; HEAD and origin/main both `315b2ff26807ce79ac0431b18398d221482e44dc`, divergence0 0 and clean worktree before this final documentation record. Docs614 and Git whitespace checks passed before publication. No source changes followed final tests/package, no deployment/live action occurred, and the overall goal remains active.
+
+This publication record is committed bilingually and non-force pushed separately, followed by fresh-fetch equality verification. Its own SHA is reported in the handoff instead of recursively written into itself.

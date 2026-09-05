@@ -31,3 +31,9 @@ Wheel SHA256：`ee89c711b3d227231f302f0207443d9fe28346158f0b0cb10ec5fd89ff1da470
 三个最终句柄均终止exit0：unit92134 **3113通过、1跳过、1既有warning，335.44秒**；contract71009 **718通过、2跳过，458.06秒**；integration77951 **898通过、20跳过，368.37秒**。不重叠目录覆盖全部159个Python测试文件，合计**4729通过、23跳过**。跳过为4项Windows/POSIX差异与19项未配置PostgreSQL，不作为执行证明。最终运行期间生产/测试源码未变，之后只有文档修改。全部本次测试/构建进程均报告终态，未启动浏览器服务。
 
 最终独立只读复核确认资料平台头像栅栏和实际锁定client两次请求合同测试，无新增可复现阻断。实施提交前fresh fetch确认远端不变，仅本地冻结计划领先（1 0）。最终双语实施/发布提交和push结果随后记录。
+
+## 发布
+
+双语计划`83ff442`和实施`315b2ff`已通过非force的`git -c http.sslBackend=schannel -c http.version=HTTP/1.1 push origin main`发布（exit0）。随后同传输选项fresh fetch exit0；HEAD和origin/main均`315b2ff26807ce79ac0431b18398d221482e44dc`，分歧0 0，本条最终文档记录前工作区干净。发布前docs614及Git空白检查通过；最终测试/打包后无源码修改，无部署/真人操作，整体目标保持活动。
+
+本发布记录另行双语提交、非force推送，并fresh fetch核对相等；自身SHA交接时报告，不递归写入自身。
