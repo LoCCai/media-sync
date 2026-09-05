@@ -3,7 +3,7 @@
 # 登录浏览器运行环境验证
 
 - 日期：2026-09-05
-- 状态：全量已收集回归、专项及真实本地空白浏览器通过，发布收尾进行中
+- 状态：可用本地门禁通过，实现 `11dbd06` 已发布；部署/真人门槛待完成
 
 基线检查：`git status --short` 为空，HEAD 为 `db6c3c7`，已读取诊断和交付优先级。此前证据仅诊断，不是重建镜像或真人平台验收。后续补记实际命令、失败、修正和测得结果。
 
@@ -49,7 +49,7 @@ uv pip install --offline --python .media-sync/login-browser-probe-venv/Scripts/p
 
 根代理全量命令 `.venv/Scripts/python.exe -m pytest -q --junitxml=artifacts/login-runtime-python-full.xml` 已结束：**3264 项通过、22 项跳过、1 项既有警告，679.04 秒（11:19）**。启动时额外 29 项接线测试尚未创建，这些测试在最终 134 项专项联合中单独通过。收集之后没有修改源码行为，后续整合格式与文档修改不构成新一次全量声明。跳过包括 Windows 下 3 项 POSIX 专用检查、未配置真实服务器的 19 项 PostgreSQL 竞态；警告为既有 Starlette/httpx 弃用提示，不把跳过门槛算通过。
 
-计划提交：`204655d`。实现/发布提交及远端验证在可用门禁结束后记录，不自动部署。
+计划提交：`204655d`。实现提交：`11dbd06e9fd1e6a3daa8277c7078e9901dff65fb`。`git push origin main` 已将远端 main 从 `e3fe9db` 推进到 `11dbd06`，包含诊断和冻结计划提交。随后 `git fetch origin` 确认 HEAD/origin-main SHA 相同、差异 `0 0`、`git status --short` 为空。本次发布记账属于后续纯文档提交，未自动部署。
 
 ## 操作者交接（尚未在服务器执行）
 

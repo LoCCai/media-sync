@@ -3,7 +3,7 @@
 # Login browser runtime verification
 
 - Date: 2026-09-05
-- Status: Full collected regression, focused and real local blank-browser checks passed; publication closeout in progress
+- Status: Available local gates passed; implementation `11dbd06` published; deployment/live gates pending
 
 Baseline inspection: `git status --short` empty; HEAD `db6c3c7`; triage and delivery priorities read. Previous evidence is diagnostic, not rebuilt-image or live-platform acceptance. Commands, failures, corrections and measured results will be appended after execution.
 
@@ -49,7 +49,7 @@ This used a disposable profile and no platform URL/account. It verifies Windows 
 
 The root full run `.venv/Scripts/python.exe -m pytest -q --junitxml=artifacts/login-runtime-python-full.xml` completed with **3264 passed, 22 skipped, one existing warning in 679.04s (11:19)**. It was started before the additional 29 wiring tests existed; those passed separately in the final 134-test union. Source behavior did not change after collection; subsequent integration formatting and documentation changes are not a new full-suite claim. Three skips are POSIX-specific on Windows; 19 are real PostgreSQL race cases without a configured server. The warning is the existing Starlette/httpx deprecation. No skipped gate is called passing.
 
-Plan commit: `204655d`. Implementation/publication commit and remote verification are recorded after the available gates complete. No automatic deployment is performed.
+Plan commit: `204655d`. Implementation commit: `11dbd06e9fd1e6a3daa8277c7078e9901dff65fb`. `git push origin main` advanced remote main from `e3fe9db` to `11dbd06`, including the diagnostic and frozen-plan commits. A subsequent `git fetch origin` returned identical HEAD/origin-main hashes, divergence `0 0` and an empty `git status --short`. This publication record is a later documentation-only commit. No automatic deployment was performed.
 
 ## Operator handoff (not executed on the server)
 

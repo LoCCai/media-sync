@@ -3,7 +3,7 @@
 # Login browser runtime progress
 
 - Date: 2026-09-05
-- Status: Implemented and locally verified; publication closeout in progress; live qualification pending
+- Status: Implemented, locally verified and published as `11dbd06`; deployment/live qualification pending
 
 The previous turn made progress: authenticated UI evidence, independent environment-filter reproduction and source/channel mismatches were recorded in commit `db6c3c7`. Current worktree was clean at resumption. The new increment repairs those shared paths; no deployed platform success is inferred.
 

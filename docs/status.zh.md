@@ -28,7 +28,7 @@
 | 维度 | 状态 | 证据 / 阻塞 |
 | --- | --- | --- |
 | 实现（离线形状） | 七平台 15+ 冻结形状 | 执行 0013–0039 记录 |
-| 离线完整套件 | 当前 P0 Python 为 3155 项通过、22 项跳过、1 个既有 warning（670.16 秒），其他结果统一见[验证](executions/0055-operator-auth-playback-evidence/secure-console/verification.zh.md)；`2e1949f` 的 2999 项投影门为历史证据，PostgreSQL skip 不构成执行证据 | 执行 0055 安全控制台 |
+| 离线完整套件 | 登录修复：3264 项通过、22 项跳过、1 项既有警告，679.04 秒；收集后新增 29 项接线测试在 134 项联合专项中单独通过，不冒称一次 3293 项全量运行。跳过的 PostgreSQL 用例不是执行证据 | [登录运行环境验证](executions/0055-operator-auth-playback-evidence/login-runtime/verification.zh.md) |
 | API/控制台测试 | 本地合成浏览器 session／CSRF、账户创建、QR、归档图像／视频加载、Jobs SSE、跨标签退出、自然过期与稍后浏览门已通过；Web 9 文件／114 项、Svelte 零 error/warning 与 build 通过。视频只加载／解码，未点击播放；准确证据见[验证](executions/0055-operator-auth-playback-evidence/secure-console/verification.zh.md) | 执行 0055 安全控制台 |
 | 静态与制品门 | 当前 Ruff/format、mypy、compileall、Web、docs／上游与包检查结果统一见[验证](executions/0055-operator-auth-playback-evidence/secure-console/verification.zh.md) | 执行 0055 安全控制台 |
 | Docker 镜像构建 | 0050/0047 镜像预检仍是历史 `PASS`；当前 0055 鉴权版 Compose 接线已代码审查，但本工作站没有 Docker CLI，故为 `NOT_RUN` | 执行 0050/0047 与 0055-A 验证 |
