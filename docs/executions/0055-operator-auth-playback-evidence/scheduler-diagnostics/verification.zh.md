@@ -26,4 +26,6 @@ Python 最终 Ruff check、Ruff format（**259 文件**）、mypy（**110 源码
 
 ## 证据边界与发布
 
-本有界增量不声明全量 Python、Docker 构建、真实 PostgreSQL、重新打包或渲染浏览器验证通过。生产测试仍 **FAILED**，新部署诊断仍 **NOT_RUN**；真实离线 SQLite 争用和注入复现都不能证明历史生产根因。未修复历史 Run、未执行生产任务、部署、新登录、下载、导出或恢复 supervisor。最终验证后记录发布哈希及远端核验。
+本有界增量不声明全量 Python、Docker 构建、真实 PostgreSQL、重新打包或渲染浏览器验证通过。生产测试仍 **FAILED**，新部署诊断仍 **NOT_RUN**；真实离线 SQLite 争用和注入复现都不能证明历史生产根因。未修复历史 Run、未执行生产任务、部署、新登录、下载、导出或恢复 supervisor。
+
+实现 **b5b6fd4dd1bc3522e6ce8416371fda988db4db5b** 与两项冻结计划提交已推送 origin/main；重新 fetch 确认两端哈希一致、分歧 **0/0**、工作区干净。该提交前最终 Ruff/format/mypy/compileall、**572 篇文档**链接、两个锁定上游和差异空白检查均通过。此后续纯文档收尾记录发布，不改变运行证据或部署状态。

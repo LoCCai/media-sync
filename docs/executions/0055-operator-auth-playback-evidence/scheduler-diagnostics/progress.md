@@ -2,7 +2,7 @@
 
 # Progress
 
-Implemented and locally verified from frozen plan 9ec7d8d and refinement 79c2168: root Python unions pass 368 and 269 tests (one Windows skip); Web passes 343 tests and static build gates. See [verification](verification.md) for exact commands, intermediate corrections and publication status.
+Implemented, locally verified and published as **b5b6fd4**, from frozen plan 9ec7d8d and refinement 79c2168: root Python unions pass 368 and 269 tests (one Windows skip); Web passes 343 tests and static build gates. See [verification](verification.md) for exact commands, intermediate corrections and publication status.
 
 ## Implemented
 

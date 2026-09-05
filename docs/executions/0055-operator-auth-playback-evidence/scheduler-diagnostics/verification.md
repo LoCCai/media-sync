@@ -26,4 +26,6 @@ Python final Ruff check, Ruff format (**259 files**), mypy (**110 source files**
 
 ## Evidence limits and publication
 
-No full Python suite, Docker build, real PostgreSQL execution, package rebuild or rendered-browser run is claimed for this bounded increment. The production canary remains **FAILED** and new deployed diagnostics **NOT_RUN**. Neither genuine offline SQLite contention nor injected reproduction proves the historical production cause. No historical Run repair, production task, deployment, new login, download, export or supervisor restart was performed. Publication hash and remote verification will be recorded after final gates.
+No full Python suite, Docker build, real PostgreSQL execution, package rebuild or rendered-browser run is claimed for this bounded increment. The production canary remains **FAILED** and new deployed diagnostics **NOT_RUN**. Neither genuine offline SQLite contention nor injected reproduction proves the historical production cause. No historical Run repair, production task, deployment, new login, download, export or supervisor restart was performed.
+
+Implementation **b5b6fd4dd1bc3522e6ce8416371fda988db4db5b** and both frozen planning commits were pushed to origin/main. A fresh fetch confirmed identical local/remote hashes, divergence **0/0** and a clean worktree. Final Ruff/format/mypy/compileall, **572-document** links, both locked upstreams and diff whitespace gates passed before that commit. This subsequent documentation-only closeout records publication; it does not alter runtime evidence or deployed state.
