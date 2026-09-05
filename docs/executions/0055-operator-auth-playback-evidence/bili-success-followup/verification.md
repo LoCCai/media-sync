@@ -23,4 +23,8 @@ A separate agent synthetic experiment recreated this exact tuple using an in-mem
 
 Final post-addendum serial Web gates all passed: **269 tests / 13 files, 707ms**, Svelte **0 errors / 0 warnings**, formatting and static build passed (8.68s). The additive helper/operation/login-diagnostic subset separately passed 122 tests in 306ms; these overlapping runs are not summed. No completion-toast mechanism was added. Both upstreams passed again; fresh origin fetch at the two-plan checkpoint returned divergence 2 ahead / 0 behind.
 
-Final docs/link check passed **562 Markdown files**; diff whitespace checks passed. Raw test XMLs remain ignored under artifacts. Future pasted-Cookie validation/persistence, other-platform live checks, true bounded Bili capture, download and playback remain pending. Publication identity will be recorded after the actual push.
+Final docs/link check passed **562 Markdown files**; diff whitespace checks passed. Raw test XMLs remain ignored under artifacts. Future pasted-Cookie validation/persistence, other-platform live checks, true bounded Bili capture, download and playback remain pending.
+
+## Publication
+
+Implementation **4b24d6e86794cb5e96c62cb3094bc9e82baa895a** and both frozen planning commits were pushed to origin/main. A fresh fetch confirmed identical local/remote hashes, divergence 0/0 and a clean worktree. This publication record is a subsequent documentation-only commit. The agent did not deploy the patch or restart the operator-stopped supervisor. All three lanes were independently reviewed; no unresolved blocking issue was found in the bounded repair, while the separately documented capture failure remains unresolved.
