@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from unittest.mock import MagicMock
 from uuid import uuid4
 
 import pytest
 
-from media_sync.domain import AccountRef, LoginMethod, Platform
+from media_sync.application.sync import SyncResult
+from media_sync.domain import AccountRef, LoginMethod, Platform, RunStatus
+from media_sync.scheduler import handlers as module
 from media_sync.scheduler.handlers import (
     SubscriptionHandlerRegistry,
     SubscriptionHandlerResult,
@@ -129,3 +132,20 @@ def test_handler_context_rejects_invalid_boundaries(kwargs: dict[str, object]) -
     values.update(kwargs)
     with pytest.raises(ValueError):
         SubscriptionJobContext(**values)  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_generic_handler_retains_fixed_content_conflict(monkeypatch: pytest.MonkeyPatch) -> None:
+    run_id = uuid4()
+
+    class Service:
+        def __init__(self, *args: object) -> None:
+            pass
+
+        async def run(self, *args: object, **kwargs: object) -> SyncResult:
+            return SyncResult(run_id, RunStatus.FAILED_TERMINAL, error_code="content_ownership_conflict")
+
+    monkeypatch.setattr(module, "SyncService", Service)
+    result = await module.FakeSubscriptionHandler(MagicMock()).run(_context())
+    assert result == SubscriptionHandlerResult.failure("content_ownership_conflict", run_id=run_id)
+    assert result.retry_after is None

@@ -6,3 +6,36 @@
 
 公开GitHub只读资料发现还检查了SocialSisterYi/bilibili-API-collect（默认deprecated，commit4c00347d4f3494318903eeb11fb00d7b9c1f8c68）及Nemo2011/bilibili-api（main，commit3798d3b3bd3c3a93678d5a0367637a19262303ef），当前tree/readme是关停说明，不含所需动态合同。未恢复删除源码、未改运行依赖/锁，不把关停声明当技术响应证据。阶段C证据仍缺失。
 
+## 阶段A实施
+
+计划冻结于`c24ab78`。回归先复现跨作者upsert静默覆盖归属。SQLite/PostgreSQL现在在原生内容冲突更新中限制当前数据库作者，绝不SET author_id。同作者仍可刷新，包括已有ORM实例；异作者拒绝不改内容元数据或tombstone。作者/内容savepoint回滚本次调用内先前修改，外层事务保持可用。PostgreSQL作者发现也用原生upsert；其他dialect对已找到行加锁并刷新后再检查作者。不修历史归属、不迁移schema、不隐式接管、不重命名路径。
+
+类型化冲突只传播字面量`content_ownership_conflict`，不信任异常的可变属性或文本。通用同步、MediaCrawler入库和CLI明确终止；scheduler不自动重试该Job，也不累计到账户熔断。Web及可下载安全报告保留精确分类，说明原内容仍归原作者，建议检查订阅/来源，不建议删除数据或更换凭据。此处是单Job终止策略，不会全局关闭订阅未来的正常调度。
+
+MediaCrawler及有界CLI仍先读取耐久发布真值，再处理入库抛错，避免提交后异常覆盖已成功Run。冲突有界单元不能发布checkpoint、资产或刷新观察；旧模式先前已提交批次保留原语义，不能声称被整体回滚。失败清理及下游pipeline行为正在真实规范化入库与封存scheduler路径中验证。
+
+## 待实现
+
+阶段B–D尚未实施：显式投稿/动态/两者范围、独立续抓feed、有源证据的动态作者/附件合同、精确刷新权威和采集→归档→本地媒体库闭环。内容归属保护是前置条件，不是动态媒体支持。其他五平台资料、剩余三平台粘贴Cookie校验及七平台真人资格仍开放。本地兼容目录输出无需连接服务器；不声称媒体服务器能播放任意文字/图集文件。
+
+未执行生产登录、订阅修改、重试、下载/导出、部署、媒体服务器动作或恢复supervisor。历史B站金丝雀失败仍无真人闭环证据。
+
+## 复核发现与重新开放冻结
+
+独立只读审查在发布前发现两个具体耐久性缺口：CLI失败标记为best-effort，但即使写库失败JSON仍无条件宣称failed_terminal；Run提交归属冲突终态后、Job收尾前若确认丢失或进程退出，原有只恢复成功的逻辑可能重试Job并影响熔断计数。因此重新开放源码冻结，补精确冲突Run恢复及CLI真实读回。已启动的unit/contract和首个打包仅作为中间快照，不充当最终源码发布门禁，不改标签掩盖复核发现。
+
+## 耐久性修正已实现
+
+CLI用新事务确认精确失败状态/错误码。提交确认丢失仍可读回已确认终态；写入或读回失败显示固定`unknown / ingestion_state_unconfirmed`、已观察冲突码及检查Run提示，不宣称可重试。初始有界发布真值不可读时不尝试写失败。独立复核确认INGESTING条件CAS保护既有成功Run，不被覆盖。
+
+scheduler仓库只恢复精确当前附件且为字面量failed_terminal/content_ownership_conflict的Run。原生更新条件重查Run范围、观察到的Job状态及租约；live worker还须当前owner/token及未过期租约。覆盖确认丢失、过期租约、旧retry/queued状态和操作入口；保留先前lane失败计数，只释放相关probe，不生成媒体pipeline。原有成功Run行为保留。任意返回结果不能采用未绑定的历史冲突Run；既有generic handler明确固定冲突结果仍可在收尾时绑定实际Run。无需改写scheduler service。
+
+第二次生产冻结scheduler/repository.py SHA256为`37ac86a66543d8845bb1e1ae6d415169b27247f4bceb94f24a86a2130a773b21`。历史Run护栏变更发生在第二轮unit/contract启动后，故保留为快照检查；下述七行修正也晚于完整integration启动。以最终受影响integration/unit/API综合回归补验这些快照；精确命令/结果和包一致性记入验证，不声称一个同源码全量运行。
+
+## 最终恢复隔离
+
+第二次独立审查复现损坏旧retry payload会阻塞整条队列。新增三个回归覆盖有精确冲突附件的retry_wait、failed_retryable及过期running Job。七行修正保留已证明终态，但纯payload验证失败时跳过订阅调度写入：无效历史周期不能授权修改更新后的日程。其他排队订阅仍可领取，不吞数据库异常，不改成功Run逻辑。复核者独立验证三个修复场景及日程快照不变。
+
+最新冻结仓库SHA256为`cee10a1e20edce7f8ae6d2c0690ce564773d679a8f4a3bdf5e0263f11b024bc4`。不再计划修改源码，发布验证及双语Git发布续记于验证文件。阶段A不关闭B–D或原始目标。
+
+最终受影响回归551通过、13项不可用PG跳过，完整Web640通过。完整目录快照和所有审查驱动修正分开记录，不累加或混称同源码全量。最终wheel/sdist与140个应用Python源码逐字节相同。阶段A已实现、离线验证，发布续记如下，不包含部署或真人资格。

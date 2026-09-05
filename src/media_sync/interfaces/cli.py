@@ -76,6 +76,7 @@ from media_sync.infrastructure.db import (
     Asset,
     Base,
     Content,
+    ContentOwnershipConflictError,
     Database,
     IngestionMode,
     LoginSessionRepository,
@@ -927,6 +928,8 @@ def _database_session() -> Iterator[Session]:
         ) from None
     except DomainError as error:
         raise typer.BadParameter(f"{error.code}: domain operation rejected") from None
+    except ContentOwnershipConflictError:
+        raise typer.BadParameter("content_ownership_conflict") from None
     except RepositoryError:
         raise typer.BadParameter("repository operation rejected; no changes were committed") from None
     except SQLAlchemyError:
@@ -956,6 +959,8 @@ def _scheduler_runtime() -> Iterator[tuple[Database, DurableSchedulerService]]:
         raise typer.BadParameter(
             "scheduler database operation failed; run `media-sync db init` and verify the database is not busy"
         ) from None
+    except ContentOwnershipConflictError:
+        raise typer.BadParameter("content_ownership_conflict") from None
     except (SchedulerRepositoryError, RepositoryError):
         raise typer.BadParameter("scheduler operation was rejected; no unsafe details were emitted") from None
     except SQLAlchemyError:
@@ -2542,8 +2547,14 @@ def export_emby_author(
     )
 
 
-def _mark_ingest_failure(database: Database, run_id: str, error_code: str) -> None:
-    """Best-effort fixed failure transition that never carries exception text."""
+def _mark_ingest_failure(
+    database: Database,
+    run_id: str,
+    error_code: str,
+    *,
+    status: RunStatus = RunStatus.FAILED_RETRYABLE,
+) -> bool:
+    """Attempt a fixed transition, then confirm its exact durable Run in a fresh session."""
 
     try:
         with database.session() as session:
@@ -2552,13 +2563,39 @@ def _mark_ingest_failure(database: Database, run_id: str, error_code: str) -> No
             if run.status == RunStatus.INGESTING.value:
                 repository.set_status(
                     run_id,
-                    RunStatus.FAILED_RETRYABLE.value,
+                    status.value,
                     expected_status=RunStatus.INGESTING.value,
                     error_code=error_code,
                     error_message=None,
                 )
-    except (RepositoryError, SQLAlchemyError):
-        return
+    except Exception:
+        # The commit may have succeeded even when its acknowledgement failed.
+        # Never interpret exception text or an in-memory object as Run truth.
+        pass
+    try:
+        with database.session() as session:
+            run = SyncRunRepository(session).require(run_id)
+            return run.status == status.value and run.error_code == error_code and run.error_message is None
+    except Exception:
+        return False
+
+
+def _emit_ingest_ownership_failure(run_id: str, *, confirmed: bool, json_output: bool) -> None:
+    payload: dict[str, object] = {
+        "run_id": run_id,
+        "status": RunStatus.FAILED_TERMINAL.value,
+        "error_code": "content_ownership_conflict",
+        "retryable": False,
+    }
+    if not confirmed:
+        payload.update(
+            status="unknown",
+            error_code="ingestion_state_unconfirmed",
+            observed_error_code="content_ownership_conflict",
+            retryable=None,
+            next_action="Inspect this Run and service state before retrying.",
+        )
+    _emit_record(payload, json_output=json_output, label="MediaCrawler ingest")
 
 
 def _bili_cli_ingestion_truth(
@@ -2748,9 +2785,17 @@ def ingest_mediacrawler_output(
                     )
                 except Exception as error:
                     ingestion_error = error
-                truth = _bili_cli_ingestion_truth(database, run_id, manifest, normalized_output, expected_revision)
+                try:
+                    truth = _bili_cli_ingestion_truth(database, run_id, manifest, normalized_output, expected_revision)
+                except RepositoryError:
+                    if isinstance(ingestion_error, ContentOwnershipConflictError):
+                        # Publication cannot be disproved while its durable
+                        # truth is unavailable. Do not attempt a failure write.
+                        _emit_ingest_ownership_failure(run_id, confirmed=False, json_output=json_output)
+                        raise typer.Exit(code=1) from None
+                    raise
                 if truth is None:
-                    if isinstance(ingestion_error, StaleCheckpointError):
+                    if isinstance(ingestion_error, (StaleCheckpointError, ContentOwnershipConflictError)):
                         raise ingestion_error
                     raise RepositoryError("bounded Bili unit was not durably published") from None
                 result = truth
@@ -2771,6 +2816,15 @@ def ingest_mediacrawler_output(
                 "error_code": "checkpoint_conflict",
             }
             _emit_record(failure_payload, json_output=json_output, label="MediaCrawler ingest")
+            raise typer.Exit(code=1) from None
+        except ContentOwnershipConflictError:
+            confirmed = _mark_ingest_failure(
+                database,
+                run_id,
+                "content_ownership_conflict",
+                status=RunStatus.FAILED_TERMINAL,
+            )
+            _emit_ingest_ownership_failure(run_id, confirmed=confirmed, json_output=json_output)
             raise typer.Exit(code=1) from None
         except (RepositoryError, SQLAlchemyError):
             _mark_ingest_failure(database, run_id, "ingestion_failed")

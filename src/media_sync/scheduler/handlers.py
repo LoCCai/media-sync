@@ -249,7 +249,9 @@ class FakeSubscriptionHandler:
                 error_code = "qr_required" if context.account.login_method is LoginMethod.QR else "auth_expired"
             return SubscriptionHandlerResult.failure(error_code, run_id=result.run_id)
         if result.status is RunStatus.FAILED_TERMINAL:
-            if result.error_code in {"entity_not_found", "content_not_found", "permanent_upstream"}:
+            if result.error_code == "content_ownership_conflict":
+                error_code = "content_ownership_conflict"
+            elif result.error_code in {"entity_not_found", "content_not_found", "permanent_upstream"}:
                 error_code = "configuration_invalid"
             elif result.error_code == "unsupported_capability":
                 error_code = "handler_unsupported"

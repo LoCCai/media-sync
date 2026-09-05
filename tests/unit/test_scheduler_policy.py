@@ -144,6 +144,7 @@ def test_retry_rejects_naive_time_and_datetime_overflow() -> None:
         ("captcha_required", FailureDisposition.WAITING_USER, False),
         ("license_acknowledgement_required", FailureDisposition.WAITING_USER, False),
         ("schema_invalid", FailureDisposition.TERMINAL, True),
+        ("content_ownership_conflict", FailureDisposition.TERMINAL, False),
         ("scheduler_heartbeat_failed", FailureDisposition.TERMINAL, True),
         ("scheduler_heartbeat_storage_busy", FailureDisposition.TERMINAL, True),
         ("scheduler_finalize_failed", FailureDisposition.TERMINAL, True),
@@ -168,6 +169,7 @@ def test_failure_classification_is_fixed_and_redaction_safe(
         "captcha_required",
         "license_acknowledgement_required",
         "schema_invalid",
+        "content_ownership_conflict",
         "scheduler_heartbeat_failed",
         "scheduler_heartbeat_storage_busy",
         "scheduler_finalize_failed",
@@ -217,6 +219,14 @@ def test_circuit_failure_threshold_reopen_and_success_close() -> None:
 def test_non_circuit_failure_preserves_exact_snapshot() -> None:
     snapshot = CircuitSnapshot(consecutive_failures=2)
     assert circuit_failure(snapshot, now=NOW, affects_circuit=False) is snapshot
+
+
+def test_content_ownership_conflict_does_not_retry_reauthenticate_or_open_circuit() -> None:
+    classified = classify_failure("content_ownership_conflict")
+    assert classified.code == "content_ownership_conflict"
+    assert classified.disposition is FailureDisposition.TERMINAL
+    snapshot = CircuitSnapshot(consecutive_failures=2)
+    assert circuit_failure(snapshot, now=NOW, affects_circuit=classified.affects_circuit) is snapshot
 
 
 @pytest.mark.parametrize(

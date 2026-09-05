@@ -40,6 +40,7 @@ const codes = [
   'handler_unsupported',
   'output_security_failed',
   'schema_invalid',
+  'content_ownership_conflict',
   'unexpected_handler_failure',
   'scheduler_heartbeat_failed',
   'scheduler_heartbeat_storage_busy',
@@ -89,6 +90,8 @@ describe('fixed scheduler Job diagnostics', () => {
     '',
     'well_formed_unknown',
     'SCHEMA_INVALID',
+    'content_ownership_conflict DO_NOT_RENDER',
+    'CONTENT_OWNERSHIP_CONFLICT',
     'DO_NOT_RENDER',
     'https://synthetic.invalid/?cookie=DO_NOT_RENDER',
     'constructor',
@@ -112,6 +115,31 @@ describe('fixed scheduler Job diagnostics', () => {
     expect(diagnostic?.detail).toContain('可能来自内部检查，也可能来自旧版心跳或收尾兜底');
     expect(diagnostic?.detail).toContain('不能确定失败阶段或 Cookie／网络问题');
     expect(diagnostic?.next).toContain('不要按这个历史错误码替换凭据或直接重试');
+  });
+
+  it('explains immutable content ownership without raw identities or recovery actions', () => {
+    const value = {
+      ...job,
+      last_error_code: 'content_ownership_conflict',
+      author_name: 'DO_NOT_RENDER',
+      creator_remote_id: 'DO_NOT_RENDER',
+      error_message: 'DO_NOT_RENDER'
+    };
+    const diagnostic = schedulerJobDiagnostic(value);
+    expect(diagnostic).toMatchObject({
+      code: 'content_ownership_conflict',
+      title: '内容归属冲突',
+      tone: 'danger'
+    });
+    expect(diagnostic?.detail).toContain('原内容仍归原作者');
+    expect(diagnostic?.detail).toContain('不会自动重试');
+    expect(diagnostic?.next).toContain('检查订阅与内容来源');
+    expect(diagnostic?.next).not.toMatch(/删除|清空|重新登录|重新认证|接管|重置/);
+    expect(JSON.stringify(diagnostic)).not.toContain('DO_NOT_RENDER');
+    expect(schedulerJobDetailRows(value)).toContainEqual({
+      key: 'last_error_code',
+      value: 'content_ownership_conflict'
+    });
   });
 
   it.each([

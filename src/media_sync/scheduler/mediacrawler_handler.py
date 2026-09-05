@@ -24,6 +24,7 @@ from media_sync.application.mediacrawler import (
 from media_sync.domain import AuthStatus, LoginMethod, Platform, RunStatus
 from media_sync.infrastructure.db import (
     AccountRepository,
+    ContentOwnershipConflictError,
     Database,
     LeaseLostError,
     MediaCrawlerIngestionResult,
@@ -1020,6 +1021,8 @@ class MediaCrawlerScheduledHandler:
             raise
         except StaleCheckpointError:
             ingestion_error_code = "temporary_upstream"
+        except ContentOwnershipConflictError:
+            ingestion_error_code = "content_ownership_conflict"
         except (_CancellationObserved, RepositoryError):
             ingestion_error_code = "unexpected_handler_failure"
         except Exception:

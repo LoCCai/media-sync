@@ -98,6 +98,29 @@ describe('closed exact-Job report projection', () => {
     expect(jobReportArtifact(report, B)).toBeNull();
   });
 
+  it('retains the fixed ownership-conflict code in exact Job, Run and Operation report artifacts', () => {
+    const value = fixture();
+    const failure = { code: 'content_ownership_conflict', availability: 'recognized', message: SECRET };
+    const report = parseJobReport(
+      {
+        ...value,
+        job: { ...value.job, error: failure, author_name: SECRET },
+        run: { ...value.run, status: 'failed_terminal', error: failure, content_remote_id: SECRET },
+        operations: [{ ...value.operations[0], state: 'failed_terminal', error: failure }],
+        observations: []
+      },
+      A
+    )!;
+    const expected = { code: 'content_ownership_conflict', availability: 'recognized' };
+    expect(report.job.error).toEqual(expected);
+    expect(report.run?.error).toEqual(expected);
+    expect(report.operations[0].error).toEqual(expected);
+    const artifact = jobReportArtifact(report, A)!;
+    expect(JSON.parse(artifact.text)).toEqual(report);
+    expect(artifact.text).not.toContain(SECRET);
+    expect(artifact.text).not.toContain('unexpected_handler_failure');
+  });
+
   it('rebuilds nested allowlists and removes arbitrary raw fields and sentinel text from artifacts', () => {
     const value = fixture();
     const dirty = {

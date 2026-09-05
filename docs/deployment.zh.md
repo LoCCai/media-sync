@@ -4,6 +4,12 @@
 
 本指南使用内含锁定 MediaCrawler 运行时的自托管容器部署 media-sync，要求 Linux 主机与 Docker Compose v2。当前 0055 安全控制台与启动预检已实现，本地离线与合成浏览器门禁已通过；准确状态见[验证](executions/0055-operator-auth-playback-evidence/secure-console/verification.zh.md)。后端鉴权、Web session／内存 CSRF、退出／过期与二维码／SSE 已接线，`/legacy` 仅提供受保护迁移提示；无 v2 构建时根页仅提示构建／CLI。当前 Linux 镜像、运行用户权限与平台／媒体服务器真人流程仍为 NOT_RUN，不能用旧 0050 镜像 PASS 或公开 health 成功替代。
 
+## 内容归属冲突（0061）
+
+`content_ownership_conflict`表示新观察内容身份与数据库已有作者归属冲突。拒绝写入，不移动原内容或修改其元数据/资产；同作者仍可更新。该Job终止，不自动重试、不累计到账户熔断；未来正常订阅调度另计，需要停止新周期时请暂停订阅。保留数据库/文件和精确Job安全报告，再检查所选作者及来源。不要为了消除错误删除媒体、更换Cookie或手工改数据库归属。
+
+CLI无法确认耐久失败状态时，可能报告`status=unknown`、`error_code=ingestion_state_unconfirmed`、`observed_error_code=content_ownership_conflict`。这要求再次尝试前先检查精确Run及服务/存储健康，不是确认终止失败或允许重试。无需新schema迁移或配置。本增量不实现B站动态附件、不部署镜像、不授权真人重试、不恢复supervisor。最终门禁及未验证范围见[0061验证](executions/0061-bili-dynamic-authority/verification.zh.md)。
+
 ## 微博作者资料（0060）
 
 选择已认证的微博保存会话或Cookie账户后，输入规范数字作者UID，完成输入（失焦/回车）会自动查询一次。先检查一次登录config，再请求一次精确作者资料，不请求帖子/评论/下载。昵称来自平台观察，本地备注可选，来源主页固定https://weibo.com/u/UID；刷新不会重命名已有作者/归档/导出路径。查询无需Emby/Jellyfin连接或全历史确认；另行执行的微博采集策略仍须全历史确认。

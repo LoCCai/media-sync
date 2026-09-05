@@ -294,6 +294,8 @@ def test_background_operation_gates(tmp_path: Path) -> None:
     ("status", "code", "expected"),
     [
         ("failed_terminal", "schema_invalid", "schema_invalid"),
+        ("failed_terminal", "content_ownership_conflict", "content_ownership_conflict"),
+        ("failed_terminal", "content_ownership_conflict SECRET_DIAGNOSTIC_SENTINEL", None),
         ("failed_terminal", "scheduler_heartbeat_failed", "scheduler_heartbeat_failed"),
         ("failed_terminal", "scheduler_heartbeat_storage_busy", "scheduler_heartbeat_storage_busy"),
         ("failed_terminal", "scheduler_finalize_failed", "scheduler_finalize_failed"),

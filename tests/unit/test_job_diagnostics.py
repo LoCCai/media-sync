@@ -235,6 +235,33 @@ def test_authenticated_api_exact_job_report(tmp_path: Path, database: Database) 
         assert client.get(f"/api/v1/scheduler/jobs/{uuid4()}/diagnostics").status_code == 404
 
 
+def test_content_ownership_conflict_retains_exact_code_in_private_safe_api_report(
+    tmp_path: Path, database: Database
+) -> None:
+    code = "content_ownership_conflict"
+    job_id, _ = _seed(database, run_status="failed_terminal", code=code)
+    operation_id = _operation(database, job_id, state="failed_terminal")
+    with database.session() as session:
+        job = session.get(Job, job_id)
+        assert job is not None
+        run = session.get(SyncRun, job.run_id)
+        operation = session.get(Operation, operation_id)
+        assert run is not None and operation is not None
+        run.error_code = operation.error_code = code
+    settings = Settings(database_url=str(database.engine.url), state_dir=tmp_path / "state", _env_file=None)
+    with authenticated_test_client(settings) as client:
+        response = client.get(f"/api/v1/scheduler/jobs/{job_id}/diagnostics")
+    assert response.status_code == 200
+    report = response.json()
+    expected = {"code": code, "availability": "recognized"}
+    assert report["job"]["error"] == report["run"]["error"] == report["operations"][0]["error"] == expected
+    assert report["job"]["status"] == report["run"]["status"] == "failed_terminal"
+    assert report["observations"] == []
+    assert PRIVATE not in response.text
+    assert "unexpected_handler_failure" not in response.text
+    assert len(response.content) <= 16_384
+
+
 @pytest.mark.parametrize("revision", ["0001_core", "0002_checkpoint"])
 def test_known_old_revision_is_retained_without_claiming_current(database: Database, revision: str) -> None:
     job_id, _ = _seed(database)

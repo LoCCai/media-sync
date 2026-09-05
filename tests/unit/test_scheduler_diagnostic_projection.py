@@ -26,6 +26,7 @@ FIXED_CODES = (
     "handler_unsupported",
     "output_security_failed",
     "schema_invalid",
+    "content_ownership_conflict",
     "unexpected_handler_failure",
     "scheduler_heartbeat_failed",
     "scheduler_heartbeat_storage_busy",
@@ -80,7 +81,20 @@ def test_scheduler_projection_exposes_only_exact_fixed_codes(status: str, code: 
 
 @pytest.mark.parametrize(
     "code",
-    [None, "", SENTINEL, "unknown_fixed_code", "schema_invalid\n", "SCHEMA_INVALID", 5, True, {}, []],
+    [
+        None,
+        "",
+        SENTINEL,
+        "unknown_fixed_code",
+        "schema_invalid\n",
+        "SCHEMA_INVALID",
+        "content_ownership_conflict " + SENTINEL,
+        "CONTENT_OWNERSHIP_CONFLICT",
+        5,
+        True,
+        {},
+        [],
+    ],
 )
 def test_scheduler_projection_does_not_guess_or_reflect_unknown_diagnostic(code: Any) -> None:
     job, worker = _payloads("failed_terminal", code)

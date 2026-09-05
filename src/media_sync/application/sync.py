@@ -17,7 +17,7 @@ from media_sync.domain import (
     DomainValidationError,
     RunStatus,
 )
-from media_sync.infrastructure.db import LeaseLostError
+from media_sync.infrastructure.db import ContentOwnershipConflictError, LeaseLostError
 from media_sync.ports import InteractionPort, PlatformAdapter, SyncRepository
 
 _ADAPTER_ERROR_CODES = frozenset(
@@ -274,6 +274,19 @@ class SyncService:
             # Ownership fencing must escape unchanged; attempting an error
             # transition would be a second unauthorized persistence attempt.
             raise
+        except ContentOwnershipConflictError:
+            guard_persistence()
+            self.repository.transition_run(
+                run_id,
+                RunStatus.FAILED_TERMINAL,
+                error_code="content_ownership_conflict",
+                error_message="Content remains assigned to its existing creator; check the subscription and source.",
+            )
+            return SyncResult(
+                run_id=run_id,
+                status=RunStatus.FAILED_TERMINAL,
+                error_code="content_ownership_conflict",
+            )
         except AdapterError as error:
             if error.requires_auth is True or error.requires_interaction is True:
                 target = RunStatus.AWAITING_AUTH

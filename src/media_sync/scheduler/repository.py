@@ -401,6 +401,18 @@ class SchedulerRepository:
         self.session.expire_all()
         return self._get_sync_job(job_id)
 
+    def _locked_sync_job(self, job_id: str) -> Job:
+        """Read current finalization identity while fencing attachment changes."""
+
+        job = self.session.scalar(
+            select(Job).where(Job.id == job_id).with_for_update().execution_options(populate_existing=True)
+        )
+        if job is None:
+            raise NotFoundError(f"job not found: {job_id}")
+        if job.job_type != SYNC_SUBSCRIPTION_JOB_TYPE:
+            raise SchedulerRepositoryError("scheduler operation rejected a foreign job type")
+        return job
+
     def _enqueue_pipeline_for_succeeded_run(self, job: Job, *, now: datetime) -> None:
         """Atomically emit the one coordinator only for durable run success."""
 
@@ -413,16 +425,30 @@ class SchedulerRepository:
             return
         PipelineJobRepository(self.session).enqueue_succeeded_sync(job.id, run_id=run.id, now=now)
 
-    def _validated_result_run_id(self, job: Job, run_id: str | None) -> str | None:
+    def _validated_result_run_id(
+        self, job: Job, run_id: str | None, *, explicit_ownership_conflict: bool = False
+    ) -> str | None:
         """Bind a handler run only when it belongs to the claimed subscription."""
 
         if run_id is None:
             return None
         if job.run_id is not None and job.run_id != run_id:
             raise SchedulerRepositoryError("scheduler result run does not match its attachment")
-        owning_subscription_id = self.session.scalar(select(SyncRun.subscription_id).where(SyncRun.id == run_id))
-        if owning_subscription_id is None or owning_subscription_id != job.subscription_id:
+        run = self.session.execute(
+            select(SyncRun.subscription_id, SyncRun.status, SyncRun.error_code).where(SyncRun.id == run_id)
+        ).one_or_none()
+        if run is None or run.subscription_id != job.subscription_id:
             raise SchedulerRepositoryError("scheduler result run scope is invalid")
+        if (
+            job.run_id is None
+            and run.status == "failed_terminal"
+            and run.error_code == "content_ownership_conflict"
+            and not explicit_ownership_conflict
+        ):
+            # Legacy handlers can bind their Run while finalizing, including an
+            # explicitly reported typed conflict. An unrelated advisory outcome
+            # must not adopt a historical conflict for later retry recovery.
+            raise SchedulerRepositoryError("scheduler conflict result requires its current attachment")
         return run_id
 
     def _cancel_attached_run(self, job: Job, *, now: datetime, error_code: str) -> None:
@@ -507,6 +533,109 @@ class SchedulerRepository:
         self._apply_lane_success(reconciled, now=now, locked_lanes=locked_lanes)
         self._finalize_subscription(reconciled, now=now, outcome="success")
         self._enqueue_pipeline_for_succeeded_run(reconciled, now=now)
+        return reconciled
+
+    @staticmethod
+    def _has_ownership_conflict_attachment() -> Any:
+        """Only the exact current attachment and literal terminal code are truth."""
+
+        return exists(
+            select(SyncRun.id).where(
+                SyncRun.id == Job.run_id,
+                SyncRun.subscription_id == Job.subscription_id,
+                SyncRun.status == "failed_terminal",
+                SyncRun.error_code == "content_ownership_conflict",
+            )
+        )
+
+    def _reconcile_ownership_conflict_attachment(
+        self,
+        job: Job,
+        *,
+        now: datetime,
+        expired_only: bool = False,
+        owned_by: tuple[str, str] | None = None,
+        allowed_statuses: tuple[str, ...] = _ACTIVE_WORK_STATUSES,
+        locked_lanes: tuple[SchedulerLane, ...] | None = None,
+    ) -> Job | None:
+        """Recover a committed conflict without retrying or changing circuit counts.
+
+        The handler's Run commit can outlive its acknowledgement or its worker.
+        Read columns (not an ORM-cached Run), then CAS the exact attachment,
+        observed Job status and lease. A returned historical Run is never used.
+        """
+
+        if job.run_id is None or job.status in TERMINAL_JOB_STATUSES:
+            return None
+        run = self.session.execute(
+            select(SyncRun.subscription_id, SyncRun.status, SyncRun.error_code, SyncRun.finished_at).where(
+                SyncRun.id == job.run_id
+            )
+        ).one_or_none()
+        if run is None or run.subscription_id != job.subscription_id:
+            raise SchedulerRepositoryError("scheduler attached run scope is invalid")
+        if run.status != "failed_terminal" or run.error_code != "content_ownership_conflict":
+            return None
+
+        conditions: list[Any] = [
+            Job.id == job.id,
+            Job.job_type == SYNC_SUBSCRIPTION_JOB_TYPE,
+            Job.subscription_id == job.subscription_id,
+            Job.status == job.status,
+            Job.run_id == job.run_id,
+            Job.lease_owner.is_(None) if job.lease_owner is None else Job.lease_owner == job.lease_owner,
+            Job.lease_token.is_(None) if job.lease_token is None else Job.lease_token == job.lease_token,
+            self._has_ownership_conflict_attachment(),
+        ]
+        if expired_only:
+            conditions.extend(
+                (Job.status.in_(_ACTIVE_WORK_STATUSES), Job.lease_expires_at.is_not(None), Job.lease_expires_at <= now)
+            )
+        if owned_by is not None:
+            owner, token = owned_by
+            conditions.extend(
+                (
+                    Job.lease_owner == owner,
+                    Job.lease_token == token,
+                    Job.status.in_(allowed_statuses),
+                    Job.lease_expires_at.is_not(None),
+                    Job.lease_expires_at > now,
+                    exists(
+                        select(Subscription.id).where(
+                            Subscription.id == Job.subscription_id, Subscription.deleted_at.is_(None)
+                        )
+                    ),
+                )
+            )
+        reconciled = self.session.scalar(
+            update(Job)
+            .where(*conditions)
+            .values(
+                status="failed_terminal",
+                lease_owner=None,
+                lease_token=None,
+                lease_expires_at=None,
+                finished_at=run.finished_at or now,
+                updated_at=now,
+                last_error_code="content_ownership_conflict",
+                last_error_message=None,
+            )
+            .returning(Job)
+            .execution_options(synchronize_session="fetch", populate_existing=True)
+        )
+        if reconciled is None:
+            if owned_by is not None:
+                raise self._lease_failure(job.id, worker_id=owned_by[0])
+            raise SchedulerRepositoryError("scheduler conflict attachment changed during reconciliation")
+        self._apply_lane_failure(reconciled, now=now, affects_circuit=False, locked_lanes=locked_lanes)
+        try:
+            _parse_payload(reconciled)
+        except ValueError:
+            # The exact Run still proves this Job's outcome, but malformed
+            # cycle identity cannot authorize any subscription schedule write.
+            # Retire this Job without poisoning unrelated queued subscriptions.
+            return reconciled
+        self._finalize_subscription(reconciled, now=now, outcome="failure")
         return reconciled
 
     def materialize_due(
@@ -859,9 +988,13 @@ class SchedulerRepository:
             )
             .order_by(Job.lease_expires_at, Job.created_at, Job.id)
             .limit(_MAX_BATCH)
+            .with_for_update(skip_locked=True)
+            .execution_options(populate_existing=True)
         ).all()
         for observed in expired_jobs:
             if self._reconcile_succeeded_attachment(observed, now=now, expired_only=True) is not None:
+                continue
+            if self._reconcile_ownership_conflict_attachment(observed, now=now, expired_only=True) is not None:
                 continue
             is_terminal = observed.attempts >= observed.max_attempts
             expected_token = observed.lease_token
@@ -903,6 +1036,23 @@ class SchedulerRepository:
                 self._finalize_subscription(reclaimed, now=now, outcome="failure")
 
     def _requeue_due_sync(self, *, now: datetime) -> None:
+        # Old interrupted finalizers may already have put the Job in retry_wait.
+        # Recover these before the bulk requeue; the exclusion also fences any
+        # remaining rows beyond the bounded recovery batch.
+        conflicts = self.session.scalars(
+            select(Job)
+            .where(
+                Job.job_type == SYNC_SUBSCRIPTION_JOB_TYPE,
+                Job.status.in_(_REQUEUE_STATUSES),
+                self._has_ownership_conflict_attachment(),
+            )
+            .order_by(Job.available_at, Job.id)
+            .limit(_MAX_BATCH)
+            .with_for_update(skip_locked=True)
+            .execution_options(populate_existing=True)
+        ).all()
+        for observed in conflicts:
+            self._reconcile_ownership_conflict_attachment(observed, now=now)
         self.session.execute(
             update(Job)
             .where(
@@ -910,6 +1060,7 @@ class SchedulerRepository:
                 Job.status.in_(_REQUEUE_STATUSES),
                 Job.available_at <= now,
                 Job.attempts < Job.max_attempts,
+                ~self._has_ownership_conflict_attachment(),
             )
             .values(status="queued", updated_at=now)
             .execution_options(synchronize_session=False)
@@ -1100,6 +1251,11 @@ class SchedulerRepository:
             try:
                 _parse_payload(candidate)
                 lanes = self._job_lanes(candidate, now=current)
+                if (
+                    self._reconcile_ownership_conflict_attachment(candidate, now=current, locked_lanes=lanes)
+                    is not None
+                ):
+                    continue
             except (ValueError, SchedulerRepositoryError):
                 self._terminalize_invalid_candidate(candidate, now=current)
                 continue
@@ -1115,6 +1271,7 @@ class SchedulerRepository:
                     Job.status == "queued",
                     Job.available_at <= current,
                     Job.attempts < Job.max_attempts,
+                    ~self._has_ownership_conflict_attachment(),
                 )
                 .values(
                     status="claimed",
@@ -1382,10 +1539,17 @@ class SchedulerRepository:
                     now=now,
                 )
 
-    def _apply_lane_failure(self, job: Job, *, now: datetime, affects_circuit: bool) -> None:
+    def _apply_lane_failure(
+        self,
+        job: Job,
+        *,
+        now: datetime,
+        affects_circuit: bool,
+        locked_lanes: tuple[SchedulerLane, ...] | None = None,
+    ) -> None:
         if not isinstance(affects_circuit, bool):
             raise ValueError("affects_circuit must be boolean")
-        for lane in self._job_lanes(job, now=now):
+        for lane in self._job_lanes(job, now=now) if locked_lanes is None else locked_lanes:
             if not affects_circuit:
                 if (
                     job.status in TERMINAL_JOB_STATUSES
@@ -1530,8 +1694,13 @@ class SchedulerRepository:
         normalized_run_id = _optional_identifier(run_id, name="run_id")
         current = _aware_utc(now)
         self._serialize_sqlite_writer()
-        observed = self._get_sync_job(normalized_id)
+        observed = self._locked_sync_job(normalized_id)
         normalized_run_id = self._validated_result_run_id(observed, normalized_run_id)
+        reconciled = self._reconcile_ownership_conflict_attachment(
+            observed, now=current, owned_by=(owner, token), allowed_statuses=("running",)
+        )
+        if reconciled is not None:
+            return _summary(reconciled)
         values: dict[str, Any] = {
             "status": "succeeded",
             "lease_owner": None,
@@ -1607,8 +1776,13 @@ class SchedulerRepository:
         normalized_run_id = _optional_identifier(run_id, name="run_id")
         current = _aware_utc(now)
         self._serialize_sqlite_writer()
-        observed = self._get_sync_job(normalized_id)
-        normalized_run_id = self._validated_result_run_id(observed, normalized_run_id)
+        observed = self._locked_sync_job(normalized_id)
+        normalized_run_id = self._validated_result_run_id(
+            observed, normalized_run_id, explicit_ownership_conflict=code == "content_ownership_conflict"
+        )
+        reconciled = self._reconcile_ownership_conflict_attachment(observed, now=current, owned_by=(owner, token))
+        if reconciled is not None:
+            return _summary(reconciled)
         self._reject_failure_for_succeeded_run(observed, normalized_run_id)
         attempts_remain = observed.attempts < observed.max_attempts
         retryable = classification.disposition is FailureDisposition.RETRY and attempts_remain
@@ -1697,8 +1871,11 @@ class SchedulerRepository:
         normalized_run_id = _optional_identifier(run_id, name="run_id")
         current = _aware_utc(now)
         self._serialize_sqlite_writer()
-        observed = self._get_sync_job(normalized_id)
+        observed = self._locked_sync_job(normalized_id)
         normalized_run_id = self._validated_result_run_id(observed, normalized_run_id)
+        reconciled = self._reconcile_ownership_conflict_attachment(observed, now=current, owned_by=(owner, token))
+        if reconciled is not None:
+            return _summary(reconciled)
         self._reject_failure_for_succeeded_run(observed, normalized_run_id)
         values: dict[str, Any] = {
             "status": status,
@@ -1734,6 +1911,11 @@ class SchedulerRepository:
         observed = self._get_sync_job(normalized_id)
         if observed.subscription_id is not None:
             SubscriptionRepository(self.session).require_active(observed.subscription_id, lock=True)
+        observed = self._locked_sync_job(normalized_id)
+        if observed.status in _WAITING_STATUSES:
+            reconciled = self._reconcile_ownership_conflict_attachment(observed, now=current)
+            if reconciled is not None:
+                return _summary(reconciled)
         resumed = self.session.scalar(
             update(Job)
             .where(
@@ -1773,7 +1955,7 @@ class SchedulerRepository:
         """Retire a non-running cycle without rewriting its historical Run."""
 
         self._serialize_sqlite_writer()
-        observed = self._get_sync_job(job_id)
+        observed = self._locked_sync_job(job_id)
         if any(
             lane.platform != observed.platform
             or lane.scope_type not in {"platform", "account"}
@@ -1786,6 +1968,9 @@ class SchedulerRepository:
         reconciled = self._reconcile_succeeded_attachment(
             observed, now=now, expired_only=False, locked_lanes=locked_lanes
         )
+        if reconciled is not None:
+            return _summary(reconciled)
+        reconciled = self._reconcile_ownership_conflict_attachment(observed, now=now, locked_lanes=locked_lanes)
         if reconciled is not None:
             return _summary(reconciled)
         observed.status = "cancelled"
@@ -1801,10 +1986,13 @@ class SchedulerRepository:
         normalized_id = _required_text(job_id, name="job_id", maximum=36)
         current = _aware_utc(now)
         self._serialize_sqlite_writer()
-        observed = self._get_sync_job(normalized_id)
+        observed = self._locked_sync_job(normalized_id)
         if observed.status in TERMINAL_JOB_STATUSES:
             return _summary(observed)
         reconciled = self._reconcile_succeeded_attachment(observed, now=current, expired_only=False)
+        if reconciled is not None:
+            return _summary(reconciled)
+        reconciled = self._reconcile_ownership_conflict_attachment(observed, now=current)
         if reconciled is not None:
             return _summary(reconciled)
         cancelled = self.session.scalar(

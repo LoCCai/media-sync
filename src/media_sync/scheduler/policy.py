@@ -216,6 +216,10 @@ def classify_failure(code: str) -> FailureClassification:
         return FailureClassification(code, FailureDisposition.WAITING_AUTH, True)
     if code in _WAITING_USER_CODES:
         return FailureClassification(code, FailureDisposition.WAITING_USER, False)
+    if code == "content_ownership_conflict":
+        # Immutable content ownership is a source/subscription conflict, not
+        # account authentication or transient upstream health evidence.
+        return FailureClassification(code, FailureDisposition.TERMINAL, False)
     if code in _TERMINAL_CODES:
         return FailureClassification(code, FailureDisposition.TERMINAL, True)
     return FailureClassification("unexpected_handler_failure", FailureDisposition.RETRY, True)

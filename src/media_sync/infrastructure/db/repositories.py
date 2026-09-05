@@ -57,6 +57,15 @@ class NotFoundError(RepositoryError):
     """The requested row does not exist."""
 
 
+class ContentOwnershipConflictError(RepositoryError):
+    """An observed identity cannot silently move between creator archives."""
+
+    code = "content_ownership_conflict"
+
+    def __init__(self) -> None:
+        super().__init__(self.code)
+
+
 class SubscriptionRemovalError(RepositoryError):
     """Closed, public-safe subscription lifecycle conflict."""
 
@@ -890,10 +899,11 @@ class AuthorRepository:
 
     def upsert(self, value: AuthorUpsert, *, seen_at: datetime | None = None) -> Author:
         now = _aware_utc(seen_at)
-        if self.session.get_bind().dialect.name == "sqlite":
+        dialect = self.session.get_bind().dialect.name
+        if dialect in {"sqlite", "postgresql"}:
+            insertion = sqlite_insert(Author) if dialect == "sqlite" else postgresql_insert(Author)
             statement = (
-                sqlite_insert(Author)
-                .values(
+                insertion.values(
                     id=new_uuid(),
                     platform=value.platform,
                     remote_id=value.remote_id,
@@ -981,10 +991,11 @@ class AuthorRepository:
         return self.upsert_with_contents(author_value, contents, seen_at=seen_at)
 
     def _upsert_content(self, author: Author, value: ContentUpsert, *, seen_at: datetime) -> Content:
-        if self.session.get_bind().dialect.name == "sqlite":
+        dialect = self.session.get_bind().dialect.name
+        if dialect in {"sqlite", "postgresql"}:
+            insertion = sqlite_insert(Content) if dialect == "sqlite" else postgresql_insert(Content)
             statement = (
-                sqlite_insert(Content)
-                .values(
+                insertion.values(
                     id=new_uuid(),
                     author_id=author.id,
                     platform=author.platform,
@@ -1007,7 +1018,6 @@ class AuthorRepository:
                 .on_conflict_do_update(
                     index_elements=[Content.platform, Content.remote_type, Content.remote_id],
                     set_={
-                        "author_id": author.id,
                         "kind": value.kind,
                         "title": value.title,
                         "body": _safe_text(value.body),
@@ -1021,18 +1031,28 @@ class AuthorRepository:
                         "tombstoned_at": None,
                         "updated_at": seen_at,
                     },
+                    # The database arbitrates first-writer races and checks the
+                    # current row, not an earlier SELECT or cached ORM object.
+                    # A different author must not modify *any* content field.
+                    where=Content.author_id == author.id,
                 )
                 .returning(Content)
                 .execution_options(populate_existing=True)
             )
-            return self.session.scalars(statement).one()
+            content = self.session.scalars(statement).one_or_none()
+            if content is None:
+                raise ContentOwnershipConflictError()
+            return content
 
         content = self.session.scalar(
-            select(Content).where(
+            select(Content)
+            .where(
                 Content.platform == author.platform,
                 Content.remote_type == value.remote_type,
                 Content.remote_id == value.remote_id,
             )
+            .with_for_update()
+            .execution_options(populate_existing=True)
         )
         if content is None:
             content = Content(
@@ -1054,7 +1074,8 @@ class AuthorRepository:
             )
             self.session.add(content)
         else:
-            content.author_id = author.id
+            if content.author_id != author.id:
+                raise ContentOwnershipConflictError()
             content.kind = value.kind
             content.title = value.title
             content.body = _safe_text(value.body)
@@ -3364,6 +3385,7 @@ __all__ = [
     "AssetUpsert",
     "AuthorRepository",
     "AuthorUpsert",
+    "ContentOwnershipConflictError",
     "ContentUpsert",
     "ExpiredLoginSessionCandidate",
     "ExportRecordConflictError",

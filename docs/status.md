@@ -2,7 +2,17 @@
 
 # Unified project status (single source of truth)
 
-## Latest: Weibo creator nickname/avatar lookup (0060)
+## Latest: content ownership and durable conflict handling (0061)
+
+[Execution 0061](executions/0061-bili-dynamic-authority/progress.md) prevents a previously stored content identity from moving to another creator during upsert. SQLite/PostgreSQL enforce the owner in the actual conflict update; same-owner metadata refresh and separate dynamic/upload identities remain supported. The fixed `content_ownership_conflict` explains retained ownership instead of degrading to schema_invalid or a Cookie error. It terminates that Job without automatic retry or account-circuit impact; future normal subscription cycles remain separate.
+
+Precise Run/Job conflict reconciliation now covers lost acknowledgements and expired leases. CLI readback reports unknown instead of claiming a failed terminal state when storage cannot confirm it. Verification and release status are tracked in [the execution record](executions/0061-bili-dynamic-authority/verification.md). Existing files/archives and earlier committed legacy batches are not erased or implicitly reassigned. No schema migration, upstream/dependency change or production action.
+
+Final-source affected regression passed551 (13 PostgreSQL environment skips); Web passed640 and final wheel/sdist match all140 application Python sources. Earlier complete-directory snapshots and later corrections are recorded separately, not claimed as one latest-source full-suite run. Damaged historical retry payloads cannot block unrelated queued work or overwrite a newer subscription schedule.
+
+This is Stage A, a required prerequisite, not complete Bili dynamic support. Explicit uploads/dynamics/both scope, independent feed state, source-backed attachments and refresh, and real capture → archive → local-library playback remain unfinished. Local Emby/Jellyfin-compatible directories still work without connecting to those servers. Other five creator profiles and three pasted-Cookie validators remain required; the original seven-platform goal stays active and supervisor is not restarted.
+
+## Previous: Weibo creator nickname/avatar lookup (0060)
 
 [Execution 0060](executions/0060-weibo-creator-profile/progress.md) extends automatic creator lookup to Weibo saved-session and pasted-Cookie accounts. Stable numeric UID entry triggers one authenticated config check and one exact creator request, not a post crawl. Platform-observed nickname, optional restricted same-origin avatar and local notes retain account/platform/identity and publication fences; existing author/export paths are not renamed. Lookup does not require full-history capture acknowledgement or a media-server connection.
 

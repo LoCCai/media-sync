@@ -23,7 +23,7 @@ from media_sync.domain import (
     RateLimitedError,
     RunStatus,
 )
-from media_sync.infrastructure.db import LeaseLostError
+from media_sync.infrastructure.db import ContentOwnershipConflictError, LeaseLostError
 
 NAMESPACE = UUID("00000000-0000-0000-0000-000000000099")
 ACCOUNT_ID = UUID("00000000-0000-0000-0000-000000000001")
@@ -417,6 +417,28 @@ async def test_hostile_custom_adapter_error_is_mapped_before_persistence() -> No
         "unexpected_failure",
         "The adapter reported a classified synchronization failure.",
     )
+
+
+@pytest.mark.asyncio
+async def test_content_owner_conflict_is_fixed_terminal_without_checkpoint_or_assets() -> None:
+    class ConflictingRepository(MemorySyncRepository):
+        def upsert_content_with_assets(self, snapshot: ContentSnapshot, assets: Sequence[AssetSnapshot]) -> UUID:
+            error = ContentOwnershipConflictError()
+            # Even the typed exception's mutable attributes are not public data.
+            error.code = "PRIVATE-owner-source-cookie"
+            error.args = ("PRIVATE-owner-source-cookie",)
+            raise error
+
+    repository = ConflictingRepository()
+    result = await SyncService(FakePlatformAdapter(), repository).run(
+        SyncRequest(subscription_id=SUBSCRIPTION_ID, account=account(), creator_reference="creator-001")
+    )
+    assert result.status is RunStatus.FAILED_TERMINAL
+    assert result.error_code == "content_ownership_conflict"
+    assert repository.cursor is None and repository.watermark is None
+    assert repository.contents == {} and repository.assets == {}
+    assert repository.errors[-1][0] == "content_ownership_conflict"
+    assert "PRIVATE" not in repr((result, repository.errors))
 
 
 @pytest.mark.asyncio
