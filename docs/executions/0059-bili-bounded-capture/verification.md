@@ -37,3 +37,9 @@ Final-source `uv build --out-dir` created the wheel from the sdist in `C:/Users/
 Wheel SHA256: `9ac67765ab2d4533cb34f167c31ad7501b6cfb78f8f2038e01220d244d064c6d`; sdist SHA256: `b9657f6f2b75b5bd2b6ed28a698ea24b008f436bb23cba2d1ca0645d22e7936b`. Docker is unavailable and MEDIA_SYNC_TEST_POSTGRESQL_URL is unset. Linux/Docker build/runtime, real PostgreSQL races, live capture/download/export/media-server playback remain NOT_RUN. No production deployment or supervisor restart.
 
 Final independent read-only recheck confirmed both source-author and CLI durable-truth fixes address the findings without an obvious new gap. It is not an additional test run. All final test/build handles are terminal; two superseded owner's Web handles were already missing when checked, and process inventory found no matching remaining test/build command. No new browser was opened for this execution.
+
+## Publication
+
+Published frozen plan `c24e400` and bilingual implementation `8382ac3` using non-force `git push origin main` (exit0, remote advanced from6eabc74). A fresh `git -c http.sslBackend=schannel -c http.version=HTTP/1.1 fetch --prune origin` exited0: HEAD and origin/main both `8382ac34bca6520eb7bd5bf9c7071b2eb5b0ce94`, divergence0 0 and clean worktree before this documentation-only publication record. All final verification handles are terminal. This is GitHub source publication, not deployment or live qualification.
+
+This publication record follows in a bilingual documentation commit with another non-force push and fresh-fetch equality check; its own resulting SHA is reported at handoff, not recursively written into itself. The next required work remains Bili dynamic attachments, remaining platform validators/profiles and separately authorized real capture/archive/local Emby/Jellyfin playback. The overall goal stays active.

@@ -34,3 +34,9 @@
 Wheel SHA256：`9ac67765ab2d4533cb34f167c31ad7501b6cfb78f8f2038e01220d244d064c6d`；sdist SHA256：`b9657f6f2b75b5bd2b6ed28a698ea24b008f436bb23cba2d1ca0645d22e7936b`。Docker不可用，MEDIA_SYNC_TEST_POSTGRESQL_URL未设置；Linux/Docker构建运行、真实PostgreSQL竞争、真人采集/下载/导出/媒体服务器播放仍NOT_RUN，未部署生产或恢复supervisor。
 
 最终独立只读复核确认作者来源与CLI耐久真值修复满足原发现，未发现新增明显缺口；这不是额外测试运行。最终测试/构建句柄均终止；两项已被后续Web验证替代的旧代理句柄检查时已不存在，进程清单无匹配的遗留测试/构建命令。本次未打开新浏览器。
+
+## 发布
+
+已用非force的`git push origin main`发布冻结计划`c24e400`与双语实现`8382ac3`（exit0，远端从6eabc74前进）。随后`git -c http.sslBackend=schannel -c http.version=HTTP/1.1 fetch --prune origin` exit0；HEAD与origin/main均为`8382ac34bca6520eb7bd5bf9c7071b2eb5b0ce94`，分歧0 0，写入本条纯文档发布记录前工作区干净。最终验证句柄均终止。这是GitHub源码发布，不是部署或真人验收。
+
+本发布记录随后单独双语文档提交、非force推送并fresh-fetch核对相等；其自身SHA在交接时报告，不递归写入自身。后续必做仍包括B站动态附件、剩余平台校验器/资料及单独授权的真实采集/归档/本地Emby/Jellyfin播放。整体目标保持活动。
