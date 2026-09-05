@@ -35,6 +35,7 @@
     StartedOperation
   } from '$lib/types/api';
   import { formatDate, formatDateLong, operationLabel, shortId, statusLabel } from '$lib/utils/format';
+  import { operationLoginExplanation } from '$lib/utils/login-diagnostics';
   import {
     createOperationStreamCursor,
     createOperationStreamHealth,
@@ -116,6 +117,8 @@
   $: selectedTruthNotice = selectedOperation ? operationTruthNotice(selectedOperation) : null;
   $: selectedProgressPercent = selectedOperation ? operationProgressPercent(selectedOperation) : null;
   $: selectedSafeResult = selectedOperation ? safeOperationResult(selectedOperation) : null;
+  $: selectedLoginExplanation =
+    selectedOperation?.kind === 'account-login' ? operationLoginExplanation(selectedOperation) : null;
 
   function eventLabel(code: string): string {
     return (
@@ -694,6 +697,19 @@
             <div class="progress-bar" style={`width: ${selectedProgressPercent}%`}></div>
           </div>
         {/if}
+      </div>
+    {/if}
+
+    {#if selectedLoginExplanation}
+      <div
+        class="notice observation-truth"
+        class:danger={selectedLoginExplanation.tone === 'danger'}
+        class:warning={selectedLoginExplanation.tone === 'warning'}
+        class:success={selectedLoginExplanation.tone === 'success'}
+      >
+        <strong>{selectedLoginExplanation.title}</strong>
+        <span>{selectedLoginExplanation.detail}</span>
+        <span>下一步：{selectedLoginExplanation.next}</span>
       </div>
     {/if}
 

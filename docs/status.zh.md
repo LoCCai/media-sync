@@ -2,9 +2,11 @@
 
 # 项目统一状态（单一事实来源）
 
-## 最新：部署登录修复（2026-09-05）
+## 最新：登录运行遗漏与诊断（2026-09-05）
 
-操作者已手工成功进入部署后台。B 站、抖音和小红书的现有账户显示登录会话失败，共观察到六次历史登录操作失败；这是失败证据，不是真人验收通过。冻结计划 `204655d` 下已在本地修复共享浏览器缓存环境、五平台 Chrome 通道及有头预检不匹配，容器也会先确认 Xvfb 可连接再迁移。真实 Windows 空白有头 Chromium 启动通过（`151.0.7922.34`）。最终回归/发布证据和待办见[登录运行环境验证](executions/0055-operator-auth-playback-evidence/login-runtime/verification.zh.md)。修复后的 Linux 镜像、扫码、会话复用、采集和 Emby/Jellyfin 金丝雀仍待验证，七平台总体目标保持开放。下文旧检查点结果除该记录明确更新外均为历史证据。
+已发布的浏览器环境修复通过 Windows 空白启动；操作者现又提供 Linux 有头持久 Chromium `151.0.7922.34` 冒烟及配置验证成功输出。但浏览器只读核查仍看到 17:47/17:48 的 B 站/抖音新登录失败（累计八条失败 Operation），最新抖音运行九秒后 runner/会话/认证均失败。操作者随后确认 `NODE_MISSING`。源码审查发现上游导入时 PyExecJS 依赖可用 JavaScript 运行时，二维码转发又静默丢弃了上游 base64 字符串。最终镜像 Node/真实 JS 预检与二维码规范化见[运行后续修复](executions/0055-operator-auth-playback-evidence/login-runtime-followup/progress.zh.md)；精确会话安全诊断与二维码终态 UI 见[登录诊断](executions/0055-operator-auth-playback-evidence/login-diagnostics/progress.zh.md)。这些修复不追认历史具体异常，也不构成平台 PASS。
+
+用户追加的粘贴 Cookie 校验/保存需求已接受，本检查点尚未实现；下一步设计须要求真实远程认证证明、保护存储凭据，并在候选失败时保留原有效凭据。精确部署 SHA/镜像身份、修复镜像的二维码显示/扫码、会话复用、采集及 Emby/Jellyfin 仍开放，七平台总体目标不变。下文旧结果除链接记录明确更新外均属历史证据。
 
 已推送的执行 0055 后端鉴权实现为提交 `f19bfaa`（冻结规划基线为 `4564b2a`）。它会在绑定端口前解析必需的类型化操作者凭据，支持可选且不同的 Bearer 凭据，强制精确 Host/Origin 策略，轮换进程内 HttpOnly `SameSite=Strict` session Cookie，对 Cookie 鉴权的不安全方法强制 CSRF，以精确匿名白名单配合默认拒绝的 ASGI 保护，只接受严格有界的登录 JSON，并把凭据/origin 契约接入 Docker Compose。其 190 项 auth/API 专项与完整离线回归（`2811 passed, 14 skipped, 1 warning in 561.43s`）通过，69 项 Web 测试及本机可用的静态/构建/docs/打包门也通过。3 项跳过为 Windows/POSIX 差异；本工作站无法运行 11 项真实 PostgreSQL 竞态与 Docker 验证，因此不作通过声明。
 

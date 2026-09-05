@@ -62,6 +62,7 @@ from media_sync.application.emby import (
     EmbyExportService,
     export_error_is_retryable,
 )
+from media_sync.application.login_diagnostics import LoginDiagnostic, latest_session_login_diagnostic
 from media_sync.application.mediacrawler import load_normalized_output
 from media_sync.application.mediacrawler_download import LazyMediaCrawlerLocatorRefresher
 from media_sync.application.operations import DurableSubjectHook
@@ -632,6 +633,8 @@ def _account_login_outcome_payload(outcome: AccountLoginOutcome) -> dict[str, ob
 def _account_login_status_payload(
     account: Account,
     latest: LoginSessionState | None,
+    *,
+    diagnostic: LoginDiagnostic | None = None,
 ) -> dict[str, object]:
     """Project current Account auth plus the latest redaction-safe session state."""
 
@@ -645,6 +648,7 @@ def _account_login_status_payload(
         "completed_at": _iso_datetime(latest.completed_at) if latest is not None else None,
         "created_at": _iso_datetime(latest.created_at) if latest is not None else None,
         "updated_at": _iso_datetime(latest.updated_at) if latest is not None else None,
+        "diagnostic": diagnostic,
     }
 
 
@@ -1535,7 +1539,12 @@ def account_login_status(
                 payload = None
             else:
                 sessions = LoginSessionRepository(session).list_for_account(account.id)
-                payload = _account_login_status_payload(account, sessions[0] if sessions else None)
+                latest = sessions[0] if sessions else None
+                payload = _account_login_status_payload(
+                    account,
+                    latest,
+                    diagnostic=latest_session_login_diagnostic(session, account.id, latest),
+                )
     except (RepositoryError, SQLAlchemyError):
         raise typer.BadParameter("account login status database operation failed safely") from None
     except Exception:

@@ -34,6 +34,24 @@ export type OperationState =
   | 'cancelled'
   | 'interrupted';
 export type OperationAction = 'cancel' | 'retry';
+export type LoginRunnerStatus =
+  | 'authenticated'
+  | 'expired'
+  | 'failed'
+  | 'timed_out'
+  | 'cancelled'
+  | 'account_busy'
+  | 'configuration_invalid'
+  | 'start_failed'
+  | 'result_invalid'
+  | 'browser_launch_failed';
+
+export interface LoginDiagnostic {
+  operation_id: string;
+  operation_state: OperationState;
+  runner_status: LoginRunnerStatus;
+  error_code: string | null;
+}
 
 export interface PlatformCapability {
   platform: Platform;
@@ -108,6 +126,7 @@ export interface LoginStatus {
   completed_at: string | null;
   created_at: string | null;
   updated_at: string | null;
+  diagnostic?: LoginDiagnostic | null;
 }
 
 export interface Subscription {

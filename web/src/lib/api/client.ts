@@ -54,6 +54,7 @@ const ERROR_MESSAGES: Record<string, string> = {
   platform_conflict: '账户平台与作者平台不一致。',
   request_validation_failed: '请求字段格式无效，请检查后重试。',
   request_timeout: '请求在本地等待期限内没有完成。',
+  runtime_javascript_unavailable: '缺少可用的 JavaScript 运行时，请更新镜像并确认 Node.js 可用。',
   scheduler_operation_rejected: '调度操作被拒绝，请刷新状态后重试。',
   subscription_exists_with_different_options: '该账户与作者的订阅已存在，但同步策略不同。',
   subscription_options_invalid: '订阅频率、上限或运行策略无效。',

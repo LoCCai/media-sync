@@ -400,6 +400,7 @@ def test_account_login_status_without_session_omits_account_secrets_and_paths(
         "completed_at": None,
         "created_at": None,
         "updated_at": None,
+        "diagnostic": None,
     }
     lowered = result.output.lower()
     for forbidden in (

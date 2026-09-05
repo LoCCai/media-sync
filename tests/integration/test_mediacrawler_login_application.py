@@ -198,6 +198,7 @@ def test_subject_hook_failure_rolls_back_waiting_session_before_child_work(datab
         (MediaCrawlerLoginStatus.EXPIRED, "expired", "required", "qr", False),
         (MediaCrawlerLoginStatus.TIMED_OUT, "expired", "required", "qr", False),
         (MediaCrawlerLoginStatus.FAILED, "failed", "failed", "qr", False),
+        (MediaCrawlerLoginStatus.BROWSER_LAUNCH_FAILED, "failed", "failed", "qr", False),
         (MediaCrawlerLoginStatus.CANCELLED, "cancelled", "required", "qr", False),
     ],
 )

@@ -38,6 +38,12 @@ try:
     import typer
 except Exception:
     raise SystemExit(42)
+try:
+    import execjs
+    if execjs.compile("function media_sync_probe() { return 1 + 1; }").call("media_sync_probe") != 2:
+        raise RuntimeError
+except Exception:
+    raise SystemExit(43)
 raise SystemExit(0)
 """
 
@@ -106,6 +112,7 @@ class CheckoutValidationCode(StrEnum):
     RUNTIME_PROBE_FAILED = "runtime_probe_failed"
     RUNTIME_PYTHON_TOO_OLD = "runtime_python_too_old"
     RUNTIME_IMPORTS_MISSING = "runtime_imports_missing"
+    RUNTIME_JAVASCRIPT_UNAVAILABLE = "runtime_javascript_unavailable"
     BROWSER_LAUNCH_FAILED = "browser_launch_failed"
 
 
@@ -357,6 +364,11 @@ def verify_mediacrawler_python(python_executable: Path) -> VerifiedPython:
         raise CheckoutValidationError(
             "MediaCrawler Python must be version 3.11 or newer",
             CheckoutValidationCode.RUNTIME_PYTHON_TOO_OLD,
+        )
+    if completed.returncode == 43:
+        raise CheckoutValidationError(
+            "MediaCrawler JavaScript runtime could not execute the required probe",
+            CheckoutValidationCode.RUNTIME_JAVASCRIPT_UNAVAILABLE,
         )
     if completed.returncode != 0:
         raise CheckoutValidationError(

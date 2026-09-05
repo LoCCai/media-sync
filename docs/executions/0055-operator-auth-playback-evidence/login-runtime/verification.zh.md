@@ -66,3 +66,9 @@ docker-compose exec -T media-sync /app/.venv/bin/python /app/scripts/check_login
 每步成功才运行下一步。锁没有变化；仅当预取目录缺失或后续版本改变 lock 时重跑既有上游预取脚本。如果启用了 supervisor profile，也用相同新镜像重建。只反馈固定预检/冒烟结果，不发配置、凭据文件或平台原始日志。之后进入账户页，仅预检一个账户，由操作者扫码；记录真实结果后再尝试其他平台。
 
 当前 Linux 镜像/UID、X11 连接、重启/恢复、二维码显示/扫码、会话复用、订阅/采集/下载和 Emby/Jellyfin 播放仍待验证，不创建真人 PASS。预检覆盖普通成功/失败/超时/取消收尾，不对 POSIX 父进程被强杀承诺完整 login runner 的父死亡保证。预检后运行错误分类和 P1 证据 UI 保持后续待办。
+
+## 后续操作者提供的 Linux 冒烟（2026-09-05）
+
+交接后，操作者提供了仅配置预检、服务重建和容器内空白浏览器检查的成功输出：`configuration: valid`，随后为 `ok: true`、`browser: bundled-chromium`、`mode: headed-persistent`、版本 `151.0.7922.34` 和 `live_qualification: NOT_RUN`。这是操作者提供的真实 Linux 容器空白浏览器启动证据，不是另一轮本地 Windows 测试；前文这一特定服务器冒烟尚未执行的状态由本次结果更新。
+
+粘贴输出没有标识精确 Git SHA/镜像摘要，代理也未独立重跑。完整当前镜像资格、启动/重启/恢复、二维码显示/扫码、会话复用、采集和 Emby/Jellyfin 仍开放。已请操作者刷新账户并先手动重试一个 B 站账户，再推进其他平台。没有自动启动平台登录，也不记录平台 PASS。

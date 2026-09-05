@@ -69,6 +69,7 @@ from media_sync.application.authentication import (
 from media_sync.application.emby import EmbyExportRequest, EmbyExportService, export_error_is_retryable
 from media_sync.application.explorer import CatalogExplorerError, ContentAssetExplorer
 from media_sync.application.library import LibraryInspection, LibraryInspectionError, LibraryInspectionService
+from media_sync.application.login_diagnostics import latest_session_login_diagnostic, login_operation_error_code
 from media_sync.application.media_server import MediaServerError, MediaServerService
 from media_sync.application.media_server_observation import MediaServerObservationService
 from media_sync.application.media_server_publication import MediaServerPublicationResolver
@@ -1805,7 +1806,12 @@ def create_api_app(
                 if account is None:
                     raise HTTPException(status_code=404, detail="account not found")
                 sessions = LoginSessionRepository(session).list_for_account(account.id)
-                return _account_login_status_payload(account, sessions[0] if sessions else None)
+                latest = sessions[0] if sessions else None
+                return _account_login_status_payload(
+                    account,
+                    latest,
+                    diagnostic=latest_session_login_diagnostic(session, account.id, latest),
+                )
         except HTTPException:
             raise
         except SQLAlchemyError:
@@ -2088,11 +2094,7 @@ def create_api_app(
                     return OperationOutcome.success(result)
                 if outcome.runner_status.value == "cancelled" or outcome.session_status == "cancelled":
                     return OperationOutcome.cancelled(result)
-                error_code = (
-                    "operation_login_expired"
-                    if outcome.runner_status.value in {"expired", "timed_out"}
-                    else "operation_login_failed"
-                )
+                error_code = login_operation_error_code(outcome.runner_status.value)
                 return OperationOutcome.failed(error_code, retryable=False, payload=result)
             except AccountLoginError as error:
                 return OperationOutcome.failed(

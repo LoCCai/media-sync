@@ -26,6 +26,7 @@ class MediaCrawlerLoginStatus(StrEnum):
     AUTHENTICATED = "authenticated"
     EXPIRED = "expired"
     FAILED = "failed"
+    BROWSER_LAUNCH_FAILED = "browser_launch_failed"
     TIMED_OUT = "timed_out"
     CANCELLED = "cancelled"
     ACCOUNT_BUSY = "account_busy"

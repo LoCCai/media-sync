@@ -2,7 +2,7 @@
 
 # 项目工作日志
 
-最新 P0 后续：[登录浏览器运行环境修复](executions/0055-operator-auth-playback-evidence/login-runtime/progress.zh.md)，保存双语冻结目标/计划及实测验证。部署登录失败观察不是真人平台验收通过。
+最新 P0 后续：[Node/二维码集成修复](executions/0055-operator-auth-playback-evidence/login-runtime-followup/progress.zh.md)与[安全登录诊断](executions/0055-operator-auth-playback-evidence/login-diagnostics/progress.zh.md)，保存双语目标/计划及实测验证。操作者的 Linux 空白浏览器 PASS 不能覆盖新观察到的平台登录失败。粘贴 Cookie 校验/保存已接受为后续范围，尚未实现。
 
 本目录是项目的长期审计记录。每个执行里程碑固定保存四类文件：目标、计划、推进结果和验证过程。自执行 0028 起，每份文档维护两种语言版本：英文 `<name>.md` 与中文 `<name>.zh.md`，两个版本顶部互相链接。
 

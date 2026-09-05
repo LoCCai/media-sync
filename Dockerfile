@@ -26,8 +26,8 @@ ARG NODE_IMAGE=node:24-bookworm-slim
 ARG NPM_REGISTRY=https://registry.npmjs.org
 
 # ----------------------------------------------------------- Web Console v2
-# Build the SvelteKit SPA separately. Node.js and pnpm never enter the final
-# runtime image; only fingerprinted static output is copied into the package.
+# Build the SvelteKit SPA separately. pnpm and Web build dependencies stay here;
+# the final stage separately installs Debian Node.js for upstream PyExecJS.
 FROM ${NODE_IMAGE} AS web-build
 ARG NPM_REGISTRY
 WORKDIR /web
@@ -89,6 +89,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
       curl \
       git \
       procps \
+      nodejs \
     && rm -rf /var/lib/apt/lists/*
 
 # ---------------------------------------------------------------- media-sync
@@ -167,6 +168,7 @@ RUN useradd --system --create-home --uid 1000 mediasync \
 # Full SBOM generation stays deferred.
 RUN { echo "python: $(python --version)"; \
       echo "uv: $(uv --version)"; \
+      echo "javascript_runtime: $(node --version)"; \
       echo "ffmpeg: $(ffmpeg -version | head -n1)"; \
       echo "playwright: $(/opt/mediacrawler-venv/bin/python -m playwright --version)"; \
       echo "chromium: $(su mediasync -s /bin/sh -c '/opt/mediacrawler-venv/bin/python -c "from playwright.sync_api import sync_playwright; p = sync_playwright().start(); b = p.chromium.launch(headless=True, args=[\"--disable-dev-shm-usage\"]); print(b.version); b.close(); p.stop()"' || echo launch-failed)"; \
@@ -195,8 +197,8 @@ ENV MEDIA_SYNC_STATE_DIR=/data/state \
 COPY upstreams.lock.json /app/upstreams.lock.json
 COPY docker/entrypoint.sh /usr/local/bin/media-sync-entrypoint
 # Exercise the exact configured venv launcher through the application verifier.
-# This catches dependency drift and accidental symlink dereferencing while the
-# image is still being built.
+# This catches dependency drift, unavailable JavaScript execution and accidental
+# symlink dereferencing while the image is still being built.
 RUN chmod +x /usr/local/bin/media-sync-entrypoint \
     && chown mediasync:mediasync /app/upstreams.lock.json /usr/local/bin/media-sync-entrypoint \
     && su mediasync -s /bin/sh -c \

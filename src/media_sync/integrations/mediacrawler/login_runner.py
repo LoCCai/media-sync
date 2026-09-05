@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import contextlib
 import importlib
+import io
 import json
 import os
 import signal
@@ -13,9 +16,11 @@ import subprocess
 import sys
 import threading
 import time
+import warnings
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from tempfile import mkstemp
 from types import MethodType
 from typing import Any
 from uuid import UUID, uuid4
@@ -26,7 +31,7 @@ if __name__ == "__main__" and (__package__ is None or __package__ == ""):
 
 from media_sync.domain import Platform
 from media_sync.integrations.mediacrawler.browser_environment import browser_child_environment
-from media_sync.integrations.mediacrawler.browser_policy import install_bundled_chromium_policy
+from media_sync.integrations.mediacrawler.browser_policy import BrowserLaunchFailure, install_bundled_chromium_policy
 from media_sync.integrations.mediacrawler.checkout import (
     VerifiedCheckout,
     VerifiedPython,
@@ -68,6 +73,14 @@ MAX_LOGIN_REQUEST_BYTES = 64 * 1024
 MAX_LOGIN_RESULT_BYTES = 4 * 1024
 LOGIN_QR_IMAGE_NAME = "login-qr.png"
 _MAX_QR_IMAGE_BYTES = 2 * 1024 * 1024
+_MAX_QR_ENCODED_CHARACTERS = 2 * 1024 * 1024
+_MAX_QR_IMAGE_DIMENSION = 4096
+_MAX_QR_IMAGE_PIXELS = 4 * 1024 * 1024
+_QR_DATA_URI_FORMATS = {
+    "data:image/png;base64,": "PNG",
+    "data:image/jpeg;base64,": "JPEG",
+    "data:image/webp;base64,": "WEBP",
+}
 _LOGIN_REQUEST_LENGTH_BYTES = 4
 _LOGIN_RESULT_LENGTH_BYTES = 4
 _LOGIN_CONTROL_POLL_SECONDS = 0.02
@@ -105,6 +118,7 @@ _CHILD_STATUSES = frozenset(
         MediaCrawlerLoginStatus.CANCELLED,
         MediaCrawlerLoginStatus.EXPIRED,
         MediaCrawlerLoginStatus.FAILED,
+        MediaCrawlerLoginStatus.BROWSER_LAUNCH_FAILED,
         MediaCrawlerLoginStatus.CONFIGURATION_INVALID,
     }
 )
@@ -476,7 +490,7 @@ def _parse_child_frame(frame: bytes) -> MediaCrawlerLoginStatus:
         raise ValueError("invalid child frame") from exc
     if not isinstance(payload, Mapping) or set(payload) != {"schema_version", "status"}:
         raise ValueError("invalid child frame shape")
-    if payload.get("schema_version") != LOGIN_RUNNER_SCHEMA_VERSION:
+    if type(payload.get("schema_version")) is not int or payload["schema_version"] != LOGIN_RUNNER_SCHEMA_VERSION:
         raise ValueError("invalid child frame schema")
     status_value = payload.get("status")
     if not isinstance(status_value, str):
@@ -524,7 +538,12 @@ class _ChildRequest:
             "platform",
             "mode",
         }
-        if not isinstance(raw, Mapping) or set(raw) != expected or raw.get("schema_version") != 1:
+        if (
+            not isinstance(raw, Mapping)
+            or set(raw) != expected
+            or type(raw.get("schema_version")) is not int
+            or raw["schema_version"] != LOGIN_RUNNER_SCHEMA_VERSION
+        ):
             raise _ChildConfigurationError
         try:
             checkout_root = Path(_child_text(raw["checkout_root"], 32_767)).resolve()
@@ -680,13 +699,80 @@ def fence_saved_session_qr_fallback(platform: Platform) -> Iterator[None]:
         login_class.begin = original_begin
 
 
+class _BoundedQrBuffer(io.BytesIO):
+    def write(self, value: Any) -> int:
+        if self.tell() + len(value) > _MAX_QR_IMAGE_BYTES:
+            raise ValueError("QR image exceeds the relay size limit")
+        return super().write(value)
+
+
+def _normalize_qr_image(value: object) -> bytes | None:
+    """Accept pinned helper strings without fetching or displaying a challenge.
+
+    Legacy byte callers keep their bounded exact-byte behavior. String callers
+    must supply canonical base64 raster data; Pillow is imported only in the
+    external upstream runtime, which already owns that dependency. New string
+    images are decoded and re-encoded as PNG for the fixed relay content type.
+    """
+
+    if isinstance(value, (bytes, bytearray)):
+        return bytes(value) if 0 < len(value) <= _MAX_QR_IMAGE_BYTES else None
+    if not isinstance(value, str) or not 0 < len(value) <= _MAX_QR_ENCODED_CHARACTERS:
+        return None
+    expected_format = None
+    encoded = value
+    if value.startswith("data:"):
+        for prefix, image_format in _QR_DATA_URI_FORMATS.items():
+            if value.startswith(prefix):
+                encoded = value[len(prefix) :]
+                expected_format = image_format
+                break
+        else:
+            return None
+    try:
+        decoded = base64.b64decode(encoded, validate=True)
+    except (ValueError, binascii.Error):
+        return None
+    if not 0 < len(decoded) <= _MAX_QR_IMAGE_BYTES or base64.b64encode(decoded).decode("ascii") != encoded:
+        return None
+    try:
+        # Decoder warnings must not put challenge-related input on stderr.
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            image_module = importlib.import_module("PIL.Image")
+            with image_module.open(io.BytesIO(decoded), formats=("PNG", "JPEG", "WEBP")) as source:
+                width, height = source.size
+                if (
+                    source.format not in {"PNG", "JPEG", "WEBP"}
+                    or (expected_format is not None and source.format != expected_format)
+                    or not 0 < width <= _MAX_QR_IMAGE_DIMENSION
+                    or not 0 < height <= _MAX_QR_IMAGE_DIMENSION
+                    or width * height > _MAX_QR_IMAGE_PIXELS
+                    or getattr(source, "n_frames", 1) != 1
+                ):
+                    return None
+                source.load()
+                # A fresh raster keeps untrusted source metadata out of PNG
+                # output and bounds memory before decompression/conversion.
+                with source.convert("RGBA") as pixels:
+                    pixels.info.clear()
+                    with _BoundedQrBuffer() as output:
+                        pixels.save(output, format="PNG")
+                        result = output.getvalue()
+                return result if 0 < len(result) <= _MAX_QR_IMAGE_BYTES else None
+    except Exception:
+        # Optional challenge display must not decide the login result, and no
+        # decoder/import exception or original image data may be logged here.
+        return None
+
+
 @contextlib.contextmanager
 def _disable_qr_export(checkout: Path, qr_relay: Path | None = None) -> Iterator[None]:
     """Keep the QR challenge out of the child terminal and optionally relay it.
 
     Without a relay destination the pinned ``show_qrcode`` helper becomes a
     no-op so the QR stays inside the headed browser. With a destination the
-    exact image bytes are atomically mirrored to that path so a local web
+    bounded image bytes are atomically mirrored to that path so a local web
     console can display the challenge while the browser runs on a container
     display. Failures to write never affect the login result.
     """
@@ -704,22 +790,24 @@ def _disable_qr_export(checkout: Path, qr_relay: Path | None = None) -> Iterator
     destination = qr_relay
 
     def relay_qr_to_file(value: object) -> None:
-        if destination is None or not isinstance(value, (bytes, bytearray)) or not value:
+        if destination is None:
             return
-        if len(value) > _MAX_QR_IMAGE_BYTES:
+        image_bytes = _normalize_qr_image(value)
+        if image_bytes is None:
             return
+        temporary: Path | None = None
         try:
-            temporary = destination.with_name(f".{destination.name}.{os.getpid()}.tmp")
-            descriptor = os.open(
-                temporary,
-                os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_BINARY", 0),
-                0o600,
-            )
+            descriptor, temporary_name = mkstemp(prefix=f".{destination.name}.", suffix=".tmp", dir=destination.parent)
+            temporary = Path(temporary_name)
             with os.fdopen(descriptor, "wb") as output:
-                output.write(bytes(value))
+                output.write(image_bytes)
             os.replace(temporary, destination)
         except OSError:
             return
+        finally:
+            if temporary is not None:
+                with contextlib.suppress(OSError):
+                    temporary.unlink(missing_ok=True)
 
     utils.show_qrcode = relay_qr_to_file if qr_relay is not None else keep_qr_in_browser
     try:
@@ -743,7 +831,7 @@ async def _run_upstream(request: _ChildRequest) -> MediaCrawlerLoginStatus:
     upstream_main: Any = importlib.import_module("main")
     if not _module_belongs_to_checkout(upstream_main, request.checkout_root):
         raise _ChildConfigurationError
-    install_bundled_chromium_policy(upstream_main)
+    install_bundled_chromium_policy(upstream_main, classify_launch_errors=True)
     crawler = upstream_main.CrawlerFactory.create_crawler(platform=request.platform.value)
     upstream_main.crawler = crawler
     _install_client_guard(crawler, request.platform)
@@ -805,6 +893,8 @@ async def _execute_controlled_child(
                 return await task
     except _ChildConfigurationError:
         return MediaCrawlerLoginStatus.CONFIGURATION_INVALID
+    except BrowserLaunchFailure:
+        return MediaCrawlerLoginStatus.BROWSER_LAUNCH_FAILED
     except BaseException:
         return MediaCrawlerLoginStatus.FAILED
     finally:

@@ -37,7 +37,7 @@ const DISPLAY_CONTEXT_KEYS = new Set([
   'total_count'
 ]);
 
-const LOGIN_RUNNER_STATUSES = new Set([
+export const LOGIN_RUNNER_STATUSES = new Set([
   'authenticated',
   'expired',
   'failed',
@@ -46,7 +46,8 @@ const LOGIN_RUNNER_STATUSES = new Set([
   'account_busy',
   'configuration_invalid',
   'start_failed',
-  'result_invalid'
+  'result_invalid',
+  'browser_launch_failed'
 ]);
 const LOGIN_SESSION_STATUSES = new Set([
   'pending',

@@ -131,6 +131,14 @@ docker compose exec -T media-sync /app/.venv/bin/python /app/scripts/check_login
 
 既有部署须保留个人 Compose/HTTPS Origin、secret 挂载及命名卷。升级前备份状态，再依次执行 `git pull --ff-only`、`docker compose build media-sync`、上面的仅配置预检、`docker compose up -d --no-deps --force-recreate media-sync`。不要执行 `down -v`，仅 restart 无法加载这次源码/镜像变更。如启用了可选 supervisor，也要从同一新镜像重建该服务。实际证据及待跑真人门槛见[修复验证与交接](executions/0055-operator-auth-playback-evidence/login-runtime/verification.zh.md)。
 
+### 2.3 JavaScript 启动依赖与可操作失败提示
+
+上游入口会在浏览器启动前导入调用 PyExecJS 的 helper，因此空白 Chromium PASS 不代表完整登录运行时就绪。最终镜像现安装 Debian Node.js，并在清单记录 `javascript_runtime`。Python doctor（登录预检与构建末尾非 root 门禁也会调用）实际执行固定 JavaScript 算术探针；缺少/损坏执行环境会安全返回 `runtime_javascript_unavailable`。仅更新 Python 源码或重启旧镜像无法安装此依赖，须保留现有私人 Compose 重新构建并重建容器。
+
+二维码转发现接收上游 base64 字符串与允许的 PNG/JPEG/WebP base64 data URI，并规范化成有界 PNG，不抓取 URL 或打开图片查看器。不支持/畸形/超限输入静默拒绝，既有字节输入保持有界原样兼容。正常转发失败会删除私有临时文件；强杀子进程仍可能在私有账户目录留下二维码临时文件，因此不承诺完整强杀清理。
+
+账户页把唯一关联的最近登录结果与预检分开显示。即使图片传递报错或悬挂，只要观察到 Operation 终态就停止等待二维码。`operation_login_browser_launch_failed` 标识实际启动边界；旧 `operation_login_failed` 仍是未知，不猜测网络/Cookie 原因。畸形、歧义或互相矛盾的持久诊断不投影。见[本轮验证](executions/0055-operator-auth-playback-evidence/login-diagnostics/verification.zh.md)与[运行后续验证](executions/0055-operator-auth-playback-evidence/login-runtime-followup/verification.zh.md)。粘贴 Cookie 校验/保存 UI 已列入后续需求，本检查点尚不可用；不要把 Cookie 发到聊天。
+
 ## 3. 当前检查点的 Web 与扫码登录状态
 
 后端现已提供严格的操作者 login/session/logout 契约、HttpOnly `SameSite=Strict` 进程内 Cookie，以及对 Cookie 鉴权不安全请求的 CSRF 强制。登录成功会轮换唯一 session；重启、退出、过期或凭据变化都会使其失效。非浏览器自动化可以另配独立解析的 Bearer 凭据，但它不能替代 0055 后续规划的浏览器专属确认权限。

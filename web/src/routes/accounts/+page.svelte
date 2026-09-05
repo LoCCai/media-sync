@@ -2,7 +2,8 @@
   import { onDestroy, onMount } from 'svelte';
   import { LoaderCircle, Plus, QrCode, RefreshCw, ShieldAlert, XCircle } from '@lucide/svelte';
 
-  import { api, apiBlob, apiMessage, LatestRequestGate } from '$lib/api/client';
+  import { api, apiBlob, apiMessage } from '$lib/api/client';
+  import { initialLoginAttemptView, LoginAttemptMonitor } from '$lib/api/login-attempt';
   import EmptyState from '$lib/components/EmptyState.svelte';
   import Modal from '$lib/components/Modal.svelte';
   import PageHeader from '$lib/components/PageHeader.svelte';
@@ -22,7 +23,12 @@
     StartedOperation
   } from '$lib/types/api';
   import { formatDate, PLATFORM_META, shortId, statusLabel } from '$lib/utils/format';
-  import { operationIsTerminal } from '$lib/utils/operations';
+  import {
+    accountLoginExplanation,
+    LOGIN_READINESS_NOTICE,
+    LOGIN_STATUS_UNAVAILABLE,
+    safeLoginDiagnostic
+  } from '$lib/utils/login-diagnostics';
   import {
     accountCompositeState,
     canStartQrLogin,
@@ -34,6 +40,7 @@
   let capabilities: PlatformCapability[] = [];
   let capabilityVersion: number | null = null;
   let statuses: Record<string, LoginStatus> = {};
+  let statusErrors: Record<string, string> = {};
   let preflights: Record<string, LoginPreflight> = {};
   let preflightErrors: Record<string, string> = {};
   let loading = true;
@@ -50,19 +57,23 @@
   let formName = '';
   let qrAccount: Account | null = null;
   let qrOperationId = '';
-  let qrLoginSessionId = '';
-  let qrImageUrl = '';
-  let qrHint = '正在启动登录环境…';
-  let qrState = 'running';
+  let qrView = initialLoginAttemptView();
+  let qrMonitor: LoginAttemptMonitor | null = null;
   let pollTimer: number | null = null;
-  let pollBusy = false;
   let destroyed = false;
-  const qrRequest = new LatestRequestGate();
+  let loadRevision = 0;
 
   $: selectedAccount = accounts.find((item) => item.id === selectedAccountId) ?? null;
   $: selectedCapability = capabilityByPlatform(capabilities, selectedAccount?.platform);
   $: selectedPreflight = selectedAccount ? (preflights[selectedAccount.id] ?? null) : null;
   $: selectedLoginStatus = selectedAccount ? (statuses[selectedAccount.id] ?? null) : null;
+  $: selectedLoginExplanation = selectedAccount
+    ? accountLoginExplanation(selectedLoginStatus, selectedAccount.id)
+    : null;
+  $: selectedLoginDiagnostic =
+    selectedAccount && selectedLoginStatus
+      ? safeLoginDiagnostic(selectedLoginStatus, selectedAccount.id)
+      : null;
   $: selectedComposite = selectedAccount
     ? accountCompositeState(selectedAccount, selectedLoginStatus, selectedCapability, selectedPreflight)
     : null;
@@ -70,6 +81,7 @@
   $: formCapability = capabilityByPlatform(capabilities, formPlatform);
 
   async function load(): Promise<void> {
+    const revision = ++loadRevision;
     loading = true;
     error = '';
     capabilityError = '';
@@ -77,13 +89,15 @@
       api<Account[]>('/api/v1/accounts'),
       api<PlatformCapabilities>('/api/v1/platform-capabilities')
     ]);
+    if (destroyed || revision !== loadRevision) return;
 
     if (accountResult.status === 'rejected') {
       error = apiMessage(accountResult.reason);
       loading = false;
       return;
     }
-    accounts = accountResult.value;
+    const loadedAccounts = accountResult.value;
+    accounts = loadedAccounts;
 
     if (capabilityResult.status === 'fulfilled') {
       capabilities = capabilityResult.value.platforms;
@@ -98,13 +112,18 @@
     }
 
     const results = await Promise.allSettled(
-      accounts.map((account) => api<LoginStatus>(`/api/v1/accounts/${account.id}/login-status`))
+      loadedAccounts.map((account) => api<LoginStatus>(`/api/v1/accounts/${account.id}/login-status`))
     );
+    if (destroyed || revision !== loadRevision) return;
     const nextStatuses: Record<string, LoginStatus> = {};
+    const nextErrors: Record<string, string> = {};
     results.forEach((result, index) => {
-      if (result.status === 'fulfilled') nextStatuses[accounts[index].id] = result.value;
+      const id = loadedAccounts[index].id;
+      if (result.status === 'fulfilled' && result.value.account_id === id) nextStatuses[id] = result.value;
+      else nextErrors[id] = LOGIN_STATUS_UNAVAILABLE;
     });
     statuses = nextStatuses;
+    statusErrors = nextErrors;
 
     if (!selectedAccountId || !accounts.some((item) => item.id === selectedAccountId)) {
       selectedAccountId = accounts[0]?.id ?? '';
@@ -190,11 +209,9 @@
       if (destroyed) return;
       qrAccount = account;
       qrOperationId = started.operation_id;
-      qrLoginSessionId = '';
-      qrState = 'running';
-      qrHint = '登录进程正在生成二维码…';
+      qrView = initialLoginAttemptView();
       qrOpen = true;
-      startPolling();
+      startPolling(account, started.operation_id);
     } catch (caught) {
       toast(apiMessage(caught), 'danger');
     } finally {
@@ -202,80 +219,48 @@
     }
   }
 
-  function startPolling(): void {
+  function startPolling(account: Account, operationId: string): void {
     stopPolling();
-    void pollLogin();
-    pollTimer = window.setInterval(() => void pollLogin(), 1_200);
-  }
-
-  async function pollLogin(): Promise<void> {
-    if (destroyed || !qrAccount || !qrOperationId || pollBusy) return;
-    const account = qrAccount;
-    const operationId = qrOperationId;
-    pollBusy = true;
-    try {
-      const result = await qrRequest.run(async (signal) => {
-        const login = await api<LoginStatus>(`/api/v1/accounts/${account.id}/login-status`, { signal });
-        const sessionId = login.login_session_id ?? qrLoginSessionId;
-        const qrPath = sessionId
-          ? `/api/v1/login-sessions/${encodeURIComponent(sessionId)}/qr.png`
-          : `/api/v1/accounts/${account.id}/login-qr.png`;
-        const [qrResponse, operation] = await Promise.all([
-          apiBlob(`${qrPath}?t=${Date.now()}`, { signal }),
-          api<Operation>(`/api/v1/operations/${operationId}`, { signal })
-        ]);
-        return { login, qrResponse, operation, sessionId };
-      });
-      if (result.status === 'superseded' || destroyed || !qrOpen || qrAccount?.id !== account.id) return;
-      if (result.status === 'rejected') throw result.reason;
-      const { login, qrResponse, operation, sessionId } = result.value;
-      statuses = { ...statuses, [account.id]: login };
-      qrLoginSessionId = sessionId;
-      if (qrResponse.blob) {
-        if (qrImageUrl) URL.revokeObjectURL(qrImageUrl);
-        qrImageUrl = URL.createObjectURL(qrResponse.blob);
-        qrHint = '请使用对应平台 App 扫码确认';
-      } else if (qrResponse.status === 202) {
-        qrHint = '登录环境已启动，正在等待二维码…';
-      } else if (qrResponse.status === 410) {
-        qrHint = '二维码已失效，正在确认最终状态…';
-      } else if (qrResponse.status === 404) {
-        qrHint = '登录会话已建立，二维码尚未可用…';
+    const monitor = new LoginAttemptMonitor(account.id, operationId, {
+      readOperation: (id, signal) => api<Operation>(`/api/v1/operations/${id}`, { signal }),
+      readQr: (sessionId, signal) =>
+        apiBlob(`/api/v1/login-sessions/${sessionId}/qr.png?t=${Date.now()}`, { signal }),
+      changed: (view) => {
+        if (!destroyed && qrOpen && qrMonitor === monitor) qrView = view;
+      },
+      terminal: (view) => {
+        if (destroyed || !qrOpen || qrMonitor !== monitor) return;
+        if (pollTimer !== null) window.clearInterval(pollTimer);
+        pollTimer = null;
+        toast(
+          view.explanation?.title ?? '登录操作已结束。',
+          view.explanation?.tone === 'success'
+            ? 'success'
+            : view.explanation?.tone === 'info'
+              ? 'info'
+              : 'danger'
+        );
+        void load();
       }
-
-      qrState = operation.state;
-      if (operation.state === 'succeeded') {
-        qrHint = '登录成功，账户状态已更新。';
-        stopPolling();
-        toast(`${account.display_name} 登录成功。`);
-        await load();
-      } else if (operationIsTerminal(operation.state)) {
-        qrHint = `登录已结束（${statusLabel(operation.state)}）：${operation.error_code ?? '无错误码'}`;
-        stopPolling();
-        toast(qrHint, operation.state === 'cancelled' ? 'info' : 'danger');
-        await load();
-      }
-    } catch {
-      if (!destroyed && qrOpen) qrHint = '暂时无法读取登录状态，将自动重试…';
-    } finally {
-      pollBusy = false;
-    }
+    });
+    qrMonitor = monitor;
+    void monitor.poll();
+    pollTimer = window.setInterval(() => void monitor.poll(), 1_200);
   }
 
   function stopPolling(): void {
     if (pollTimer !== null) window.clearInterval(pollTimer);
     pollTimer = null;
-    qrRequest.cancel();
+    qrMonitor?.dispose();
+    qrMonitor = null;
   }
 
   function closeQr(): void {
     qrOpen = false;
     stopPolling();
-    if (qrImageUrl) URL.revokeObjectURL(qrImageUrl);
-    qrImageUrl = '';
+    qrView = initialLoginAttemptView();
     qrAccount = null;
     qrOperationId = '';
-    qrLoginSessionId = '';
   }
 
   onMount(() => void load());
@@ -392,6 +377,7 @@
             <div>
               <strong>登录专用预检</strong>
               <span>仅检查数据库、许可证、运行时、浏览器、profile 与账户锁。</span>
+              <span>{LOGIN_READINESS_NOTICE}</span>
             </div>
             {#if selectedPreflight}
               <StatusBadge
@@ -433,6 +419,27 @@
           {/if}
         </section>
       </div>
+      {#if statusErrors[selectedAccount.id]}
+        <div class="notice warning login-result-notice" role="status">{LOGIN_STATUS_UNAVAILABLE}</div>
+      {:else if selectedLoginExplanation}
+        <section
+          class="notice login-result-notice"
+          class:danger={selectedLoginExplanation.tone === 'danger'}
+          class:warning={selectedLoginExplanation.tone === 'warning'}
+          class:success={selectedLoginExplanation.tone === 'success'}
+          aria-live="polite"
+        >
+          <strong>最近登录结果 · {selectedLoginExplanation.title}</strong>
+          <span>{selectedLoginExplanation.detail}</span>
+          <span>下一步：{selectedLoginExplanation.next}</span>
+          <span
+            ><a class="text-link" href="/jobs">查看任务记录</a> ·
+            <a class="text-link" href="/diagnostics">检查运行环境</a>
+            {#if selectedLoginDiagnostic}
+              · 操作 <code>{shortId(selectedLoginDiagnostic.operation_id)}</code>{/if}
+          </span>
+        </section>
+      {/if}
     </Panel>
   {/if}
 
@@ -462,6 +469,7 @@
           <tbody>
             {#each accounts as account}
               {@const login = statuses[account.id]}
+              {@const loginExplanation = accountLoginExplanation(login ?? null, account.id)}
               {@const capability = capabilityByPlatform(capabilities, account.platform)}
               {@const composite = accountCompositeState(
                 account,
@@ -490,6 +498,8 @@
                 <td>
                   <span class="cell-main">{statusLabel(login?.login_session_status)}</span>
                   <span class="cell-sub mono">{shortId(login?.login_session_id)}</span>
+                  {#if statusErrors[account.id]}<span class="cell-sub">最近结果读取失败，请刷新确认</span>
+                  {:else if loginExplanation}<span class="cell-sub">{loginExplanation.title}</span>{/if}
                 </td>
                 <td>
                   <span class="cell-main">{capability?.qr_login ? 'QR 可用' : 'QR 未开放'}</span>
@@ -567,27 +577,37 @@
 <Modal
   bind:open={qrOpen}
   title={`扫码登录${qrAccount ? ` · ${qrAccount.display_name}` : ''}`}
-  description={qrLoginSessionId ? `会话 ${shortId(qrLoginSessionId)}` : `操作 ${shortId(qrOperationId)}`}
+  description={qrView.sessionId ? `会话 ${shortId(qrView.sessionId)}` : `操作 ${shortId(qrOperationId)}`}
   dismissible={false}
 >
-  <div class="qr-stage" class:success={qrState === 'succeeded'} class:failed={qrState === 'failed'}>
-    {#if qrImageUrl && qrState === 'running'}
-      <img src={qrImageUrl} alt="平台登录二维码" />
-    {:else if qrState === 'succeeded'}
-      <div class="qr-result success"><QrCode size={30} /><strong>认证完成</strong></div>
-    {:else if qrState === 'failed'}
-      <div class="qr-result failed"><XCircle size={30} /><strong>认证失败</strong></div>
+  <div
+    class="qr-stage"
+    class:success={qrView.terminal && qrView.explanation?.tone === 'success'}
+    class:failed={qrView.terminal && qrView.explanation?.tone === 'danger'}
+  >
+    {#if qrView.terminal}
+      <div
+        class="qr-result"
+        class:success={qrView.explanation?.tone === 'success'}
+        class:failed={qrView.explanation?.tone === 'danger'}
+      >
+        {#if qrView.explanation?.tone === 'success'}<QrCode size={30} />{:else}<XCircle size={30} />{/if}
+        <strong>{qrView.explanation?.title ?? '登录操作已结束'}</strong>
+      </div>
+    {:else if qrView.imageUrl}
+      <img src={qrView.imageUrl} alt="平台登录二维码" />
     {:else}
       <LoaderCircle class="spin" size={31} />
     {/if}
   </div>
-  <p class="qr-hint">{qrHint}</p>
-  {#if qrLoginSessionId}
-    <p class="session-bound">二维码已绑定到会话 <span class="mono">{shortId(qrLoginSessionId)}</span></p>
+  <p class="qr-hint" aria-live="polite">{qrView.hint}</p>
+  {#if qrView.explanation}<p class="qr-hint">下一步：{qrView.explanation.next}</p>{/if}
+  {#if qrView.sessionId}
+    <p class="session-bound">本次操作关联会话 <span class="mono">{shortId(qrView.sessionId)}</span></p>
   {/if}
   <svelte:fragment slot="footer">
     <button class="button secondary" type="button" on:click={closeQr}>
-      {qrState === 'running' ? '后台继续并关闭' : '关闭'}
+      {qrView.terminal ? '关闭' : '后台继续并关闭'}
     </button>
   </svelte:fragment>
 </Modal>
@@ -597,6 +617,13 @@
     display: grid;
     grid-template-columns: minmax(250px, 0.72fr) minmax(360px, 1.28fr);
     gap: 14px;
+  }
+
+  .login-result-notice {
+    display: grid;
+    gap: 5px;
+    margin-top: 14px;
+    font-size: 12px;
   }
 
   .capability-card,

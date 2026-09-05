@@ -85,6 +85,9 @@ class CrawlerFactory:
 
 
 async def async_cleanup():
+    root = Path(__file__).parent
+    if (root / "mode.txt").read_text(encoding="utf-8").strip() == "browser_failure":
+        (root / "cleanup-called").write_text("cleaned", encoding="utf-8")
     return None
 """
 
@@ -100,6 +103,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+from types import SimpleNamespace
 
 import config
 from tools import utils
@@ -167,12 +171,21 @@ class {login_class}:
 
 class FakeCrawler:
     async def launch_browser(self, chromium, *args, **kwargs):
-        raise AssertionError("non-browser login fixture must not launch Chromium")
+        return await chromium.launch_persistent_context(channel="chrome", headless=config.HEADLESS)
 
     async def _create_client(self, *_args, **_kwargs):
         return FakeClient()
 
     async def start(self):
+        if mode() == "browser_failure":
+            async def fail_launch(**kwargs):
+                assert "channel" not in kwargs
+                assert kwargs["executable_path"] == "/synthetic/bundled/chromium"
+                raise RuntimeError("PRIVATE-BROWSER-FAILURE-MUST-NOT-ESCAPE")
+            await self.launch_browser(SimpleNamespace(
+                executable_path="/synthetic/bundled/chromium",
+                launch_persistent_context=fail_launch,
+            ))
         client = await getattr(self, FACTORY_NAME)(None)
         if not await client.pong():
             login = globals()[LOGIN_CLASS]()
@@ -484,6 +497,22 @@ def test_seven_platform_login_contract_has_no_content_or_qr_export(tmp_path: Pat
     assert (profile / "authenticated.state").read_text(encoding="utf-8") == "ok"
     assert "QR-SECRET" not in repr((interactive, probe, expired))
     assert str(profile) not in repr((interactive, probe, expired))
+
+
+@pytest.mark.parametrize("platform", list(Platform))
+def test_seven_platform_login_browser_failure_is_fixed_and_cleanup_still_runs(
+    tmp_path: Path, platform: Platform, capsys: pytest.CaptureFixture[str]
+) -> None:
+    checkout = _write_fake_checkout(tmp_path / "upstream")
+    (checkout / "mode.txt").write_text("browser_failure", encoding="utf-8")
+    result = _runner(checkout, tmp_path / "runtime").run(_request(platform, MediaCrawlerLoginMode.INTERACTIVE_QR))
+
+    assert result.status is MediaCrawlerLoginStatus.BROWSER_LAUNCH_FAILED
+    assert not result.authenticated
+    assert (checkout / "cleanup-called").read_text(encoding="utf-8") == "cleaned"
+    assert not (checkout / "content-side-effect").exists()
+    output = capsys.readouterr()
+    assert "PRIVATE-BROWSER-FAILURE-MUST-NOT-ESCAPE" not in output.out + output.err + repr(result)
 
 
 def test_system_exit_zero_cannot_authenticate(tmp_path: Path) -> None:
@@ -988,6 +1017,7 @@ def test_timeout_and_cancellation_join_the_complete_process_tree(
     ("frame", "returncode", "expected"),
     [
         (b'{"schema_version":1,"status":"failed"}', 0, MediaCrawlerLoginStatus.FAILED),
+        (b'{"schema_version":1,"status":"browser_launch_failed"}', 20, MediaCrawlerLoginStatus.BROWSER_LAUNCH_FAILED),
         (b'{"schema_version":1,"status":"authenticated"}', 20, MediaCrawlerLoginStatus.AUTHENTICATED),
         (
             b'{"schema_version":1,"status":"failed"}{"schema_version":1,"status":"authenticated"}',

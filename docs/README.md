@@ -2,7 +2,7 @@
 
 # media-sync project journal
 
-Latest P0 follow-up: [login browser runtime repair](executions/0055-operator-auth-playback-evidence/login-runtime/progress.md), with bilingual frozen goal/plan and measured verification. Failed deployed login observations are not successful platform qualification.
+Latest P0 follow-up: [Node/QR integration repair](executions/0055-operator-auth-playback-evidence/login-runtime-followup/progress.md) and [safe login diagnostics](executions/0055-operator-auth-playback-evidence/login-diagnostics/progress.md), with bilingual goals/plans and measured verification. The operator's Linux blank-browser PASS does not override newly observed platform login failures. Pasted-Cookie validation/persistence is accepted follow-up, not yet implemented.
 
 This directory is the durable audit trail for the project. Every execution milestone has four records: goal, plan, progress, and verification. Since execution 0028 every document is maintained as two editions — English `<name>.md` and Chinese `<name>.zh.md` — and each edition links to its counterpart in its header.
 

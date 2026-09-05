@@ -201,6 +201,18 @@ describe('media-server error copy', () => {
   });
 });
 
+describe('login runtime error copy', () => {
+  it('explains missing JavaScript runtime with a fixed action and never reflects raw payload', () => {
+    const error = new ApiError(503, 'runtime_javascript_unavailable', {
+      detail: 'runtime_javascript_unavailable',
+      stderr: 'DO_NOT_RENDER'
+    });
+
+    expect(error.message).toBe('缺少可用的 JavaScript 运行时，请更新镜像并确认 Node.js 可用。');
+    expect(error.message).not.toContain('DO_NOT_RENDER');
+  });
+});
+
 describe('browser session transport', () => {
   it('normalizes Headers, sends memory CSRF only for unsafe methods, and consumes 204', async () => {
     const fetchMock = vi.fn(async (_path: string, _init: RequestInit) => new Response(null, { status: 204 }));

@@ -71,8 +71,9 @@ def _compile(nodes: list[ast.stmt], namespace: dict[str, Any]) -> None:
 class _Chromium:
     executable_path = "/synthetic/bundled/chromium"
 
-    def __init__(self, events: list[str]) -> None:
+    def __init__(self, events: list[str], failure: Exception | None = None) -> None:
         self.events = events
+        self.failure = failure
         self.calls: list[dict[str, Any]] = []
         self.context = object()
 
@@ -81,6 +82,8 @@ class _Chromium:
         self.calls.append(kwargs)
         assert kwargs["executable_path"] == self.executable_path
         assert "channel" not in kwargs
+        if self.failure is not None:
+            raise self.failure
         return self.context
 
 
@@ -91,6 +94,7 @@ def _runtime(
     platform: Platform,
     *,
     authenticated: bool = False,
+    launch_failure: Exception | None = None,
 ) -> SimpleNamespace:
     checkout = tmp_path / "checkout"
     checkout.mkdir()
@@ -109,7 +113,7 @@ def _runtime(
         COOKIES="",
     )
     events: list[str] = []
-    chromium = _Chromium(events)
+    chromium = _Chromium(events, launch_failure)
     upstream = ModuleType("main")
     upstream.__file__ = str(checkout / "main.py")
 
@@ -179,15 +183,20 @@ def _runtime(
     monkeypatch.setattr(importlib, "import_module", fake_import)
     install = browser_policy.install_bundled_chromium_policy
 
-    def observed_install(main: Any) -> None:
+    policy_modes: list[bool] = []
+
+    def observed_install(main: Any, *, classify_launch_errors: bool = False) -> None:
         assert main is upstream
         events.append("install")
-        install(main)
+        policy_modes.append(classify_launch_errors)
+        install(main, classify_launch_errors=classify_launch_errors)
 
     monkeypatch.setattr(browser_policy, "install_bundled_chromium_policy", observed_install)
     monkeypatch.setattr(login_runner, "install_bundled_chromium_policy", observed_install)
     monkeypatch.setattr(detail_runner, "install_bundled_chromium_policy", observed_install)
-    return SimpleNamespace(checkout=checkout, config=config, main=upstream, events=events, chromium=chromium)
+    return SimpleNamespace(
+        checkout=checkout, config=config, main=upstream, events=events, chromium=chromium, policy_modes=policy_modes
+    )
 
 
 @pytest.mark.parametrize("platform", tuple(Platform))
@@ -201,6 +210,7 @@ async def test_pinned_factory_dispatches_each_platform_through_real_policy(
     await crawler.start()
     assert crawler.context is fixture.chromium.context
     assert fixture.events == ["install", f"factory:{platform.value}", "start", "browser"]
+    assert fixture.policy_modes == [False]
 
 
 @pytest.mark.parametrize("platform", tuple(Platform))
@@ -220,6 +230,34 @@ async def test_real_login_entry_installs_policy_before_pinned_factory(
 
     assert await login_runner._run_upstream(request) is MediaCrawlerLoginStatus.AUTHENTICATED
     assert fixture.events == ["install", f"factory:{platform.value}", "start", "browser", "cleanup"]
+    assert fixture.policy_modes == [True]
+
+
+@pytest.mark.parametrize("platform", tuple(Platform))
+async def test_real_login_child_classifies_pinned_launch_failure_and_cleans_up(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, pinned_nodes: Any, platform: Platform
+) -> None:
+    fixture = _runtime(
+        tmp_path,
+        monkeypatch,
+        pinned_nodes,
+        platform,
+        launch_failure=RuntimeError("synthetic-secret-browser-error"),
+    )
+    monkeypatch.setattr(login_runner, "_configure_upstream", lambda *_args: None)
+    monkeypatch.setattr(login_runner, "_install_client_guard", lambda *_args: None)
+    monkeypatch.setattr(login_runner, "_disable_qr_export", lambda *_args: contextlib.nullcontext())
+    request = SimpleNamespace(
+        checkout_root=fixture.checkout,
+        platform=platform,
+        mode=MediaCrawlerLoginMode.INTERACTIVE_QR,
+        paths=SimpleNamespace(account_root=tmp_path / "unused-account"),
+    )
+
+    assert await login_runner._execute_child(request) is MediaCrawlerLoginStatus.BROWSER_LAUNCH_FAILED
+    assert fixture.events == ["install", f"factory:{platform.value}", "start", "browser", "cleanup"]
+    assert fixture.policy_modes == [True]
+    assert fixture.config.COOKIES == ""
 
 
 def _disable_capture_hooks(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -261,6 +299,7 @@ async def test_real_creator_entry_installs_policy_before_pinned_main_dispatch(
 
     assert await runner._execute_child(manifest, "fixture-author", None, None) == 0
     assert fixture.events == ["install", f"factory:{platform.value}", "start", "browser", "cleanup"]
+    assert fixture.policy_modes == [False]
 
 
 @pytest.mark.parametrize("platform", tuple(Platform))
@@ -279,6 +318,7 @@ async def test_real_detail_entry_installs_policy_before_pinned_main_dispatch(
 
     assert await detail_runner._run_upstream(request) == (fixture.main, None)
     assert fixture.events == ["install", f"factory:{platform.value}", "start", "browser"]
+    assert fixture.policy_modes == [False]
 
 
 async def test_real_bilibili_aid_detail_branch_uses_same_installed_factory(
@@ -296,3 +336,4 @@ async def test_real_bilibili_aid_detail_branch_uses_same_installed_factory(
 
     assert await detail_runner._run_upstream(request) == (fixture.main, None)
     assert fixture.events == ["install", "factory:bili", "start", "browser", "aid-detail"]
+    assert fixture.policy_modes == [False]

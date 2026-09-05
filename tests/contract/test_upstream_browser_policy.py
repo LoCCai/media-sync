@@ -10,7 +10,7 @@ from typing import Any
 
 import pytest
 
-from media_sync.integrations.mediacrawler.browser_policy import install_bundled_chromium_policy
+from media_sync.integrations.mediacrawler.browser_policy import BrowserLaunchFailure, install_bundled_chromium_policy
 from media_sync.integrations.mediacrawler.checkout import verify_mediacrawler_checkout
 
 _PLATFORMS = ("xhs", "douyin", "kuaishou", "bilibili", "weibo", "tieba", "zhihu")
@@ -122,6 +122,24 @@ async def test_pinned_launches_change_only_browser_selectors(
     assert chromium.close_count == 0
     await context.close()
     assert chromium.close_count == 1
+
+
+@pytest.mark.parametrize("platform", _PLATFORMS)
+@pytest.mark.parametrize("persistent", [True, False])
+async def test_login_opt_in_classifies_exact_pinned_launch_failures(
+    pinned_launchers: dict[str, tuple[Callable[..., Any], SimpleNamespace]], platform: str, persistent: bool
+) -> None:
+    launcher, config = pinned_launchers[platform]
+    config.SAVE_LOGIN_STATE = persistent
+    crawler = type("Crawler", (), {"launch_browser": launcher})()
+    upstream_main = _main_for(crawler)
+    install_bundled_chromium_policy(upstream_main, classify_launch_errors=True)
+    upstream_main.CrawlerFactory.create_crawler("fixture")
+    chromium = FakeChromium(RuntimeError("synthetic launch failure"))
+    with pytest.raises(BrowserLaunchFailure, match=r"^MediaCrawler browser launch failed$"):
+        await crawler.launch_browser(chromium, None, None)
+    assert len(chromium.calls) == 1
+    assert chromium.close_count == 0
 
 
 @pytest.mark.parametrize("platform", _PLATFORMS)

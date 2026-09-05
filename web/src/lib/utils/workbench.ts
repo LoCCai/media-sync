@@ -8,6 +8,7 @@ import type {
   SubscriptionPolicySummary,
   SubscriptionPreview
 } from '$lib/types/api';
+import { accountLoginExplanation, LOGIN_READINESS_NOTICE } from './login-diagnostics';
 
 export interface SubscriptionWizardState {
   accountId: string;
@@ -74,6 +75,7 @@ export function accountCompositeState(
   capability: PlatformCapability | null,
   preflight: LoginPreflight | null
 ): { status: string; label: string; detail: string } {
+  if (status?.account_id !== account.id) status = null;
   if (!capability) {
     return { status: 'failed_terminal', label: '能力未知', detail: '尚未取得平台能力契约' };
   }
@@ -89,6 +91,20 @@ export function accountCompositeState(
   ) {
     return { status: 'running', label: '登录进行中', detail: '存在正在推进的登录会话' };
   }
+  if (status?.login_session_status === 'failed' || status?.auth_status === 'failed') {
+    const result = accountLoginExplanation(status, account.id);
+    return {
+      status: 'failed',
+      label: result?.title ?? '最近登录失败',
+      detail: result?.detail ?? '未保存更细诊断'
+    };
+  }
+  if (status?.login_session_status === 'expired' || status?.auth_status === 'expired') {
+    return { status: 'expired', label: '登录已过期', detail: '需要重新预检并手动登录，不代表已认证' };
+  }
+  if (status?.login_session_status === 'cancelled') {
+    return { status: 'cancelled', label: '最近登录已取消', detail: '重新预检后可手动发起新的登录' };
+  }
   if (!preflight) {
     return { status: 'pending', label: '等待预检', detail: '通过启动前检查后才可扫码' };
   }
@@ -99,7 +115,7 @@ export function accountCompositeState(
       detail: preflight.code
     };
   }
-  return { status: 'required', label: '可以登录', detail: '启动前必需检查已通过' };
+  return { status: 'required', label: '允许启动登录', detail: LOGIN_READINESS_NOTICE };
 }
 
 export function subscriptionWizardGates(state: SubscriptionWizardState): SubscriptionWizardGates {

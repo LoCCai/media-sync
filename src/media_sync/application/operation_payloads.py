@@ -113,6 +113,7 @@ _LOGIN_RUNNER_STATUSES: Final = frozenset(
         "authenticated",
         "expired",
         "failed",
+        "browser_launch_failed",
         "timed_out",
         "cancelled",
         "account_busy",
