@@ -560,7 +560,11 @@ class OperationCoordinator:
 
         def request(session: Session) -> OperationSnapshot:
             repository = OperationRepository(session)
-            observed = repository.require(operation_id)
+            observed = (
+                repository.require_for_update(operation_id)
+                if expected_revision is None
+                else repository.require(operation_id)
+            )
             revision = observed.revision if expected_revision is None else expected_revision
             return repository.request_cancel(operation_id, expected_revision=revision, at=self._now())
 
@@ -653,7 +657,7 @@ class OperationCoordinator:
                     target_operation_id: str = operation_id,
                 ) -> OperationSnapshot:
                     repository = OperationRepository(session)
-                    snapshot = repository.require(target_operation_id)
+                    snapshot = repository.require_for_update(target_operation_id)
                     if snapshot.state == "running" and snapshot.cancel_requested_at is None:
                         return repository.request_cancel(
                             target_operation_id,
