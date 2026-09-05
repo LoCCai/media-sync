@@ -2,15 +2,16 @@
 
 # Execution 0055 Phase A verification
 
-- Status: Published backend-auth gate and current observation identity/persistent-ledger Python, Web, code-quality, and distribution gates pass locally
+- Status: Backend-authentication and observation identity/persistent-ledger checkpoints published; confirmation service/API not yet implemented
 - Date: 2026-09-05
 - Planning baseline: `d0a8cc2`; authentication implementation baseline: `4564b2a`
 - Published authentication commit: `f19bfaa`
+- Published persistence commit: `1d5b448`
 - Current revision: `0008_playback_evidence`
 
 ## Evidence policy
 
-Planning checks establish only that the slice is scoped and based on current code. The published evidence below proves the backend authentication contracts at `f19bfaa`; the newer focused evidence proves only the local observation-identity and persistence primitive. It does not yet prove a working confirmation service/API, Web login/confirmation surface, qualification schema v3, real-server compatibility, or authorized human playback. Implementation evidence and live qualification remain separate.
+Planning checks establish only that the slice is scoped and based on current code. The published evidence below proves the backend authentication contracts at `f19bfaa`; the newer focused evidence proves only the observation-identity and persistence primitive published at `1d5b448`. It does not yet prove a working confirmation service/API, Web login/confirmation surface, qualification schema v3, real-server compatibility, or authorized human playback. Implementation evidence and live qualification remain separate.
 
 ## Planning baseline evidence
 
@@ -55,6 +56,7 @@ Every result in this section is retained as historical evidence for pushed commi
 | Check | Command or source | Status |
 | --- | --- | --- |
 | Authentication publication baseline | `git log`; published repository state | `PASS` — fail-closed single-operator authentication was committed and pushed as `f19bfaa` before commit-3 work began |
+| Persistence publication | final fetch, staged-set audit, commit, push, and `HEAD...origin/main` comparison | `PASS` — 38 intended files were committed and pushed as `1d5b448`; divergence is `0 0`, `.mimosa/` remains untracked, and no staged or unstaged tracked change remains |
 | Matched-only observation identity | `media_server_observation_fingerprint`; `MediaServerAuthorLookupResult`; Web `MediaServerAuthorLookup` discriminated type; observation unit/API regressions | `PASS` — the domain-separated v1 digest binds canonical author ID plus profile/publication/selector/item digests only for a unique `matched` result; `not_found` exposes neither item nor observation fingerprint, raw item ID is not retained, and Web types mirror the distinction without claiming a confirmation UI |
 | Revision and ORM contract | `0008_playback_evidence.py`; `PlaybackEvidence`; migration/model regressions | `PASS` — schema version, canonical UUID, lowercase SHA-256, timestamp ordering, unique observation identity, author/time index, and Author/Job `RESTRICT` constraints are enforced in both migration and model metadata |
 | Guarded downgrade | revision 0008 migration regressions | `PASS` — offline downgrade is refused, a populated ledger blocks downgrade, and only an online audited empty ledger can be removed |
@@ -93,14 +95,13 @@ Every result in this section is retained as historical evidence for pushed commi
 
 The current checkpoint closes the local fingerprint, revision/model, guarded-downgrade, natural-replay, and SQLite portions of the frozen exit gate. Remaining work still requires exact passing evidence for:
 
-1. Complete the final Git publication gate for commit 3; its Python, Web, code-quality, docs, locked-upstream, distribution, generated-output, sensitive-data, frozen-plan, and divergence gates are complete and recorded separately from historical `f19bfaa` evidence.
-2. Implement resolve → unique lookup → resolve TOCTOU closure, authenticated confirmation service/API, and every zero-write failure path.
-3. Implement qualification schema v3 truth: no evidence is `IMPLEMENTED/NOT_RUN`, only exact current evidence may be PASS, stale evidence never is, and provider completion/automatic scan stay unimplemented.
-4. Implement and verify the Web login/session/logout/expiry lifecycle, in-memory CSRF injection, centralized 401 reset, cookie-only EventSource/direct-media behavior, and the accessible matched-only playback-attestation interaction.
-5. Complete a real Docker/Compose configuration and startup check on a host with Docker available.
-6. Run the eight PlaybackEvidence PostgreSQL races and re-run the previously skipped PostgreSQL coverage on a configured host; source inspection is not a substitute.
-7. Preserve credential/session/CSRF/reference/raw-selector non-retention through final repository, package, and publication scans.
-8. Re-run complete Python/Web and all quality/package/documentation/upstream/generated-output/host-path/secret/whitespace gates after the remaining implementation, then complete the Git publication gate.
+1. Implement resolve → unique lookup → resolve TOCTOU closure, authenticated confirmation service/API, and every zero-write failure path.
+2. Implement qualification schema v3 truth: no evidence is `IMPLEMENTED/NOT_RUN`, only exact current evidence may be PASS, stale evidence never is, and provider completion/automatic scan stay unimplemented.
+3. Implement and verify the Web login/session/logout/expiry lifecycle, in-memory CSRF injection, centralized 401 reset, cookie-only EventSource/direct-media behavior, and the accessible matched-only playback-attestation interaction.
+4. Complete a real Docker/Compose configuration and startup check on a host with Docker available.
+5. Run the eight PlaybackEvidence PostgreSQL races and re-run the previously skipped PostgreSQL coverage on a configured host; source inspection is not a substitute.
+6. Preserve credential/session/CSRF/reference/raw-selector non-retention through final repository, package, and publication scans.
+7. Re-run complete Python/Web and all quality/package/documentation/upstream/generated-output/host-path/secret/whitespace gates after the remaining implementation, then complete the Git publication gate.
 
 ## Live qualification
 

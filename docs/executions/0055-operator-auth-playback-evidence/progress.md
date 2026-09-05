@@ -2,10 +2,11 @@
 
 # Execution 0055 Phase A progress
 
-- Status: Backend authentication published; playback observation identity/persistent-ledger checkpoint implemented locally; Python, Web, code-quality, and distribution gates pass
+- Status: Backend authentication and playback observation identity/persistent-ledger checkpoints published; confirmation service/API remains pending
 - Date: 2026-09-05
 - Planning baseline: `d0a8cc2`; authentication implementation baseline: `4564b2a`
 - Published authentication commit: `f19bfaa`
+- Published persistence commit: `1d5b448`
 - Current revision: `0008_playback_evidence`
 
 ## Completed checkpoints
@@ -27,6 +28,7 @@
 15. The current commit-3 focused union passes 129 tests with 8 skips and one existing warning. Its migration/repository subset passes 42 tests with 8 skips. The complete Python regression passes 2868 tests with 22 skips and one existing Starlette/httpx warning in 558.19 seconds (`0:09:18`): 3 skips are Windows/POSIX differences, 11 are the existing Operation PostgreSQL cases, and 8 are the new PlaybackEvidence PostgreSQL races. Both PostgreSQL groups were skipped because `MEDIA_SYNC_TEST_POSTGRESQL_URL` is unset, so real PostgreSQL remains explicitly `NOT_RUN`.
 16. Current Web format, 7-file/69-test regression, Svelte check with zero errors/warnings, and production build all pass. Full Ruff check passes; Ruff format passes over 727 files after correcting one formatting-only difference; strict mypy passes over 105 source files; and compileall passes. These Web gates validate the current discriminated response type and existing console only—they do not claim that the missing Web login or confirmation interaction is implemented.
 17. An isolated system-temporary `uv build` produces exactly one wheel and one sdist. The wheel has 123 entries and the sdist has 837; both contain `playback_evidence_repository.py` and `0008_playback_evidence.py`, and neither contains `.env` or SQLite output.
+18. Reviewed, committed, and pushed the observation-identity/persistent-ledger checkpoint as `1d5b448`. The final fetch confirms `HEAD...origin/main` divergence `0 0`; all tracked changes are published, and only the pre-existing untracked `.mimosa/` remains excluded.
 
 ## Playback-evidence boundary clarified before implementation
 
@@ -43,6 +45,6 @@
 
 ## Next checkpoint
 
-Complete the final Git publication gate for the reviewed observation-identity/persistent-ledger commit, then implement the authenticated confirmation service/API with the required double resolution and zero-write failure paths. The current docs, locked-upstream, quality, distribution, generated-output, sensitive-data, frozen-plan, and divergence checks pass locally. Qualification schema v3 and the Web login/confirmation lifecycle follow as separate checkpoints. A Linux/Docker/PostgreSQL-capable host must still execute the recorded Compose startup and eight PlaybackEvidence PostgreSQL race gates, together with the previously skipped PostgreSQL coverage.
+Implement the authenticated confirmation service/API with the required double resolution and zero-write failure paths. Qualification schema v3 and the Web login/confirmation lifecycle follow as separate checkpoints. A Linux/Docker/PostgreSQL-capable host must still execute the recorded Compose startup and eight PlaybackEvidence PostgreSQL race gates, together with the previously skipped PostgreSQL coverage.
 
 The pre-existing `.mimosa/` directory remains untracked and excluded.

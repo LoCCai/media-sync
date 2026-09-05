@@ -2,10 +2,11 @@
 
 # 执行 0055 阶段 A 进展
 
-- 状态：后端鉴权已发布；播放观察身份/持久账本检查点已在本地实现；Python、Web、代码质量与 distribution 门通过
+- 状态：后端鉴权与播放观察身份/持久账本检查点均已发布；确认 service/API 仍待实现
 - 日期：2026-09-05
 - 规划基线：`d0a8cc2`；鉴权实现基线：`4564b2a`
 - 已发布鉴权提交：`f19bfaa`
+- 已发布持久化提交：`1d5b448`
 - 当前 revision：`0008_playback_evidence`
 
 ## 已完成检查点
@@ -27,6 +28,7 @@
 15. 当前 commit-3 专项并集为 129 项通过、8 项跳过、1 个既有 warning；其中 migration/repository 子集为 42 项通过、8 项跳过。完整 Python 回归在 558.19 秒（`0:09:18`）内通过 2868 项、跳过 22 项，并有 1 个既有 Starlette/httpx warning：3 项 skip 为 Windows/POSIX 差异，11 项为既有 Operation PostgreSQL 用例，8 项为新增 PlaybackEvidence PostgreSQL 竞态。两组 PostgreSQL 用例均因未设置 `MEDIA_SYNC_TEST_POSTGRESQL_URL` 而跳过，因此真实 PostgreSQL 明确仍为 `NOT_RUN`。
 16. 当前 Web format、7 个文件/69 项测试、Svelte check（0 error/0 warning）与 production build 均通过。全仓 Ruff check 通过；修正 1 个纯格式差异后，Ruff format 对 727 个文件通过；strict mypy 对 105 个源文件通过；compileall 通过。这些 Web 门只验证当前 discriminated response type 与既有控制台，不声明尚缺的 Web 登录或 confirmation 交互已经实现。
 17. 在系统临时目录隔离运行 `uv build`，精确生成 1 个 wheel 与 1 个 sdist。Wheel 共 123 项，sdist 共 837 项；两者均包含 `playback_evidence_repository.py` 与 `0008_playback_evidence.py`，也均不包含 `.env` 或 SQLite 输出。
+18. Observation identity/持久账本检查点经审查后已提交并推送为 `1d5b448`。最终 fetch 确认 `HEAD...origin/main` 分叉为 `0 0`；全部 tracked 变更均已发布，只剩既有未跟踪 `.mimosa/` 继续排除。
 
 ## 播放证据实现前澄清
 
@@ -43,6 +45,6 @@
 
 ## 下一检查点
 
-完成已审查 observation identity/持久账本提交的最终 Git 发布门；随后实现带必需双重 resolve 与失败零写入的经鉴权 confirmation service/API。当前 docs、锁定上游、质量、distribution、生成物、敏感数据、冻结计划与分叉检查均已在本地通过。Qualification schema v3 与 Web 登录/确认生命周期作为后续独立检查点推进。具备 Linux/Docker/PostgreSQL 的主机仍须执行已记录的 Compose 启动、8 项 PlaybackEvidence PostgreSQL 竞态门，以及此前跳过的 PostgreSQL 覆盖。
+实现带必需双重 resolve 与失败零写入的经鉴权 confirmation service/API。Qualification schema v3 与 Web 登录/确认生命周期作为后续独立检查点推进。具备 Linux/Docker/PostgreSQL 的主机仍须执行已记录的 Compose 启动、8 项 PlaybackEvidence PostgreSQL 竞态门，以及此前跳过的 PostgreSQL 覆盖。
 
 既有 `.mimosa/` 目录保持未跟踪并排除。

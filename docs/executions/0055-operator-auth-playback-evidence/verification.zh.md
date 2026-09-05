@@ -2,15 +2,16 @@
 
 # 执行 0055 阶段 A 验证
 
-- 状态：已发布后端鉴权门与当前观察身份/持久账本 Python、Web、代码质量、distribution 门均在本地通过
+- 状态：后端鉴权与观察身份/持久账本检查点均已发布；确认 service/API 尚未实现
 - 日期：2026-09-05
 - 规划基线：`d0a8cc2`；鉴权实现基线：`4564b2a`
 - 已发布鉴权提交：`f19bfaa`
+- 已发布持久化提交：`1d5b448`
 - 当前 revision：`0008_playback_evidence`
 
 ## 证据政策
 
-规划检查只能证明切片范围明确且基于当前代码。下方已发布证据证明 `f19bfaa` 的后端鉴权契约；较新的专项证据只证明本地 observation identity 与持久化原语。它尚不能证明 confirmation service/API、Web 登录/确认表面、qualification schema v3、真实服务器兼容或获授权真人播放。实现证据与真人资格继续分开。
+规划检查只能证明切片范围明确且基于当前代码。下方已发布证据证明 `f19bfaa` 的后端鉴权契约；较新的专项证据只证明已在 `1d5b448` 发布的 observation identity 与持久化原语。它尚不能证明 confirmation service/API、Web 登录/确认表面、qualification schema v3、真实服务器兼容或获授权真人播放。实现证据与真人资格继续分开。
 
 ## 规划基线证据
 
@@ -55,6 +56,7 @@
 | 检查 | 命令或来源 | 状态 |
 | --- | --- | --- |
 | 鉴权发布基线 | `git log`；已发布仓库状态 | `PASS`——commit-3 开始前，关闭失败的单操作者鉴权已提交并推送为 `f19bfaa` |
+| 持久化发布 | 最终 fetch、暂存集合审计、commit、push 与 `HEAD...origin/main` 比较 | `PASS`——38 个预期文件已提交并推送为 `1d5b448`；分叉为 `0 0`，`.mimosa/` 保持未跟踪，且没有已暂存或未暂存 tracked 变更 |
 | 只为 matched 生成的观察身份 | `media_server_observation_fingerprint`；`MediaServerAuthorLookupResult`；Web `MediaServerAuthorLookup` discriminated type；observation 单元/API 回归 | `PASS`——带域分隔的 v1 digest 仅为唯一 `matched` 结果绑定规范 author ID 与 profile/publication/selector/item digest；`not_found` 不暴露 item 或 observation fingerprint，也不保留原始 item ID；Web 类型同步该区分但不声明 confirmation UI 已实现 |
 | Revision 与 ORM 契约 | `0008_playback_evidence.py`；`PlaybackEvidence`；migration/model 回归 | `PASS`——migration 与 model metadata 均强制 schema version、规范 UUID、小写 SHA-256、时间戳顺序、唯一 observation identity、author/time 索引及 Author/Job `RESTRICT` constraint |
 | 受保护 downgrade | revision 0008 migration 回归 | `PASS`——拒绝 offline downgrade，含行账本会阻止 downgrade，只有在线审计确认的空账本可被移除 |
@@ -93,14 +95,13 @@
 
 当前检查点已关闭冻结退出门中的本地 fingerprint、revision/model、受保护 downgrade、自然重放与 SQLite 部分。剩余工作仍须为以下内容提供精确 passing evidence：
 
-1. 完成 commit 3 的最终 Git 发布门；其 Python、Web、代码质量、docs、锁定上游、distribution、生成物、敏感数据、冻结计划与分叉门均已完成，并与历史 `f19bfaa` 证据分开记录。
-2. 实现 resolve → unique lookup → resolve 的 TOCTOU 封闭、经鉴权 confirmation service/API 与全部失败零写入路径。
-3. 实现 qualification schema v3 真值：无证据为 `IMPLEMENTED/NOT_RUN`，只有精确当前 evidence 可 PASS，stale 绝不 PASS，provider completion/automatic scan 保持未实现。
-4. 实现并验证 Web login/session/logout/expiry 生命周期、内存 CSRF 注入、集中 401 reset、cookie-only EventSource/直接媒体行为，以及可访问且只允许 matched 的播放确认交互。
-5. 在安装 Docker 的主机上完成真实 Docker/Compose 配置与启动检查。
-6. 在已配置主机上运行 8 项 PlaybackEvidence PostgreSQL 竞态并重跑此前跳过的 PostgreSQL 覆盖；源码检查不能替代执行。
-7. 通过最终仓库、包与发布扫描继续保证 credential/session/CSRF/reference/raw selector 零保留。
-8. 剩余实现完成后重跑完整 Python/Web 及全部质量/包/文档/上游/generated-output/host-path/secret/空白门，再完成 Git 发布门。
+1. 实现 resolve → unique lookup → resolve 的 TOCTOU 封闭、经鉴权 confirmation service/API 与全部失败零写入路径。
+2. 实现 qualification schema v3 真值：无证据为 `IMPLEMENTED/NOT_RUN`，只有精确当前 evidence 可 PASS，stale 绝不 PASS，provider completion/automatic scan 保持未实现。
+3. 实现并验证 Web login/session/logout/expiry 生命周期、内存 CSRF 注入、集中 401 reset、cookie-only EventSource/直接媒体行为，以及可访问且只允许 matched 的播放确认交互。
+4. 在安装 Docker 的主机上完成真实 Docker/Compose 配置与启动检查。
+5. 在已配置主机上运行 8 项 PlaybackEvidence PostgreSQL 竞态并重跑此前跳过的 PostgreSQL 覆盖；源码检查不能替代执行。
+6. 通过最终仓库、包与发布扫描继续保证 credential/session/CSRF/reference/raw selector 零保留。
+7. 剩余实现完成后重跑完整 Python/Web 及全部质量/包/文档/上游/generated-output/host-path/secret/空白门，再完成 Git 发布门。
 
 ## 真人资格
 
