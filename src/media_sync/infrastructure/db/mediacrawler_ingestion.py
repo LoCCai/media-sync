@@ -11,6 +11,7 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
+from itertools import islice
 from typing import Any
 from uuid import UUID
 
@@ -41,6 +42,7 @@ from .repositories import (
 
 DEFAULT_INGESTION_BATCH_SIZE = 100
 MAX_INGESTION_BATCH_SIZE = 1_000
+MAX_BILI_BOUNDED_INGESTION_ITEMS = 30
 _EXISTING_KEY_QUERY_BATCH_SIZE = 400
 
 
@@ -346,6 +348,160 @@ class MediaCrawlerIngestionService:
         self.database = database
         self.batch_size = batch_size
 
+    def ingest_bili_bounded(
+        self,
+        records: Iterable[NormalizedMediaRecord],
+        *,
+        subscription_id: str | UUID,
+        run_id: str | UUID,
+        expected_revision: int,
+        input_cursor: str | None,
+        next_cursor: str,
+        crawl_revision_before: int | None = None,
+        ownership_guard: Callable[[Session], None] | None = None,
+    ) -> MediaCrawlerIngestionResult:
+        """Publish one validated upload-scan unit in exactly one transaction.
+
+        The application verifies the opaque scan state and sealed coverage.
+        This boundary binds its input to the actual subscription and Run,
+        preserves all older content regardless of the legacy watermark, and
+        publishes rows, provenance, continuation and Run success together.
+        A replay of the exact completed Run performs no mutation; an old
+        artifact cannot borrow a newer revision to overwrite continuation.
+        """
+
+        if type(expected_revision) is not int or expected_revision < 0:
+            raise ValueError("expected_revision must be nonnegative")
+        origin_revision = expected_revision if crawl_revision_before is None else crawl_revision_before
+        if type(origin_revision) is not int or not 0 <= origin_revision <= expected_revision:
+            raise ValueError("crawl_revision_before must be between zero and expected_revision")
+        if input_cursor is not None and (type(input_cursor) is not str or not input_cursor):
+            raise ValueError("input_cursor must be an opaque nonempty string or None")
+        if type(next_cursor) is not str or not next_cursor:
+            raise ValueError("next_cursor must be an opaque nonempty string")
+
+        # Never normalize/read an iterator while holding a database session,
+        # and stop consuming an oversized or unbounded iterable at item 31.
+        materialized = tuple(islice(records, MAX_BILI_BOUNDED_INGESTION_ITEMS + 1))
+        if len(materialized) > MAX_BILI_BOUNDED_INGESTION_ITEMS:
+            raise ValueError("bounded Bili ingestion accepts at most 30 records")
+        unique_records = _deduplicate(materialized)
+        if len(unique_records) != len(materialized):
+            raise RepositoryError("bounded Bili ingestion contains duplicate content identities")
+        before = None if input_cursor is None else {"value": input_cursor}
+        after = {"value": next_cursor}
+        database_subscription_id = _database_id(subscription_id)
+        database_run_id = _database_id(run_id)
+
+        with self.database.session() as session:
+            if session.get_bind().dialect.name == "sqlite":
+                # Acquire the writer before the read/compare/CAS sequence;
+                # this does not modify any row or require a second session.
+                session.connection().exec_driver_sql("UPDATE subscriptions SET updated_at = updated_at WHERE 0")
+            if ownership_guard is not None:
+                ownership_guard(session)
+            subscriptions = SubscriptionRepository(session)
+            subscription = subscriptions.require_active(database_subscription_id, lock=True)
+            runs = SyncRunRepository(session)
+            run = runs.require(database_run_id)
+            if (
+                subscription.account.adapter != "mediacrawler"
+                or subscription.account.platform != Platform.BILI.value
+                or subscription.author.platform != Platform.BILI.value
+                or run.subscription_id != database_subscription_id
+                or run.cursor_before != before
+                or run.checkpoint_revision_before != origin_revision
+            ):
+                raise RepositoryError("bounded Bili ingestion scope does not match its input")
+            if len(materialized) > subscription.max_items:
+                raise RepositoryError("bounded Bili ingestion exceeds the subscription item limit")
+            for record in unique_records:
+                if (
+                    record.author.platform is not Platform.BILI
+                    or record.author.remote_id != subscription.author.remote_id
+                    or record.content.remote_type != "content"
+                ):
+                    raise RepositoryError("bounded Bili record does not belong to the subscription upload feed")
+
+            if run.status == RunStatus.SUCCEEDED.value:
+                if (
+                    run.checkpoint_revision_after != origin_revision + 1
+                    or run.cursor_after != after
+                    or subscription.checkpoint_revision < origin_revision + 1
+                    or (subscription.checkpoint_revision == origin_revision + 1 and subscription.cursor != after)
+                ):
+                    raise RepositoryError("completed Bili unit does not match the requested continuation")
+                # A newer subscription cursor is intentionally not inspected
+                # or reassigned. Durable exact-Run truth is sufficient here.
+                return MediaCrawlerIngestionResult(
+                    mode=IngestionMode.FORWARD,
+                    input_count=len(materialized),
+                    accepted_count=0,
+                    skipped_count=len(materialized),
+                    discovered_count=0,
+                    asset_count=0,
+                    committed_batches=0,
+                    checkpoint_revision=run.checkpoint_revision_after,
+                    watermarked_at=subscription.watermarked_at,
+                    watermark_remote_ids=tuple(subscription.watermark_remote_ids),
+                )
+
+            if origin_revision != expected_revision or subscription.checkpoint_revision != expected_revision:
+                raise StaleCheckpointError(database_subscription_id, origin_revision, subscription.checkpoint_revision)
+            if subscription.cursor != before:
+                raise RepositoryError("bounded Bili subscription cursor changed")
+            if (
+                run.status != RunStatus.INGESTING.value
+                or run.checkpoint_revision_after is not None
+                or run.cursor_after is not None
+                or run.discovered_count != 0
+                or run.updated_count != 0
+                or run.asset_count != 0
+            ):
+                raise RepositoryError("bounded Bili run is not an unpublished ingestion unit")
+
+            discovered_count, asset_count = _upsert_batch(session, unique_records)
+            _record_refresh_observations(
+                session,
+                unique_records,
+                subscription_id=database_subscription_id,
+                run_id=database_run_id,
+            )
+            if ownership_guard is not None:
+                ownership_guard(session)
+            published = subscriptions.publish_checkpoint(
+                database_subscription_id,
+                expected_revision=expected_revision,
+                cursor=after,
+                succeeded_at=utc_now(),
+            )
+            run = runs.record_checkpoint_publication(
+                database_run_id,
+                expected_revision=expected_revision,
+                published_revision=published.checkpoint_revision,
+                expected_status=RunStatus.INGESTING.value,
+            )
+            run.discovered_count = discovered_count
+            run.asset_count = asset_count
+            run.cursor_after = after
+            session.flush()
+            runs.set_status(database_run_id, RunStatus.SUCCEEDED.value, expected_status=RunStatus.INGESTING.value)
+            if ownership_guard is not None:
+                ownership_guard(session)
+            result = MediaCrawlerIngestionResult(
+                mode=IngestionMode.FORWARD,
+                input_count=len(materialized),
+                accepted_count=len(unique_records),
+                skipped_count=0,
+                discovered_count=discovered_count,
+                asset_count=asset_count,
+                committed_batches=1,
+                checkpoint_revision=published.checkpoint_revision,
+                watermarked_at=published.watermarked_at,
+                watermark_remote_ids=tuple(published.watermark_remote_ids),
+            )
+        return result
+
     def ingest(
         self,
         records: Iterable[NormalizedMediaRecord],
@@ -562,6 +718,7 @@ class MediaCrawlerIngestionService:
 
 __all__ = [
     "DEFAULT_INGESTION_BATCH_SIZE",
+    "MAX_BILI_BOUNDED_INGESTION_ITEMS",
     "MAX_INGESTION_BATCH_SIZE",
     "IngestionMode",
     "MediaCrawlerIngestionResult",

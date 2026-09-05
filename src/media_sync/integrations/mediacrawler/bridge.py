@@ -21,6 +21,7 @@ from media_sync.domain import LoginMethod, Platform
 from media_sync.integrations.mediacrawler.browser_environment import browser_child_environment
 from media_sync.security import SecretValue, redact_text, secret_url_components
 
+from .bilibili_scan import BiliScanState
 from .checkout import (
     MEDIACRAWLER_LICENSE,
     MEDIACRAWLER_LICENSE_SHA256,
@@ -110,8 +111,21 @@ class BridgeRequest:
     execution_id: UUID | None = None
     sync_run_id: UUID | None = None
     request_delay_seconds: float = 2.0
+    bili_bounded_capture: bool = False
+    bili_scan_cursor_before: str | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
+        if type(self.bili_bounded_capture) is not bool or (
+            self.bili_bounded_capture
+            and (self.platform is not Platform.BILI or self.intended_mode != MediaCrawlerRunMode.FORWARD)
+        ):
+            raise BridgeConfigurationError("bounded Bili capture requires a forward Bili request")
+        if self.bili_scan_cursor_before is not None and (
+            not self.bili_bounded_capture
+            or type(self.bili_scan_cursor_before) is not str
+            or not self.bili_scan_cursor_before.strip()
+        ):
+            raise BridgeConfigurationError("bounded Bili input cursor is invalid")
         try:
             intended_mode = MediaCrawlerRunMode(self.intended_mode)
         except (TypeError, ValueError) as error:
@@ -192,8 +206,40 @@ class RunnerManifest:
     request_delay_seconds: float | None = 2.0
     license_name: str | None = MEDIACRAWLER_LICENSE
     license_sha256: str | None = MEDIACRAWLER_LICENSE_SHA256
+    bili_scan: BiliScanState | None = field(default=None, repr=False)
+    bili_scan_input_cursor: str | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
+        if self.bili_scan_input_cursor is not None and (
+            type(self.bili_scan_input_cursor) is not str or not self.bili_scan_input_cursor.strip()
+        ):
+            raise BridgeConfigurationError("bounded Bili manifest input cursor is invalid")
+        if self.bili_scan is not None:
+            if (
+                not isinstance(self.bili_scan, BiliScanState)
+                or self.platform is not Platform.BILI
+                or self.schema_version != MANIFEST_SCHEMA_VERSION
+                or self.intended_mode != MediaCrawlerRunMode.FORWARD
+            ):
+                raise BridgeConfigurationError("bounded Bili manifest scope is invalid")
+            try:
+                self.bili_scan.require_binding(
+                    account_id=self.account_id,
+                    author_fingerprint_sha256=self.author_remote_id_fingerprint_sha256,
+                    upstream_sha=self.upstream_sha,
+                )
+                expected_scan = BiliScanState.for_cursor(
+                    self.bili_scan_input_cursor,
+                    account_id=self.account_id,
+                    author_fingerprint_sha256=self.author_remote_id_fingerprint_sha256,
+                    upstream_sha=self.upstream_sha,
+                )
+                if self.bili_scan != expected_scan:
+                    raise ValueError("scan input mismatch")
+            except ValueError:
+                raise BridgeConfigurationError("bounded Bili manifest state is invalid") from None
+        elif self.bili_scan_input_cursor is not None:
+            raise BridgeConfigurationError("Bili cursor requires a bounded scan contract")
         if type(self.schema_version) is not int or self.schema_version not in {
             LEGACY_MANIFEST_SCHEMA_VERSION,
             MANIFEST_SCHEMA_VERSION,
@@ -287,7 +333,7 @@ class RunnerManifest:
             or self.license_sha256 is None
         ):  # pragma: no cover - construction validates this invariant
             raise BridgeConfigurationError("runner manifest v3 identity is incomplete")
-        return {
+        payload: dict[str, object] = {
             "schema_version": MANIFEST_SCHEMA_VERSION,
             "checkout_root": str(self.checkout_root),
             "lock_path": str(self.lock_path),
@@ -327,6 +373,13 @@ class RunnerManifest:
                 "poll_seconds": self.watchdogs.poll_seconds,
             },
         }
+        if self.bili_scan is not None:
+            payload["bili_scan"] = {
+                "schema_version": 1,
+                "input_cursor": self.bili_scan_input_cursor,
+                "state": self.bili_scan.to_cursor(),
+            }
+        return payload
 
     @classmethod
     def load(cls, manifest_path: Path) -> RunnerManifest:
@@ -387,6 +440,8 @@ class RunnerManifest:
             "request_delay_seconds",
         }
         expected_keys = legacy_keys if schema_version == LEGACY_MANIFEST_SCHEMA_VERSION else v3_keys
+        if schema_version == MANIFEST_SCHEMA_VERSION and "bili_scan" in raw:
+            expected_keys = expected_keys | {"bili_scan"}
         if set(raw) != expected_keys:
             raise BridgeConfigurationError("runner manifest contains unsupported fields")
 
@@ -523,7 +578,28 @@ class RunnerManifest:
         headless = boolean_value("headless")
         if not 1 <= max_items <= 1_000:
             raise BridgeConfigurationError("runner manifest max_items is outside the allowed range")
-        require_full_history_acknowledgement(platform, allow_full_history)
+        bili_scan = None
+        bili_scan_input_cursor = None
+        if "bili_scan" in raw:
+            scan_contract = raw["bili_scan"]
+            if (
+                not isinstance(scan_contract, Mapping)
+                or set(scan_contract) != {"schema_version", "input_cursor", "state"}
+                or type(scan_contract.get("schema_version")) is not int
+                or scan_contract["schema_version"] != 1
+                or type(scan_contract.get("state")) is not str
+                or (
+                    scan_contract.get("input_cursor") is not None and type(scan_contract.get("input_cursor")) is not str
+                )
+            ):
+                raise BridgeConfigurationError("bounded Bili manifest contract is invalid")
+            try:
+                bili_scan = BiliScanState.from_cursor(scan_contract["state"])
+            except ValueError:
+                raise BridgeConfigurationError("bounded Bili manifest state is invalid") from None
+            bili_scan_input_cursor = scan_contract["input_cursor"]
+        if bili_scan is None:
+            require_full_history_acknowledgement(platform, allow_full_history)
         upstream_login_type(login_method)
         author_remote_id_fingerprint = text_value("author_remote_id_fingerprint_sha256").lower()
         creator_fingerprint = text_value("creator_fingerprint_sha256").lower()
@@ -565,6 +641,8 @@ class RunnerManifest:
             request_delay_seconds=request_delay_seconds,
             license_name=license_name,
             license_sha256=license_sha256,
+            bili_scan=bili_scan,
+            bili_scan_input_cursor=bili_scan_input_cursor,
         )
 
 
@@ -749,7 +827,8 @@ class MediaCrawlerBridge:
         python_runtime = self._python_verifier(request.python_executable)
         if not RUNNER_SCRIPT.is_file():
             raise BridgeConfigurationError("isolated MediaCrawler runner script is unavailable")
-        require_full_history_acknowledgement(request.platform, request.allow_full_history)
+        if not request.bili_bounded_capture:
+            require_full_history_acknowledgement(request.platform, request.allow_full_history)
         upstream_login_type(request.login_method)
         creator_reference, creator_known_secrets = _normalize_creator_input(
             request.platform,
@@ -760,6 +839,18 @@ class MediaCrawlerBridge:
             raise BridgeConfigurationError("Cookie login requires one resolved SecretValue")
         if request.login_method is not LoginMethod.COOKIE and request.cookie is not None:
             raise BridgeConfigurationError("resolved Cookie secret is only valid for Cookie login")
+
+        bili_scan = None
+        if request.bili_bounded_capture:
+            try:
+                bili_scan = BiliScanState.for_cursor(
+                    request.bili_scan_cursor_before,
+                    account_id=request.account_id,
+                    author_fingerprint_sha256=hashlib.sha256(request.author_remote_id.encode("utf-8")).hexdigest(),
+                    upstream_sha=checkout.commit,
+                )
+            except ValueError:
+                raise BridgeConfigurationError("bounded Bili input state is invalid") from None
 
         scheduler_job_id = request.scheduler_job_id
         execution_id = request.execution_id
@@ -824,6 +915,8 @@ class MediaCrawlerBridge:
             execution_id=execution_id,
             sync_run_id=sync_run_id,
             request_delay_seconds=request.request_delay_seconds,
+            bili_scan=bili_scan,
+            bili_scan_input_cursor=request.bili_scan_cursor_before,
         )
         environment, known_secrets = _child_environment(
             creator_reference,

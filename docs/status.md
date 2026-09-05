@@ -2,7 +2,15 @@
 
 # Unified project status (single source of truth)
 
-## Latest: pasted Cookie validation and reuse (0058)
+## Latest: bounded resumable Bili upload units (0059)
+
+[Execution0059](executions/0059-bili-bounded-capture/progress.md) connects bounded ordinary-upload capture to the real bridge/scheduler/receipt/normalizer/atomic ingestion pipeline. Each unit verifies at most min(max_items,30) details and makes at most two author-list attempts; browser/auth and up to two WBI key reads are additional. Head/history lanes retain queued identities and page witnesses, and do not filter history using the old watermark. New Bili requests need no unbounded-history acknowledgement; legacy artifacts retain their gate. API/Web distinguish partial unit progress, conservative restart and source-end observation from full history, without exposing cursors or IDs.
+
+Offline proof covers signed query/HTTP budgets, more-than30 across bounded state restarts, exact sealed author/item identity, atomic provenance/checkpoint/Run publication, cancel/lease/CAS, real sealed recovery and durable success after a newer checkpoint. Final complete-directory runs passed4386 Python tests (23 environment skips), Web572, and all140 wheel Python sources match current code. Exact package/publication details are in [verification](executions/0059-bili-bounded-capture/verification.md). CLI resolves ambiguous publication from exact Run truth; a separate repeat import of a consumed artifact safely rejects instead of claiming CLI-level replay success.
+
+This is not total Bili support or a live canary PASS. Dynamic attachments, the remaining platform validators/profiles and real capture/download/archive/local-library playback qualification are still required. Local Emby/Jellyfin-compatible output remains independent of optional server connections. No deployment, live retry, subscription mutation or supervisor restart occurred.
+
+## Previous: pasted Cookie validation and reuse (0058)
 
 [Execution 0058](executions/0058-cookie-login/progress.md) implements Bili/XHS/WB/Zhihu remote self-account checks, private immutable managed storage, atomic Account/Operation publication and the Accounts paste dialog. Bili Cookie accounts now also support single-creator nickname/avatar lookup; downstream Cookie contexts cannot silently use an old saved profile. Complete offline directory runs passed 4256 tests (23 skipped), Web passed 553, and final wheel sources match current code. See [verification](executions/0058-cookie-login/verification.md) for exact timing/scope, failure corrections, package/publication state and live exclusions.
 

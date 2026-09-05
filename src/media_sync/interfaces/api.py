@@ -120,6 +120,7 @@ from media_sync.infrastructure.db.creator_profile_repository import (
     ProfileSnapshot,
 )
 from media_sync.integrations.mediacrawler import platform_capabilities_payload
+from media_sync.integrations.mediacrawler.checkout import load_mediacrawler_lock
 from media_sync.integrations.mediacrawler.cookie_login_runner import CookieLoginProcessRunner
 from media_sync.integrations.mediacrawler.creator_profile_runner import MediaCrawlerCreatorProfileProcessRunner
 from media_sync.integrations.mediacrawler.login_runner import (
@@ -626,12 +627,55 @@ def _subscription_policy_summary_payload(subscription: Subscription) -> dict[str
     }
 
 
-def _subscription_checkpoint_summary_payload(subscription: Subscription) -> dict[str, object]:
+def _bili_scan_summary_payload(subscription: Subscription, lock_path: Path) -> dict[str, object] | None:
+    """Project only typed, exactly bound Bili state; never infer legacy coverage."""
+
+    if subscription.account.adapter != "mediacrawler" or subscription.account.platform != Platform.BILI.value:
+        return None
+    payload: dict[str, object] = {
+        "version": 1,
+        "status": "not_started" if subscription.cursor is None else "unverified",
+        "feed": "ordinary_uploads",
+        "unit_item_limit": min(subscription.max_items, 30),
+        "max_list_attempts": 2,
+        "history_complete": False,
+        "state": None,
+    }
+    if subscription.cursor is None:
+        return payload
+    try:
+        from media_sync.integrations.mediacrawler.bilibili_scan import BiliScanState
+
+        cursor = subscription.cursor
+        if type(cursor) is not dict or set(cursor) != {"value"} or type(cursor["value"]) is not str:
+            return payload
+        if type(subscription.cursor_version) is not int or subscription.cursor_version != 1:
+            return payload
+        state = BiliScanState.from_cursor(cursor["value"])
+        state.require_binding(
+            account_id=UUID(subscription.account_id),
+            author_fingerprint_sha256=hashlib.sha256(subscription.author.remote_id.encode("utf-8")).hexdigest(),
+            upstream_sha=load_mediacrawler_lock(lock_path).commit,
+        )
+        payload["state"] = state.public_summary()
+        payload["status"] = "verified"
+    except (OSError, ValueError, TypeError, KeyError):
+        # Unknown versions, mismatched identities or unavailable locked source
+        # are not evidence. Do not expose their values or parser diagnostics.
+        pass
+    return payload
+
+
+def _subscription_checkpoint_summary_payload(
+    subscription: Subscription,
+    *,
+    lock_path: Path,
+) -> dict[str, object]:
     """Return checkpoint presence and counters without serializing cursor data."""
 
     has_forward_cursor = subscription.cursor is not None
     has_backfill_cursor = subscription.backfill_cursor is not None
-    return {
+    payload: dict[str, object] = {
         "has_checkpoint": bool(
             subscription.checkpoint_revision
             or has_forward_cursor
@@ -647,6 +691,10 @@ def _subscription_checkpoint_summary_payload(subscription: Subscription) -> dict
         "watermark_count": len(subscription.watermark_remote_ids),
         "last_success_at": subscription.last_success_at.isoformat() if subscription.last_success_at else None,
     }
+    bili_scan = _bili_scan_summary_payload(subscription, lock_path)
+    if bili_scan is not None:
+        payload["bili_scan"] = bili_scan
+    return payload
 
 
 class SchedulerTick(BaseModel):
@@ -2486,7 +2534,10 @@ def create_api_app(
                 payload = _subscription_payload(subscription)
                 _add_creator_profile(session, subscription, payload)
                 payload["policy_summary"] = _subscription_policy_summary_payload(subscription)
-                payload["checkpoint_summary"] = _subscription_checkpoint_summary_payload(subscription)
+                payload["checkpoint_summary"] = _subscription_checkpoint_summary_payload(
+                    subscription,
+                    lock_path=resolved.mediacrawler_lock_path,
+                )
                 payload["schedule"] = _scheduler_schedule_payload(
                     SchedulerRepository(session).get_subscription_schedule(str(subscription_id))
                 )

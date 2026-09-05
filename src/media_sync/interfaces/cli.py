@@ -63,7 +63,7 @@ from media_sync.application.emby import (
     export_error_is_retryable,
 )
 from media_sync.application.login_diagnostics import LoginDiagnostic, latest_session_login_diagnostic
-from media_sync.application.mediacrawler import load_normalized_output
+from media_sync.application.mediacrawler import NormalizedMediaCrawlerOutput, load_normalized_output
 from media_sync.application.mediacrawler_download import LazyMediaCrawlerLocatorRefresher
 from media_sync.application.operations import DurableSubjectHook
 from media_sync.application.subscription_removal import SubscriptionRemovalError, SubscriptionRemovalService
@@ -80,6 +80,7 @@ from media_sync.infrastructure.db import (
     IngestionMode,
     LoginSessionRepository,
     LoginSessionState,
+    MediaCrawlerIngestionResult,
     MediaCrawlerIngestionService,
     NotFoundError,
     RepositoryError,
@@ -1340,6 +1341,7 @@ def mediacrawler_dry_run(
                     allow_full_history=allow_full_history,
                     headless=True,
                     max_items=max_items,
+                    bili_bounded_capture=platform is Platform.BILI,
                 )
             )
             payload: dict[str, object] = {
@@ -1361,6 +1363,15 @@ def mediacrawler_dry_run(
                 "spawned": False,
                 "live_qualification": "NOT_RUN",
             }
+            if spec.manifest.bili_scan is not None:
+                payload["bounded_capture"] = {
+                    "feed": "ordinary_uploads",
+                    "unit_item_limit": min(max_items, 30),
+                    "max_list_attempts": 2,
+                    "browser_and_signing_requests_additional": True,
+                    "download_scope_bounded": False,
+                    "history_complete": False,
+                }
     except (CheckoutValidationError, MediaCrawlerPolicyError):
         raise typer.BadParameter("MediaCrawler dry-run preparation was rejected") from None
 
@@ -2550,6 +2561,52 @@ def _mark_ingest_failure(database: Database, run_id: str, error_code: str) -> No
         return
 
 
+def _bili_cli_ingestion_truth(
+    database: Database,
+    run_id: str,
+    manifest: RunnerManifest,
+    output: NormalizedMediaCrawlerOutput,
+    expected_revision: int,
+) -> MediaCrawlerIngestionResult | None:
+    """Resolve bounded CLI publication from exact durable Run truth, not its return value."""
+    if output.bili_coverage is None:
+        return None
+    before = None if manifest.bili_scan_input_cursor is None else {"value": manifest.bili_scan_input_cursor}
+    after = {"value": output.bili_coverage.next_state.to_cursor()}
+    try:
+        with database.session() as session:
+            run = SyncRunRepository(session).require(run_id)
+            subscription = SubscriptionRepository(session).get(str(manifest.subscription_id))
+            if (
+                subscription is None
+                or run.subscription_id != subscription.id
+                or run.status != RunStatus.SUCCEEDED.value
+                or run.checkpoint_revision_before != expected_revision
+                or expected_revision != manifest.checkpoint_revision_before
+                or run.checkpoint_revision_after != expected_revision + 1
+                or run.cursor_before != before
+                or run.cursor_after != after
+                or run.manifest.get("output_fingerprint_sha256") != output.output_fingerprint_sha256
+                or subscription.checkpoint_revision < expected_revision + 1
+                or (subscription.checkpoint_revision == expected_revision + 1 and subscription.cursor != after)
+            ):
+                return None
+            return MediaCrawlerIngestionResult(
+                mode=IngestionMode.FORWARD,
+                input_count=output.input_records,
+                accepted_count=len(output.records),
+                skipped_count=0,
+                discovered_count=run.discovered_count,
+                asset_count=run.asset_count,
+                committed_batches=1,
+                checkpoint_revision=run.checkpoint_revision_after,
+                watermarked_at=subscription.watermarked_at,
+                watermark_remote_ids=tuple(subscription.watermark_remote_ids),
+            )
+    except Exception:
+        raise RepositoryError("bounded Bili ingestion truth is unavailable") from None
+
+
 @sync_app.command("ingest")
 def ingest_mediacrawler_output(
     subscription_id: Annotated[UUID, typer.Option(help="MediaCrawler subscription UUID.")],
@@ -2676,14 +2733,36 @@ def ingest_mediacrawler_output(
 
         assert run_id is not None  # created and committed in the preceding short transaction
         try:
-            result = MediaCrawlerIngestionService(database, batch_size=batch_size).ingest(
-                normalized_records,
-                subscription_id=subscription_id,
-                run_id=run_id,
-                expected_revision=expected_revision,
-                crawl_revision_before=manifest.checkpoint_revision_before,
-                mode=mode,
-            )
+            service = MediaCrawlerIngestionService(database, batch_size=batch_size)
+            if manifest.bili_scan is not None and normalized_output.bili_coverage is not None:
+                ingestion_error: Exception | None = None
+                try:
+                    service.ingest_bili_bounded(
+                        normalized_records,
+                        subscription_id=subscription_id,
+                        run_id=run_id,
+                        expected_revision=expected_revision,
+                        crawl_revision_before=manifest.checkpoint_revision_before,
+                        input_cursor=manifest.bili_scan_input_cursor,
+                        next_cursor=normalized_output.bili_coverage.next_state.to_cursor(),
+                    )
+                except Exception as error:
+                    ingestion_error = error
+                truth = _bili_cli_ingestion_truth(database, run_id, manifest, normalized_output, expected_revision)
+                if truth is None:
+                    if isinstance(ingestion_error, StaleCheckpointError):
+                        raise ingestion_error
+                    raise RepositoryError("bounded Bili unit was not durably published") from None
+                result = truth
+            else:
+                result = service.ingest(
+                    normalized_records,
+                    subscription_id=subscription_id,
+                    run_id=run_id,
+                    expected_revision=expected_revision,
+                    crawl_revision_before=manifest.checkpoint_revision_before,
+                    mode=mode,
+                )
         except StaleCheckpointError:
             _mark_ingest_failure(database, run_id, "checkpoint_conflict")
             failure_payload: dict[str, object] = {
@@ -2712,6 +2791,11 @@ def ingest_mediacrawler_output(
             "committed_batches": result.committed_batches,
             "checkpoint_revision": result.checkpoint_revision,
         }
+        if normalized_output.bili_coverage is not None:
+            payload["bounded_capture"] = {
+                **normalized_output.bili_coverage.public_summary(),
+                "history_complete": False,
+            }
     except (RepositoryError, SQLAlchemyError):
         if database is not None and run_id is not None:
             _mark_ingest_failure(database, run_id, "ingestion_failed")

@@ -89,6 +89,7 @@ _CHINA_TZ = timezone(timedelta(hours=8))
 _BILI_PROGRESSIVE_FIELD = "__media_sync_bili_progressive_url"
 _PRIVATE_MEDIA_FIELDS = frozenset(
     {
+        "__media_sync_bili_scan_identity",
         BILIBILI_PAGES_FIELD,
         BILIBILI_DASH_PAGE_FIELD,
         BILIBILI_PROGRESSIVE_BACKUPS_FIELD,

@@ -21,7 +21,7 @@ from media_sync.application.mediacrawler import (
     NormalizedMediaCrawlerOutput,
     load_normalized_output,
 )
-from media_sync.domain import AuthStatus, LoginMethod, RunStatus
+from media_sync.domain import AuthStatus, LoginMethod, Platform, RunStatus
 from media_sync.infrastructure.db import (
     AccountRepository,
     Database,
@@ -172,6 +172,19 @@ class _CheckoutVerifier(Protocol):
 
 
 class _IngestionService(Protocol):
+    def ingest_bili_bounded(
+        self,
+        records: tuple[NormalizedMediaRecord, ...],
+        *,
+        subscription_id: str | UUID,
+        run_id: str | UUID,
+        expected_revision: int,
+        input_cursor: str | None,
+        next_cursor: str,
+        crawl_revision_before: int | None = None,
+        ownership_guard: Callable[[Session], None] | None = None,
+    ) -> MediaCrawlerIngestionResult: ...
+
     def ingest(
         self,
         records: tuple[NormalizedMediaRecord, ...],
@@ -218,6 +231,7 @@ class _PreparedRun:
     checkpoint_revision: int
     creator_remote_id: str
     creator_display_name: str
+    cursor_before: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -500,6 +514,12 @@ class MediaCrawlerScheduledHandler:
             creator_remote_id = subscription.author.remote_id
             creator_display_name = subscription.author.display_name
             checkpoint_revision = subscription.checkpoint_revision
+            cursor_before = None
+            if subscription.cursor is not None:
+                raw_cursor = subscription.cursor.get("value")
+                if set(subscription.cursor) != {"value"} or type(raw_cursor) is not str or not raw_cursor.strip():
+                    raise RepositoryError("scheduled subscription cursor is invalid")
+                cursor_before = raw_cursor
 
             runs = SyncRunRepository(session)
             if context.current_run_id is not None:
@@ -560,6 +580,7 @@ class MediaCrawlerScheduledHandler:
             checkpoint_revision=checkpoint_revision,
             creator_remote_id=creator_remote_id,
             creator_display_name=creator_display_name,
+            cursor_before=cursor_before,
         )
 
     def _set_run_failure(
@@ -633,6 +654,8 @@ class MediaCrawlerScheduledHandler:
         self,
         context: SubscriptionJobContext,
         prepared: _PreparedRun,
+        *,
+        bounded_next_cursor: str | None = None,
     ) -> _IngestionTruth:
         """Read durable success before interpreting any in-memory summary.
 
@@ -659,6 +682,23 @@ class MediaCrawlerScheduledHandler:
                 and subscription is not None
                 and subscription.checkpoint_revision == checkpoint_revision
             )
+            if bounded_next_cursor is not None:
+                expected_before = None if prepared.cursor_before is None else {"value": prepared.cursor_before}
+                expected_after = {"value": bounded_next_cursor}
+                commit_complete = bool(
+                    run_succeeded
+                    and run is not None
+                    and run.subscription_id == str(context.subscription_id)
+                    and run.checkpoint_revision_before == prepared.checkpoint_revision
+                    and checkpoint_revision == prepared.checkpoint_revision + 1
+                    and run.cursor_before == expected_before
+                    and run.cursor_after == expected_after
+                    and subscription is not None
+                    and subscription.checkpoint_revision >= checkpoint_revision
+                    and (
+                        subscription.checkpoint_revision > checkpoint_revision or subscription.cursor == expected_after
+                    )
+                )
             self._guard(context, session)
         return _IngestionTruth(
             run_succeeded=run_succeeded,
@@ -905,6 +945,7 @@ class MediaCrawlerScheduledHandler:
             not isinstance(output, NormalizedMediaCrawlerOutput)
             or isinstance(output.input_records, bool)
             or output.input_records < len(output.records)
+            or (manifest.bili_scan is None) != (output.bili_coverage is None)
         ):
             error_code = await self._cleanup_failure_code(attempt_paths, "output_security_failed")
             self._set_run_failure(context, prepared.run_id, error_code)
@@ -934,8 +975,30 @@ class MediaCrawlerScheduledHandler:
                 raise _CancellationObserved("scheduled MediaCrawler ingestion was cancelled")
 
         service = self.ingestion_factory(self.database)
-        task = asyncio.create_task(
-            asyncio.to_thread(
+        if manifest.bili_scan is not None and output.bili_coverage is not None:
+            # Revalidate the pure transition even when a custom normalizer was
+            # injected. Filesystem/content validation precedes this DB boundary.
+            try:
+                output.bili_coverage.validate(
+                    input_state=manifest.bili_scan,
+                    max_items=manifest.max_items,
+                    normalized_remote_ids=tuple(record.content.remote_id for record in output.records),
+                )
+            except ValueError:
+                return await self._fail_attempt(context, prepared, attempt_paths, "output_security_failed")
+            ingest_call = asyncio.to_thread(
+                service.ingest_bili_bounded,
+                output.records,
+                subscription_id=context.subscription_id,
+                run_id=prepared.run_id,
+                expected_revision=prepared.checkpoint_revision,
+                crawl_revision_before=manifest.checkpoint_revision_before,
+                input_cursor=manifest.bili_scan_input_cursor,
+                next_cursor=output.bili_coverage.next_state.to_cursor(),
+                ownership_guard=guarded,
+            )
+        else:
+            ingest_call = asyncio.to_thread(
                 service.ingest,
                 output.records,
                 subscription_id=context.subscription_id,
@@ -945,7 +1008,7 @@ class MediaCrawlerScheduledHandler:
                 mode=MediaCrawlerRunMode.FORWARD.value,
                 ownership_guard=guarded,
             )
-        )
+        task = asyncio.create_task(ingest_call)
         ingestion_error_code: str | None = None
         try:
             await self._join_security_task(task, on_cancel=cancellation.set)
@@ -963,7 +1026,12 @@ class MediaCrawlerScheduledHandler:
             ingestion_error_code = "unexpected_handler_failure"
 
         try:
-            truth = self._read_ingestion_truth(context, prepared)
+            if output.bili_coverage is not None:
+                truth = self._read_ingestion_truth(
+                    context, prepared, bounded_next_cursor=output.bili_coverage.next_state.to_cursor()
+                )
+            else:
+                truth = self._read_ingestion_truth(context, prepared)
         except LeaseLostError:
             await self._cleanup_before_fence(attempt_paths)
             raise
@@ -1303,6 +1371,8 @@ class MediaCrawlerScheduledHandler:
             max_items=context.max_items,
             watchdogs=self.watchdogs,
             request_delay_seconds=policy.request_delay_seconds,
+            bili_bounded_capture=context.account.platform is Platform.BILI,
+            bili_scan_cursor_before=prepared.cursor_before if context.account.platform is Platform.BILI else None,
         )
         try:
             await self._require_cleanup_unblocked(attempt_paths)

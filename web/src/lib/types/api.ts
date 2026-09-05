@@ -69,9 +69,24 @@ export interface PlatformCapability {
     allows_secret_reference: boolean;
   };
   requires_full_history_acknowledgement: boolean;
+  bounded_capture?: BiliBoundedCapture | null;
   offline_shapes: string[];
   limitations: string[];
   live_qualification: 'NOT_RUN';
+}
+
+export interface BiliBoundedCapture {
+  version: 1;
+  feed: 'ordinary_uploads';
+  order: 'pubdate';
+  page_size: 30;
+  max_items_per_unit: 30;
+  max_list_attempts_per_unit: 2;
+  alternating_lanes: ['head', 'history'];
+  browser_setup_separate: true;
+  download_scope_bounded: false;
+  history_completeness_claimed: false;
+  legacy_requires_full_history_acknowledgement: true;
 }
 
 export interface PlatformCapabilities {
@@ -197,6 +212,7 @@ export interface SubscriptionPolicySummary extends Record<string, unknown> {
 }
 
 export interface SubscriptionCheckpointSummary extends Record<string, unknown> {
+  bili_scan?: unknown;
   has_checkpoint: boolean;
   has_forward_cursor: boolean;
   has_backfill_cursor: boolean;

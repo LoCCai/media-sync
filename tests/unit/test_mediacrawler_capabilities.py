@@ -38,7 +38,9 @@ def test_every_platform_exposes_the_closed_login_and_honest_live_contract() -> N
             LoginMethod.SAVED_SESSION,
         )
         assert capability.qr_login is True
-        assert capability.requires_full_history_acknowledgement is (platform in FULL_HISTORY_PLATFORMS)
+        assert capability.requires_full_history_acknowledgement is (
+            platform in FULL_HISTORY_PLATFORMS and platform is not Platform.BILI
+        )
         assert capability.live_qualification == "NOT_RUN"
         assert capability.offline_shapes
         assert capability.limitations
@@ -148,6 +150,7 @@ def test_payload_rows_have_only_the_closed_public_fields_and_canonical_examples(
             "pasted_cookie_login",
             "creator_input",
             "requires_full_history_acknowledgement",
+            "bounded_capture",
             "offline_shapes",
             "limitations",
             "live_qualification",
@@ -165,3 +168,25 @@ def test_payload_rows_have_only_the_closed_public_fields_and_canonical_examples(
         examples = creator_input["examples"]
         assert isinstance(examples, list)
         assert all(normalize_creator_stable_id(example) == example for example in examples)
+
+
+def test_bili_new_capture_is_bounded_without_reclassifying_legacy_artifacts() -> None:
+    row = capability_for(Platform.BILI).to_payload()
+    assert Platform.BILI in FULL_HISTORY_PLATFORMS
+    assert row["requires_full_history_acknowledgement"] is False
+    assert row["bounded_capture"] == {
+        "version": 1,
+        "feed": "ordinary_uploads",
+        "order": "pubdate",
+        "page_size": 30,
+        "max_items_per_unit": 30,
+        "max_list_attempts_per_unit": 2,
+        "alternating_lanes": ["head", "history"],
+        "browser_setup_separate": True,
+        "download_scope_bounded": False,
+        "history_completeness_claimed": False,
+        "legacy_requires_full_history_acknowledgement": True,
+    }
+    for platform in Platform:
+        if platform is not Platform.BILI:
+            assert capability_for(platform).to_payload()["bounded_capture"] is None

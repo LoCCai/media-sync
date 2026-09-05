@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from _api_client import authenticated_test_client
@@ -16,6 +19,14 @@ from media_sync.config import Settings
 from media_sync.infrastructure.db import Database, LoginSessionRepository
 from media_sync.infrastructure.db.migration import upgrade_database
 from media_sync.infrastructure.db.models import Author, Subscription
+from media_sync.integrations.mediacrawler.bilibili_scan import (
+    BiliIdentity,
+    BiliLane,
+    BiliPage,
+    BiliScanState,
+    BiliUnitSummary,
+)
+from media_sync.integrations.mediacrawler.checkout import load_mediacrawler_lock
 
 
 def _client(tmp_path: Path) -> TestClient:
@@ -109,10 +120,10 @@ def test_request_validation_never_echoes_rejected_secret_or_creator_input(tmp_pa
 
 def test_unacknowledged_or_unstable_subscription_drafts_write_no_rows(tmp_path: Path) -> None:
     client = _client(tmp_path)
-    account = _account(client, "bili", "bili-main")
+    account = _account(client, "wb", "weibo-main")
     draft = {
         "account_id": account["id"],
-        "platform": "bili",
+        "platform": "wb",
         "creator_remote_id": "123456",
         "display_name": "creator",
     }
@@ -131,6 +142,127 @@ def test_unacknowledged_or_unstable_subscription_drafts_write_no_rows(tmp_path: 
     assert unstable.status_code == 400
     assert unstable.json()["detail"] == "creator_remote_id_must_be_stable_id"
     assert _row_counts(client) == (0, 0)
+
+
+def test_new_bili_subscription_needs_no_unbounded_history_acknowledgement(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    account = _account(client, "bili", "bili-main")
+    draft = {
+        "account_id": account["id"],
+        "platform": "bili",
+        "creator_remote_id": "123456",
+        "display_name": "creator",
+        "max_items": 1000,
+    }
+    preview = client.post("/api/v1/subscriptions/preview", json=draft)
+    assert preview.status_code == 200
+    assert preview.json()["policy_summary"]["allow_full_history"] is False
+    assert _row_counts(client) == (0, 0)
+    created = client.post("/api/v1/subscriptions", json=draft)
+    assert created.status_code == 201
+    detail = client.get(f"/api/v1/subscriptions/{created.json()['id']}")
+    assert detail.status_code == 200
+    assert detail.json()["checkpoint_summary"]["bili_scan"] == {
+        "version": 1,
+        "status": "not_started",
+        "feed": "ordinary_uploads",
+        "unit_item_limit": 30,
+        "max_list_attempts": 2,
+        "history_complete": False,
+        "state": None,
+    }
+
+
+@pytest.mark.parametrize(
+    "mode",
+    ["bound", "source_end", "restarted", "account", "author", "sha", "legacy", "malformed", "extra", "version"],
+)
+def test_bili_api_projects_only_verified_bound_scan_state(tmp_path: Path, mode: str) -> None:
+    client = _client(tmp_path)
+    account = _account(client, "bili", "bili-main")
+    created = client.post(
+        "/api/v1/subscriptions",
+        json={
+            "account_id": account["id"],
+            "platform": "bili",
+            "creator_remote_id": "123456",
+            "display_name": "creator",
+            "max_items": 1,
+        },
+    )
+    assert created.status_code == 201
+    settings = client.app.state.settings  # type: ignore[attr-defined]
+    sha = load_mediacrawler_lock(settings.mediacrawler_lock_path).commit
+    state = BiliScanState.initial(
+        UUID(str(account["id"])),
+        hashlib.sha256(b"123456").hexdigest(),
+        sha,
+    )
+    page = BiliPage(1, 30, tuple(BiliIdentity(str(i), f"BV{i:010}", 1_700_000_000) for i in range(1, 31)))
+    state = replace(
+        state,
+        next_lane="history",
+        head=BiliLane(witness=page, index=1),
+        last_unit=BiliUnitSummary("head", "item_limit", 1, 1, 1),
+    )
+    if mode in {"source_end", "restarted"}:
+        state = replace(state, head=BiliLane(), last_unit=BiliUnitSummary("head", mode, 0, 1, 0))
+    if mode == "account":
+        state = replace(state, account_id=uuid4())
+    elif mode == "author":
+        state = replace(state, author_fingerprint_sha256="a" * 64)
+    elif mode == "sha":
+        state = replace(state, upstream_sha="a" * 40)
+    cursor = {"value": state.to_cursor()}
+    if mode == "legacy":
+        cursor = {"value": "LEGACY_PRIVATE_SENTINEL"}
+    elif mode == "malformed":
+        cursor = {"value": 'bili-scan-v1:{"cookie":"PRIVATE_SENTINEL"}'}
+    elif mode == "extra":
+        cursor["private"] = "PRIVATE_SENTINEL"
+    database = Database(settings.resolved_database_url)
+    try:
+        with database.session() as session:
+            subscription = session.get(Subscription, created.json()["id"])
+            assert subscription is not None
+            subscription.cursor = cursor
+            subscription.cursor_version = 2 if mode == "version" else 1
+            subscription.watermarked_at = datetime(2025, 1, 1, tzinfo=UTC)
+            subscription.watermark_remote_ids = ["PRIVATE_WATERMARK_ID"]
+            session.commit()
+        response = client.get(f"/api/v1/subscriptions/{created.json()['id']}")
+        assert response.status_code == 200
+        projection = response.json()["checkpoint_summary"]["bili_scan"]
+        assert projection["unit_item_limit"] == 1 and projection["history_complete"] is False
+        if mode in {"bound", "source_end", "restarted"}:
+            assert projection["status"] == "verified"
+            assert projection["state"] == state.public_summary()
+            assert projection["state"]["head_boundary_established"] is False
+        else:
+            assert projection["status"] == "unverified" and projection["state"] is None
+        public = json.dumps(projection)
+        assert set(projection) == {
+            "version",
+            "status",
+            "feed",
+            "unit_item_limit",
+            "max_list_attempts",
+            "history_complete",
+            "state",
+        }
+        for private in (
+            "PRIVATE",
+            "BV0000000001",
+            "author_fingerprint",
+            sha,
+            "head_candidate",
+            "witness",
+            "account_id",
+            str(tmp_path),
+        ):
+            assert private not in public
+    finally:
+        database.dispose()
 
 
 def test_concurrent_same_draft_creates_converge_idempotently(tmp_path: Path) -> None:

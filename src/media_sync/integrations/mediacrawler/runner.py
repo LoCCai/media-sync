@@ -1479,6 +1479,10 @@ async def _execute_child(
             )
 
             install_bilibili_media_capture(verified.root)
+            if manifest.bili_scan is not None:
+                from media_sync.integrations.mediacrawler.bilibili_capture import install_bilibili_capture_shim
+
+                install_bilibili_capture_shim(manifest)
         elif manifest.platform.value == "wb":
             from media_sync.integrations.mediacrawler.weibo_media import (
                 install_weibo_media_capture,

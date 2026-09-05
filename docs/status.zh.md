@@ -2,7 +2,15 @@
 
 # 项目统一状态（单一事实来源）
 
-## 最新：粘贴Cookie校验与复用（0058）
+## 最新：B站有界续抓单元（0059）
+
+[执行0059](executions/0059-bili-bounded-capture/progress.zh.md)已接通真实bridge/scheduler/receipt/规范化/原子入库链路中的普通投稿有界采集。每轮最多校验min(max_items,30)条详情、最多两次作者列表尝试；浏览器/认证与最多两次WBI签名密钥读取另计。头部/历史通道保留待抓身份和页见证，历史不套用旧水位过滤。新B站请求无需无限历史确认，旧artifact仍门控。API/Web区分部分推进、保守重启、源末尾观察和全历史完整，不泄露cursor/ID。
+
+离线验证覆盖签名查询/HTTP预算、超过30条的有界状态续抓、封存作者/投稿身份、来源/checkpoint/Run原子发布、取消/租约/CAS、真实封存恢复及更新检查点后的耐久成功。最终完整目录Python4386通过（23项环境跳过）、Web572通过，wheel的140个Python源码与工作区一致。精确打包/发布结果见[验证](executions/0059-bili-bounded-capture/verification.zh.md)。CLI提交确认不明时读取精确Run真值；另一次重复导入已消费artifact安全拒绝，不声称CLI重复调用幂等成功。
+
+不代表B站全内容支持或真人金丝雀PASS。动态附件、剩余平台校验器/资料及真实采集/下载/归档/本地媒体库播放验收仍须完成。Emby/Jellyfin兼容目录输出仍独立于可选服务器连接。未部署、重试真人采集、修改订阅或恢复supervisor。
+
+## 上一检查点：粘贴Cookie校验与复用（0058）
 
 [执行0058](executions/0058-cookie-login/progress.zh.md)实现B站/小红书/微博/知乎远程本人认证检查、不可变managed私密保存、Account/Operation原子发布和账户粘贴弹窗。B站Cookie账户还支持单作者昵称/头像；后续Cookie上下文不再静默误用旧保存会话。完整离线目录检查4256通过（23跳过）、Web553通过，最终wheel源码与工作区一致。精确时间/范围、失败修正、打包/发布状态和真人边界见[验证](executions/0058-cookie-login/verification.zh.md)。
 

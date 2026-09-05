@@ -180,7 +180,7 @@ def test_fake_account_and_default_subscription_behavior_remain_compatible(databa
     assert _count(database, Subscription) == 1
 
 
-@pytest.mark.parametrize("platform", [Platform.BILI, Platform.DY, Platform.KS, Platform.WB])
+@pytest.mark.parametrize("platform", [Platform.DY, Platform.KS, Platform.WB])
 def test_full_history_platform_rejection_occurs_before_author_or_subscription_write(
     database: Database,
     platform: Platform,

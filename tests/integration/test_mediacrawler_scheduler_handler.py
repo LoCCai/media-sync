@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import os
 import subprocess
 import sys
@@ -154,6 +155,10 @@ def _manifest_for_request(request: BridgeRequest) -> RunnerManifest:
             author_remote_id_fingerprint_sha256=hashlib.sha256(request.author_remote_id.encode("utf-8")).hexdigest(),
             creator_fingerprint_sha256="unused-by-fresh-attempt",
             upstream_sha=PINNED_SHA,
+            # These structural doubles deliberately exercise legacy sealed
+            # artifacts; the real-bridge tests below exercise bounded Bili.
+            bili_scan=None,
+            bili_scan_input_cursor=None,
         ),
     )
 
@@ -295,7 +300,34 @@ def _write_protocol_fixture_child(
     fixture = Path(FIXTURES[manifest["platform"]])
     target = Path(manifest["output_root"]) / manifest["platform"] / "jsonl" / fixture.name
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_bytes(fixture.read_bytes())
+    if manifest.get("bili_scan") is not None:
+        sys.path.insert(0, {str(REPOSITORY_ROOT / "src")!r})
+        from media_sync.integrations.mediacrawler.bilibili_scan import (
+            BILI_SCAN_COVERAGE_FILENAME, BILI_SCAN_IDENTITY_FIELD,
+            BiliIdentity, BiliPage, BiliScanState, BiliScanUnit,
+        )
+        record = json.loads(fixture.read_text(encoding="utf-8"))
+        identity = BiliIdentity(record["video_id"], "BV17x411w7KC", record["create_time"])
+        unit = BiliScanUnit(BiliScanState.from_cursor(manifest["bili_scan"]["state"]), manifest["max_items"])
+        consumed = []
+        while (action := unit.next_action()).kind != "stop":
+            if action.kind == "list":
+                unit.observe_page(BiliPage(action.page, 1, (identity,) if action.page == 1 else ()))
+            else:
+                assert action.identity == identity
+                unit.consume(identity)
+                record[BILI_SCAN_IDENTITY_FIELD] = identity.as_mapping()
+                record[BILI_SCAN_IDENTITY_FIELD]["author_fingerprint_sha256"] = (
+                    manifest["author_remote_id_fingerprint_sha256"]
+                )
+                consumed.append(json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\\n")
+        if consumed:
+            target.write_text("".join(consumed), encoding="utf-8", newline="\\n")
+        (Path(manifest["output_root"]) / BILI_SCAN_COVERAGE_FILENAME).write_text(
+            unit.coverage().to_json_line(), encoding="utf-8", newline="\\n",
+        )
+    else:
+        target.write_bytes(fixture.read_bytes())
     raise SystemExit(0)
     """
     path.write_text(textwrap.dedent(source).lstrip(), encoding="utf-8", newline="\n")
@@ -858,7 +890,20 @@ async def test_all_platforms_cross_real_v3_v2_process_protocol_retry_and_idempot
     assert snapshot.receipt.attempt == 2
     assert snapshot.receipt.execution_id == second_manifest.execution_id
     assert snapshot.receipt.sync_run_id == second_manifest.sync_run_id
-    assert tuple(item.payload for item in snapshot.files) == ((FIXTURE_ROOT / FIXTURES[platform]).read_bytes(),)
+    if platform is Platform.BILI:
+        assert second_manifest.bili_scan is not None
+        assert len(snapshot.files) == 2
+        content_file = next(item for item in snapshot.files if item.relative_path != "_media_sync_bili_coverage.jsonl")
+        content = json.loads(content_file.payload)
+        assert content.pop("__media_sync_bili_scan_identity") == {
+            "aid": "987654321",
+            "bvid": "BV17x411w7KC",
+            "pubdate": 1767225600,
+            "author_fingerprint_sha256": second_manifest.author_remote_id_fingerprint_sha256,
+        }
+        assert content == json.loads((FIXTURE_ROOT / FIXTURES[platform]).read_bytes())
+    else:
+        assert tuple(item.payload for item in snapshot.files) == ((FIXTURE_ROOT / FIXTURES[platform]).read_bytes(),)
     assert not second_manifest.job_root.exists() and not second_manifest.job_root.is_symlink()
 
     with database.session() as session:
@@ -2438,6 +2483,8 @@ async def test_prior_attempt_recovery_is_policy_bound_and_cleans_untrusted_roots
             author_remote_id_fingerprint_sha256=creator_fingerprint,
             creator_fingerprint_sha256=creator_fingerprint,
             upstream_sha=PINNED_SHA,
+            bili_scan=None,
+            bili_scan_input_cursor=None,
         ),
     )
     loaded_paths: list[Path] = []

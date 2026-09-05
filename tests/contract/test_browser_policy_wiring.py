@@ -283,9 +283,9 @@ def _disable_capture_hooks(monkeypatch: pytest.MonkeyPatch) -> None:
             monkeypatch.setattr(detail_runner, function, lambda *_args, **_kwargs: None)
 
 
-@pytest.mark.parametrize("platform", tuple(Platform))
+@pytest.mark.parametrize("platform,bounded", [(platform, False) for platform in Platform] + [(Platform.BILI, True)])
 async def test_real_creator_entry_installs_policy_before_pinned_main_dispatch(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, pinned_nodes: Any, platform: Platform
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, pinned_nodes: Any, platform: Platform, bounded: bool
 ) -> None:
     fixture = _runtime(tmp_path, monkeypatch, pinned_nodes, platform)
     from media_sync.integrations.mediacrawler import bridge
@@ -293,6 +293,12 @@ async def test_real_creator_entry_installs_policy_before_pinned_main_dispatch(
     monkeypatch.setattr(bridge, "verify_manifest_checkout", lambda _manifest: SimpleNamespace(root=fixture.checkout))
     monkeypatch.setattr(runner, "_configure_upstream", lambda *_args: None)
     _disable_capture_hooks(monkeypatch)
+    if bounded:
+        from media_sync.integrations.mediacrawler import bilibili_capture
+
+        monkeypatch.setattr(
+            bilibili_capture, "install_bilibili_capture_shim", lambda manifest: fixture.events.append("bounded-capture")
+        )
     output = tmp_path / "output"
     output.mkdir()
     manifest = SimpleNamespace(
@@ -303,10 +309,17 @@ async def test_real_creator_entry_installs_policy_before_pinned_main_dispatch(
         login_method=LoginMethod.COOKIE,
         watchdogs=WatchdogLimits(max_seconds=5, poll_seconds=0.01),
         max_items=1,
+        bili_scan=object() if bounded else None,
     )
 
     assert await runner._execute_child(manifest, "fixture-author", "session=fixture", None) == 0
-    assert fixture.events == ["install", "cookie-reuse", f"factory:{platform.value}", "start", "browser", "cleanup"]
+    assert fixture.events == ["install"] + (["bounded-capture"] if bounded else []) + [
+        "cookie-reuse",
+        f"factory:{platform.value}",
+        "start",
+        "browser",
+        "cleanup",
+    ]
     assert fixture.policy_modes == [False]
 
 

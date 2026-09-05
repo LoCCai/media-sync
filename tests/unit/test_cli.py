@@ -256,7 +256,12 @@ def test_mediacrawler_dry_run_wires_all_platforms_without_spawn_or_secret_output
         def prepare(self, request: object) -> object:
             captured.append(request)
             temporary_roots.append(request.integration_root)  # type: ignore[attr-defined]
-            return SimpleNamespace(manifest=SimpleNamespace(upstream_sha="b" * 40))
+            return SimpleNamespace(
+                manifest=SimpleNamespace(
+                    upstream_sha="b" * 40,
+                    bili_scan=object() if platform == "bili" else None,
+                )
+            )
 
     monkeypatch.setattr(cli_module, "get_settings", lambda: settings)
     monkeypatch.setattr(cli_module, "MediaCrawlerBridge", _FakeBridge)
@@ -291,6 +296,10 @@ def test_mediacrawler_dry_run_wires_all_platforms_without_spawn_or_secret_output
     ]
     assert payload["live_qualification"] == "NOT_RUN"
     assert captured
+    assert captured[0].bili_bounded_capture is (platform == "bili")
+    if platform == "bili":
+        assert payload["bounded_capture"]["unit_item_limit"] == 30
+        assert payload["bounded_capture"]["history_complete"] is False
     assert all(not root.exists() for root in temporary_roots)
     assert f"stable-{platform}-creator" not in result.output
 
@@ -806,6 +815,10 @@ def test_mediacrawler_full_history_subscription_requires_confirmation_before_wri
 
     rejected = runner.invoke(app, base_arguments)
 
+    if platform == "bili":
+        assert rejected.exit_code == 0, rejected.output
+        assert _row_count(initialized_cli_database, Subscription) == 1
+        return
     assert rejected.exit_code == 2
     assert "allow_full_history acknowledgement is required" in rejected.output
     assert "Traceback" not in rejected.output

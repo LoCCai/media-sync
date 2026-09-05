@@ -121,7 +121,7 @@ class CreatorInputCapability:
 
 @dataclass(frozen=True, slots=True)
 class MediaCrawlerPlatformCapability:
-    """One immutable platform row in the public capability contract."""
+    """One immutable capability for new scheduled requests, not legacy artifacts."""
 
     platform: Platform
     display_name: str
@@ -147,8 +147,8 @@ class MediaCrawlerPlatformCapability:
             raise MediaCrawlerCapabilityError("creator_input must use the typed capability contract")
         if type(self.requires_full_history_acknowledgement) is not bool:
             raise MediaCrawlerCapabilityError("requires_full_history_acknowledgement must be boolean")
-        if self.requires_full_history_acknowledgement is not (platform in FULL_HISTORY_PLATFORMS):
-            raise MediaCrawlerCapabilityError("full-history acknowledgement must match the bridge policy")
+        if self.requires_full_history_acknowledgement is not _new_request_requires_full_history(platform):
+            raise MediaCrawlerCapabilityError("full-history acknowledgement must match the new-request policy")
         if self.live_qualification != "NOT_RUN":
             raise MediaCrawlerCapabilityError("live qualification has not been established")
         object.__setattr__(self, "platform", platform)
@@ -168,6 +168,7 @@ class MediaCrawlerPlatformCapability:
             "pasted_cookie_login": self.platform in {Platform.BILI, Platform.WB, Platform.XHS, Platform.ZHIHU},
             "creator_input": self.creator_input.to_payload(),
             "requires_full_history_acknowledgement": self.requires_full_history_acknowledgement,
+            "bounded_capture": bounded_capture_payload(self.platform),
             "offline_shapes": list(self.offline_shapes),
             "limitations": list(self.limitations),
             "live_qualification": self.live_qualification,
@@ -190,6 +191,32 @@ def _creator_input(
     )
 
 
+def _new_request_requires_full_history(platform: Platform) -> bool:
+    # The legacy bridge classification deliberately still includes Bili. Only
+    # newly constructed requests carry its owned versioned bounded contract.
+    return platform in FULL_HISTORY_PLATFORMS and platform is not Platform.BILI
+
+
+def bounded_capture_payload(platform: Platform) -> dict[str, object] | None:
+    """Return fixed budgets for the new Bili upload path, never live evidence."""
+
+    if platform is not Platform.BILI:
+        return None
+    return {
+        "version": 1,
+        "feed": "ordinary_uploads",
+        "order": "pubdate",
+        "page_size": 30,
+        "max_items_per_unit": 30,
+        "max_list_attempts_per_unit": 2,
+        "alternating_lanes": ["head", "history"],
+        "browser_setup_separate": True,
+        "download_scope_bounded": False,
+        "history_completeness_claimed": False,
+        "legacy_requires_full_history_acknowledgement": True,
+    }
+
+
 def _capability(
     platform: Platform,
     display_name: str,
@@ -203,7 +230,7 @@ def _capability(
         login_methods=_LOGIN_METHODS,
         qr_login=True,
         creator_input=creator_input,
-        requires_full_history_acknowledgement=platform in FULL_HISTORY_PLATFORMS,
+        requires_full_history_acknowledgement=_new_request_requires_full_history(platform),
         offline_shapes=offline_shapes,
         limitations=limitations,
     )
@@ -284,8 +311,10 @@ MEDIACRAWLER_PLATFORM_CAPABILITIES: Final = (
             "multi_segment_flv_concat",
         ),
         (
-            "Creator pagination may scan full history and requires explicit acknowledgement.",
-            "Numeric UIDs are recommended; compatible stable IDs remain accepted.",
+            "New upload units consume at most min(max_items, 30) verified details and two list HTTP attempts.",
+            "Browser/auth setup and up to two WBI key reads are separate; this is not a download or full-history cap.",
+            "Only ordinary uploads are scanned; dynamics, fans, follows and comments are excluded.",
+            "Legacy artifacts remain gated by full-history acknowledgement. Numeric UIDs are recommended.",
             "Transcoding, pages above 64, paid, bangumi, and live media remain unsupported.",
             _LIVE_LIMITATION,
         ),
@@ -381,6 +410,7 @@ __all__ = [
     "CreatorInputKind",
     "MediaCrawlerCapabilityError",
     "MediaCrawlerPlatformCapability",
+    "bounded_capture_payload",
     "capability_for",
     "normalize_creator_stable_id",
     "platform_capabilities_payload",

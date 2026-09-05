@@ -37,6 +37,12 @@
   } from '$lib/types/api';
   import { formatDate, formatDateLong, intervalLabel, PLATFORM_META, shortId } from '$lib/utils/format';
   import {
+    biliCaptureNotice,
+    biliUnitItemLimit,
+    isBiliBoundedCapture,
+    safeBiliScanSummaryRows
+  } from '$lib/utils/bilibili-capture';
+  import {
     CREATOR_LOOKUP_NOTICE,
     CreatorLookupController,
     creatorLookupButtonLabel,
@@ -669,6 +675,9 @@
           <tbody>
             {#each subscriptions as subscription}
               {@const savedProfile = subscriptionCreatorProfile(subscription)}
+              {@const boundedBili =
+                subscription.policy_summary?.adapter === 'mediacrawler' &&
+                isBiliBoundedCapture(capabilityByPlatform(capabilities, subscription.platform))}
               <tr>
                 <td>
                   <div class="inline-identity">
@@ -696,7 +705,12 @@
                 >
                 <td>
                   <span class="cell-main">每 {intervalLabel(subscription.interval_seconds)}</span>
-                  <span class="cell-sub">单次最多 {subscription.max_items} 条</span>
+                  <span class="cell-sub"
+                    >单次最多 {boundedBili
+                      ? biliUnitItemLimit(subscription.max_items)
+                      : subscription.max_items} 条{boundedBili ? '普通投稿详情' : ''}</span
+                  >
+                  {#if boundedBili}<span class="cell-sub">分轮更新/回填；不是下载上限</span>{/if}
                 </td>
                 <td>{formatDate(subscription.last_success_at, '尚未成功')}</td>
                 <td
@@ -820,7 +834,13 @@
               </div>
               <div>
                 <dt>全历史确认</dt>
-                <dd>{selectedCapability.requires_full_history_acknowledgement ? '创建前必需' : '不强制'}</dd>
+                <dd>
+                  {selectedCapability.requires_full_history_acknowledgement
+                    ? '创建前必需'
+                    : isBiliBoundedCapture(selectedCapability)
+                      ? '新格式有界投稿扫描无需确认；旧产物仍受门控'
+                      : '不强制'}
+                </dd>
               </div>
               <div>
                 <dt>离线形状</dt>
@@ -1019,6 +1039,11 @@
             <div class="field">
               <label for="max-items">单次上限</label>
               <input id="max-items" class="input" type="number" min="1" max="1000" bind:value={maxItems} />
+              {#if isBiliBoundedCapture(selectedCapability)}
+                <span class="field-help"
+                  >本轮实际最多 {biliUnitItemLimit(maxItems)} 条普通投稿详情；不是下载上限。</span
+                >
+              {/if}
             </div>
             <div class="field">
               <label for="request-delay">请求间隔（秒）</label>
@@ -1039,29 +1064,41 @@
                 <option value={false}>可见浏览器</option>
               </select>
             </div>
-            <label
-              class:required-confirmation={wizardGates.confirmationRequired}
-              class="checkbox-row wide history-confirmation"
-            >
-              <input type="checkbox" bind:checked={fullHistory} />
-              <span>
-                <strong>
-                  {wizardGates.confirmationRequired
-                    ? '必须确认：允许首次全历史采集'
-                    : '允许首次全历史采集（可选）'}
-                </strong>
+            {#if !isBiliBoundedCapture(selectedCapability)}
+              <label
+                class:required-confirmation={wizardGates.confirmationRequired}
+                class="checkbox-row wide history-confirmation"
+              >
+                <input type="checkbox" bind:checked={fullHistory} />
                 <span>
-                  {wizardGates.confirmationRequired
-                    ? `${selectedCapability.display_name} 的当前作者路径仍可能遍历完整历史；未确认不能创建。`
-                    : '该平台当前具备有界作者路径；只有确实需要时再开启。'}
+                  <strong>
+                    {wizardGates.confirmationRequired
+                      ? '必须确认：允许首次全历史采集'
+                      : '允许首次全历史采集（可选）'}
+                  </strong>
+                  <span>
+                    {wizardGates.confirmationRequired
+                      ? `${selectedCapability.display_name} 的当前作者路径仍可能遍历完整历史；未确认不能创建。`
+                      : '该平台当前具备有界作者路径；只有确实需要时再开启。'}
+                  </span>
                 </span>
-              </span>
-            </label>
+              </label>
+            {/if}
           </div>
+
+          {#if isBiliBoundedCapture(selectedCapability)}
+            <p class="notice warning">{biliCaptureNotice(maxItems)}</p>
+          {/if}
 
           <div class="policy-summary">
             <span>每 {intervalLabel(intervalSeconds)}</span>
-            <span>最多 {maxItems} 条</span>
+            <span
+              >最多 {isBiliBoundedCapture(selectedCapability) ? biliUnitItemLimit(maxItems) : maxItems} 条{isBiliBoundedCapture(
+                selectedCapability
+              )
+                ? '普通投稿详情'
+                : ''}</span
+            >
             <span>请求间隔 {requestDelaySeconds} 秒</span>
             <span>{headless ? '后台浏览器' : '可见浏览器'}</span>
             <span>真人验收 {selectedCapability.live_qualification}</span>
@@ -1207,6 +1244,20 @@
         </section>
       {/if}
     </div>
+    {#if detail.platform === 'bili' && detail.checkpoint_summary?.bili_scan}
+      <section class="safe-summary" aria-label="B站有界采集覆盖">
+        <h3>B站有界采集覆盖</h3>
+        <p class="field-help">{biliCaptureNotice(detail.max_items)}</p>
+        <dl>
+          {#each safeBiliScanSummaryRows(detail.checkpoint_summary.bili_scan) as row}
+            <div>
+              <dt>{row.label}</dt>
+              <dd>{row.value}</dd>
+            </div>
+          {/each}
+        </dl>
+      </section>
+    {/if}
     {#if detail.policy_summary || detail.checkpoint_summary}
       <p class="redaction-note">
         仅展示服务端白名单摘要；secret reference、原始 cursor、签名 URL 与本地路径均不返回。
