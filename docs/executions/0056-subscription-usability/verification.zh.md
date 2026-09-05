@@ -52,3 +52,5 @@
 本机没有 Docker CLI，也未配置 PostgreSQL 测试 URL。当前 Docker 构建/部署、真实 PostgreSQL 迁移/并发、生产删除/恢复、真人资料查询/登录/采集/下载/导出/播放均 NOT_RUN。自动昵称/头像仍 NOT_IMPLEMENTED，0056 和总目标保持开放。未改写生产历史，也未恢复 supervisor。
 
 首次 HTTPS fetch 遇 TLS unexpected EOF；改用 Git 的 Schannel TLS 后端与 HTTP/1.1 重试成功，未放宽证书校验。新读取远端 main 仍为 `0eefea7`。包含本记录的实现提交接续计划 `fe54aba`，使用非强制推送并另记远端一致性。上述包检查早于最终文档更新；修后 97 项联合已重建并执行修正版 wheel 的迁移。
+
+已发布实现：`57c447ce2863b316a3702a4d5e1247e59a943964`。非强制推送将 `origin/main` 从 `0eefea7` 推进至 `57c447c`；随后新 fetch 显示分歧 `0 0`、工作树干净。本次仅文档跟进记录该已核实源码检查点，未进行生产部署或额外真人验收。

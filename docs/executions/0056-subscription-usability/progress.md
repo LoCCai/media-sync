@@ -4,6 +4,8 @@
 
 Implementation is in progress under planning commit `fe54aba`; this execution and the seven-platform product goal are not complete.
 
+The implemented slice is published as `57c447c`; a fresh fetch verified equality with `origin/main`. Automatic creator profiles remain pending as described below.
+
 ## Implemented in this slice
 
 - Library/Settings and deployment guidance separate local compatible-directory output from optional Emby/Jellyfin connectivity. A real authenticated API/exporter test proves local video/NFO/body output with no connector configured or constructed; archive integrity is still required. Server-side scheduled/manual scanning is configured in the media server, not implicitly triggered by export.
