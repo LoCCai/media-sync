@@ -10,6 +10,7 @@ from typing import Final, Literal
 
 from media_sync.domain import LoginMethod, Platform
 
+from .cookie_login import COOKIE_LOGIN_PLATFORMS
 from .policies import FULL_HISTORY_PLATFORMS
 
 CAPABILITY_SCHEMA_VERSION: Final = 1
@@ -165,7 +166,7 @@ class MediaCrawlerPlatformCapability:
             "display_name": self.display_name,
             "login_methods": [method.value for method in self.login_methods],
             "qr_login": self.qr_login,
-            "pasted_cookie_login": self.platform in {Platform.BILI, Platform.WB, Platform.XHS, Platform.ZHIHU},
+            "pasted_cookie_login": self.platform in COOKIE_LOGIN_PLATFORMS,
             "creator_input": self.creator_input.to_payload(),
             "requires_full_history_acknowledgement": self.requires_full_history_acknowledgement,
             "bounded_capture": bounded_capture_payload(self.platform),

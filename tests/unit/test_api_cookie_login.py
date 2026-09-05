@@ -346,11 +346,11 @@ def test_gates_do_not_call_runner(environment: Any, change: dict[str, object], c
 def test_capabilities_distinguish_supported_remote_proofs(environment: Any) -> None:
     client, _, _, _, _ = environment
     rows = client.get("/api/v1/platform-capabilities").json()["platforms"]
-    assert {row["platform"] for row in rows if row["pasted_cookie_login"]} == {"bili", "xhs", "wb", "zhihu"}
+    assert {row["platform"] for row in rows if row["pasted_cookie_login"]} == {"bili", "xhs", "wb", "zhihu", "tieba"}
     assert len(rows) == 7
 
 
-@pytest.mark.parametrize("platform", ["bili", "wb"])
+@pytest.mark.parametrize("platform", ["bili", "wb", "zhihu"])
 def test_saved_cookie_feeds_profile_receipt_and_subscription(environment: Any, platform: str) -> None:
     client, database, account_id, _, _ = environment
     with database.session() as session:
@@ -400,3 +400,34 @@ def test_saved_cookie_feeds_profile_receipt_and_subscription(environment: Any, p
     assert created.status_code == 201, created.text
     assert created.json()["creator_display_name"] == "Remote nickname" and len(calls) == 1
     assert original(database, account_id)[3] == 1
+
+
+@pytest.mark.parametrize("failure", ["rejected", "result_invalid", "verification_unavailable", "cancelled"])
+def test_tieba_saved_cookie_is_private_and_failed_replacement_retains_exact_auth(
+    environment: Any, failure: str
+) -> None:
+    client, database, account_id, runner, settings = environment
+    candidate = "BDUSS=" + "S" * 192 + "; STOKEN=synthetic=="
+    with database.session() as session:
+        session.get(Account, account_id).platform = "tieba"
+    first = submit(environment, body(platform="tieba", cookie=candidate))
+    assert first["state"] == "succeeded", first
+    before = original(database, account_id)
+    reference = before[2]
+    assert isinstance(reference, str) and reference.startswith("managed:")
+    resolver = SecretResolver.local(
+        file_root=settings.resolved_secret_file_dir, managed_root=settings.state_dir / "credentials"
+    )
+    assert resolver.resolve(reference).reveal() == candidate
+    runner.status = failure
+    second = submit(environment, body(platform="tieba", cookie="BDUSS=" + "F" * 192, expected_auth_revision=1))
+    assert second["state"] in {"failed_terminal", "cancelled"}, second
+    assert original(database, account_id) == before
+    assert resolver.resolve(reference).reveal() == candidate
+    public = json.dumps(first) + json.dumps(second) + client.get("/api/v1/accounts").text
+    public += client.get(f"/api/v1/operations/{first['id']}/events").text
+    assert candidate not in public and reference not in public
+    with database.session() as session:
+        assert session.scalar(select(LoginSession)) is None
+    for path in settings.state_dir.glob("*.sqlite3*"):
+        assert candidate.encode() not in path.read_bytes()

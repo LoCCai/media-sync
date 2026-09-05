@@ -225,7 +225,7 @@ def test_avatar_is_same_origin_exact_revision_and_failure_preserves_bytes(enviro
     "extra,expected",
     [
         ({"platform": "dy"}, 400),
-        ({"creator_remote_id": "https://space.bilibili.com/2"}, 422),
+        ({"creator_remote_id": "https://space.bilibili.com/2"}, 400),
         ({"creator_remote_id": "0002"}, 400),
         ({"enable_mediacrawler": False}, 400),
         ({"accept_mediacrawler_license": False}, 400),
@@ -437,3 +437,105 @@ def test_avatar_network_scope_is_bound_to_profile_platform(
     assert result["state"] == "succeeded", result
     assert result["profile"]["nickname"] == runner.name
     assert received == ([] if wrong_platform else [urls[platform]])
+
+
+@pytest.mark.parametrize(
+    "platform,creator,homepage",
+    [
+        ("ks", "3xSynthetic_ID", "https://www.kuaishou.com/profile/3xSynthetic_ID"),
+        ("zhihu", "test.user-token", "https://www.zhihu.com/people/test.user-token"),
+        ("ks", "x" * 128, "https://www.kuaishou.com/profile/" + "x" * 128),
+        ("zhihu", "x" * 255, "https://www.zhihu.com/people/" + "x" * 255),
+    ],
+)
+def test_opaque_creator_lookup_receipt_and_subscription_preserve_identity(
+    environment: Any, platform: str, creator: str, homepage: str
+) -> None:
+    client, database, account_id, runner = environment
+    with database.session() as session:
+        session.get(Account, account_id).platform = platform
+    result = _lookup(client, account_id, platform=platform, creator_remote_id=creator)
+    assert result["state"] == "succeeded", result
+    assert result["profile"]["nickname"] == runner.name
+    assert result["profile"]["profile_url"] == homepage
+    assert result["profile"]["avatar_state"] == "absent"
+    assert runner.calls[0].creator_remote_id == creator and len(runner.calls) == 1
+    draft = {
+        "account_id": account_id,
+        "platform": platform,
+        "creator_remote_id": creator,
+        "profile_lookup_id": result["operation_id"],
+        "allow_full_history": True,
+    }
+    preview = client.post("/api/v1/subscriptions/preview", json=draft)
+    assert preview.status_code == 200, preview.text
+    assert preview.json()["creator_display_name"] == runner.name
+    wrong = client.post("/api/v1/subscriptions", json={**draft, "creator_remote_id": "different" + creator[9:]})
+    assert wrong.status_code in {400, 409}, wrong.text
+    created = client.post("/api/v1/subscriptions", json=draft)
+    assert created.status_code == 201, created.text
+    original_name = runner.name
+    runner.name = "更新后的平台昵称"
+    fresh = _lookup(client, account_id, platform=platform, creator_remote_id=creator)
+    assert fresh["state"] == "succeeded" and fresh["profile"]["revision"] == 2
+    rows = client.get("/api/v1/subscriptions").json()
+    assert rows[0]["creator_profile"]["nickname"] == runner.name
+    with database.session() as session:
+        assert session.scalar(select(Author)).display_name == original_name
+        account = session.get(Account, account_id)
+        assert account.auth_status == "authenticated" and account.auth_revision == 0
+        assert session.scalar(select(LoginSession)) is None
+
+
+@pytest.mark.parametrize("platform,creator", [("ks", "3xSynthetic"), ("zhihu", "test-user")])
+@pytest.mark.parametrize("failure", ["result_invalid", "auth_expired", "auth_changed"])
+def test_new_platform_failed_or_stale_lookup_preserves_previous_observation(
+    environment: Any, platform: str, creator: str, failure: str
+) -> None:
+    client, database, account_id, runner = environment
+    with database.session() as session:
+        session.get(Account, account_id).platform = platform
+    first = _lookup(client, account_id, platform=platform, creator_remote_id=creator)
+    assert first["state"] == "succeeded", first
+    if failure == "auth_changed":
+
+        def change(*_: object) -> None:
+            with database.session() as session:
+                session.get(Account, account_id).auth_revision += 1
+
+        runner.hook = change
+    else:
+        runner.status = MediaCrawlerCreatorProfileStatus(failure)
+    runner.name = "不应发布的晚结果"
+    second = _lookup(client, account_id, platform=platform, creator_remote_id=creator)
+    assert second["state"] == "failed_terminal", second
+    with database.session() as session:
+        profile = session.get(CreatorProfile, first["profile"]["id"])
+        assert profile.revision == 1 and profile.nickname == first["profile"]["nickname"]
+        assert session.get(Account, account_id).auth_status == "authenticated"
+
+
+@pytest.mark.parametrize(
+    "platform,creator,expected",
+    [
+        ("ks", "../user", 400),
+        ("ks", "x" * 129, 400),
+        ("zhihu", "..", 400),
+        ("zhihu", "%2e%2e", 400),
+        ("zhihu", "x" * 256, 422),
+        ("bili", "1" * 21, 400),
+    ],
+)
+def test_invalid_opaque_profile_request_never_starts_runner(
+    environment: Any, platform: str, creator: str, expected: int
+) -> None:
+    client, database, account_id, runner = environment
+    with database.session() as session:
+        session.get(Account, account_id).platform = platform
+    response = client.post(
+        f"/api/v1/accounts/{account_id}/creator-lookups", json=_body(platform=platform, creator_remote_id=creator)
+    )
+    assert response.status_code == expected, response.text
+    assert runner.calls == []
+    with database.session() as session:
+        assert session.scalar(select(Operation)) is None

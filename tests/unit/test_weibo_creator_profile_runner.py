@@ -168,8 +168,19 @@ async def test_no_post_retry_or_request_after_finished(response: tuple[dict[str,
     assert len(seen) == 2
 
 
-@pytest.mark.parametrize("platform", [Platform.XHS, Platform.DY, Platform.KS, Platform.TIEBA, Platform.ZHIHU])
-def test_other_five_platforms_remain_unsupported(tmp_path: Path, platform: Platform) -> None:
+@pytest.mark.parametrize(
+    "platform,expected",
+    [
+        (Platform.XHS, module.MediaCrawlerCreatorProfileStatus.UNSUPPORTED),
+        (Platform.DY, module.MediaCrawlerCreatorProfileStatus.UNSUPPORTED),
+        (Platform.KS, module.MediaCrawlerCreatorProfileStatus.AUTH_EXPIRED),
+        (Platform.TIEBA, module.MediaCrawlerCreatorProfileStatus.UNSUPPORTED),
+        (Platform.ZHIHU, module.MediaCrawlerCreatorProfileStatus.AUTH_EXPIRED),
+    ],
+)
+def test_other_platform_support_and_missing_credentials(
+    tmp_path: Path, platform: Platform, expected: module.MediaCrawlerCreatorProfileStatus
+) -> None:
     import sys
 
     runner = module.MediaCrawlerCreatorProfileProcessRunner(
@@ -180,7 +191,7 @@ def test_other_five_platforms_remain_unsupported(tmp_path: Path, platform: Platf
         license_acknowledged=True,
     )
     request = module.MediaCrawlerCreatorProfileRequest(uuid4(), platform, UID, uuid4())
-    assert runner.run(request).status is module.MediaCrawlerCreatorProfileStatus.UNSUPPORTED
+    assert runner.run(request).status is expected
 
 
 @pytest.mark.parametrize("raw_uid", ["0", "01", str(2**64), True, "1\n"])

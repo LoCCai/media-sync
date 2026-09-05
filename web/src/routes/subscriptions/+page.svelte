@@ -976,7 +976,9 @@
                   <CheckCircle2 size={15} />本次平台资料查询成功，创建时使用服务器保存的资料凭单。
                 </p>
               {:else if lookupView.phase === 'idle'}
-                <p class="field-help">填写有效数字 UID 后离开输入框或按 Enter，将自动查询一次。</p>
+                <p class="field-help">
+                  填写有效的{selectedCapability.creator_input.label}后离开输入框或按 Enter，将自动查询一次。
+                </p>
               {/if}
               {#if lookupView.message}
                 <div class="notice warning" role="status">{lookupView.message}</div>

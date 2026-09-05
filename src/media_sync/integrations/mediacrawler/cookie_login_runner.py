@@ -68,13 +68,20 @@ _SELF_ENDPOINTS = {
     Platform.WB: ("weibo", "WeiboClient", "https://m.weibo.cn", "/api/config"),
     Platform.XHS: ("xhs", "XiaoHongShuClient", "https://edith.xiaohongshu.com", "/api/sns/web/v1/user/selfinfo"),
     Platform.ZHIHU: ("zhihu", "ZhiHuClient", "https://www.zhihu.com", "/api/v4/me"),
+    Platform.TIEBA: ("tieba", "BaiduTieBaClient", "https://tieba.baidu.com", "/mo/q/newmoindex"),
 }
 _PAGE_ORIGINS = {
     Platform.BILI: "https://www.bilibili.com",
     Platform.WB: "https://m.weibo.cn",
     Platform.XHS: "https://www.xiaohongshu.com",
     Platform.ZHIHU: "https://www.zhihu.com",
+    Platform.TIEBA: "https://tieba.baidu.com",
 }
+
+
+def _self_url(platform: Platform) -> str:
+    _module, _class, host, path = _SELF_ENDPOINTS[platform]
+    return host + path + ("?need_user=1" if platform is Platform.TIEBA else "")
 
 
 def _result(request: CookieLoginRequest, status: str, sha: str | None = None) -> CookieLoginResult:
@@ -419,7 +426,7 @@ def _fetch_json(url: str, headers: Mapping[str, str], deadline: float) -> dict[s
 
     from media_sync.media.network import PinnedHTTPTransport, SocketAddressResolver, validate_target
 
-    if url not in {host + path for _module, _class, host, path in _SELF_ENDPOINTS.values()}:
+    if url not in {_self_url(platform) for platform in _SELF_ENDPOINTS}:
         raise _VerificationFailure("result_invalid")
     remaining = min(10.0, deadline - time.monotonic())
     if remaining <= 0:
@@ -529,6 +536,35 @@ def _authenticated(platform: Platform, raw: dict[str, Any]) -> None:
         if not valid_uid or type(name) is not str or not 0 < len(name) <= 512 or not name.isprintable():
             raise _VerificationFailure("result_invalid")
         return
+    elif platform is Platform.TIEBA:
+        # The immutable current-user ID is supplied by the exact moindex self
+        # endpoint, never a caller-selected public profile or local Cookie flag.
+        # Unknown remote codes are not evidence that a credential has expired.
+        data = raw.get("data")
+        if (
+            type(raw.get("no")) is not int
+            or raw["no"] != 0
+            or type(data) is not dict
+            or raw.get("error") not in (None, "")
+        ):
+            raise _VerificationFailure("result_invalid")
+        uid, portrait = data.get("id"), data.get("portrait")
+        if (
+            type(uid) is not int
+            or not 0 < uid <= 2**64 - 1
+            or type(portrait) is not str
+            or re.fullmatch(r"tb\.1\.[A-Za-z0-9._-]{28,31}", portrait, flags=re.ASCII) is None
+            or ".." in portrait
+            or portrait.endswith(".")
+            or any(
+                value.get(key) is not False
+                for value in (raw, data)
+                for key in ("guest", "isGuest", "is_guest")
+                if key in value
+            )
+        ):
+            raise _VerificationFailure("result_invalid")
+        return
     else:
         raise _VerificationFailure("verification_unavailable")
     if flag is False:
@@ -544,7 +580,11 @@ def _origin(module: Any, expected: Path) -> None:
 
 
 async def _verify_remote(checkout: Path, request: CookieLoginRequest, deadline: float) -> None:
-    module_name, class_name, host, uri = _SELF_ENDPOINTS[request.platform]
+    module_name, class_name, _host, uri = _SELF_ENDPOINTS[request.platform]
+    expected_url = _self_url(request.platform)
+    candidate_pairs = cookie_pairs(request.cookie.reveal())
+    if request.platform is Platform.TIEBA and not candidate_pairs.get("BDUSS", "").strip('"'):
+        raise _VerificationFailure("result_invalid")
     os.chdir(checkout)
     sys.path.insert(0, str(checkout))
     if "config" in sys.modules or f"media_platform.{module_name}.client" in sys.modules:
@@ -586,14 +626,24 @@ async def _verify_remote(checkout: Path, request: CookieLoginRequest, deadline: 
         headers.update(
             {"x-api-version": "3.0.91", "x-app-za": "OS=Web", "x-requested-with": "fetch", "x-zse-93": "101_3_3.0"}
         )
-    client = client_type(
-        headers=headers, playwright_page=None, cookie_dict=cookie_pairs(request.cookie.reveal()), proxy=None
-    )
+    if request.platform is Platform.TIEBA:
+        # This locked client has a distinct constructor and its get() forwards
+        # return_ori_content. Do not invoke its retried requests/browser path.
+        client = client_type(headers=headers, playwright_page=None, ip_pool=None, default_ip_proxy=None)
+    else:
+        client = client_type(headers=headers, playwright_page=None, cookie_dict=candidate_pairs, proxy=None)
     calls = 0
 
     async def remote(method: str, url: str, **kwargs: Any) -> dict[str, Any]:
         nonlocal calls
-        if method != "GET" or url != host + uri or set(kwargs) != {"headers"} or calls != 0:
+        expected_kwargs = {"headers", "return_ori_content"} if request.platform is Platform.TIEBA else {"headers"}
+        if (
+            method != "GET"
+            or url != expected_url
+            or set(kwargs) != expected_kwargs
+            or (request.platform is Platform.TIEBA and kwargs["return_ori_content"] is not False)
+            or calls != 0
+        ):
             raise _VerificationFailure("result_invalid")
         calls += 1
         outgoing = kwargs["headers"]
@@ -601,7 +651,7 @@ async def _verify_remote(checkout: Path, request: CookieLoginRequest, deadline: 
             raise _VerificationFailure("result_invalid")
         raw = await asyncio.to_thread(_fetch_json, url, outgoing, deadline)
         _authenticated(request.platform, raw)
-        return raw if request.platform in {Platform.XHS, Platform.ZHIHU} else raw["data"]
+        return raw if request.platform in {Platform.XHS, Platform.ZHIHU, Platform.TIEBA} else raw["data"]
 
     client.request = remote
     if request.platform is Platform.XHS:
@@ -635,6 +685,8 @@ async def _verify_remote(checkout: Path, request: CookieLoginRequest, deadline: 
             module.make_async_client = original
     elif request.platform is Platform.BILI:
         await client.get(uri, enable_params_sign=False)
+    elif request.platform is Platform.TIEBA:
+        await client.get(uri, params={"need_user": 1}, headers=headers)
     else:
         # The locked Zhihu get_current_user_info adds email/phone fields. Keep
         # its same self path and real signing/get method without those fields.

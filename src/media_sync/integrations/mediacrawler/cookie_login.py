@@ -14,7 +14,7 @@ from media_sync.security import SecretValue
 
 MAX_COOKIE_HEADER_BYTES = 16 * 1024
 MAX_COOKIE_PAIRS = 128
-COOKIE_LOGIN_PLATFORMS = frozenset({Platform.BILI, Platform.WB, Platform.XHS, Platform.ZHIHU})
+COOKIE_LOGIN_PLATFORMS = frozenset({Platform.BILI, Platform.WB, Platform.XHS, Platform.ZHIHU, Platform.TIEBA})
 COOKIE_LOGIN_STATUSES = frozenset(
     {
         "authenticated",

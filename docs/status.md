@@ -2,7 +2,15 @@
 
 # Unified project status (single source of truth)
 
-## Latest: Bili dynamic capture and local output (0062, offline verified)
+## Latest: Tieba Cookie and KS/Zhihu creator nicknames (0063, offline verified)
+
+[Execution0063](executions/0063-platform-access-and-profiles/progress.md) adds strict positive Tieba self validation to the existing private Cookie save/atomic account workflow and exact KS/Zhihu nickname lookup through isolated workers, API, UI and subscription receipts. Pasted validators now cover Bili/XHS/WB/Zhihu/Tieba; creator nickname lookup covers Bili/WB/KS/Zhihu. KS lookup is a creator observation, not self-authentication evidence. Shared identity, long-ID API and real script-worker dispatch issues were reproduced and corrected.
+
+Final complete unit/contract/integration directories passed5456 with37 environment skips; Web passed671, static/build/docs gates passed, and wheel/sdist match all147 application Python files. The old-assertion failures, complete rerun and account-page wording correction are retained separately; overlapping selections are not added to the total.
+
+KS/Zhihu avatars remain unimplemented pending source-backed CDN shapes; the UI says nickname-only. DY/KS pasted-Cookie self validators, XHS/DY/Tieba profiles, remaining media shapes and real Linux/platform/archive/playback qualification remain required. Tieba strict integer no/id plus modern portrait is a conservative accepted subset, not universal response-format proof. [Verification](executions/0063-platform-access-and-profiles/verification.md) records actual failures, final gates and publication. The prior failed live Bili canary remains unresolved; no deployment, production retry or supervisor restart.
+
+## Previous: Bili dynamic capture and local output (0062, offline verified)
 
 [Execution0062](executions/0062-bili-dynamic-workflow/progress.md) wires explicit uploads/dynamics/both scope, resumable private page snapshots, exact WORD/DRAW/OPUS bodies and owned AV references through the locked client, sealed output, CLI, scheduler and atomic ingestion. Dynamic and upload identities/budgets remain distinct; old subscriptions never silently expand. Paused idle subscriptions may change scope at the current revision while preserving checkpoints/media.
 

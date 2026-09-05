@@ -2,7 +2,15 @@
 
 # 项目统一状态（单一事实来源）
 
-## 最新：B站动态采集与本地输出（0062，离线验证通过）
+## 最新：贴吧Cookie与快手/知乎作者昵称（0063，离线验证通过）
+
+[执行0063](executions/0063-platform-access-and-profiles/progress.zh.md)把贴吧严格正向本人验证接入既有私密Cookie保存/账户原子发布，并贯通快手/知乎精确昵称的隔离worker、API、UI和订阅资料凭单。粘贴校验现覆盖B站/小红书/微博/知乎/贴吧；昵称查询覆盖B站/微博/快手/知乎。快手资料只证明作者观察，不是本人认证。统一身份、长ID API和实际script worker接线问题均已复现修正。
+
+最终unit/contract/integration完整目录5456通过、37项环境跳过；Web671通过、静态/构建/文档门禁通过，wheel/sdist与147个应用Python文件字节一致。旧断言失败、最终重跑及账户页旧文案修正均单列保留，不用重复专项累加测试数。
+
+快手/知乎头像仍未实现，需补可信CDN来源证据，UI明确仅昵称。抖音/快手粘贴Cookie本人校验，小红书/抖音/贴吧作者资料，剩余媒体形状和真实Linux/平台/归档/播放验收仍必需。贴吧严格整数no/id与现代portrait是保守接受子集，不代表所有合法响应格式已证明。[验证记录](executions/0063-platform-access-and-profiles/verification.zh.md)保留实际失败、最终门禁及发布。历史真实B站canary仍未解决；无部署、生产重试或supervisor恢复。
+
+## 上一检查点：B站动态采集与本地输出（0062，离线验证通过）
 
 [执行0062](executions/0062-bili-dynamic-workflow/progress.zh.md)接入显式投稿/动态/两者范围、可恢复私密页快照、精确WORD/DRAW/OPUS正文及自有AV引用，贯穿真实锁定client、封存输出、CLI、scheduler和原子入库。动态与普通投稿保持独立身份和计数；旧订阅不静默扩大。已有订阅可在暂停空闲状态按当前修订改范围，保留断点与媒体。
 

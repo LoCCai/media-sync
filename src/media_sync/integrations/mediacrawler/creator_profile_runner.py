@@ -1,4 +1,4 @@
-"""One authenticated Bili or Weibo profile, isolated from content and storage.
+"""One exact supported creator profile, isolated from content and storage.
 
 A trusted guardian owns verification and the upstream-runtime child in one
 process tree. The parent owns one execution deadline and retains the shared
@@ -30,6 +30,9 @@ from uuid import UUID, uuid4
 
 if __name__ == "__main__" and not __package__:
     sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+    # Platform modules import the canonical name. Script-mode children must
+    # share these exact DTO/exception classes, not load a second module copy.
+    sys.modules["media_sync.integrations.mediacrawler.creator_profile_runner"] = sys.modules[__name__]
 
 from media_sync.domain import Platform
 from media_sync.integrations.mediacrawler.browser_environment import browser_child_environment
@@ -39,6 +42,11 @@ from media_sync.integrations.mediacrawler.checkout import (
     verify_mediacrawler_python,
 )
 from media_sync.integrations.mediacrawler.cookie_login import cookie_pairs, parse_cookie_header
+from media_sync.integrations.mediacrawler.creator_profile_identity import (
+    CREATOR_PROFILE_PLATFORMS,
+    profile_identifier,
+    validate_creator_profile_id,
+)
 from media_sync.integrations.mediacrawler.login_runner import (
     _guard_completed_login_tree,
     _profile_is_present,
@@ -76,7 +84,7 @@ _PROFILE_PATH = "/x/space/wbi/acc/info"
 _WB_ORIGIN = "https://m.weibo.cn"
 _WB_CONFIG_PATH = "/api/config"
 _WB_PROFILE_PATH = "/api/container/getIndex"
-_SUPPORTED_PLATFORMS = frozenset({Platform.BILI, Platform.WB})
+_SUPPORTED_PLATFORMS = CREATOR_PROFILE_PLATFORMS
 _RETAINED_LOCKS: list[_AccountFileLock] = []
 
 
@@ -105,6 +113,10 @@ def _text(value: object, maximum: int) -> str:
         raise ValueError("creator_profile_result_invalid")
     if any(ord(character) < 32 or ord(character) == 127 for character in value):
         raise ValueError("creator_profile_result_invalid")
+    try:
+        value.encode("utf-8")
+    except UnicodeError:
+        raise ValueError("creator_profile_result_invalid") from None
     return value.strip()
 
 
@@ -122,7 +134,10 @@ class MediaCrawlerCreatorProfileRequest:
         if not isinstance(self.account_id, UUID) or not isinstance(self.request_id, UUID):
             raise ValueError("creator_profile_identity_invalid")
         object.__setattr__(self, "platform", Platform(self.platform))
-        _uid(self.creator_remote_id)
+        if self.platform in _SUPPORTED_PLATFORMS:
+            validate_creator_profile_id(self.platform, self.creator_remote_id)
+        else:
+            _uid(self.creator_remote_id)
         if self.cookie is not None:
             if not isinstance(self.cookie, SecretValue):
                 raise ValueError("creator_profile_identity_invalid")
@@ -143,7 +158,7 @@ class MediaCrawlerCreatorProfile:
     avatar_url: str | None = field(repr=False)
 
     def __post_init__(self) -> None:
-        _uid(self.remote_id)
+        profile_identifier(self.remote_id)
         object.__setattr__(self, "display_name", _text(self.display_name, 512))
         if self.avatar_url is not None:
             object.__setattr__(self, "avatar_url", _text(self.avatar_url, 2048))
@@ -164,7 +179,10 @@ class MediaCrawlerCreatorProfileResult:
         if not isinstance(self.account_id, UUID) or not isinstance(self.request_id, UUID):
             raise ValueError("creator_profile_identity_invalid")
         object.__setattr__(self, "platform", Platform(self.platform))
-        _uid(self.creator_remote_id)
+        if self.platform in _SUPPORTED_PLATFORMS:
+            validate_creator_profile_id(self.platform, self.creator_remote_id)
+        else:
+            _uid(self.creator_remote_id)
         if self.upstream_sha is not None and (
             type(self.upstream_sha) is not str or _SHA.fullmatch(self.upstream_sha) is None
         ):
@@ -1049,7 +1067,16 @@ def _worker_entry() -> int:
         return 20
     try:
         with _silenced_upstream():
-            lookup = _lookup_bili if request.platform is Platform.BILI else _lookup_weibo
+            if request.platform is Platform.KS:
+                from media_sync.integrations.mediacrawler.kuaishou_creator_profile import lookup_kuaishou
+
+                lookup = lookup_kuaishou
+            elif request.platform is Platform.ZHIHU:
+                from media_sync.integrations.mediacrawler.zhihu_creator_profile import lookup_zhihu
+
+                lookup = lookup_zhihu
+            else:
+                lookup = _lookup_bili if request.platform is Platform.BILI else _lookup_weibo
             result = asyncio.run(lookup(checkout, profile, request.creator_remote_id, deadline, cookie=request.cookie))
         outcome = _result(request, MediaCrawlerCreatorProfileStatus.SUCCEEDED, sha, result)
     except _LookupFailure as error:

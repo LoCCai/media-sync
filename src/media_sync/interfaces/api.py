@@ -595,7 +595,7 @@ class CreatorLookupStart(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     platform: Platform
-    creator_remote_id: str = Field(min_length=1, max_length=20, strict=True)
+    creator_remote_id: str = Field(min_length=1, max_length=255, strict=True)
     frontend_generation: UUID
     enable_mediacrawler: bool = Field(default=False, strict=True)
     accept_mediacrawler_license: bool = Field(default=False, strict=True)

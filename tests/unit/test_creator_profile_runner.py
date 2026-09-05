@@ -102,7 +102,7 @@ def test_duplicate_json_fields_are_rejected() -> None:
         module._json(b'{"status":"succeeded","status":"temporary"}', 100)
 
 
-@pytest.mark.parametrize("raw_name", [None, "", "x" * 513, "name\r\nCookie: secret"])
+@pytest.mark.parametrize("raw_name", [None, "", "x" * 513, "name\r\nCookie: secret", "\ud800", "\udfff"])
 def test_invalid_profile_name_is_not_promoted(raw_name: object) -> None:
     with pytest.raises(ValueError):
         MediaCrawlerCreatorProfile("123", raw_name, None)

@@ -2,7 +2,7 @@
 
 # 项目工作日志
 
-当前推进：[0062 B站动态闭环](executions/0062-bili-dynamic-workflow/progress.zh.md)接通显式范围、私密断点、精确动态正文/图片/自有视频引用、原子入库及离线本地输出；[0061](executions/0061-bili-dynamic-authority/progress.zh.md)保留内容归属，[0060](executions/0060-weibo-creator-profile/progress.zh.md)补微博作者资料。最终测试/发布见[0062验证](executions/0062-bili-dynamic-workflow/verification.zh.md)。三平台粘贴验证器、五平台资料和真实采集/归档/播放验收仍须完成，整体目标未完成。
+当前推进：[0063平台登录与资料](executions/0063-platform-access-and-profiles/progress.zh.md)接入贴吧粘贴Cookie本人校验和快手/知乎精确昵称，贯通真实账户/订阅流程。快手/知乎头像、两平台粘贴校验、其余三平台资料和真实采集/归档/播放验收仍必需。[0062](executions/0062-bili-dynamic-workflow/progress.zh.md)已有B站有界动态/本地输出，无需连接媒体服务器。最终测试/发布见[0063验证](executions/0063-platform-access-and-profiles/verification.zh.md)，原定七平台总目标未完成。
 
 生产未决：[首次真实B站采集失败](executions/0055-operator-auth-playback-evidence/bili-success-followup/verification.zh.md)及其[调度失败诊断](executions/0055-operator-auth-playback-evidence/scheduler-diagnostics/progress.zh.md)。登录成功和Worker完成不等于采集成功；[统一状态](status.zh.md)区分已实现与待实现。新有界能力的离线通过不替代生产验收，七平台目标不变。
 

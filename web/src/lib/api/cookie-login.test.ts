@@ -146,14 +146,14 @@ describe('explicit bounded Cookie submission', () => {
     await controller.submit('a=synthetic');
     expect(controller.snapshot.phase).toBe('saved');
   });
-  it.each(['bili', 'xhs', 'wb', 'zhihu'] as Platform[])(
+  it.each(['bili', 'xhs', 'wb', 'zhihu', 'tieba'] as Platform[])(
     'allows capability-enabled %s accounts and replacements',
     (platform) => {
       const current = { ...account, platform, login_method: 'cookie' as const, auth_status: 'authenticated' };
       expect(cookieLoginEligibility(current, { ...capability, platform })).toBe('');
     }
   );
-  it.each(['dy', 'ks', 'tieba'] as Platform[])('does not pretend %s has a pasted validator', (platform) => {
+  it.each(['dy', 'ks'] as Platform[])('does not pretend %s has a pasted validator', (platform) => {
     expect(cookieLoginEligibility({ ...account, platform }, { ...capability, platform })).not.toBe('');
   });
   it.each([

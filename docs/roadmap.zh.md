@@ -8,7 +8,7 @@
 
 ## 阶段
 
-当前检查点（0056–0062）：本地目录输出独立于可选媒体服务器连接；可恢复移除订阅、安全Job报告、B站/微博作者资料、四平台粘贴Cookie校验、有界B站投稿和显式动态采集已完成离线实现。[0062](executions/0062-bili-dynamic-workflow/progress.zh.md)接入WORD/DRAW/完整OPUS和自有AV引用、私密断点快照及精确图片刷新，贯通归档/本地导出。其他五平台资料、抖音/快手/贴吧粘贴Cookie校验、剩余媒体形状以及当前Linux/真实平台验收仍需推进。之前已授权的B站canary失败且未解决；这里不代表已部署或恢复supervisor。以后续[统一状态](status.zh.md)和[0062验证](executions/0062-bili-dynamic-workflow/verification.zh.md)为准，不沿用下文历史阶段测试数。
+当前检查点（0056–0063）：本地输出独立于可选服务器连接；可恢复移除订阅、安全Job报告、B站/微博资料及有界B站投稿/动态已完成离线实现。[0063](executions/0063-platform-access-and-profiles/progress.zh.md)增加第五平台贴吧粘贴本人校验，以及快手/知乎精确昵称的worker/UI/凭单链。快手/知乎头像、抖音/快手粘贴校验、小红书/抖音/贴吧资料、剩余媒体及当前Linux/真实平台验收仍需推进。历史已授权B站canary失败且未解决，不代表已部署或恢复supervisor。以[统一状态](status.zh.md)和[0063验证](executions/0063-platform-access-and-profiles/verification.zh.md)为准，不沿用下文历史计数。
 
 ### 阶段 0 — 基线与许可证边界
 

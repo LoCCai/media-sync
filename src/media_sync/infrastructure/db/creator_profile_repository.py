@@ -13,6 +13,12 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from media_sync.integrations.mediacrawler.creator_profile_identity import (
+    CREATOR_PROFILE_PLATFORMS,
+    profile_homepage,
+    validate_creator_profile_id,
+)
+
 from .base import new_uuid, utc_now
 from .models import Account, CreatorProfile, CreatorProfileLookup, Operation
 from .repositories import RepositoryError
@@ -58,21 +64,18 @@ def _uuid(value: str) -> str:
 
 
 def _identity(platform: str, creator_remote_id: str) -> None:
-    if platform not in {"bili", "wb"}:
+    if platform not in CREATOR_PROFILE_PLATFORMS:
         raise CreatorProfileError("creator_profile_unsupported")
-    if (
-        type(creator_remote_id) is not str
-        or re.fullmatch(r"[1-9][0-9]{0,19}", creator_remote_id) is None
-        or int(creator_remote_id) > 2**64 - 1
-    ):
-        raise CreatorProfileError("creator_profile_identity_mismatch")
+    try:
+        validate_creator_profile_id(platform, creator_remote_id)
+    except ValueError:
+        raise CreatorProfileError("creator_profile_identity_mismatch") from None
 
 
 def creator_profile_homepage(platform: str, creator_remote_id: str) -> str:
     """Canonical, platform-bound profile location; never trust a supplied URL."""
     _identity(platform, creator_remote_id)
-    origin = "https://space.bilibili.com/" if platform == "bili" else "https://weibo.com/u/"
-    return origin + creator_remote_id
+    return profile_homepage(platform, creator_remote_id)
 
 
 def _time(value: datetime | None) -> datetime:

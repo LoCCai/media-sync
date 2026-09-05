@@ -114,7 +114,7 @@ def test_weibo_profile_contract_does_not_weaken_numeric_identity(uid: object) ->
         creator_profile_homepage("wb", uid)
 
 
-@pytest.mark.parametrize("platform", ["xhs", "dy", "ks", "tieba", "zhihu"])
+@pytest.mark.parametrize("platform", ["xhs", "dy", "tieba"])
 def test_unimplemented_profile_platforms_still_fail_closed(platform: str) -> None:
     with pytest.raises(CreatorProfileError, match="creator_profile_unsupported"):
         creator_profile_homepage(platform, "123")

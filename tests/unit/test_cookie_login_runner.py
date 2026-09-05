@@ -94,7 +94,7 @@ def test_request_budget_is_closed(timeout: object) -> None:
         replace(request(), timeout_seconds=timeout)
 
 
-@pytest.mark.parametrize("platform", [Platform.DY, Platform.KS, Platform.TIEBA])
+@pytest.mark.parametrize("platform", [Platform.DY, Platform.KS])
 def test_unqualified_platform_never_spawns_or_writes(tmp_path: Path, platform: Platform) -> None:
     runner = module.CookieLoginProcessRunner(
         lock_path=tmp_path / "missing",
