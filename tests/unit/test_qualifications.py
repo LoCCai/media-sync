@@ -1,4 +1,4 @@
-"""Schema-v2 automated versus human qualification boundary."""
+"""Schema-v3 automated versus scoped human qualification boundary."""
 
 from __future__ import annotations
 
@@ -178,7 +178,7 @@ def test_qualification_snapshot_counts_local_evidence_without_promoting_human_pa
     finally:
         database.dispose()
 
-    assert payload["schema_version"] == 2
+    assert payload["schema_version"] == 3
     assert payload["policy"]["automated_evidence_confers_human_pass"] is False  # type: ignore[index]
     platform_rows = {row["platform"]: row for row in payload["platforms"]}  # type: ignore[union-attr]
     bili = platform_rows["bili"]
@@ -237,7 +237,14 @@ def test_qualification_snapshot_counts_local_evidence_without_promoting_human_pa
         "human_status": None,
         "reason": "provider_api_unsupported",
     }
-    for capability in ("playback_evidence", "automatic_post_export_scan"):
+    assert capability_rows["playback_evidence"] == {
+        "capability": "playback_evidence",
+        "implementation_status": "IMPLEMENTED",
+        "human_status": "NOT_RUN",
+        "scope": "not_requested",
+        "author_id": None,
+    }
+    for capability in ("automatic_post_export_scan",):
         assert capability_rows[capability] == {
             "capability": capability,
             "implementation_status": "NOT_IMPLEMENTED",

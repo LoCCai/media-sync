@@ -460,10 +460,34 @@ export interface HumanQualificationCapability {
   implementation_status: ImplementationStatus;
   human_status: HumanQualificationStatus | null;
   reason?: 'provider_api_unsupported';
+  scope?: 'author' | 'not_requested';
+  author_id?: string | null;
+}
+
+export interface PlaybackEvidenceView {
+  schema_version: 1;
+  id: string;
+  author_id: string;
+  observed_at: string;
+  confirmed_at: string;
+  state: 'current' | 'stale' | 'unknown';
+}
+
+export interface PlaybackEvidenceProjection {
+  schema_version: 1;
+  scope: 'author' | 'not_requested';
+  author_id: string | null;
+  checked_at: string | null;
+  current_state: 'matched' | 'not_found' | 'unavailable' | 'not_requested';
+  human_status: 'PASS' | 'NOT_RUN';
+  current: PlaybackEvidenceView | null;
+  history: PlaybackEvidenceView[];
+  history_truncated: boolean;
+  limit: number;
 }
 
 export interface Qualifications {
-  schema_version: 2;
+  schema_version: 3;
   generated_at: string;
   policy: {
     automated_evidence_confers_human_pass: false;
@@ -477,6 +501,7 @@ export interface Qualifications {
   }>;
   media_server: {
     configured: boolean;
+    playback_evidence: PlaybackEvidenceProjection;
     automated_evidence: {
       latest_probe: Record<string, unknown> | null;
       latest_targeted_scan: Record<string, unknown> | null;

@@ -2,11 +2,12 @@
 
 # 执行 0055 阶段 A 进展
 
-- 状态：后端鉴权与播放观察身份/持久账本检查点均已发布；确认 service 与仅浏览器 POST 已在当前检查点实现
+- 状态：后端鉴权、观察身份／持久账本及仅浏览器确认均已发布；有界作者证据投影与资格 v3 已实现并完成完整回归，正在收尾发布
 - 日期：2026-09-05
 - 规划基线：`d0a8cc2`；鉴权实现基线：`4564b2a`
 - 已发布鉴权提交：`f19bfaa`
 - 已发布持久化提交：`1d5b448`
+- 已发布确认提交：`13de3b7`；投影冻结规划提交：`9fd74de`
 - 当前 revision：`0008_playback_evidence`
 
 ## 已完成检查点
@@ -35,23 +36,29 @@
 22. 专项证据全部通过：18 项 service 单元测试、2 项 SQLite 组合测试、51 项 endpoint 测试、108 项 service/API/auth 并集、47 项 media-server API 回归，以及覆盖 API/auth/observation/persistence 的 289 项并集（8 项 PostgreSQL 预期跳过）。Service/transaction 与 API/auth 只读审查均未发现 P0/P1/P2；后续最终发布审查发现并关闭了下文单独记录的默认运行时审计可见性 P2。
 23. 当前 Web format、7 文件/69 项回归、Svelte check 与 production build 通过；Ruff/format 覆盖 731 个文件，strict mypy 覆盖 106 个源文件，compileall 通过，498 份文档链接及两个干净锁定上游通过。严格 package 扫描发现 Hatch 会把未跟踪的本地 `.mimosa/` 历史收入 sdist，因此该目录现已在 Git 与 Docker context 中显式忽略；重建的 124 项 wheel 与 810 项 sdist 均包含新 service/repository/revision，且没有运行时/工具历史根目录。Docker 不可用且未设置 `MEDIA_SYNC_TEST_POSTGRESQL_URL`，所以对应可执行门继续为 `NOT_RUN`。
 24. 首轮完整套件发现了一个进程顺序相关的日志副作用：Alembic 的 INI 日志配置会禁用已创建的应用审计 logger，而已提交 service 结果本身仍正确。第一版缓解已通过完整套件，但独立复审发现仍会改变 root level，因此后续运行在约 7% 处主动中止，并把实现收紧为只在 standalone Alembic CLI 执行时应用 INI logging。Subprocess“migration 后审计”回归现会保留调用方 root handler 与继承 INFO logging；该发布候选完整套件在 588.32 秒（`0:09:48`）内通过 2940 项、跳过 22 项，并保留 1 个既有 warning。本检查点有意拆分冻结 commit boundary 4，以缩小确认写入路径的安全审查面；规划中的 projection 与 qualification 范围不变。
-25. 最终发布审查发现默认 `serve` 日志仍会让 `media_sync.*` INFO 审计低于 root 的有效阈值。`serve` 现会深复制 Uvicorn 配置，按已校验日志级别增加一个不向上传播的应用 stderr handler，保留 Uvicorn 默认配置并继续关闭 access log。无 socket subprocess 证明固定 playback 与 operator-auth 审计均可见，且不反射私有 sentinel。修复后的最终完整套件在 594.72 秒（`0:09:54`）内通过 2941 项、按预期跳过 22 项，并保留 1 个既有 warning；当前没有遗留 P0/P1/P2。
+25. 最终发布审查发现默认 `serve` 日志仍会让 `media_sync.*` INFO 审计低于 root 的有效阈值。`serve` 现会深复制 Uvicorn 配置，按已校验日志级别增加一个不向上传播的应用 stderr handler，保留 Uvicorn 默认配置并继续关闭 access log。无 socket subprocess 证明固定 playback 与 operator-auth 审计均可见，且不反射私有 sentinel。修复后的最终完整套件在 594.72 秒（`0:09:54`）内通过 2941 项、按预期跳过 22 项，并保留 1 个既有 warning。该结果是 `13de3b7` 的历史发布证据；当时确认写入审查范围内没有遗留 P0/P1/P2，不代表后续交付核查中的 Web、凭据可读性或迁移前预检问题已经解决。
+
+26. 当前投影检查点已按冻结规划 `9fd74de` 增加 `GET /api/v1/media-server/playback-evidence/by-author/{author_id}` 与可选显式作者范围的资格 schema v3。GET 接受既有 Cookie/Bearer 读取鉴权，严格校验规范作者 UUID 及唯一允许的 query；默认历史 20 行、最多 50 行，精确当前行独立查询，总物化账本行不超过 `limit + 2`，不 COUNT、不写入。
+27. 新读取 service 在一个最长 120 秒的绝对 deadline 内完成 resolve A → profile A → 一次完整 lookup → resolve B → profile B；target/profile 必须稳定且重新计算身份一致。全部远端／文件系统工作及 authority lock 结束后才打开短读取事务。远端不确定时当前 unavailable、历史 unknown；完整不存在时历史 stale。远端 lookup 截断不能 PASS；历史页截断独立报告，不否定已独立重验的精确当前持久行。
+28. 资格 v3 未指定作者时为 `not_requested`，不查询账本或远端；指定作者时只有完整稳定权威与不可变字段精确匹配的持久确认可产生该作者范围 PASS。安全投影只暴露 ID、作者、时间与状态，不暴露 digest、Job、路径、provider 值或远端 item ID；路由清单现为 59。Provider completion 与自动扫描继续未实现，全部仓库真人行仍为 NOT_RUN。
+29. 当前投影专项并集通过 220 项、1 个既有 warning（51.09 秒）；完整 Python 套件通过 2999 项、跳过 22 项、1 个既有 warning（613.66 秒）。Web 7 文件／69 项及 format/check/build、107 个源文件 strict mypy 与 743 文件 format 通过。详细命令及最终文档／包／Git 门见[投影验证](evidence-projection/verification.zh.md)；不能用这些离线结果替代当前镜像或真人执行。
+30. 按用户交付核查补充[优先级计划](delivery-priorities.zh.md)：本增量收尾后，先完成安全 login/session/CSRF 与凭据／迁移前预检，再验证当前 Linux 镜像并推进 Bilibili／小红书获授权真人金丝雀。最小证据 UI 属于后续已承诺工作，但不阻塞可通过既有 CLI 开始的获授权真人流程。
 
 ## 播放证据实现前澄清
 
 1. 自然重放只比较不可变身份字段：schema version、author/job 身份、四个 context digest 与 observation fingerprint。新请求的 `observed_at`/`confirmed_at` 不要求等于胜出行；重放始终返回首个持久行及其时间戳。
 2. 本阶段的 “append-only” 由 application、API 与 repository 强制，不宣称数据库 role/trigger 级不可变。
 3. Item fingerprint 证明的是 resolved profile/publication/selector 上下文中的一个规范远端 item 身份；它不证明媒体字节完整、持续播放，亦不证明远端 item 此后仍 current。
-4. Qualification schema v3 实现前必须冻结 author 聚合范围、行数/deadline 上限、current authority 来源以及 lookup 失败/截断语义。PostgreSQL 证据仅覆盖 Author/Job/PlaybackEvidence 元数据与 repository 竞态，不宣称完整应用已支持 PostgreSQL 部署。
+4. Qualification schema v3 的单作者范围、行数／deadline 上限、current authority 来源及失败／截断语义已在[投影计划](evidence-projection/plan.zh.md)中冻结并实现。远端 lookup 截断阻止权威成立及 PASS；历史页截断不否定独立验证的精确当前行。PostgreSQL 证据仅覆盖 Author/Job/PlaybackEvidence 元数据与 repository 竞态，不宣称完整应用已支持 PostgreSQL 部署。
 
 ## 仍待实现
 
 - 打包的 Svelte 控制台与 `/legacy` 尚无登录壳、内存 CSRF store、集中 401 reset 或 logout/expiry 生命周期。因此后端边界已经实现，但当前 Web 控制面尚不能完成经鉴权写操作。
-- 确认写入后端已经实现，但安全、有界、按作者的 current/stale evidence 投影与 qualification schema v3 尚未实现。因此现有 schema-v2 qualification 响应仍把整体 `playback_evidence` 报为 `NOT_IMPLEMENTED`，真人状态为空。
+- 仍须完成最小当前／历史证据展示与 matched-only 确认交互。投影与资格 v3 后端已实现，无指定作者或无精确当前证据时为 `IMPLEMENTED/NOT_RUN`；这不代表真人资格已经通过。
 - 尚未运行任何获授权真人操作者凭据、平台账户或真实 Emby/Jellyfin 播放流程。本地账本行、mock connector 或 endpoint 测试都不能授予真人 PASS；真人播放仍为 `NOT_RUN`。
 
 ## 下一检查点
 
-实现单作者、有界、经鉴权的 current/stale evidence 投影，再把 qualification 升级为 schema v3，并禁止无界的全作者远端工作。只有精确当前 evidence 才能授予 scoped PASS；缺失、stale、截断或 authority unavailable 均保持 NOT_RUN。Web login/session/CSRF 与确认生命周期随后作为独立检查点推进。具备 Linux/Docker/PostgreSQL 的主机仍须执行已记录的 Compose 启动、8 项 PlaybackEvidence PostgreSQL 竞态门，以及此前跳过的 PostgreSQL 覆盖。
+按[交付优先级补充计划](delivery-priorities.zh.md)，先收尾发布已验证投影，再实现安全可用的 Web login/session/CSRF、401／过期重置、登出与凭据／迁移前预检，随后验证当前 Linux 镜像并推进获授权 Bilibili／小红书金丝雀。最小证据 UI 不阻塞既有 CLI 真人运行。具备 Linux/Docker/PostgreSQL 的主机仍须执行当前 Compose 启动、8 项 PlaybackEvidence PostgreSQL 竞态及此前跳过的 PostgreSQL 覆盖；旧镜像 PASS 不替代当前版本。
 
 既有 `.mimosa/` 目录保持未跟踪，现已显式忽略，并同时从 Git、distribution 与 Docker build context 排除。

@@ -10,6 +10,7 @@ Run top-down before every public push or tagged release. Every item is checkable
 - [ ] `uv run python scripts/check_docs.py` passes (all Markdown links resolve).
 - [ ] `uv run python scripts/check_upstreams.py` passes (both pinned checkouts clean at locked SHAs).
 - [ ] Execution index (`docs/README.md`) rows match reality: no row claims Complete without its verification record.
+- [ ] Qualification v3 without an author is `not_requested`; PASS is scoped to one author with exact current durable attestation, while checked-in live rows retain evidence-backed status.
 
 ## Secrets and privacy
 

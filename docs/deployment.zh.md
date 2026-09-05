@@ -47,6 +47,16 @@ compose 模板会把 `BASE_IMAGE` 作为 build arg 透传，构建清单记录�
 
 ## 2. 启动服务
 
+启动或升级前，先确认凭据文件对**最终镜像的运行用户**可读。Dockerfile 使用 UID 1000；普通 rootful Linux 映射下，root 所有的 `0600` 源文件对此用户不可读，应只调整该文件的所有者或受限读取权限来匹配实际运行身份。Rootless／user namespace 映射须按主机检查。不能假设文件型 Compose secret 会重映射 uid/gid/mode，不得改成所有人可读或递归变更所有权。
+
+构建后可用以下手工只读预检绕过普通 entrypoint，且不输出凭据：
+
+```bash
+docker compose run --rm --no-deps --entrypoint /bin/sh media-sync -c 'test -f /run/secrets/operator_credential && test -r /run/secrets/operator_credential'
+```
+
+本命令只是文档示例，未在当前 Windows 工作站执行（无 Docker），仅检查可读性，不校验凭据内容／origin。普通 entrypoint 仍先 `db init` 再由 `serve` 校验鉴权，因此启动失败时数据库可能已迁移。升级前须取得兼容备份。迁移前自动配置校验仍属 [P0 待办](executions/0055-operator-auth-playback-evidence/delivery-priorities.zh.md)，当前镜像的启动／重启／恢复尚未完成资格验证。
+
 ```bash
 docker compose up -d
 ```
@@ -144,10 +154,11 @@ API key 值应通过引用指向的环境变量或 secret 文件注入，不得�
 5. 作者刷新并核验在当前且完整的媒体树检查授予动作后，只接受精确 `{"author_id":"<uuid>"}`。作者模式先要求完整 absent baseline；精确项目已经存在时不会发送 POST，并返回 `media_server_scan_observation_precondition_failed`。成功需要一次刷新被接受，随后间隔两次观察到同一唯一项目；仍不证明 provider task completion 或可播放。
 6. 持久 `media-server-probe` / `media-server-scan` Operation 会区分 accepted、observed、acceptance unknown 与 completion unknown。进入 transport 后无法确认接受时以不可重试的 `media_server_scan_acceptance_unknown` 收尾；已经可信接受但无法证明观察时以不可重试的 `media_server_scan_completion_unknown` 收尾，并保留 accepted checkpoint。两种歧义都不得自动重试。
 7. 播放确认使用 `POST /api/v1/media-server/playback-evidence`。它不是自动化 endpoint：必须具有已登录浏览器 session、精确 Origin 与 CSRF，并在进入 handler 前拒绝 Bearer-only 或 Cookie/Authorization 混用。严格正文只含规范 `author_id` 与 matched lookup 返回的不透明 `observation_fingerprint`；`Idempotency-Key`、selector、路径、远端 ID、timestamp 与说明文本均被拒绝。服务端先执行 resolve → 一次完整唯一 lookup → resolve，再打开短 create-or-replay 事务，且不返回 fingerprint 或内部上下文摘要。Web 检查点交付前，该后端契约尚未成为受支持的控制台工作流。
+8. 经 Cookie 或 Bearer 鉴权的客户端可读取 `GET /api/v1/media-server/playback-evidence/by-author/{author_id}?limit=20`。只接受规范作者 UUID 和一个可选 limit（1–50）；一次稳定完整的新 lookup 完成后才只读查询 current/history。当前证据单独返回，历史截断显式报告。远端不确定使当前权威不可用、历史未知，不能误标过期或 PASS。
 
 服务重启时，处于 `preparing` 或 `baselining` 的作者观察属于 dispatch 前中断；`dispatching` 收敛为 acceptance unknown；`accepted` 或 `polling` 收敛为 completion unknown 并保留 accepted checkpoint；只有有效持久 `observed` checkpoint 才能收敛为成功。Legacy targetless scan 保持 0054-A 的保守恢复。Probe 可人工重试；scan 歧义则必须先在服务器侧检查，才能考虑新请求。
 
-`GET /api/v1/qualifications` 仍为 schema v2，并把本地自动化计数、实现状态与真人资格分开。当前工作区没有真实服务器凭据，已实现的连接 probe、Library 发现、定向刷新接受、项目查找与刷新后项目观察真人状态都仍为 `NOT_RUN`。只允许浏览器的播放确认写入后端已经实现并通过离线验证，但 schema v2 仍如实把整体 `playback_evidence` 能力报为 `NOT_IMPLEMENTED` 与 `human_status: null`，因为有界按作者 current/stale 投影及 qualification schema v3 尚不存在。`provider_task_completion` 继续为 `NOT_IMPLEMENTED`，原因是 `provider_api_unsupported`；导出后自动扫描也为 `NOT_IMPLEMENTED`。未实现能力不得写成真人 `NOT_RUN`、`FAIL` 或 `PASS`。
+`GET /api/v1/qualifications` 现为 schema v3，只接受一个可选规范 `author_id`；未指定时播放 scope 为 `not_requested`，不查询证据或远端。Playback 已 IMPLEMENTED，无精确当前确认则为 NOT_RUN。指定作者时 PASS 要求当前持久真人确认，并显式限定到该作者。既有自动化计数／Operation 结果不授予真人 PASS。工作区全部真人行保持 NOT_RUN。Provider task completion 仍 NOT_IMPLEMENTED（`provider_api_unsupported`），自动扫描仍 NOT_IMPLEMENTED，二者真人状态为空。
 
 ## 6. 验收清单（如实记录）
 
@@ -163,7 +174,7 @@ API key 值应通过引用指向的环境变量或 secret 文件注入，不得�
 | 真实服务器刷新后项目观察 | 0054-B 已实现；absent baseline + 一次 accepted POST + 同一唯一项目连续观察两次；未执行记 `NOT_RUN` |
 | Provider task completion | `NOT_IMPLEMENTED`（`provider_api_unsupported`）；没有真人状态 |
 | 仅浏览器播放确认后端/API | 已实现并通过离线验证；未向真实 Emby/Jellyfin 提交真人播放，因此不授予现网状态 |
-| 播放证据 current/stale 投影与资格 | schema v2 中仍为 `NOT_IMPLEMENTED`；有界投影与 schema v3 交付前 `human_status: null` |
+| 播放证据 current/stale/unknown 投影与资格 | Schema v3 中已 IMPLEMENTED；无选定作者的精确当前证据则为 NOT_RUN。Web 确认 UI 与真人播放资格仍待完成 |
 | 导出后自动扫描 | `NOT_IMPLEMENTED`；尚无已冻结后续归属，也没有真人状态 |
 
 现网证据以实际运行为准；未执行的项一律保持 `NOT_RUN`，遵守项目真实性规则。

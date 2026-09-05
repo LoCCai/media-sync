@@ -9,13 +9,13 @@
 
 **阶段 B —— Linux 基线（任何真人账户之前）**
 
-1. `git pull && uv sync --all-groups --locked && uv run pytest -q`——记录准确数字并调查全部平台特异性分歧。当前 0055 Windows 仅浏览器确认检查点通过 `2941 passed, 22 skipped, 1 warning in 594.72s`；其中 19 项是真实 PostgreSQL 竞态因未配置 URL 而跳过（11 项 Operation 加 8 项 PlaybackEvidence）。该结果不能替代启用 PostgreSQL 的完整 Linux 主机门。
+1. `git pull && uv sync --all-groups --locked && uv run pytest -q`——记录准确数字并调查平台差异，见最新 [0055 投影验证](../0055-operator-auth-playback-evidence/evidence-projection/verification.zh.md)。Windows skip 与未配置真实 PostgreSQL 的跳过项不能替代启用 PostgreSQL 的完整 Linux 主机门。
 2. 任何 Compose 启动之前，先在仓库外创建专用 UTF-8 操作者凭据文件，将权限限制为 `0600`，并设置 `export MEDIA_SYNC_OPERATOR_CREDENTIAL_FILE=/absolute/private/path/operator-credential.txt`。凭据须为 16–1024 个 UTF-8 字节，不含控制字符，且不得复用平台 Cookie 或媒体服务器 key。每次重启时都要保持该绝对路径可用；示例 Compose 会把它挂载为 `/run/secrets/operator_credential`，并且只向应用传递 `file:operator_credential`。
 3. `cp docker-compose.example.yml docker-compose.yml && docker compose build && docker compose up -d`；确认必需的类型化凭据在绑定端口前成功解析，配置的浏览器 origin 精确等于 `http://127.0.0.1:8632`。使用不会把凭据写入日志或 shell 历史的受审查 HTTP 客户端，证明匿名访问仅限 `GET`/`HEAD /api/v1/health`、`GET`/`HEAD /api/v1/ready`、`POST /api/v1/operator-auth/login`、`GET /api/v1/operator-auth/session` 及公开根资源；证明匿名业务路由与 `/api/docs` 被拒绝；随后证明登录 → Cookie session → 受 CSRF 保护的不安全请求 → 退出完整链路。若验证可选 Bearer 自动化，须配置与浏览器凭据不同且单独解析的凭据。记录精确状态码，但不得记录凭据、Cookie 或 CSRF 值。
 4. 重启持久性：`docker compose restart`，确认账户/订阅/任务仍在，并确认进程内操作者 session 已失效；按 [`operations.zh.md`](../../operations.zh.md) 做一次备份 → 恢复到新卷的演练。
 5. 进程口径：每个需要显示环境的运行中容器恰好一个受管 Xvfb（启用 supervisor profile 时两个容器各一个是正常情况）；空闲时零 Chromium、零 ffmpeg/ffprobe；不存在任务结束后遗留的孤儿进程；容器停止后相关进程全部消失。
 
-**资格暂停点：**上述后端鉴权边界、revision `0008_playback_evidence`、append-only 持久化及防 TOCTOU 的仅浏览器确认 service/API 已实现并通过离线验证。Console v2 与 `/legacy` 仍未集成操作者 login/session/CSRF 及确认 UI，安全且有界的按作者 current/stale 投影与 qualification schema v3 也尚未实现。因此当前 schema-v2 qualification API 仍把整体 `playback_evidence` 报为 `NOT_IMPLEMENTED` 且真人状态为空。当前检查点不得启动 Web 登录、真人平台、真实媒体服务器播放或阶段 C–F 资格步骤；全部真人资格行继续保持 `NOT_RUN`。只有投影/v3 与 Web 两个检查点都完成验证收尾后，才能恢复下述流程；后端实现或本地/mock 证据本身不能授予任何真人 PASS。
+**资格暂停点：**后端鉴权、revision `0008`、确认、有界作者证据读取与资格 v3 已实现。Console v2 与 `/legacy` 仍缺 login/session/CSRF 和确认 UI；在 Web 检查点通过验证且获授权操作者执行真人步骤前，全部真人行保持 NOT_RUN。Schema-v3 作者范围 PASS 要求精确当前持久确认；实现或本地／mock 测试不能产生仓库真人 PASS。
 
 **阶段 C —— 金丝雀（先 Bilibili，后小红书）**
 

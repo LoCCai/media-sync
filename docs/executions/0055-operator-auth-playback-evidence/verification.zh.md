@@ -2,16 +2,17 @@
 
 # 执行 0055 阶段 A 验证
 
-- 状态：后端鉴权与观察身份/持久账本检查点均已发布；确认 service 与仅浏览器 POST 已实现，正在完成发布前验证
+- 状态：后端鉴权、观察身份／持久账本及仅浏览器确认均已发布；有界作者投影与资格 v3 已通过完整回归，最终发布门见子检查点
 - 日期：2026-09-05
 - 规划基线：`d0a8cc2`；鉴权实现基线：`4564b2a`
 - 已发布鉴权提交：`f19bfaa`
 - 已发布持久化提交：`1d5b448`
+- 已发布确认提交：`13de3b7`；投影冻结规划提交：`9fd74de`
 - 当前 revision：`0008_playback_evidence`
 
 ## 证据政策
 
-规划检查只能证明切片范围明确且基于当前代码。下方已发布证据证明 `f19bfaa` 的后端鉴权契约与 `1d5b448` 的 observation identity/持久化原语；当前专项证据证明本工作树中的 confirmation service 与仅浏览器 POST。它不能证明仍缺失的安全读取投影、qualification schema v3、Web 登录/确认表面、真实服务器兼容或获授权真人播放。实现证据与真人资格继续分开。
+规划检查只能证明切片范围明确且基于当时代码。下方分节保留 `f19bfaa` 鉴权、`1d5b448` 观察身份／持久化和 `13de3b7` 确认写入的历史证据；当前有界作者投影与资格 v3 的专项、完整回归及发布证据统一见[子检查点验证](evidence-projection/verification.zh.md)。离线证据不证明仍缺失的 Web 登录／确认表面、当前 Linux 镜像可用性、真实服务器兼容或获授权真人播放。历史审查范围内的“无 P0/P1/P2”不关闭[交付核查](delivery-priorities.zh.md)中的 Web、凭据可读性与迁移前预检问题。实现证据与真人资格继续分开。
 
 ## 规划基线证据
 
@@ -53,6 +54,8 @@
 
 ## 观察身份与持久账本检查点证据
 
+本节保留 `1d5b448` 的历史证据和后续确认拆分时的能力边界；其中“当前”指当时检查点，不代表本次投影版本。最新结果见下方投影检查点。
+
 | 检查 | 命令或来源 | 状态 |
 | --- | --- | --- |
 | 鉴权发布基线 | `git log`；已发布仓库状态 | `PASS`——commit-3 开始前，关闭失败的单操作者鉴权已提交并推送为 `f19bfaa` |
@@ -70,11 +73,11 @@
 | 当前 Web 回归与构建 | 在 `web/` 运行 `npm run format:check`、`npm test -- --run`、`npm run check`、`npm run build` | `PASS`——格式干净，7 个文件/69 项测试通过，Svelte 为 0 error/0 warning，production build 完成；不声明尚未实现的登录/确认表面 |
 | 当前代码质量 | `uv run --frozen ruff check .`、`ruff format --check .`、`uv run --frozen mypy --strict src/media_sync`、`python -m compileall -q src tests` | `PASS`——Ruff check 通过，修正 1 个纯格式差异后 727 个文件全部通过 format，strict mypy 对 105 个源文件通过，字节编译干净 |
 | 当前 Distribution | 在系统临时目录隔离执行 `uv build`；用 `zipfile`/`tarfile` 检查 wheel/sdist | `PASS`——精确生成 1 个含 123 项的 wheel 与 1 个含 837 项的 sdist；两者均包含 `playback_evidence_repository.py` 和 `0008_playback_evidence.py`，且 `.env` 或 SQLite 输出为零 |
-| 端到端能力边界 | 检查当前 service/API/qualification/Web 表面 | `PARTIAL`——confirmation service/API 与双重 resolve TOCTOU 封闭已经存在，但有界按作者投影、qualification schema v3、Web 登录生命周期与只允许 matched 的 Web 确认尚不存在。因此 schema v2 仍把整体 `playback_evidence` 报为 `NOT_IMPLEMENTED`；真人播放仍为 `NOT_RUN` |
+| 当时端到端能力边界 | 确认拆分时的 service/API/qualification/Web 表面 | 历史 `PARTIAL`——当时确认 service/API 已存在，而投影、qualification v3 与 Web 登录／确认尚缺；schema v2 当时将整体播放证据标为 `NOT_IMPLEMENTED`。本次投影已更新该后端状态，Web 与真人验收仍未完成 |
 
 ## 确认 service 与仅浏览器 POST 检查点证据
 
-本检查点有意拆分冻结 commit boundary 4，使安全敏感的写入路径可以独立接受审查。它完成交付项 10 与交付项 11 的 POST 半项；按作者投影与 qualification schema v3 仍是范围不变的下一检查点。
+本节为已发布 `13de3b7` 的历史证据，包括 2941 项／594.72 秒结果；不替代当前投影回归。该检查点当时有意拆分冻结 commit boundary 4，使安全敏感的写入路径可独立审查，并完成交付项 10 与交付项 11 的 POST 半项。当时后续的按作者投影与 qualification v3 现已实现，最新证据见下节。
 
 | 检查 | 命令或来源 | 状态 |
 | --- | --- | --- |
@@ -85,12 +88,25 @@
 | 固定失败边界 | service/API 失败矩阵 | `PASS`——invalid、not-confirmable、identity-conflict、confirmation-unavailable 与 store-unavailable 路径只使用固定且不反射的 code；authority/store 失败不发送成功审计 |
 | Service/API 专项门 | 专用测试选择 | `PASS`——service 单元 18、SQLite 组合 2、endpoint 51、service/API/auth 并集 108、media-server API 47，以及较宽并集 289 项通过、8 项 PostgreSQL 预期跳过 |
 | 路由清单 | 精确 `app.routes` 枚举 | `PASS`——58 个 route object；匿名 allowlist 不变，新 mutation 只允许浏览器 |
-| 独立审查 | service/transaction、API/auth 与最终发布门审查 | `PASS`——前两次审查未发现 P0/P1/P2；最终门发现 1 个默认运行时审计可见性 P2，现已通过复制 Uvicorn 应用日志配置及无 socket subprocess 回归关闭。没有遗留审查问题 |
+| 独立审查 | service/transaction、API/auth 与最终发布门审查 | `PASS`——前两次审查未发现 P0/P1/P2；最终门发现 1 个默认运行时审计可见性 P2，现已通过复制 Uvicorn 应用日志配置及无 socket subprocess 回归关闭。该确认写入审查范围内没有遗留问题；后续交付核查中的 P0 仍待解决 |
 | 应用与 migration 日志 | 复制 Uvicorn log config；无 socket 审计 subprocess；embedded-Alembic root 继承 subprocess | `PASS`——默认 `serve` 会为 `media_sync` 配置 stderr handler，同时保留 Uvicorn 默认配置；固定 playback 与 operator-auth INFO 码可见且不反射私有 sentinel。Programmatic Alembic INI 运行不会替换调用方 root level/handler 或继承 INFO logging |
 | 当前 Web 与静态门 | `pnpm format:check`；`pnpm test`；`pnpm check`；`pnpm build`；Ruff/format；strict mypy；compileall | `PASS`——Web 7 文件/69 项测试、Svelte 0 error/0 warning 与 production build；731 个格式文件、106 个类型检查源文件及字节编译通过 |
 | 文档/上游/Distribution | docs/upstream 检查；隔离 `uv build` 检查 | `PASS`——498 份 Markdown 与两个干净锁定上游通过；显式忽略 `.mimosa/` 后，一个 124 项 wheel 与一个 810 项 sdist 包含 service/repository/revision，且不含运行时/工具历史/数据库输出 |
 | Docker 与 PostgreSQL 执行 | executable/environment 检查 | `NOT_RUN`——Docker executable 不可用且未设置 `MEDIA_SYNC_TEST_POSTGRESQL_URL`；源码/测试不能替代执行 |
 | 全部日志修复后的完整 Python 回归 | `uv run --frozen pytest -q` | `PASS`——594.72 秒（`0:09:54`）内 2941 项通过、22 项跳过、1 个既有 Starlette/httpx warning。3 项 skip 为 Windows/POSIX 差异；11 项 Operation 与 8 项 PlaybackEvidence PostgreSQL 用例因未设置测试 URL 继续为 `NOT_RUN` |
+
+## 当前作者投影与资格 v3 检查点证据
+
+完整命令、尝试记录与最终文档／包／Git 门见[投影验证](evidence-projection/verification.zh.md)。以下摘要只涵盖本次实际已运行的门。
+
+| 检查 | 命令或来源 | 状态 |
+| --- | --- | --- |
+| 有界读取与资格范围 | query service/API／SQLite／qualification 回归 | `PASS`——Cookie/Bearer 读取、严格 UUID/query、默认 20／最多 50 条历史、最多 `limit + 2` 物化行、精确当前行独立查询、59 路由鉴权清单；无作者不查账本／远端 |
+| 当前权威与截断 | authority／deadline／事务顺序／真实 SQLite SQL 捕获 | `PASS`——完整稳定远端权威与不可变字段精确匹配的持久行才可 scoped PASS；远端 lookup 截断不能 PASS，历史页截断不否定独立当前行；不确定历史为 unknown，完整不存在为 stale；全部外部工作先于短读取事务，无 COUNT 或写入 |
+| 最终专项并集 | 投影／确认／API／鉴权／资格／SQLite 测试选择 | `PASS`——220 项通过、1 个既有 warning，51.09 秒 |
+| 完整 Python 回归 | `uv run --frozen pytest -q` | `PASS`——2999 项通过、22 项跳过、1 个既有 Starlette/httpx warning，613.66 秒；3 项 Windows/POSIX 差异，11 项 Operation 与 8 项 PlaybackEvidence PostgreSQL 用例未配置而跳过，不声明真实 PostgreSQL 已运行 |
+| Web 与已确认静态门 | `pnpm test`、`pnpm format:check`、`pnpm check`、`pnpm build`；strict mypy／format | `PASS`——7 文件／69 项 Web 测试、零 Svelte error/warning、production build；107 个源文件 mypy、743 文件 format。只更新响应类型，不声明新增登录或确认 UI |
+| 真人与部署边界 | 当前工作站能力及仓库资格记录 | `NOT_RUN`——Docker／真实 PostgreSQL／当前镜像浏览器组合／平台及媒体服务器真人流程；测试行或 scoped PASS 夹具不改变真人资格 |
 
 ## 验证尝试记录
 
@@ -120,11 +136,11 @@
 
 ## 剩余实现证据
 
-当前检查点已关闭冻结退出门中的本地 fingerprint、revision/model、受保护 downgrade、自然重放、SQLite、确认权威与仅浏览器 POST 部分。剩余工作仍须为以下内容提供精确 passing evidence：
+当前检查点已关闭本地 fingerprint、revision/model、受保护 downgrade、自然重放、SQLite、确认权威、仅浏览器 POST、有界作者投影与资格 v3 的离线部分；P0 顺序见[交付优先级补充计划](delivery-priorities.zh.md)。剩余工作仍须提供精确 passing evidence：
 
-1. 实现有界、经鉴权、按作者的 current/stale 投影及 qualification schema v3 真值：无当前 evidence 为 `IMPLEMENTED/NOT_RUN`，只有精确当前 evidence 可 PASS，stale/unknown 绝不 PASS，provider completion/automatic scan 保持未实现。
-2. 实现并验证 Web login/session/logout/expiry 生命周期、内存 CSRF 注入、集中 401 reset、cookie-only EventSource/直接媒体行为，以及可访问且只允许 matched 的播放确认交互。
-3. 在安装 Docker 的主机上完成真实 Docker/Compose 配置与启动检查。
+1. 完成凭据可读性及迁移前配置预检；证明无效／不可读凭据会在数据库修改前失败，不用服务启动失败推断数据库未变。
+2. 优先实现并验证 Web login/session/logout/expiry、内存 CSRF、集中 401 reset 与 cookie-only EventSource／直接媒体；随后完成可访问的当前／历史展示与 matched-only 播放确认。后者不阻塞通过既有 CLI 开始获授权真人金丝雀。
+3. 在安装 Docker 的 Linux 主机验证精确当前提交／镜像的配置、运行用户 secret 读取、迁移边界、启动、重启持久性与备份恢复，然后优先完成 Bilibili／小红书获授权金丝雀。历史镜像 PASS 不替代当前版本。
 4. 在已配置主机上运行 8 项 PlaybackEvidence PostgreSQL 竞态并重跑此前跳过的 PostgreSQL 覆盖；源码检查不能替代执行。
 5. 通过最终仓库、包与发布扫描继续保证 credential/session/CSRF/reference/raw selector 零保留。
 6. 剩余实现完成后重跑完整 Python/Web 及全部质量/包/文档/上游/generated-output/host-path/secret/空白门，再完成 Git 发布门。

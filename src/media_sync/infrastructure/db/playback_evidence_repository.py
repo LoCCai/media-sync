@@ -18,6 +18,7 @@ from .models import PlaybackEvidence
 from .repositories import RepositoryError
 
 PLAYBACK_EVIDENCE_SCHEMA_VERSION = 1
+MAX_PLAYBACK_EVIDENCE_HISTORY = 50
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 
 
@@ -101,6 +102,33 @@ class PlaybackEvidenceRepository:
 
     def __init__(self, session: Session) -> None:
         self.session = session
+
+    def by_observation(self, fingerprint: str) -> PlaybackEvidenceResult | None:
+        """Read the unique candidate independently of the bounded history page."""
+
+        value = _sha256(fingerprint, "observation_fingerprint")
+        evidence = self._by_observation_fingerprint(value)
+        return self._result(evidence, replayed=False) if evidence is not None else None
+
+    def history_by_author(
+        self,
+        author_id: str,
+        *,
+        limit: int = 20,
+        exclude_id: str | None = None,
+    ) -> tuple[PlaybackEvidenceResult, ...]:
+        """Read at most limit + 1 rows, with the extra row proving truncation."""
+
+        normalized_author = _canonical_uuid(author_id, "author_id")
+        if type(limit) is not int or not 1 <= limit <= MAX_PLAYBACK_EVIDENCE_HISTORY:
+            raise ValueError("invalid playback evidence history limit")
+        statement = select(PlaybackEvidence).where(PlaybackEvidence.author_id == normalized_author)
+        if exclude_id is not None:
+            statement = statement.where(PlaybackEvidence.id != _canonical_uuid(exclude_id, "exclude_id"))
+        statement = statement.order_by(PlaybackEvidence.confirmed_at.desc(), PlaybackEvidence.id.desc()).limit(
+            limit + 1
+        )
+        return tuple(self._result(row, replayed=False) for row in self.session.scalars(statement))
 
     def create_or_replay(
         self,

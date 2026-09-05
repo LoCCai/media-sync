@@ -2,7 +2,7 @@
 
 # 安全与隐私审查（执行 0046）
 
-范围：执行 0046 首次建立的逐项自审，已校准到执行 0054 阶段 B、执行 0055 后端鉴权提交 `f19bfaa`、播放证据持久化提交 `1d5b448` 及当前仅浏览器确认检查点；每项声明均附强制机制。这是自审，不是外部审计。后端边界、仅 matched observation 身份、append-only 持久化及防 TOCTOU 的确认 service/API 已实现并通过离线验证；安全 current/stale 投影、qualification schema v3 与 Web login/CSRF/确认客户端尚未实现。
+范围：执行 0046 自审，已校准到 0054 及 0055 的鉴权、持久账本、浏览器确认与当前有界作者证据／资格 v3。这是自审，不是外部审计。后端鉴权、确认与读取投影已实现，Web login/CSRF/确认集成仍待完成。
 
 ## 1. 凭据与机密
 
@@ -56,7 +56,7 @@
 
 1. Web 客户端暂时落后于后端契约：不能登录、在内存持有 CSRF 或统一恢复 session 过期。Web 只同步了 matched lookup response 类型，尚无确认 UI。该状态以 401/403 关闭失败，不会重新开放匿名访问，但会阻塞 Web 管理与真人扫码资格，直到 0055 剩余前端工作完成验证。
 2. 这是单操作者鉴权，不是多用户授权。可选 Bearer 拥有广泛自动化权限；非回环部署仍要求经过审查的 HTTPS 终止及精确 Host 保留。公网部署、RBAC、SSO/MFA 与可信反向代理身份均不受支持。
-3. 仅浏览器确认 service/API 现已提供经鉴权写入权限，但尚无有界按作者 current/stale 投影、qualification schema v3 或 Web 确认 UI。因此 schema-v2 qualification response 继续把整体 `playback_evidence` 报为 `NOT_IMPLEMENTED` 且真人状态为空，真人播放继续为 `NOT_RUN`。本地/mock 确认不是远端播放遥测，不能产生检入仓库的真人 PASS。
+3. 资格 v3 只接受一个可选规范作者。无作者则不查询证据／远端且为 NOT_RUN；精确持久当前确认只可授予作者范围 PASS。失败／不完整／歧义或变化的权威使历史证据未知。响应省略全部上下文摘要、publication Job、路径与远端 ID。本地／mock 测试不能产生仓库真人 PASS；真人播放保持 NOT_RUN，Web 确认 UI 仍待实现。
 4. SQLite 是唯一受支持的生产存储；拿到磁盘即拿到全部数据，包括凭据*引用*（仍需 secret provider 才能使用）与任何未来播放关联摘要。PostgreSQL 仓储语义带有隔离可选竞态 harness，但新用例尚未在本工作站运行，且不能证明完整 schema 或生产 PostgreSQL 支持。
 5. 上游平台行为变化可能改变锁定爬虫的行为；许可证门是确认书，不是对上游行为的技术控制。
 6. 未执行外部审计（`NOT_RUN`，操作者可选项）。

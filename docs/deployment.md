@@ -48,6 +48,16 @@ The image contains two layers:
 
 ## 2. Start the service
 
+Before starting or upgrading, verify that the credential file is readable by the **final image's runtime user**. The Dockerfile uses UID 1000. With ordinary rootful Linux mappings, a root-owned `0600` source is not readable by that user: align only this file's owner or restricted read access with the effective runtime identity. Rootless/user-namespace mappings require host-specific checks. File-backed Compose secrets must not be assumed to remap uid/gid/mode; do not use world-readable permissions or recursive ownership changes.
+
+After building, this manual read-only preflight bypasses the normal entrypoint and does not print the credential:
+
+```bash
+docker compose run --rm --no-deps --entrypoint /bin/sh media-sync -c 'test -f /run/secrets/operator_credential && test -r /run/secrets/operator_credential'
+```
+
+This command is documented, not executed on the current Windows workstation (Docker is unavailable). It checks readability only, not credential content/origin validity. The normal entrypoint still runs `db init` before `serve` validates authentication; therefore a startup failure may already have migrated the database. Take a compatible backup before upgrade. Automated configuration validation before migration remains [P0 work](executions/0055-operator-auth-playback-evidence/delivery-priorities.md); current-image startup/restart/restore is not yet qualified.
+
 ```bash
 docker compose up -d
 ```
@@ -149,10 +159,11 @@ Start with `MEDIA_SYNC_MEDIA_SERVER_OPERATIONS_ENABLED=false`. After checking th
 5. Author refresh-and-verify accepts exactly `{"author_id":"<uuid>"}` after a current, complete tree inspection grants the action. It first requires a complete absent baseline. If the exact item already exists, it sends no POST and returns `media_server_scan_observation_precondition_failed`. Success requires one accepted refresh followed by two separated observations of the same unique item; it still does not prove provider task completion or playback.
 6. Durable `media-server-probe` / `media-server-scan` Operations keep accepted, observed, acceptance-unknown and completion-unknown distinct. After transport entry, uncertain acceptance becomes non-retryable `media_server_scan_acceptance_unknown`. After trusted acceptance, an unproven observation becomes non-retryable `media_server_scan_completion_unknown` while retaining the accepted checkpoint. Never retry either ambiguity automatically.
 7. Playback confirmation uses `POST /api/v1/media-server/playback-evidence`. It is not an automation endpoint: it requires a logged-in browser session, exact Origin and CSRF, and rejects Bearer-only or mixed Cookie/Authorization before handler work. The strict body contains only canonical `author_id` and the matched lookup's opaque `observation_fingerprint`; `Idempotency-Key`, selectors, paths, remote IDs, timestamps and notes are rejected. The server performs resolve → one complete unique lookup → resolve before a short create-or-replay transaction and returns no fingerprint or internal context digest. Until the Web checkpoint lands, this backend contract is not exposed as a supported console workflow.
+8. Authenticated Cookie or Bearer clients can read `GET /api/v1/media-server/playback-evidence/by-author/{author_id}?limit=20`. Only canonical author UUID and one optional limit (1–50) are accepted. One fresh stable complete lookup precedes read-only history/current queries. Current evidence is returned separately; history truncation is explicit. Remote uncertainty yields unavailable current authority and unknown history, never stale or PASS.
 
 On restart, an author observation in `preparing` or `baselining` is a pre-dispatch interruption; `dispatching` becomes acceptance unknown; `accepted` or `polling` becomes completion unknown with its accepted checkpoint preserved; only a valid persisted `observed` checkpoint may reconcile to success. Legacy targetless scans retain their conservative 0054-A recovery. A probe may be retried manually, but a scan ambiguity requires server-side inspection before any new request.
 
-`GET /api/v1/qualifications` remains schema v2 and separates local automated counts, implementation status and human qualification. This workspace has no real server credentials, so implemented connection probe, Library discovery, targeted-refresh acceptance, item lookup and post-refresh item observation all remain human `NOT_RUN`. The browser-only playback-confirmation write backend is implemented and offline-verified, but schema v2 still truthfully reports the overall `playback_evidence` capability as `NOT_IMPLEMENTED` with `human_status: null` because the bounded by-author current/stale projection and qualification schema v3 do not exist. `provider_task_completion` remains `NOT_IMPLEMENTED` with reason `provider_api_unsupported`; automatic post-export scanning is also `NOT_IMPLEMENTED`. An unimplemented capability must not be reported as human `NOT_RUN`, `FAIL` or `PASS`.
+`GET /api/v1/qualifications` now uses schema v3. It accepts only one optional canonical `author_id`; without it, playback scope is `not_requested` and no evidence or remote lookup runs. Playback is IMPLEMENTED and remains NOT_RUN without exact current attestation. With an author, PASS requires a current durable human confirmation and is explicitly scoped to that author. Existing automated counts/Operation results never confer a human PASS. All workspace live rows remain NOT_RUN. Provider task completion remains NOT_IMPLEMENTED (`provider_api_unsupported`) and automatic scanning remains NOT_IMPLEMENTED; these retain null human status.
 
 ## 6. Verification checklist (record honestly)
 
@@ -168,7 +179,7 @@ On restart, an author observation in `preparing` or `baselining` is a pre-dispat
 | Post-refresh item observation on a real server | implemented in 0054-B; absent baseline + one accepted POST + the same unique item observed twice; `NOT_RUN` if not exercised |
 | Provider task completion | `NOT_IMPLEMENTED` (`provider_api_unsupported`); no human status |
 | Browser-only playback confirmation backend/API | Implemented and offline-verified; no real Emby/Jellyfin playback was submitted, so it grants no live status |
-| Playback-evidence current/stale projection and qualification | `NOT_IMPLEMENTED` in schema v2; `human_status: null` until bounded projection and schema v3 ship |
+| Playback-evidence current/stale/unknown projection and qualification | IMPLEMENTED in schema v3; NOT_RUN without selected-author exact current evidence. Web confirmation UI and real playback qualification remain pending |
 | Automatic post-export scan | `NOT_IMPLEMENTED`; no frozen follow-up assignment and no human status |
 
 Live evidence is limited to what actually ran; anything not exercised stays `NOT_RUN` per the project's truth rules.

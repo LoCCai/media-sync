@@ -1,8 +1,8 @@
 """Evidence-only qualification projection for the local control plane.
 
 Automated rows describe durable facts already present in the local database.
-They deliberately cannot promote a live, operator-observed qualification: the
-current schema has no authenticated evidence ledger for that assertion.
+Automated counts cannot promote live qualification. Only a freshly revalidated
+durable human attestation can confer playback PASS for one explicitly named author.
 """
 
 from __future__ import annotations
@@ -14,6 +14,13 @@ from typing import Final, Literal, TypeAlias
 from sqlalchemy import func, select
 from sqlalchemy.exc import SQLAlchemyError
 
+from media_sync.application.playback_evidence_query import (
+    DEFAULT_EVIDENCE_HISTORY_LIMIT,
+    PlaybackEvidenceQueryError,
+    PlaybackEvidenceQueryService,
+    unrequested_playback_evidence,
+    validate_evidence_query,
+)
 from media_sync.domain import Platform
 from media_sync.infrastructure.db import (
     Account,
@@ -30,7 +37,7 @@ from media_sync.infrastructure.db import (
 HumanQualificationStatus: TypeAlias = Literal["PASS", "FAIL", "NOT_RUN", "BLOCKED_EXTERNAL"]
 ImplementationStatus: TypeAlias = Literal["IMPLEMENTED", "NOT_IMPLEMENTED"]
 
-QUALIFICATION_SCHEMA_VERSION: Final = 2
+QUALIFICATION_SCHEMA_VERSION: Final = 3
 HUMAN_QUALIFICATION_STATUSES: Final = frozenset({"PASS", "FAIL", "NOT_RUN", "BLOCKED_EXTERNAL"})
 IMPLEMENTATION_STATUSES: Final = frozenset({"IMPLEMENTED", "NOT_IMPLEMENTED"})
 _PLATFORM_ORDER: Final = tuple(platform.value for platform in Platform)
@@ -49,10 +56,7 @@ _MEDIA_SERVER_IMPLEMENTED: Final = (
     "item_lookup",
     "post_refresh_item_observation",
 )
-_MEDIA_SERVER_NOT_IMPLEMENTED: Final = (
-    "playback_evidence",
-    "automatic_post_export_scan",
-)
+_MEDIA_SERVER_NOT_IMPLEMENTED: Final = ("automatic_post_export_scan",)
 
 
 class QualificationError(RuntimeError):
@@ -101,12 +105,13 @@ def _operation_evidence(operation: OperationSnapshot | None) -> dict[str, object
 
 
 class QualificationService:
-    """Build schema-v2 evidence without inferring live qualification PASS."""
+    """Build schema-v3 evidence with explicitly scoped playback qualification."""
 
-    def __init__(self, database: Database) -> None:
+    def __init__(self, database: Database, *, playback_evidence: PlaybackEvidenceQueryService | None = None) -> None:
         if not isinstance(database, Database):
             raise TypeError("database must be a Database")
         self._database = database
+        self._playback_evidence = playback_evidence or PlaybackEvidenceQueryService(database, None)
 
     def snapshot(
         self,
@@ -114,11 +119,14 @@ class QualificationService:
         media_server_configured: bool,
         media_server_operations: Mapping[str, OperationSnapshot | None] | None = None,
         generated_at: datetime | None = None,
+        author_id: str | None = None,
     ) -> dict[str, object]:
         """Return bounded counts and explicit human/implementation states."""
 
         if type(media_server_configured) is not bool:
             raise TypeError("media_server_configured must be a bool")
+        if author_id is not None:
+            validate_evidence_query(author_id, DEFAULT_EVIDENCE_HISTORY_LIMIT)
         current = generated_at or datetime.now(UTC)
         if current.tzinfo is None or current.utcoffset() is None:
             raise ValueError("generated_at must be timezone-aware")
@@ -127,6 +135,13 @@ class QualificationService:
             counts = self._platform_counts()
         except SQLAlchemyError:
             raise QualificationError("qualification_store_unavailable") from None
+
+        playback = unrequested_playback_evidence()
+        if author_id is not None:
+            try:
+                playback = self._playback_evidence.snapshot(author_id).as_dict()
+            except PlaybackEvidenceQueryError:
+                raise QualificationError("qualification_store_unavailable") from None
 
         platforms = [
             {
@@ -144,6 +159,7 @@ class QualificationService:
         scan = operations.get("media-server-scan")
         media_server = {
             "configured": media_server_configured,
+            "playback_evidence": playback,
             "automated_evidence": {
                 "latest_probe": _operation_evidence(probe),
                 "latest_targeted_scan": _operation_evidence(scan),
@@ -155,6 +171,13 @@ class QualificationService:
                     "NOT_IMPLEMENTED",
                     reason="provider_api_unsupported",
                 ),
+                {
+                    "capability": "playback_evidence",
+                    "implementation_status": "IMPLEMENTED",
+                    "human_status": playback["human_status"],
+                    "scope": playback["scope"],
+                    "author_id": author_id,
+                },
                 *(_human_capability(capability, "NOT_IMPLEMENTED") for capability in _MEDIA_SERVER_NOT_IMPLEMENTED),
             ],
         }

@@ -2,7 +2,7 @@
 
 # Security and privacy review (execution 0046)
 
-Scope: the claim-by-claim self-review introduced at the 0046 boundary, calibrated through execution 0054 phase B, the execution 0055 backend-authentication commit `f19bfaa`, the playback-evidence persistence commit `1d5b448`, and the current browser-only confirmation checkpoint. This is a self-review, not an external audit. The backend boundary, matched-only observation identity, append-only persistence and TOCTOU-safe confirmation service/API are implemented and offline-verified; safe current/stale projection, qualification schema v3 and the Web login/CSRF/confirmation client are not.
+Scope: execution 0046 self-review, calibrated through 0054 and 0055 authentication, durable ledger, browser confirmation and current bounded author evidence/qualification v3. This is a self-review, not an external audit. Backend authentication, attestation and read projection are implemented; Web login/CSRF/confirmation integration remains pending.
 
 ## 1. Credentials and secrets
 
@@ -56,7 +56,7 @@ Scope: the claim-by-claim self-review introduced at the 0046 boundary, calibrate
 
 1. The Web clients are temporarily behind the backend contract: they cannot log in, retain CSRF in memory, or recover uniformly from session expiry. Web has synchronized only the matched lookup response type; it has no confirmation UI. This fails closed as 401/403 rather than reopening anonymous access, but blocks Web administration and live QR qualification until the remaining 0055 frontend work is verified.
 2. This is single-operator authentication, not multi-user authorization. The optional Bearer is broad automation authority, and non-loopback deployment still requires reviewed HTTPS termination and exact Host preservation. Public-network deployment, RBAC, SSO/MFA and trusted reverse-proxy identity remain unsupported.
-3. The browser-only confirmation service/API now provides authenticated write authority, but there is no bounded by-author current/stale projection, qualification schema v3 or Web confirmation UI. The schema-v2 qualification response therefore continues to report overall `playback_evidence` as `NOT_IMPLEMENTED` with null human status, and live playback remains `NOT_RUN`. Local/mock confirmations are not remote playback telemetry and cannot create a checked-in human PASS.
+3. Qualification v3 accepts only one optional canonical author. No author means no evidence/remote work and NOT_RUN; an exact durable current attestation can grant only author-scoped PASS. Failed/incomplete/ambiguous or changed authority makes historical evidence unknown. The response omits all context digests, publication Jobs, paths and remote IDs. Local/mock tests do not create a checked-in human PASS; real playback remains NOT_RUN and Web confirmation UI remains pending.
 4. SQLite is the single supported production store; disk access equals full data access, including credential *references* (which still require the secret provider) and any future playback-association digests. PostgreSQL repository semantics have an isolated optional race harness, but its new cases have not run on this workstation and do not establish complete-schema or production PostgreSQL support.
 5. Upstream platform behavior changes can alter what the pinned crawler does; the license gate is an acknowledgement, not a technical control on upstream behavior.
 6. No external audit has been performed (`NOT_RUN`, operator option).

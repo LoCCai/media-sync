@@ -349,7 +349,7 @@ def test_unconfigured_media_server_and_qualifications_are_explicit(tmp_path: Pat
     qualifications = client.get("/api/v1/qualifications")
     assert qualifications.status_code == 200
     body = qualifications.json()
-    assert body["schema_version"] == 2
+    assert body["schema_version"] == 3
     assert body["policy"]["automated_evidence_confers_human_pass"] is False
     assert [row["platform"] for row in body["platforms"]] == [
         "xhs",
@@ -378,7 +378,9 @@ def test_unconfigured_media_server_and_qualifications_are_explicit(tmp_path: Pat
         "human_status": None,
         "reason": "provider_api_unsupported",
     }
-    assert media_capabilities["playback_evidence"]["human_status"] is None
+    assert media_capabilities["playback_evidence"]["human_status"] == "NOT_RUN"
+    assert media_capabilities["playback_evidence"]["implementation_status"] == "IMPLEMENTED"
+    assert body["media_server"]["playback_evidence"]["scope"] == "not_requested"
     assert media_capabilities["automatic_post_export_scan"]["human_status"] is None
     assert "scan_completion" not in media_capabilities
     assert body["media_server"]["automated_evidence"] == {

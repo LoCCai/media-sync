@@ -76,6 +76,12 @@ from media_sync.application.playback_evidence import (
     PlaybackEvidenceConfirmationError,
     PlaybackEvidenceService,
 )
+from media_sync.application.playback_evidence_query import (
+    DEFAULT_EVIDENCE_HISTORY_LIMIT,
+    PlaybackEvidenceQueryError,
+    PlaybackEvidenceQueryService,
+    validate_evidence_query,
+)
 from media_sync.application.qualifications import QualificationError, QualificationService
 from media_sync.application.support_bundle import SupportBundleError, SupportBundleService
 from media_sync.config import Settings, get_settings
@@ -706,6 +712,10 @@ def create_api_app(
         if media_server_observation_service is not None
         else None
     )
+    playback_evidence_query = PlaybackEvidenceQueryService(
+        operation_database,
+        media_server_observation_service if media_server_service.operations_enabled else None,
+    )
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
@@ -733,6 +743,7 @@ def create_api_app(
     app.state.media_server_service = media_server_service
     app.state.media_server_observation_service = media_server_observation_service
     app.state.playback_evidence_service = playback_evidence_service
+    app.state.playback_evidence_query = playback_evidence_query
     app.state.library_inspection_service = library_inspection_service
     deep_readiness_cache: dict[bool, tuple[float, dict[str, object]]] = {}
     deep_readiness_lock = threading.Lock()
@@ -1630,10 +1641,42 @@ def create_api_app(
         )
         return _operation_start_payload(submission)
 
+    def _validate_evidence_read(request: Request, author_id: str | None, *, history: bool) -> int:
+        allowed = {"limit"} if history else {"author_id"}
+        entries = list(request.query_params.multi_items())
+        names = [name for name, _value in entries]
+        raw_limit = request.query_params.get("limit", str(DEFAULT_EVIDENCE_HISTORY_LIMIT))
+        if (
+            not set(names).issubset(allowed)
+            or len(names) != len(set(names))
+            or re.fullmatch(r"[1-9][0-9]?", raw_limit) is None
+        ):
+            raise HTTPException(status_code=400, detail="playback_evidence_request_invalid")
+        limit = int(raw_limit)
+        if author_id is not None:
+            try:
+                validate_evidence_query(author_id, limit)
+            except PlaybackEvidenceQueryError:
+                raise HTTPException(status_code=400, detail="playback_evidence_request_invalid") from None
+        return limit
+
+    @app.get("/api/v1/media-server/playback-evidence/by-author/{author_id}")
+    def author_playback_evidence(
+        request: Request, author_id: str, limit: int = DEFAULT_EVIDENCE_HISTORY_LIMIT
+    ) -> dict[str, object]:
+        """Read current and bounded historical attestations for one author."""
+
+        limit = _validate_evidence_read(request, author_id, history=True)
+        try:
+            return playback_evidence_query.snapshot(author_id, limit=limit).as_dict()
+        except PlaybackEvidenceQueryError as error:
+            raise HTTPException(status_code=503, detail=error.code) from None
+
     @app.get("/api/v1/qualifications")
-    def qualifications() -> dict[str, object]:
+    def qualifications(request: Request, author_id: str | None = None) -> dict[str, object]:
         """Keep local automated evidence separate from live qualifications."""
 
+        _validate_evidence_read(request, author_id, history=False)
         _reconcile_operation_reads()
         try:
             profile_fingerprint = resolved.media_server_profile_fingerprint
@@ -1647,9 +1690,10 @@ def create_api_app(
                     profile_fingerprint=profile_fingerprint,
                 ),
             }
-            return QualificationService(operation_database).snapshot(
+            return QualificationService(operation_database, playback_evidence=playback_evidence_query).snapshot(
                 media_server_configured=resolved.media_server_profile is not None,
                 media_server_operations=evidence,
+                author_id=author_id,
             )
         except QualificationError as error:
             raise HTTPException(status_code=503, detail=error.code) from None

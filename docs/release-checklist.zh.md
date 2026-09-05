@@ -10,6 +10,7 @@
 - [ ] `uv run python scripts/check_docs.py` 通过（全部 Markdown 链接可解析）。
 - [ ] `uv run python scripts/check_upstreams.py` 通过（两个锁定 checkout 均干净且处于锁定 SHA）。
 - [ ] 执行索引（`docs/README.md`）各行与事实一致：没有验证记录的行不声明 Complete。
+- [ ] 资格 v3 中无作者为 `not_requested`；PASS 只适用于具有精确当前持久确认的单个作者，仓库真人行保持基于实际证据的状态。
 
 ## 机密与隐私
 

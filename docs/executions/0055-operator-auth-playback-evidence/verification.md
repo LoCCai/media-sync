@@ -2,16 +2,17 @@
 
 # Execution 0055 Phase A verification
 
-- Status: Backend-authentication and observation identity/persistent-ledger checkpoints published; confirmation service and browser-only POST implemented and under final publication verification
+- Status: Backend authentication, observation identity/ledger and browser-only confirmation published; bounded author projection and qualification v3 pass full regression, with final publication gates in the child checkpoint
 - Date: 2026-09-05
 - Planning baseline: `d0a8cc2`; authentication implementation baseline: `4564b2a`
 - Published authentication commit: `f19bfaa`
 - Published persistence commit: `1d5b448`
+- Published confirmation commit: `13de3b7`; projection frozen planning commit: `9fd74de`
 - Current revision: `0008_playback_evidence`
 
 ## Evidence policy
 
-Planning checks establish only that the slice is scoped and based on current code. The published evidence below proves the backend authentication contracts at `f19bfaa` and the observation-identity/persistence primitive at `1d5b448`; the current focused evidence proves the confirmation service and browser-only POST in this worktree. It does not prove the still-missing safe read projection, qualification schema v3, Web login/confirmation surface, real-server compatibility, or authorized human playback. Implementation evidence and live qualification remain separate.
+Planning checks establish scope against the code at that time. The sections below retain historical authentication evidence for `f19bfaa`, observation identity/persistence for `1d5b448`, and confirmation writes for `13de3b7`; current focused/full-regression and publication evidence for bounded author projection and qualification v3 lives in the [child verification](evidence-projection/verification.md). Offline evidence does not prove the missing Web login/confirmation surface, current Linux-image usability, real-server compatibility or authorized playback. Historical no-P0/P1/P2 findings within those review scopes do not close the Web, credential-readability or pre-migration-validation issues in the [delivery review](delivery-priorities.md). Implementation evidence and live qualification remain separate.
 
 ## Planning baseline evidence
 
@@ -53,6 +54,8 @@ Every result in this section is retained as historical evidence for pushed commi
 
 ## Observation identity and persistent-ledger checkpoint evidence
 
+This section retains historical evidence for `1d5b448` and the capability boundary during the following confirmation split; “current” here refers to that checkpoint, not this projection version. See the projection checkpoint below for the latest result.
+
 | Check | Command or source | Status |
 | --- | --- | --- |
 | Authentication publication baseline | `git log`; published repository state | `PASS` — fail-closed single-operator authentication was committed and pushed as `f19bfaa` before commit-3 work began |
@@ -70,11 +73,11 @@ Every result in this section is retained as historical evidence for pushed commi
 | Current Web regression and build | `npm run format:check`; `npm test -- --run`; `npm run check`; `npm run build` in `web/` | `PASS` — formatting is clean, 7 files/69 tests pass, Svelte reports 0 errors and 0 warnings, and the production build completes; this does not claim the unimplemented login/confirmation surfaces |
 | Current code quality | `uv run --frozen ruff check .`; `ruff format --check .`; `uv run --frozen mypy --strict src/media_sync`; `python -m compileall -q src tests` | `PASS` — Ruff check passes, all 727 files pass format after one formatting-only correction, strict mypy passes over 105 source files, and byte-compilation is clean |
 | Current distribution | isolated system-temporary `uv build`; inspect wheel/sdist with `zipfile`/`tarfile` | `PASS` — exactly one 123-entry wheel and one 837-entry sdist were produced; both include `playback_evidence_repository.py` and `0008_playback_evidence.py`, with zero `.env` or SQLite output |
-| End-to-end capability boundary | inspect current service/API/qualification/Web surfaces | `PARTIAL` — confirmation service/API and double-resolution TOCTOU closure now exist, but the bounded by-author projection, qualification schema v3, Web login lifecycle and matched-only Web confirmation do not. Schema v2 therefore still reports overall `playback_evidence` as `NOT_IMPLEMENTED`; live playback remains `NOT_RUN` |
+| End-to-end capability boundary at that time | service/API/qualification/Web surfaces at the confirmation split | Historical `PARTIAL` — confirmation service/API existed while projection, qualification v3 and Web login/confirmation were absent; schema v2 then marked overall playback evidence `NOT_IMPLEMENTED`. This projection updates that backend state; Web and live acceptance remain incomplete |
 
 ## Confirmation service and browser-only POST checkpoint evidence
 
-This checkpoint intentionally splits frozen commit boundary 4 so the security-sensitive write path can be reviewed independently. It completes delivery item 10 and the POST half of item 11; the by-author projection and qualification schema v3 remain the next unchanged scope.
+This section is historical evidence for published `13de3b7`, including the 2941-test/594.72s result; it does not substitute for current projection regression. That checkpoint intentionally split frozen commit boundary 4 for independent review of the security-sensitive write path, completing delivery item 10 and the POST half of item 11. The following by-author projection and qualification v3 are now implemented; see the next section.
 
 | Check | Command or source | Status |
 | --- | --- | --- |
@@ -85,12 +88,25 @@ This checkpoint intentionally splits frozen commit boundary 4 so the security-se
 | Fixed failure boundary | service/API failure matrix | `PASS` — invalid, non-confirmable, identity-conflict, confirmation-unavailable and store-unavailable paths use fixed non-reflecting codes; failed authority/store paths emit no success audit |
 | Focused service/API gates | dedicated selections | `PASS` — service unit 18, SQLite composition 2, endpoint 51, service/API/auth union 108, media-server API 47, and broader union 289 passed with 8 expected PostgreSQL skips |
 | Route inventory | exact `app.routes` enumeration | `PASS` — 58 route objects; anonymous allowlist unchanged and the new mutation is browser-only |
-| Independent review | service/transaction, API/auth and final release-gate reviews | `PASS` — the first two reviews found no P0/P1/P2; the final gate found one default-runtime audit-visibility P2, which is now closed by the copied Uvicorn application-log configuration and no-socket subprocess regression. No review finding remains open |
+| Independent review | service/transaction, API/auth and final release-gate reviews | `PASS` — the first two reviews found no P0/P1/P2; the final gate found one default-runtime audit-visibility P2, which is now closed by the copied Uvicorn application-log configuration and no-socket subprocess regression. No finding remains open within that confirmation-write review scope; later delivery-review P0 work remains |
 | Application and migration logging | copied Uvicorn log config; no-socket audit subprocess; embedded-Alembic root-inheritance subprocess | `PASS` — default `serve` gives `media_sync` a configured stderr handler while retaining Uvicorn defaults; fixed playback and operator-auth INFO codes are visible without reflecting a private sentinel. Programmatic Alembic INI runs do not replace the caller root level/handler or inherited INFO logging |
 | Current Web and static gates | `pnpm format:check`; `pnpm test`; `pnpm check`; `pnpm build`; Ruff/format; strict mypy; compileall | `PASS` — Web 7 files/69 tests, 0 Svelte errors/warnings and production build; 731 formatted files, 106 typed source files and byte compilation pass |
 | Docs/upstreams/distribution | docs/upstream checks; isolated `uv build` inspection | `PASS` — 498 Markdown files and both clean pinned upstreams pass; after explicitly ignoring `.mimosa/`, one 124-entry wheel and one 810-entry sdist include the service/repository/revision and exclude runtime/tool-history/database output |
 | Docker and PostgreSQL execution | executable/environment checks | `NOT_RUN` — Docker executable is unavailable and `MEDIA_SYNC_TEST_POSTGRESQL_URL` is unset; source/tests do not substitute for execution |
 | Complete Python regression after all logging fixes | `uv run --frozen pytest -q` | `PASS` — 2941 passed, 22 skipped and 1 existing Starlette/httpx warning in 594.72s (`0:09:54`). Three skips are Windows/POSIX differences; 11 Operation and 8 PlaybackEvidence PostgreSQL cases remain `NOT_RUN` because the test URL is unset |
+
+## Current author projection and qualification v3 checkpoint evidence
+
+Exact commands, attempt history and final documentation/package/Git gates are in [projection verification](evidence-projection/verification.md). This summary covers only the gates actually run for this increment.
+
+| Check | Command or source | Status |
+| --- | --- | --- |
+| Bounded read and qualification scope | query service/API/SQLite/qualification regressions | `PASS` — Cookie/Bearer reads, strict UUID/query, default 20/max 50 historical rows, at most `limit + 2` materialized rows, independent exact-current selection, and 59-route auth inventory; no author means no ledger/remote query |
+| Current authority and truncation | authority/deadline/transaction ordering/real SQLite SQL capture | `PASS` — only complete stable remote authority plus a durable row matching all immutable fields can yield scoped PASS; remote lookup truncation cannot PASS, history-page truncation does not invalidate the independent current row; uncertain history is unknown, complete absence is stale; all external work precedes the short read transaction, with no COUNT or writes |
+| Final focused union | projection/confirmation/API/auth/qualification/SQLite selection | `PASS` — 220 passed, 1 existing warning in 51.09s |
+| Complete Python regression | `uv run --frozen pytest -q` | `PASS` — 2999 passed, 22 skipped, 1 existing Starlette/httpx warning in 613.66s; 3 Windows/POSIX differences plus 11 Operation and 8 PlaybackEvidence PostgreSQL cases skipped for missing configuration; no real PostgreSQL execution is claimed |
+| Web and confirmed static gates | `pnpm test`, `pnpm format:check`, `pnpm check`, `pnpm build`; strict mypy/format | `PASS` — 7 files/69 Web tests, zero Svelte errors/warnings, production build; 107 mypy source files and 743 formatted files. Only response types changed; no new login or confirmation UI is claimed |
+| Live and deployment boundary | current workstation capability and checked-in qualification | `NOT_RUN` — Docker/real PostgreSQL/current-image browser integration/live platform and media-server workflows; test rows or scoped-PASS fixtures do not change live qualification |
 
 ## Verification attempt log
 
@@ -120,11 +136,11 @@ This checkpoint intentionally splits frozen commit boundary 4 so the security-se
 
 ## Remaining implementation evidence
 
-The current checkpoint closes the local fingerprint, revision/model, guarded-downgrade, natural-replay, SQLite, confirmation authority and browser-only POST portions of the frozen exit gate. Remaining work still requires exact passing evidence for:
+The current checkpoint closes the offline fingerprint, revision/model, guarded downgrade, natural replay, SQLite, confirmation authority, browser-only POST, bounded author projection and qualification v3 portions. P0 order is in the [delivery priority addendum](delivery-priorities.md). Remaining work still requires exact passing evidence for:
 
-1. Implement a bounded authenticated by-author current/stale projection and qualification schema v3 truth: no current evidence is `IMPLEMENTED/NOT_RUN`, only exact current evidence may be PASS, stale/unknown evidence never is, and provider completion/automatic scan stay unimplemented.
-2. Implement and verify the Web login/session/logout/expiry lifecycle, in-memory CSRF injection, centralized 401 reset, cookie-only EventSource/direct-media behavior, and the accessible matched-only playback-attestation interaction.
-3. Complete a real Docker/Compose configuration and startup check on a host with Docker available.
+1. Complete credential-readability and pre-migration configuration validation; prove invalid/unreadable credentials fail before database changes rather than inferring an untouched database from a failed server start.
+2. Prioritize Web login/session/logout/expiry, memory-only CSRF, centralized 401 reset and cookie-only EventSource/direct media; then finish accessible current/history display and matched-only attestation. The latter does not block authorized canaries through the existing CLI.
+3. Verify configuration, runtime-user secret reads, migration boundary, startup, restart persistence and backup restore for the exact current commit/image on a Docker-capable Linux host, then prioritize authorized Bilibili/XHS canaries. Historical-image PASS does not substitute for the current version.
 4. Run the eight PlaybackEvidence PostgreSQL races and re-run the previously skipped PostgreSQL coverage on a configured host; source inspection is not a substitute.
 5. Preserve credential/session/CSRF/reference/raw-selector non-retention through final repository, package, and publication scans.
 6. Re-run complete Python/Web and all quality/package/documentation/upstream/generated-output/host-path/secret/whitespace gates after the remaining implementation, then complete the Git publication gate.
