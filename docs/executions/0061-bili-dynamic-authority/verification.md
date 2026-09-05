@@ -57,3 +57,9 @@ Independent final `uv build --out-dir` completed exit0 in8.99s in `C:/Users/LoCC
 Wheel SHA256: `bdb5fa0a3d7c27887220123c065cf9e6d39af78a24715bb2cf956c565754af6a`; sdist SHA256: `0a1920fee11ff2b1a1023b039397e788f0b0ebdd3870561bb03cad951ad860c4`.
 
 Final Ruff check and format check932 files, mypy128 source files, compileall src/tests/scripts, uv lock62 packages, both locked/clean upstream checks, Web Prettier and Git diff check passed. Documentation622 passed and is checked again before commit. Real Docker/Linux image, PostgreSQL transactions, live platform login/capture/download/export/media-server/playback qualification remain NOT_RUN. No credentials, production state or supervisor were changed. Stage A is implemented/offline verified; Stages B–D and the overall goal remain open.
+
+## Publication
+
+Pre-commit docs622 and whitespace checks passed; fresh fetch showed only frozen plan ahead (1 0). Bilingual plan `c24ab78` and implementation `d43988cbda24b2531f0886fe409f97c98f873a20` were non-force pushed using `git -c http.sslBackend=schannel -c http.version=HTTP/1.1 push origin main`, exit0. A subsequent fresh fetch with the same transport options completed exit0: HEAD and origin/main both d43988cbda24b2531f0886fe409f97c98f873a20, divergence0 0 and clean worktree before this publication record. No source edits followed final regression/package checks.
+
+This final bilingual publication record is committed and pushed separately, then fresh-fetch equality is checked again. Its own SHA is reported in the handoff instead of recursively written into itself. No deployment/live action occurred; dynamics Stages B–D and the original seven-platform goal remain active.

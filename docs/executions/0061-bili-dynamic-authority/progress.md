@@ -39,3 +39,5 @@ A second independent review reproduced queue poisoning from a malformed old retr
 Latest frozen repository SHA256 is `cee10a1e20edce7f8ae6d2c0690ce564773d679a8f4a3bdf5e0263f11b024bc4`. No further source edits are planned; release verification and bilingual Git publication follow in the verification record. Stage A does not close Stages B–D or the original goal.
 
 Final affected regression passed551 with13 unavailable PostgreSQL cases skipped; full Web passed640. Complete-directory snapshots and all review-driven corrections are separately recorded, not summed or presented as one same-source full suite. Final wheel/sdist source bytes match all140 application Python files. Stage A is implemented and offline verified; publication is recorded next, without deployment or live qualification.
+
+Bilingual implementation `d43988c` is now published to GitHub, with non-force push and fresh-fetch HEAD/origin equality0 0 plus a clean worktree. This final publication-record update is a separate bilingual commit. Stage A is delivered as the documented prerequisite only; follow-up dynamics scope/attachments/refresh and seven-platform qualification remain required.

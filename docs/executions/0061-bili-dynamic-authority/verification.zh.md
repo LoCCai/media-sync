@@ -57,3 +57,9 @@ scheduler严格矩阵编写中有十个fixture失败（缺少空registry mapping
 wheel SHA256：`bdb5fa0a3d7c27887220123c065cf9e6d39af78a24715bb2cf956c565754af6a`；sdist SHA256：`0a1920fee11ff2b1a1023b039397e788f0b0ebdd3870561bb03cad951ad860c4`。
 
 最终Ruff check/格式932文件、mypy128源码、compileall src/tests/scripts、uv lock62包、两个锁定/干净上游、Web Prettier及Git diff通过。docs622通过，提交前再检查。真实Docker/Linux镜像、PG事务、真人平台登录/采集/下载/导出/媒体服务器/播放资格仍NOT_RUN。未改凭据、生产状态或supervisor。阶段A已实现并离线验证，B–D及总目标继续开放。
+
+## 发布
+
+提交前docs622及空白检查通过，fresh fetch仅冻结计划领先（1 0）。双语计划`c24ab78`和实现`d43988cbda24b2531f0886fe409f97c98f873a20`已用`git -c http.sslBackend=schannel -c http.version=HTTP/1.1 push origin main`非force推送，exit0。随后相同传输参数fresh fetch完成exit0，HEAD与origin/main均为d43988cbda24b2531f0886fe409f97c98f873a20，分歧0 0，本发布记录修改前工作区干净。最终回归/包检查后无源码修改。
+
+本双语发布记录单独提交推送，再做fresh-fetch相等核验；其自身SHA在交接报告，不递归写入自身。未部署/执行真人操作；动态B–D及原始七平台目标继续活动。
