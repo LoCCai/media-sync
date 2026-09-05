@@ -34,4 +34,6 @@
 
 ## 未跑门与发布
 
-本机Docker不可用，PostgreSQL测试URL未配置。Docker构建/生产部署、真人资料/登录/采集/归档/播放仍NOT_RUN。六平台及Cookie资料模式NOT_IMPLEMENTED；Cookie登录、正确有界覆盖和整体目标仍开放。无生产动作或supervisor重启。实现尚未提交/推送，待最终检查后记录。
+本机Docker不可用，PostgreSQL测试URL未配置。Docker构建/生产部署、真人资料/登录/采集/归档/播放仍NOT_RUN。六平台及Cookie资料模式NOT_IMPLEMENTED；Cookie登录、正确有界覆盖和整体目标仍开放。无生产动作或supervisor重启。
+
+冻结计划`36e004d`和双语实现提交`141f7c4`已通过非强制`git push origin main`发布（退出0，远端由`87ef7fd`前进）。新执行`git -c http.sslBackend=schannel -c http.version=HTTP/1.1 fetch --prune origin`退出0；HEAD与origin/main均为`141f7c424226a1b7f8cdc97b24e3b43d61ae6f40`，`git rev-list --left-right --count HEAD...origin/main`返回`0 0`，本次仅文档发布记录更新前`git status --porcelain=v1`为空。最终文档检查再次通过全部590份Markdown，`git diff --check`通过。发布指GitHub源码交付，不是生产部署。

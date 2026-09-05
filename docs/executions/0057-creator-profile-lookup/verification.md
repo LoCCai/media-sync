@@ -34,4 +34,6 @@ Independent review checked the shared lock, account isolation, auth ABA, retaine
 
 ## Unrun gates and publication
 
-Docker is unavailable and no PostgreSQL test URL is configured. Docker build/production deployment and live profile/login/capture/archive/playback remain NOT_RUN. Six-platform/Cookie profiles remain NOT_IMPLEMENTED; pasted-Cookie login, correct bounded coverage and the overall goal stay open. No production action or supervisor restart. Implementation is not yet committed/pushed; record after final checks.
+Docker is unavailable and no PostgreSQL test URL is configured. Docker build/production deployment and live profile/login/capture/archive/playback remain NOT_RUN. Six-platform/Cookie profiles remain NOT_IMPLEMENTED; pasted-Cookie login, correct bounded coverage and the overall goal stay open. No production action or supervisor restart.
+
+Published the frozen plan `36e004d` and bilingual implementation commit `141f7c4` through non-force `git push origin main` (exit 0; remote advanced from `87ef7fd`). Fresh `git -c http.sslBackend=schannel -c http.version=HTTP/1.1 fetch --prune origin` exited 0; HEAD and origin/main were both `141f7c424226a1b7f8cdc97b24e3b43d61ae6f40`, `git rev-list --left-right --count HEAD...origin/main` returned `0 0`, and `git status --porcelain=v1` was empty before this documentation-only publication record. Final documentation validation again passed all 590 Markdown files and `git diff --check` passed. Publication is GitHub source delivery, not production deployment.

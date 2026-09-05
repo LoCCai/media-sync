@@ -4,7 +4,7 @@
 
 The previous goal turn completed 0056 publication and remote-consistency evidence and is classified as progress. Continue automatic profiles from the current clean `87ef7fd` baseline. Reviewed the upstream single-profile endpoint, shared-Author overwrite risk and existing Operation boundary, then froze this plan.
 
-Committed plan36e004d before parallel implementation. The Bili saved-session source/UI slice is implemented and local verification is complete; publication is pending closeout. Offline tests do not qualify a live platform.
+Committed plan `36e004d` before parallel implementation. The Bili saved-session source/UI slice and local verification are complete and published as `141f7c4`. A fresh fetch verified HEAD and origin/main both at `141f7c424226a1b7f8cdc97b24e3b43d61ae6f40`, divergence `0 0`, with a clean worktree before this publication-record update. Offline tests do not qualify a live platform.
 
 ## Implemented
 
