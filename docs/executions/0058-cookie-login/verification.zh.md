@@ -42,4 +42,4 @@ computer-use技能用于独立loopback8768合成服务：用公开测试凭据�
 
 ## 发布
 
-计划提交后fresh fetch确认HEAD比origin/main领先1个本地提交、无远端分歧。实现和发布记录待最终验证；不能把此草稿当作已推送证据。
+已用非force `git push origin main`发布冻结计划`f94d557`和双语实现`3dc8905`（退出0，远端从`68c4004`前进）。新执行`git -c http.sslBackend=schannel -c http.version=HTTP/1.1 fetch --prune origin`退出0：HEAD和origin/main均为`3dc89056150a6651f813d7df03036031163a932b`，分歧`0 0`，本次仅文档发布记录前`git status --porcelain=v1`为空。全部测试/构建句柄已终止。这是GitHub源码发布，不是生产部署。发布记录提交随后再次非force推送并fresh fetch核对；自身结果在交付时报告，不递归改写本记录。

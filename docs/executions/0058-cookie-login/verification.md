@@ -42,4 +42,4 @@ Docker executable is unavailable and `MEDIA_SYNC_TEST_POSTGRESQL_URL` is not con
 
 ## Publication
 
-Fresh fetch after plan commit confirmed HEAD one local commit ahead of origin/main with no remote divergence. Implementation and publication record are pending final validation; do not treat this draft as pushed evidence.
+Published frozen plan `f94d557` and bilingual implementation `3dc8905` with non-force `git push origin main` (exit0; remote advanced from `68c4004`). A fresh `git -c http.sslBackend=schannel -c http.version=HTTP/1.1 fetch --prune origin` exited0: HEAD and origin/main both `3dc89056150a6651f813d7df03036031163a932b`, divergence `0 0`, and clean `git status --porcelain=v1` before this documentation-only publication record. All test/build handles were terminal. This is GitHub source publication, not production deployment. The publication-record commit follows with another non-force push and fresh-fetch equality check; its own result is reported at handoff rather than recursively editing this record.

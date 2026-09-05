@@ -29,7 +29,7 @@ This directory is the durable audit trail for the project. Every execution miles
 
 | ID | Milestone | Status | Commit |
 | --- | --- | --- | --- |
-| 0058 | Cookie validation, private save and reuse | Four validators and Bili Cookie profiles implemented; three validators/live gates open; [verification](executions/0058-cookie-login/verification.md) | Plan `f94d557`; implementation is the commit containing this row |
+| 0058 | Cookie validation, private save and reuse | Four validators and Bili Cookie profiles implemented; three validators/live gates open; [verification](executions/0058-cookie-login/verification.md) | Plan `f94d557`; implementation `3dc8905` |
 | 0057 | Single-creator profiles | Bili saved-session profiles, local aliases and receipt-bound subscriptions; [verification](executions/0057-creator-profile-lookup/verification.md) | `141f7c4`, `68c4004` |
 | 0056 | Subscription usability and local delivery | Removal/paused restore, local output guidance and exact-Job reports implemented; automatic creator profiles still required; [progress](executions/0056-subscription-usability/progress.md), [verification](executions/0056-subscription-usability/verification.md) | Plan `fe54aba`; implementation is the commit containing this row |
 | 0001 | Bootstrap and pin upstreams | Complete | `59da120` |

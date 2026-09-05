@@ -29,7 +29,7 @@
 
 | ID | 里程碑 | 状态 | 提交 |
 | --- | --- | --- | --- |
-| 0058 | Cookie校验、私密保存与复用 | 四平台验证器及B站Cookie资料已实现，三平台验证器/真人门仍开放；[验证](executions/0058-cookie-login/verification.zh.md) | 计划 `f94d557`；实现为包含本行的提交 |
+| 0058 | Cookie校验、私密保存与复用 | 四平台验证器及B站Cookie资料已实现，三平台验证器/真人门仍开放；[验证](executions/0058-cookie-login/verification.zh.md) | 计划 `f94d557`；实现 `3dc8905` |
 | 0057 | 单作者资料 | B站saved-session资料、本地备注、凭单绑定订阅；[验证](executions/0057-creator-profile-lookup/verification.zh.md) | `141f7c4`、`68c4004` |
 | 0056 | 订阅可用性与本地交付 | 删除/暂停恢复、本地输出说明和精确 Job 报告已实现；自动作者资料仍必做；[进度](executions/0056-subscription-usability/progress.zh.md)、[验证](executions/0056-subscription-usability/verification.zh.md) | 计划 `fe54aba`；实现为包含本行的提交 |
 | 0001 | 初始化并锁定上游 | 已完成 | `59da120` |
