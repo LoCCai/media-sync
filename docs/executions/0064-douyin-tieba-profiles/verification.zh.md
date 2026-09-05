@@ -50,3 +50,9 @@ fresh fetch确认HEAD=origin/main `133e461007f92c7dd9444d4dd5e661887c5912d1`、�
 原始报告保存在本地docs并按既有artifacts策略忽略Git，命令/结果入版本管理。报告SHA256依次为unit `34481aefc252c5586545da8ce5de6b02ab14f511b5e6cc71fbf85358663a341b`、contract `486e7b8bbbcd500c94fafcc4357a6740cae8c69b1b5ce7d67cee4352cab06b81`、integration `769c48bc7f519a56f18c24b1c80e63070fe262ca469e60385e948051fa76de0c`；复跑时耗时/时间戳使哈希变化属正常。跳过32项真实PG检查及5项POSIX权限/启动器/耐久检查，不把Windows替代当原生验证。最终文档652份通过、diff检查通过；独立文档终审无未解决发现。暂存前fresh fetch仅计划提交领先1/落后0。
 
 Docker命令当前不可用，`MEDIA_SYNC_TEST_POSTGRESQL_URL`未设置。当前Linux镜像/原生权限耐久、真实PostgreSQL、平台/CDN字节、真人登录/资料/采集/归档、Emby/Jellyfin原生播放及生产supervisor均NOT_RUN。历史已授权但失败的B站canary未重试/未改标成功；六平台资料不等于七平台闭环完成。
+
+## GitHub发布
+
+双语冻结计划 `b60cccb` 和实现 `275ab8a8d3aecc3f37022aafb39cfd6a67c52688` 已正常非强制推送至 https://github.com/LoCCai/media-sync 的origin/main。随后fresh fetch确认HEAD=origin/main为该完整SHA、分歧0 0、工作区干净。实现仅暂存本任务39份源码/测试/Web/双语文档；凭据、运行数据、JUnit原始报告、构建输出及临时包未提交。
+
+这份发布结果以独立双语纯文档提交保存，再次普通push/fetch验证一致性；不会修改已冻结应用与测试。没有部署、真实平台请求或supervisor恢复。小红书资料、两个本人校验器、三个平台头像、剩余媒体及真实环境验收仍是原定七平台目标的必做项。
