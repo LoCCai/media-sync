@@ -2,14 +2,15 @@
 
 # Execution 0055 Phase A verification
 
-- Status: Backend-auth complete local offline gates pass; Web auth, playback evidence, Docker, and real-PostgreSQL gates pending
+- Status: Published backend-auth gate and current observation identity/persistent-ledger Python, Web, code-quality, and distribution gates pass locally
 - Date: 2026-09-05
-- Planning baseline: `d0a8cc2`; implementation baseline: `4564b2a`
-- Planned revision: `0008_playback_evidence`
+- Planning baseline: `d0a8cc2`; authentication implementation baseline: `4564b2a`
+- Published authentication commit: `f19bfaa`
+- Current revision: `0008_playback_evidence`
 
 ## Evidence policy
 
-Planning checks establish only that the slice is scoped and based on current code. The focused evidence below proves the implemented backend authentication contracts, but does not yet prove a working Web login surface, playback evidence, real-server compatibility, or authorized human playback. Implementation evidence and live qualification remain separate.
+Planning checks establish only that the slice is scoped and based on current code. The published evidence below proves the backend authentication contracts at `f19bfaa`; the newer focused evidence proves only the local observation-identity and persistence primitive. It does not yet prove a working confirmation service/API, Web login/confirmation surface, qualification schema v3, real-server compatibility, or authorized human playback. Implementation evidence and live qualification remain separate.
 
 ## Planning baseline evidence
 
@@ -28,7 +29,9 @@ Planning checks establish only that the slice is scoped and based on current cod
 | Confidentiality and workspace paths | Scan the 14 intended changed/new files for workstation paths, private-key/token forms, and assigned secret values | `PASS` — zero matches |
 | Whitespace | `git diff --check` | `PASS` |
 
-## Backend authentication implementation evidence
+## Published backend authentication evidence
+
+Every result in this section is retained as historical evidence for pushed commit `f19bfaa`. It must not be read as a completed full-regression claim for the newer commit-3 worktree.
 
 | Check | Command or source | Status |
 | --- | --- | --- |
@@ -47,12 +50,36 @@ Planning checks establish only that the slice is scoped and based on current cod
 | Distribution | isolated `uv build --out-dir ...`; inspect wheel/sdist with `zipfile`/`tarfile` | `PASS` — one wheel and one sdist build; wheel has 121 entries including auth, legacy console, and migration template; sdist has 832 entries; neither contains `.env`/SQLite output |
 | Pre-commit repository gate | explicit 46-file index; `git ls-files`; generated/runtime and sensitive-pattern scans; frozen goal/plan diff; `git diff --cached --check`; compare `HEAD...origin/main` | `PASS` — 800 indexed files, zero forbidden output or sensitive match, frozen goal/plan unchanged, divergence `0 0`, no unstaged tracked change, and only pre-existing `.mimosa/` remains untracked |
 
+## Observation identity and persistent-ledger checkpoint evidence
+
+| Check | Command or source | Status |
+| --- | --- | --- |
+| Authentication publication baseline | `git log`; published repository state | `PASS` — fail-closed single-operator authentication was committed and pushed as `f19bfaa` before commit-3 work began |
+| Matched-only observation identity | `media_server_observation_fingerprint`; `MediaServerAuthorLookupResult`; Web `MediaServerAuthorLookup` discriminated type; observation unit/API regressions | `PASS` — the domain-separated v1 digest binds canonical author ID plus profile/publication/selector/item digests only for a unique `matched` result; `not_found` exposes neither item nor observation fingerprint, raw item ID is not retained, and Web types mirror the distinction without claiming a confirmation UI |
+| Revision and ORM contract | `0008_playback_evidence.py`; `PlaybackEvidence`; migration/model regressions | `PASS` — schema version, canonical UUID, lowercase SHA-256, timestamp ordering, unique observation identity, author/time index, and Author/Job `RESTRICT` constraints are enforced in both migration and model metadata |
+| Guarded downgrade | revision 0008 migration regressions | `PASS` — offline downgrade is refused, a populated ledger blocks downgrade, and only an online audited empty ledger can be removed |
+| Natural replay | `PlaybackEvidenceRepository`; SQLite repository regressions | `PASS` — immutable natural identity replays the first durable row and timestamps; conflicting reuse of an observation fingerprint returns the fixed conflict code, and validation/FK/check failures do not become replay success |
+| SQLite transaction and races | repository statement/rollback/concurrency regressions | `PASS` — the first natural-key read is protected by `BEGIN IMMEDIATE`, insertion is savepoint-scoped without committing the caller transaction, an unsafe existing deferred writer transaction is rejected, and concurrent identical/conflicting attempts leave one durable winner |
+| PostgreSQL repository semantics | repository implementation and eight dedicated PostgreSQL race tests | `NOT_RUN` — the implementation uses the unique constraint plus savepoint rollback and winner re-read under `READ COMMITTED`, but all 8 executable race cases were skipped because `MEDIA_SYNC_TEST_POSTGRESQL_URL` is unset |
+| Migration/repository subset | focused migration, SQLite repository, and PostgreSQL-race test selection | `PASS` — 42 passed and 8 skipped; all skips are the unconfigured PostgreSQL cases above |
+| Commit-3 focused union | focused observation/API/migration/repository/PostgreSQL-race regression selection | `PASS` — 129 passed, 8 skipped, 1 pre-existing Starlette/httpx deprecation warning |
+| Checkpoint documentation | `uv run --frozen python scripts/check_docs.py`; `git diff --check` over the four mutable 0055 progress/verification files | `PASS` — 498 Markdown files have valid links and the checkpoint documentation has no whitespace error |
+| Complete current Python regression | `uv run --frozen pytest -q` | `PASS` — 2868 passed, 22 skipped, 1 pre-existing Starlette/httpx warning in 558.19s (`0:09:18`). The skips are 3 Windows/POSIX differences, 11 existing Operation PostgreSQL cases, and 8 new PlaybackEvidence PostgreSQL races; the 19 PostgreSQL cases remain `NOT_RUN` because `MEDIA_SYNC_TEST_POSTGRESQL_URL` is unset |
+| Current Web regression and build | `npm run format:check`; `npm test -- --run`; `npm run check`; `npm run build` in `web/` | `PASS` — formatting is clean, 7 files/69 tests pass, Svelte reports 0 errors and 0 warnings, and the production build completes; this does not claim the unimplemented login/confirmation surfaces |
+| Current code quality | `uv run --frozen ruff check .`; `ruff format --check .`; `uv run --frozen mypy --strict src/media_sync`; `python -m compileall -q src tests` | `PASS` — Ruff check passes, all 727 files pass format after one formatting-only correction, strict mypy passes over 105 source files, and byte-compilation is clean |
+| Current distribution | isolated system-temporary `uv build`; inspect wheel/sdist with `zipfile`/`tarfile` | `PASS` — exactly one 123-entry wheel and one 837-entry sdist were produced; both include `playback_evidence_repository.py` and `0008_playback_evidence.py`, with zero `.env` or SQLite output |
+| End-to-end capability boundary | inspect current service/API/qualification/Web surfaces | `NOT_IMPLEMENTED` — confirmation service/API, double-resolution TOCTOU closure, qualification schema v3, Web login lifecycle, and matched-only Web confirmation do not exist yet; live playback remains `NOT_RUN` |
+
 ## Verification attempt log
 
 1. The first `git fetch --prune origin` failed with a transient GitHub TLS unexpected EOF; the immediate retry completed successfully and the divergence check remained clean.
 2. `docker compose ... config --quiet` could not start because this Windows workstation has no Docker executable. A fallback PyYAML parser was also unavailable. The policy and manifest wiring are covered by unit tests and read-only inspection, but a real Compose parse/start remains explicitly `NOT_RUN`.
 3. The isolated `uv build` itself succeeded on its first run. The first wrapper assertion counted uv's generated `.gitignore` as a package and exited nonzero; the corrected filter verified exactly one wheel and one sdist. A first content assertion incorrectly expected the Docker-only Console v2 copy in the standalone wheel; the corrected distribution contract verified the included legacy console while the separate Web production build verified Console v2.
 4. The first tracked-output denylist was too broad and classified the legitimate documentation directory `docs/archive/` and Web route `routes/jobs/` as runtime roots. The corrected root-aware scan checked 800 indexed files and found zero forbidden generated/runtime output. Separate staged-diff scans found zero workstation path, private-key, GitHub/OpenAI/AWS token, or assigned production operator-secret match.
+5. The commit-3 migration/repository selection discovered all eight dedicated PostgreSQL race tests but skipped them because `MEDIA_SYNC_TEST_POSTGRESQL_URL` is unset. Their existence and collection do not constitute execution, so PostgreSQL remains `NOT_RUN`.
+6. The complete Python suite for the current commit-3 worktree finished with 2868 passes, 22 skips, and one existing warning in 558.19 seconds (`0:09:18`). This is separate from the historical 2811-pass `f19bfaa` result. The 3 Windows/POSIX skips and both unconfigured PostgreSQL groups—11 existing Operation cases plus 8 new PlaybackEvidence races—are retained explicitly; no PostgreSQL execution is claimed.
+7. The first current Ruff format check identified one formatting-only difference. After that source was formatted, the repeated check passed all 727 files; Ruff check, strict mypy over 105 source files, and compileall also passed. No behavioral pass is inferred from the formatting correction alone.
+8. The first distribution wrapper passed an unsupported `New-Item -LiteralPath` argument in this PowerShell environment. `uv build` nevertheless created the isolated output directory and succeeded; the corrected content check verified one wheel and one sdist without embedding a workstation path in artifacts or documentation.
 
 ## Review findings closed
 
@@ -62,20 +89,18 @@ Planning checks establish only that the slice is scoped and based on current cod
 4. The outer boundary removes every downstream HEAD body while preserving representation headers; its own rejected HEAD retains the GET representation length and emits no body. Health, readiness, and archive GET/HEAD registrations are split to avoid duplicate OpenAPI operation IDs.
 5. The shared authenticated test client no longer attaches CSRF headers to safe methods, removing false evidence for browser primitives that cannot set custom headers.
 
-## Required implementation evidence
+## Remaining implementation evidence
 
-The remaining exit gate requires exact passing evidence for:
+The current checkpoint closes the local fingerprint, revision/model, guarded-downgrade, natural-replay, and SQLite portions of the frozen exit gate. Remaining work still requires exact passing evidence for:
 
-1. Implement and verify the Web login/session/logout/expiry lifecycle, in-memory CSRF injection, centralized 401 reset, and cookie-only EventSource/direct-media behavior.
-2. Complete a real Docker/Compose configuration and startup check on a host with Docker available.
-3. Re-run the 11 real-PostgreSQL races on a configured host and add the planned PlaybackEvidence races after revision 0008 exists.
-4. Preserve credential/session/CSRF/reference non-retention through the final repository/publication scans.
-5. Observation-fingerprint stability/domain separation and every authority-context drift.
-6. Resolve → unique lookup → resolve TOCTOU closure and zero-write failure paths.
-7. Append-only revision 0008 constraints, natural replay, SQLite/PostgreSQL concurrency, RESTRICT parents, and guarded downgrade.
-8. Qualification schema v3 truth: no evidence is `IMPLEMENTED/NOT_RUN`, exact current evidence may be PASS, stale evidence never is, provider completion and automatic scan stay unimplemented.
-9. Web explicit matched-only playback-attestation interaction, including accessibility and truthful wording.
-10. Re-run complete Python/Web and all quality/package/documentation/upstream/generated-output/host-path/secret/whitespace gates after the remaining implementation, then complete the Git publication gate.
+1. Complete the final Git publication gate for commit 3; its Python, Web, code-quality, docs, locked-upstream, distribution, generated-output, sensitive-data, frozen-plan, and divergence gates are complete and recorded separately from historical `f19bfaa` evidence.
+2. Implement resolve → unique lookup → resolve TOCTOU closure, authenticated confirmation service/API, and every zero-write failure path.
+3. Implement qualification schema v3 truth: no evidence is `IMPLEMENTED/NOT_RUN`, only exact current evidence may be PASS, stale evidence never is, and provider completion/automatic scan stay unimplemented.
+4. Implement and verify the Web login/session/logout/expiry lifecycle, in-memory CSRF injection, centralized 401 reset, cookie-only EventSource/direct-media behavior, and the accessible matched-only playback-attestation interaction.
+5. Complete a real Docker/Compose configuration and startup check on a host with Docker available.
+6. Run the eight PlaybackEvidence PostgreSQL races and re-run the previously skipped PostgreSQL coverage on a configured host; source inspection is not a substitute.
+7. Preserve credential/session/CSRF/reference/raw-selector non-retention through final repository, package, and publication scans.
+8. Re-run complete Python/Web and all quality/package/documentation/upstream/generated-output/host-path/secret/whitespace gates after the remaining implementation, then complete the Git publication gate.
 
 ## Live qualification
 

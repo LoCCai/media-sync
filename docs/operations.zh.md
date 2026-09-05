@@ -6,7 +6,7 @@
 
 | 路径 | 内容 | 备份价值 |
 | --- | --- | --- |
-| `/data/state/media-sync.sqlite3` | 数据库：账户、订阅、内容、资产、任务、导出记录、持久 Operation 与 Event | 关键（含平台账户凭据*引用*，绝无原始机密；操作者凭据/session 与媒体服务器 key/reference 均不存于此） |
+| `/data/state/media-sync.sqlite3` | 数据库：账户、订阅、内容、资产、任务、导出记录、持久 Operation/Event，以及 revision `0008` 播放证据账本 | 关键（含平台账户凭据*引用*，以及后续若发生确认时由 UUID/摘要/时间戳表达的播放关联；绝无原始机密、远端 item ID、操作者凭据/session 或媒体服务器 key/reference） |
 | `/data/archive/` | 不可变 SHA-256 媒体 blob | 关键（丢失只能全量重新下载） |
 | `/data/library/` | Emby/Jellyfin 目录（NFO、海报、剧集） | 可再生成（由数据库 + 归档重新导出） |
 | `/data/jobs/`、`/data/mediacrawler/` | 工作根、manifest、浏览器 profile | 可丢弃；profile 丢失意味着需要重新登录 |
@@ -36,7 +36,7 @@ docker compose exec media-sync /app/.venv/bin/python -c \
 # 然后按上述方式把 /data/state/backup.sqlite3 与 archive/ 一并拷出
 ```
 
-SQLite 备份会包含持久 `media-server-probe` / `media-server-scan` 审计行及其白名单证据，包括阶段 B 的作者 target、关联 publication Job 与 accepted/observed checkpoint；但不包含环境托管的媒体服务器配置、操作者凭据、可选 Bearer token、session Cookie 或 CSRF 值。只通过上述独立机密管理流程备份必要部署输入。
+SQLite 备份会包含持久 `media-server-probe` / `media-server-scan` 审计行及其白名单证据，包括阶段 B 的作者 target、关联 publication Job 与 accepted/observed checkpoint。在 revision `0008`，它也会包含任何 append-only 播放证据行；这些行只保存规范作者/publication Job 身份、绑定上下文的摘要与时间戳，不保存原始服务器 item ID 或路径。当前工作变更尚无经鉴权确认 service/API/UI，因此表存在不证明该能力可用或已通过资格。备份不包含环境托管的媒体服务器配置、操作者凭据、可选 Bearer token、session Cookie 或 CSRF 值。只通过上述独立机密管理流程备份必要部署输入。
 
 ## 恢复
 
@@ -66,10 +66,14 @@ docker compose build
 docker compose up -d
 ```
 
-schema 迁移在容器启动时运行（`db init` 幂等）。`uv.lock` 保证与发布时测试相同的依赖组合。本地 `docker-compose.yml` 被 git 忽略，上游更新不会与你的部署配置冲突。当前检查点已启用后端鉴权边界，但 Web login/session bootstrap 与 CSRF 传播仍待实现；在前端检查点收尾前使用 CLI/supervisor 工作流。
+schema 迁移在容器启动时运行（`db init` 幂等）。`uv.lock` 保证与发布时测试相同的依赖组合。本地 `docker-compose.yml` 被 git 忽略，上游更新不会与你的部署配置冲突。提交 `f19bfaa` 的后端鉴权边界已启用，但 Web login/session bootstrap 与 CSRF 传播仍待实现；在前端检查点收尾前使用 CLI/supervisor 工作流。
 
 数据库一旦包含任一 `media-server-probe` 或 `media-server-scan` 行，revision `0007_media_server_operations` 就是 forward-only。其 downgrade 会有意关闭失败而不是删除持久审计证据，旧应用也不得针对该数据库运行。没有新 kind 行的数据库可以使用经过测试的 downgrade 路径，但 down-migration 从不自动执行。签出旧 tag/SHA 前必须检查发布说明与数据库状态；若已有新 kind 行，应恢复兼容的升级前备份，或继续使用理解 revision `0007` 的应用版本。
 
-执行 0054-B 不新增迁移，Alembic 仍为 `0007`。回滚应用版本前，必须等待所有作者观察 scan 进入终态，或部署具备兼容收敛逻辑的版本；不得通过删除 Operation 行或 accepted/observed checkpoint 强行制造兼容。
+执行 0054-B 在历史上没有新增迁移，并结束于 `0007`。当前执行 0055 工作变更把 Alembic 推进到 `0008_playback_evidence`。新表在升级时为空，并以 `RESTRICT` 关联作者与 publication Job；应用仓储只暴露 create-or-exact-replay，不暴露 update/delete。只有表为空时，在线 downgrade 才能回到 `0007`。只要存在任一证据行，downgrade 就会以 `playback_evidence_rows_prevent_downgrade` 关闭失败；离线 SQL downgrade 也会被拒绝，因为它无法审计表内容。不得为了回滚而删除证据行；应恢复兼容的 `0008` 前备份，或继续使用理解 `0008` 的二进制。
+
+SQLite 继续是受支持的生产存储。`0008` migration 可生成 SQLite/PostgreSQL DDL，仓储也实现 PostgreSQL 专用 unique-conflict/savepoint 语义及可选隔离三表竞态套件，但该真实 PostgreSQL 套件尚未在本工作站运行；其 Author/Job/PlaybackEvidence fixture 不能证明完整应用 schema、容器部署或生产 PostgreSQL 支持。
+
+跨越历史 `0007` 边界回滚应用版本前，必须等待所有作者观察 scan 进入终态，或部署具备兼容收敛逻辑的版本；不得通过删除 Operation 行或 accepted/observed checkpoint 强行制造兼容。
 
 即使鉴权本身没有新增数据库 revision，它仍是应用回滚边界。不得为了恢复控制台访问而运行旧的匿名 `serve` 二进制；应保持流量停止并部署兼容鉴权的构建。应用不会隐式信任外部代理，任何外置鉴权方案都需要单独审查。

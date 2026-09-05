@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import inspect
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -12,6 +14,7 @@ from media_sync.application.media_server_observation import (
     MediaServerObservationLimits,
     MediaServerObservationService,
     media_server_item_fingerprint,
+    media_server_observation_fingerprint,
 )
 from media_sync.application.media_server_publication import MediaServerPublicationTarget
 from media_sync.application.operation_payloads import operation_request_fingerprint
@@ -240,6 +243,19 @@ def test_safe_author_lookup_has_exact_complete_shape_and_no_raw_identity(state: 
 
     result = service.lookup_author(AUTHOR_ID)
     payload = result.as_dict()
+    item_fingerprint = media_server_item_fingerprint(
+        profile_fingerprint=PROFILE_FINGERPRINT,
+        publication_fingerprint=PUBLICATION_FINGERPRINT,
+        selector_fingerprint=SELECTOR_FINGERPRINT,
+        item_id=RAW_ITEM_ID,
+    )
+    observation_fingerprint = media_server_observation_fingerprint(
+        author_id=AUTHOR_ID,
+        profile_fingerprint=PROFILE_FINGERPRINT,
+        publication_fingerprint=PUBLICATION_FINGERPRINT,
+        selector_fingerprint=SELECTOR_FINGERPRINT,
+        item_fingerprint=item_fingerprint,
+    )
 
     assert payload == {
         "schema_version": 1,
@@ -252,12 +268,8 @@ def test_safe_author_lookup_has_exact_complete_shape_and_no_raw_identity(state: 
         "match_count": 1 if state == "matched" else 0,
         **(
             {
-                "item_fingerprint": media_server_item_fingerprint(
-                    profile_fingerprint=PROFILE_FINGERPRINT,
-                    publication_fingerprint=PUBLICATION_FINGERPRINT,
-                    selector_fingerprint=SELECTOR_FINGERPRINT,
-                    item_id=RAW_ITEM_ID,
-                )
+                "item_fingerprint": item_fingerprint,
+                "observation_fingerprint": observation_fingerprint,
             }
             if state == "matched"
             else {}
@@ -267,6 +279,12 @@ def test_safe_author_lookup_has_exact_complete_shape_and_no_raw_identity(state: 
     }
     assert RAW_ITEM_ID not in repr(result)
     assert RAW_ITEM_ID not in str(payload)
+    assert "private-provider-value-sentinel" not in repr(result)
+    assert "private-provider-value-sentinel" not in str(payload)
+    assert "/srv/media/xhs-creator-author" not in repr(result)
+    assert "/srv/media/xhs-creator-author" not in str(payload)
+    assert item_fingerprint not in repr(result)
+    assert observation_fingerprint not in repr(result)
     assert resolver.deadlines == [None]
     assert server.lookup_deadlines == [None]
 
@@ -294,6 +312,141 @@ def test_item_fingerprint_is_stable_and_binds_every_authority_context() -> None:
             **change,
         }
         assert media_server_item_fingerprint(**values) != baseline
+
+
+def test_observation_fingerprint_has_a_stable_domain_separated_digest_only_contract() -> None:
+    item_fingerprint = media_server_item_fingerprint(
+        profile_fingerprint=PROFILE_FINGERPRINT,
+        publication_fingerprint=PUBLICATION_FINGERPRINT,
+        selector_fingerprint=SELECTOR_FINGERPRINT,
+        item_id=RAW_ITEM_ID,
+    )
+    values = {
+        "author_id": AUTHOR_ID,
+        "profile_fingerprint": PROFILE_FINGERPRINT,
+        "publication_fingerprint": PUBLICATION_FINGERPRINT,
+        "selector_fingerprint": SELECTOR_FINGERPRINT,
+        "item_fingerprint": item_fingerprint,
+    }
+
+    baseline = media_server_observation_fingerprint(**values)
+
+    assert baseline == "5712c66b1374d4cb1efde0164b139e5a794ac4f93219d2f70152555eff6a6f7f"
+    assert media_server_observation_fingerprint(**values) == baseline
+    assert tuple(inspect.signature(media_server_observation_fingerprint).parameters) == (
+        "author_id",
+        "profile_fingerprint",
+        "publication_fingerprint",
+        "selector_fingerprint",
+        "item_fingerprint",
+    )
+    other_domain = hashlib.sha256(b"media-sync:media-server-observed-item:v1\0")
+    for value in values.values():
+        encoded = value.encode("ascii")
+        other_domain.update(len(encoded).to_bytes(4, "big"))
+        other_domain.update(encoded)
+    assert other_domain.hexdigest() != baseline
+
+    raw_capable_arguments = {**values, "provider_value": "private-provider-value-sentinel"}
+    with pytest.raises(TypeError) as caught:
+        media_server_observation_fingerprint(**raw_capable_arguments)  # type: ignore[arg-type]
+    assert "private-provider-value-sentinel" not in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    ("component", "replacement"),
+    [
+        ("author_id", "00000000-0000-0000-0000-000000000003"),
+        ("profile_fingerprint", "f" * 64),
+        ("publication_fingerprint", "1" * 64),
+        ("selector_fingerprint", "2" * 64),
+        ("item_fingerprint", "3" * 64),
+    ],
+)
+def test_observation_fingerprint_binds_every_authority_component(
+    component: str,
+    replacement: str,
+) -> None:
+    item_fingerprint = media_server_item_fingerprint(
+        profile_fingerprint=PROFILE_FINGERPRINT,
+        publication_fingerprint=PUBLICATION_FINGERPRINT,
+        selector_fingerprint=SELECTOR_FINGERPRINT,
+        item_id=RAW_ITEM_ID,
+    )
+    values = {
+        "author_id": AUTHOR_ID,
+        "profile_fingerprint": PROFILE_FINGERPRINT,
+        "publication_fingerprint": PUBLICATION_FINGERPRINT,
+        "selector_fingerprint": SELECTOR_FINGERPRINT,
+        "item_fingerprint": item_fingerprint,
+    }
+    baseline = media_server_observation_fingerprint(**values)
+
+    assert media_server_observation_fingerprint(**{**values, component: replacement}) != baseline
+
+
+@pytest.mark.parametrize(
+    "author_id",
+    [
+        "00000000-0000-0000-0000-000000000001 ",
+        "{00000000-0000-0000-0000-000000000001}",
+        "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA",
+        "private-author-id-sentinel",
+    ],
+)
+def test_observation_fingerprint_rejects_noncanonical_author_without_reflection(author_id: str) -> None:
+    with pytest.raises(ValueError) as caught:
+        media_server_observation_fingerprint(
+            author_id=author_id,
+            profile_fingerprint=PROFILE_FINGERPRINT,
+            publication_fingerprint=PUBLICATION_FINGERPRINT,
+            selector_fingerprint=SELECTOR_FINGERPRINT,
+            item_fingerprint="f" * 64,
+        )
+
+    assert str(caught.value) == "observation fingerprint author is invalid"
+    assert author_id not in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    "component",
+    [
+        "profile_fingerprint",
+        "publication_fingerprint",
+        "selector_fingerprint",
+        "item_fingerprint",
+    ],
+)
+def test_observation_fingerprint_rejects_non_digest_context_without_reflection(component: str) -> None:
+    values = {
+        "author_id": AUTHOR_ID,
+        "profile_fingerprint": PROFILE_FINGERPRINT,
+        "publication_fingerprint": PUBLICATION_FINGERPRINT,
+        "selector_fingerprint": SELECTOR_FINGERPRINT,
+        "item_fingerprint": "f" * 64,
+    }
+    values[component] = "private-raw-context-sentinel"
+
+    with pytest.raises(ValueError) as caught:
+        media_server_observation_fingerprint(**values)
+
+    assert str(caught.value) == "observation fingerprint context is invalid"
+    assert "private-raw-context-sentinel" not in str(caught.value)
+
+
+def test_repeated_matched_lookup_keeps_observation_identity_when_timestamp_changes() -> None:
+    timeline = _TimelineEvent()
+    server = _Server("emby", [_lookup("matched", items=1), _lookup("matched", items=1)])
+    service = _service(server, _Resolver(_target()), timeline)
+
+    first = service.lookup_author(AUTHOR_ID)
+    timeline.now = 17.0
+    second = service.lookup_author(AUTHOR_ID)
+
+    assert first.observed_at != second.observed_at
+    assert first.item_fingerprint == second.item_fingerprint
+    assert first.observation_fingerprint == second.observation_fingerprint
+    assert first.observation_fingerprint is not None
 
 
 def test_emby_observation_persists_accepted_then_same_item_twice_and_succeeds() -> None:

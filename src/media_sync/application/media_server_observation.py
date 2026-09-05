@@ -16,6 +16,7 @@ from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Literal, Protocol, overload
+from uuid import UUID
 
 from media_sync.application.media_server_publication import MediaServerPublicationTarget
 from media_sync.application.operations import OperationOutcome
@@ -168,9 +169,14 @@ class MediaServerAuthorLookupResult:
     observed_at: str
     complete: Literal[True]
     item_fingerprint: str | None = field(default=None, repr=False)
+    observation_fingerprint: str | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
-        if self.schema_version != 1 or self.provider not in {"emby", "jellyfin"}:
+        if (
+            self.schema_version != 1
+            or not _is_canonical_uuid(self.author_id)
+            or self.provider not in {"emby", "jellyfin"}
+        ):
             raise ValueError("author lookup identity is invalid")
         for value in (self.library_id_digest, self.publication_fingerprint, self.selector_fingerprint):
             if not _is_digest(value):
@@ -182,10 +188,14 @@ class MediaServerAuthorLookupResult:
         if observed.tzinfo is None or observed.utcoffset() is None:
             raise ValueError("observed_at must be an aware ISO timestamp")
         if self.lookup_state == "matched":
-            if self.match_count != 1 or not _is_digest(self.item_fingerprint):
+            if (
+                self.match_count != 1
+                or not _is_digest(self.item_fingerprint)
+                or not _is_digest(self.observation_fingerprint)
+            ):
                 raise ValueError("matched lookup evidence is invalid")
         elif self.lookup_state == "not_found":
-            if self.match_count != 0 or self.item_fingerprint is not None:
+            if self.match_count != 0 or self.item_fingerprint is not None or self.observation_fingerprint is not None:
                 raise ValueError("not-found lookup evidence is invalid")
         else:
             raise ValueError("lookup_state is invalid")
@@ -209,6 +219,8 @@ class MediaServerAuthorLookupResult:
         }
         if self.item_fingerprint is not None:
             payload["item_fingerprint"] = self.item_fingerprint
+        if self.observation_fingerprint is not None:
+            payload["observation_fingerprint"] = self.observation_fingerprint
         return payload
 
     def __repr__(self) -> str:
@@ -293,6 +305,15 @@ def _is_digest(value: object) -> bool:
     return isinstance(value, str) and _DIGEST.fullmatch(value) is not None
 
 
+def _is_canonical_uuid(value: object) -> bool:
+    if not isinstance(value, str):
+        return False
+    try:
+        return str(UUID(value)) == value
+    except ValueError:
+        return False
+
+
 def _bounded_item_id(value: object) -> str:
     if (
         not isinstance(value, str)
@@ -320,6 +341,34 @@ def media_server_item_fingerprint(
     digest = hashlib.sha256(b"media-sync:media-server-observed-item:v1\0")
     for value in (profile_fingerprint, publication_fingerprint, selector_fingerprint, normalized_id):
         encoded = value.encode("utf-8")
+        digest.update(len(encoded).to_bytes(4, "big"))
+        digest.update(encoded)
+    return digest.hexdigest()
+
+
+def media_server_observation_fingerprint(
+    *,
+    author_id: str,
+    profile_fingerprint: str,
+    publication_fingerprint: str,
+    selector_fingerprint: str,
+    item_fingerprint: str,
+) -> str:
+    """Bind one canonical author to four already-safe authority digests."""
+
+    if not _is_canonical_uuid(author_id):
+        raise ValueError("observation fingerprint author is invalid")
+    context = (
+        profile_fingerprint,
+        publication_fingerprint,
+        selector_fingerprint,
+        item_fingerprint,
+    )
+    if not all(_is_digest(value) for value in context):
+        raise ValueError("observation fingerprint context is invalid")
+    digest = hashlib.sha256(b"media-sync:media-server-playback-observation:v1\0")
+    for value in (author_id, *context):
+        encoded = value.encode("ascii")
         digest.update(len(encoded).to_bytes(4, "big"))
         digest.update(encoded)
     return digest.hexdigest()
@@ -404,6 +453,7 @@ class MediaServerObservationService:
         result = self._lookup_once(target, provider, _LookupBudget(self._limits), deadline=deadline)
         observed_at = self._timestamp()
         item_fingerprint = None
+        observation_fingerprint = None
         if result.lookup_state == "matched":
             assert result.item_id is not None
             item_fingerprint = media_server_item_fingerprint(
@@ -411,6 +461,13 @@ class MediaServerObservationService:
                 publication_fingerprint=target.publication_fingerprint,
                 selector_fingerprint=target.selector_fingerprint,
                 item_id=result.item_id,
+            )
+            observation_fingerprint = media_server_observation_fingerprint(
+                author_id=target.author_id,
+                profile_fingerprint=profile_fingerprint,
+                publication_fingerprint=target.publication_fingerprint,
+                selector_fingerprint=target.selector_fingerprint,
+                item_fingerprint=item_fingerprint,
             )
         return MediaServerAuthorLookupResult(
             schema_version=1,
@@ -422,6 +479,7 @@ class MediaServerObservationService:
             lookup_state=result.lookup_state,
             match_count=1 if result.lookup_state == "matched" else 0,
             item_fingerprint=item_fingerprint,
+            observation_fingerprint=observation_fingerprint,
             observed_at=observed_at,
             complete=True,
         )
@@ -813,4 +871,5 @@ __all__ = [
     "MediaServerObservationSnapshotPort",
     "MediaServerPublicationResolverPort",
     "media_server_item_fingerprint",
+    "media_server_observation_fingerprint",
 ]

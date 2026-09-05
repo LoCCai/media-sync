@@ -6,16 +6,16 @@
 
 ## 当前状态
 
-单一事实来源是 [`docs/status.zh.md`](docs/status.zh.md)。当前执行 0055 阶段 A 实现检查点摘要：
+单一事实来源是 [`docs/status.zh.md`](docs/status.zh.md)。当前执行 0055 增量实现检查点摘要：
 
 | 维度 | 状态 |
 | --- | --- |
-| 离线实现 | 执行 0054 的功能边界保持不变；执行 0055 现已增加后端单操作者凭据/session/CSRF 边界及可选独立 Bearer 自动化；播放证据与 Web 鉴权集成仍未实现 |
-| 离线验证 | 当前执行 0055 后端切片通过 **2811 项测试、14 项跳过、1 个既有 warning**；其中 3 项为 Windows/POSIX 差异，另 11 项因本工作站未配置测试 URL 而跳过真实 PostgreSQL 竞态。190 项 auth/API 专项、69 项 Web 测试、format/check/build、完整静态门、docs/upstreams 与 distribution build 也通过。Web 鉴权与播放证据仍使 0055 总退出门保持开启 |
+| 离线实现 | 提交 `f19bfaa` 已交付后端单操作者凭据/session/CSRF 边界及可选独立 Bearer 自动化。当前工作变更新增仅适用于唯一匹配结果的 observation fingerprint、revision `0008_playback_evidence`，以及 append-only create-or-replay 仓储原语；经鉴权确认 service/API/UI、资格 schema v3 与 Web 鉴权集成仍未实现 |
+| 离线验证 | 当前工作树通过 **2868 项测试、22 项跳过、1 个既有 warning**。跳过项分别为 3 项 Windows/POSIX 差异、11 项既有 Operation PostgreSQL 用例，以及因本工作站没有测试 URL 而跳过的 8 项新增 PlaybackEvidence PostgreSQL 用例。69 项 Web 测试及 format/check/build、727 文件 Ruff/format、105 个源文件 strict mypy、compileall 与 498 份文档检查均通过。真实 PostgreSQL 与 Docker 均未运行；隔离 PostgreSQL harness 不能证明完整部署支持 |
 | REST API + Web 控制台 | 所有非公开后端路由现已在精确 Host 与浏览器 session 或可选 Bearer 鉴权之后关闭失败。SvelteKit 与 `/legacy` 客户端尚未提供登录壳、内存 CSRF 传播或统一过期处理，因此当前不能把 Web 控制台当作可操作的管理界面 |
 | Docker 打包 | 示例 Compose 把宿主机提供的操作者凭据挂载为 Docker secret，容器内绑定 `0.0.0.0` 时只显式允许宿主机回环浏览器 origin；0047 Linux 重启/恢复/进程证据仍为 `NOT_RUN` |
 | 真人验收 | **全部已实现平台/CDN/媒体服务器真人行保持 `NOT_RUN`**；provider task completion、播放证据及导出后自动扫描是 `NOT_IMPLEMENTED`，不是“尚未运行的真人行” |
-| 发布阻塞 | Web 鉴权集成、0055 剩余播放证据切片、Linux 操作者基线及真人行零记录；见 [`docs/status.zh.md`](docs/status.zh.md) |
+| 发布阻塞 | Web 鉴权集成、经鉴权播放确认 service/API/UI 与资格 v3、Linux 操作者基线及真人行零记录；见 [`docs/status.zh.md`](docs/status.zh.md) |
 
 逐执行细节、证据与准确命令都在 [`docs/executions/`](docs/README.zh.md)——本 README 有意不堆叠执行叙事。
 

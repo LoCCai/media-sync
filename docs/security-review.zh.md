@@ -2,7 +2,7 @@
 
 # 安全与隐私审查（执行 0046）
 
-范围：执行 0046 首次建立的逐项自审，已校准到执行 0054 阶段 B 及当前执行 0055 后端鉴权检查点；每项声明均附强制机制。这是自审，不是外部审计。后端边界已经实现；Web 登录/CSRF 客户端与播放证据尚未实现。
+范围：执行 0046 首次建立的逐项自审，已校准到执行 0054 阶段 B、执行 0055 后端鉴权提交 `f19bfaa` 及当前播放证据持久化增量；每项声明均附强制机制。这是自审，不是外部审计。后端边界、仅 matched observation 身份与 append-only 持久化基础已经实现；Web 登录/CSRF 客户端与经鉴权播放确认能力尚未实现。
 
 ## 1. 凭据与机密
 
@@ -12,6 +12,8 @@
 | 管理凭据在 `serve` 绑定前解析且绝不持久化 | 必需的类型化操作者引用通过 `env:` / 受限 `file:` / `keyring:` 解析，值只转为进程内摘要；可选自动化 Bearer 使用不同的引用和值。固定启动/登录/审计码都不披露它们 |
 | 浏览器权限只存在于进程内且不可导出 | 唯一轮换的不透明 HttpOnly、`SameSite=Strict` session Cookie 与仅存内存的 CSRF 值会在超时、退出、重启或凭据替换时失效；二者都不属于备份或支持包 |
 | 爬虫/账户机密只在对应进程边界解析；媒体服务器 API key 只在最终 connector 边界解析 | `security/secrets.py` 提供 `env:` / `keyring:` / 受限相对 `file:` scheme；执行 0054 阻止完整媒体服务器 reference 与值进入 API 响应、Operation payload 和 SQLite |
+| 播放 observation 身份不披露原始服务器 selector | 只有完整且唯一 `matched` 的 lookup 才派生该值：先在 profile/publication/selector 上下文中哈希有界远端 item ID，再把摘要绑定规范作者。`not_found` 既不携带 item fingerprint，也不携带 observation fingerprint；原始 item ID 与路径绝不进入账本 |
+| 播放证据持久化基础保留首个持久行 | Revision `0008` 约束规范 UUID、小写 SHA-256 摘要、时间顺序、唯一 observation 身份及 `RESTRICT` 作者/publication Job 父项。仓储只提供 create-or-exact-replay；冲突身份会关闭失败，非空表会阻止 downgrade |
 | 签名 CDN URL 仅运行时存在 | 详情协议子进程在有界 frame/内存中携带；持久化前递归剥离（执行 0009、0013+）；留存树扫描断言零匹配 |
 | 创作者权限引用为机密类型 | `creator_input.secret_ref` 走 `SecretValue` 来源；含义不明的 query/fragment URL 默认拒绝 |
 | API 请求不能提供媒体服务器配置 | 启动时只校验一个不可变、由环境变量托管的配置；API 仅返回手工安全摘要，不包含 API key、完整 reference、Library ID、服务器路径或网络范围 |
@@ -42,7 +44,7 @@
 | 浏览器 mutation 要求同源证明 | 登录要求精确配置的 Origin；每个 Cookie 鉴权不安全请求还要求同一 Origin 与绑定 session 的 CSRF header。CORS 关闭；转发 Host/proto header 不授予权限 |
 | 容器回环拓扑是显式配置 | 镜像内部绑定 `0.0.0.0`，示例 Compose 只发布 `127.0.0.1:8632`，从仓库外挂载必需凭据，并只允许 `http://127.0.0.1:8632`；非回环浏览器 origin 必须使用 HTTPS |
 | 不夸大 Web 集成 | Console v2 与 `/legacy` 尚未 bootstrap session 或传播 CSRF；即使后端边界已启用，它们当前也不是可操作的管理客户端 |
-| 结构化日志与持久 Operation 界面已脱敏 | 机密分类名称在落点掩码；原始适配器异常绝不进入 CLI/API 输出。含 selector 的依赖 wire 消息会整体替换为固定文本；原始或百分号编码的媒体服务器路径/provider 值、远端 item ID、Etag 与远端错误正文不能进入日志、SQLite、Event、SSE、API 结果或支持包 |
+| 结构化日志与持久 Operation/证据界面已脱敏 | 机密分类名称在落点掩码；原始适配器异常绝不进入 CLI/API 输出。含 selector 的依赖 wire 消息会整体替换为固定文本；原始或百分号编码的媒体服务器路径/provider 值、远端 item ID、Etag 与远端错误正文不能进入日志、SQLite、Event、SSE、API 结果或支持包；revision `0008` 只保存绑定上下文的摘要与规范本地身份 |
 
 ## 5. 隐私
 
@@ -51,8 +53,9 @@
 
 ## 6. 残余风险（如实清单）
 
-1. Web 客户端暂时落后于后端契约：不能登录、在内存持有 CSRF 或统一恢复 session 过期。该状态以 401/403 关闭失败，不会重新开放匿名访问，但会阻塞 Web 管理与真人扫码资格，直到 0055 剩余前端工作完成验证。
+1. Web 客户端暂时落后于后端契约：不能登录、在内存持有 CSRF 或统一恢复 session 过期。Web 只同步了 matched lookup response 类型，尚无确认 UI。该状态以 401/403 关闭失败，不会重新开放匿名访问，但会阻塞 Web 管理与真人扫码资格，直到 0055 剩余前端工作完成验证。
 2. 这是单操作者鉴权，不是多用户授权。可选 Bearer 拥有广泛自动化权限；非回环部署仍要求经过审查的 HTTPS 终止及精确 Host 保留。公网部署、RBAC、SSO/MFA 与可信反向代理身份均不受支持。
-3. SQLite 是唯一存储；拿到磁盘即拿到全部数据（含凭据*引用*——仍需 secret provider 才能使用）。
-4. 上游平台行为变化可能改变锁定爬虫的行为；许可证门是确认书，不是对上游行为的技术控制。
-5. 未执行外部审计（`NOT_RUN`，操作者可选项）。
+3. 账本 schema 与仓储不是确认权限。在仅浏览器、经鉴权的确认 service/API/UI 重新校验当前 observation 且资格 schema v3 交付前，`playback_evidence` 继续为 `NOT_IMPLEMENTED`，真人播放继续为 `NOT_RUN`。
+4. SQLite 是唯一受支持的生产存储；拿到磁盘即拿到全部数据，包括凭据*引用*（仍需 secret provider 才能使用）与任何未来播放关联摘要。PostgreSQL 仓储语义带有隔离可选竞态 harness，但新用例尚未在本工作站运行，且不能证明完整 schema 或生产 PostgreSQL 支持。
+5. 上游平台行为变化可能改变锁定爬虫的行为；许可证门是确认书，不是对上游行为的技术控制。
+6. 未执行外部审计（`NOT_RUN`，操作者可选项）。

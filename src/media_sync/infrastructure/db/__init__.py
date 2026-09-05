@@ -35,6 +35,7 @@ from .models import (
     OperationEvent,
     OperationEventStreamState,
     OperationSubject,
+    PlaybackEvidence,
     RunEvent,
     SchedulerLane,
     Subscription,
@@ -55,6 +56,13 @@ from .operation_repository import (
     OperationStateConflictError,
     OperationSubjectInput,
     OperationSubjectSnapshot,
+)
+from .playback_evidence_repository import (
+    PLAYBACK_EVIDENCE_SCHEMA_VERSION,
+    PlaybackEvidenceConflictError,
+    PlaybackEvidenceRepository,
+    PlaybackEvidenceResult,
+    PlaybackEvidenceTransactionError,
 )
 from .repositories import (
     AccountLoginConflictError,
@@ -93,6 +101,7 @@ __all__ = [
     "OPERATION_STATES",
     "OPERATION_SUBJECT_ROLES",
     "OPERATION_SUBJECT_TYPES",
+    "PLAYBACK_EVIDENCE_SCHEMA_VERSION",
     "TERMINAL_OPERATION_STATES",
     "Account",
     "AccountLoginConflictError",
@@ -145,6 +154,11 @@ __all__ = [
     "OperationSubject",
     "OperationSubjectInput",
     "OperationSubjectSnapshot",
+    "PlaybackEvidence",
+    "PlaybackEvidenceConflictError",
+    "PlaybackEvidenceRepository",
+    "PlaybackEvidenceResult",
+    "PlaybackEvidenceTransactionError",
     "RepositoryError",
     "RunEvent",
     "SQLAlchemySyncRepository",

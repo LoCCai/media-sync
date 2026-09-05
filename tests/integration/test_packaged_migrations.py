@@ -54,7 +54,7 @@ from media_sync.infrastructure.db.migration import MIGRATIONS_PACKAGE, upgrade_d
 from media_sync.media import AdapterRefreshLocator, SafeHttpClient, SecureMediaDownloader, ValidatedTarget
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
-HEAD_REVISION = "0007_media_server_operations"
+HEAD_REVISION = "0008_playback_evidence"
 
 
 class _PublicResolver:
@@ -159,6 +159,7 @@ def test_programmatic_upgrade_uses_packaged_resources_and_handles_percent_path(t
         assert "accounts" in inspect(engine).get_table_names()
         with engine.connect() as connection:
             assert connection.scalar(text("SELECT version_num FROM alembic_version")) == HEAD_REVISION
+            assert "playback_evidence" in inspect(connection).get_table_names()
     finally:
         engine.dispose()
 
@@ -193,6 +194,7 @@ def test_built_wheel_contains_and_runs_packaged_migrations(tmp_path: Path) -> No
             "media_sync/infrastructure/db/migrations/versions/0005_asset_refresh_sources.py",
             "media_sync/infrastructure/db/migrations/versions/0006_operations_observability.py",
             "media_sync/infrastructure/db/migrations/versions/0007_media_server_operations.py",
+            "media_sync/infrastructure/db/migrations/versions/0008_playback_evidence.py",
         }
         assert required_resources <= wheel_names
         wheel.extractall(installed_root)
@@ -218,7 +220,7 @@ try:
     if "accounts" not in inspect(engine).get_table_names():
         raise AssertionError("packaged migration did not create accounts")
     with engine.connect() as connection:
-        if connection.scalar(text("SELECT version_num FROM alembic_version")) != "0007_media_server_operations":
+        if connection.scalar(text("SELECT version_num FROM alembic_version")) != "0008_playback_evidence":
             raise AssertionError("unexpected migration revision")
 finally:
     engine.dispose()
@@ -552,7 +554,8 @@ def test_0007_sqlite_downgrade_with_media_rows_fails_closed_without_audit_loss(t
     engine = create_engine(database_url)
     try:
         with engine.connect() as connection:
-            assert connection.scalar(text("SELECT version_num FROM alembic_version")) == HEAD_REVISION
+            assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0007_media_server_operations"
+            assert "playback_evidence" not in inspect(connection).get_table_names()
             assert (
                 connection.execute(
                     text("SELECT * FROM operations WHERE id = :id"),

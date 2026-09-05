@@ -6,7 +6,7 @@ Applies to the Docker compose deployment from [`deployment.md`](deployment.md). 
 
 | Path | Contents | Backup value |
 | --- | --- | --- |
-| `/data/state/media-sync.sqlite3` | The database: accounts, subscriptions, contents, assets, jobs, export records, durable Operations and Events | Critical (contains platform-account credential *references*, never raw secrets; operator credentials/sessions and media-server keys/references are not stored here) |
+| `/data/state/media-sync.sqlite3` | The database: accounts, subscriptions, contents, assets, jobs, export records, durable Operations/Events and the revision-`0008` playback-evidence ledger | Critical (contains platform-account credential *references* and, if later confirmed, playback associations represented by UUIDs/digests/timestamps; never raw secrets, remote item IDs, operator credentials/sessions or media-server keys/references) |
 | `/data/archive/` | Immutable SHA-256 media blobs | Critical (re-derivable only by re-downloading everything) |
 | `/data/library/` | The Emby/Jellyfin tree (NFO, posters, episodes) | Re-derivable from database + archive via re-export |
 | `/data/jobs/`, `/data/mediacrawler/` | Work roots, manifests, browser profiles | Disposable; browser profiles lost means re-login |
@@ -36,7 +36,7 @@ docker compose exec media-sync /app/.venv/bin/python -c \
 # then copy /data/state/backup.sqlite3 plus archive/ out of the volume as above
 ```
 
-The SQLite backup includes durable `media-server-probe` / `media-server-scan` audit rows and their allowlisted evidence, including phase-B author targets, related publication Jobs, and accepted/observed checkpoints. It does not include the environment-owned media-server profile, operator credential, optional Bearer token, session cookie, or CSRF value. Back up only the required deployment inputs through the separate secret-management process described above.
+The SQLite backup includes durable `media-server-probe` / `media-server-scan` audit rows and their allowlisted evidence, including phase-B author targets, related publication Jobs, and accepted/observed checkpoints. At revision `0008` it also includes any append-only playback-evidence rows. Those rows contain canonical author/publication-Job identities, context-bound digests and timestamps, not a raw server item ID or path. The current working change has no authenticated confirmation service/API/UI, so the table's presence is not proof that the capability is usable or qualified. The backup does not include the environment-owned media-server profile, operator credential, optional Bearer token, session cookie, or CSRF value. Back up only the required deployment inputs through the separate secret-management process described above.
 
 ## Restore
 
@@ -66,10 +66,14 @@ docker compose build
 docker compose up -d
 ```
 
-Schema migrations run at container start (`db init` is idempotent). `uv.lock` guarantees the same dependency set the release was tested with. The live `docker-compose.yml` is git-ignored, so upstream updates never conflict with your deployment configuration. The backend authentication boundary is active at this checkpoint, but Web login/session bootstrap and CSRF propagation remain pending; use CLI/supervisor workflows until that frontend checkpoint closes.
+Schema migrations run at container start (`db init` is idempotent). `uv.lock` guarantees the same dependency set the release was tested with. The live `docker-compose.yml` is git-ignored, so upstream updates never conflict with your deployment configuration. The backend authentication boundary from commit `f19bfaa` is active, but Web login/session bootstrap and CSRF propagation remain pending; use CLI/supervisor workflows until that frontend checkpoint closes.
 
 Revision `0007_media_server_operations` is forward-only once the database contains any `media-server-probe` or `media-server-scan` row. Its downgrade deliberately fails closed instead of deleting durable audit evidence, and an older application must not be run against that database. A database with no new-kind rows may use the tested downgrade path, but down-migrations are never automatic. Before checking out an older tag/SHA, inspect the release notes and database state; if new-kind rows exist, restore a compatible pre-upgrade backup or continue with an application version that understands revision `0007`.
 
-Execution 0054-B adds no migration; Alembic remains at `0007`. Before rolling an application binary back, wait until every author-observation scan is terminal or deploy a reconciliation-compatible binary. Never delete Operation rows or accepted/observed checkpoints to force compatibility.
+Execution 0054-B historically added no migration and ended at `0007`. The current execution 0055 working change advances Alembic to `0008_playback_evidence`. Its new table is empty on upgrade and has `RESTRICT` links to the author and publication Job; the application repository exposes create-or-exact-replay rather than update/delete. An online downgrade to `0007` succeeds only while the table is empty. If any evidence row exists, downgrade fails closed with `playback_evidence_rows_prevent_downgrade`; offline SQL downgrade is rejected because it cannot audit table contents. Never delete evidence rows merely to force a rollback. Restore a compatible pre-`0008` backup or continue with a binary that understands `0008`.
+
+SQLite remains the supported production store. The `0008` migration emits portable SQLite/PostgreSQL DDL, and the repository has PostgreSQL-specific unique-conflict/savepoint semantics plus an optional isolated three-table race suite. That real-PostgreSQL suite has not run on this workstation, and its Author/Job/PlaybackEvidence fixture does not demonstrate a complete application schema, container deployment or production PostgreSQL support.
+
+Before rolling an application binary back across the historical `0007` boundary, wait until every author-observation scan is terminal or deploy a reconciliation-compatible binary. Never delete Operation rows or accepted/observed checkpoints to force compatibility.
 
 Authentication is also an application rollback boundary even though it adds no database revision. Do not run an older anonymous `serve` binary to regain console access. Keep traffic stopped and deploy an authentication-compatible build; an external proxy is not implicitly trusted by this application and needs its own review.

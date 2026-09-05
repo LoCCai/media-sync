@@ -14,7 +14,7 @@ from media_sync.infrastructure.db.database import Database
 from media_sync.infrastructure.db.migration import upgrade_database
 from media_sync.infrastructure.db.models import Account, Author, Operation
 
-EXPECTED_REVISION = "0007_media_server_operations"
+EXPECTED_REVISION = "0008_playback_evidence"
 PRIVATE_TIME = datetime(2037, 1, 2, 3, 4, 5, tzinfo=UTC)
 
 

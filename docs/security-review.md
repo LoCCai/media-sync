@@ -2,7 +2,7 @@
 
 # Security and privacy review (execution 0046)
 
-Scope: the claim-by-claim self-review introduced at the 0046 boundary, calibrated through execution 0054 phase B and the current execution 0055 backend-authentication checkpoint. This is a self-review, not an external audit. The backend boundary is implemented; the Web login/CSRF client and playback evidence are not.
+Scope: the claim-by-claim self-review introduced at the 0046 boundary, calibrated through execution 0054 phase B, the execution 0055 backend-authentication commit `f19bfaa`, and the current playback-evidence persistence increment. This is a self-review, not an external audit. The backend boundary, matched-only observation identity and append-only persistence substrate are implemented; the Web login/CSRF client and authenticated playback-confirmation capability are not.
 
 ## 1. Credentials and secrets
 
@@ -12,6 +12,8 @@ Scope: the claim-by-claim self-review introduced at the 0046 boundary, calibrate
 | The administration credential is resolved before `serve` binds and is never persisted | A required typed operator reference resolves through `env:` / confined `file:` / `keyring:`; the value is reduced to a process-memory digest. The optional automation Bearer uses a distinct reference and value. Fixed startup/login/audit codes disclose neither |
 | Browser authority is process-local and non-exportable | One rotating opaque HttpOnly, `SameSite=Strict` session cookie and one memory-only CSRF value expire on timeout, logout, restart, or credential replacement; neither belongs to a backup or support bundle |
 | Crawler/account secrets resolve only at their process boundary; the media-server API key resolves only at the final connector boundary | `security/secrets.py` provides `env:` / `keyring:` / confined relative `file:` schemes; execution 0054 keeps the complete media-server reference and value out of API responses, Operation payloads and SQLite |
+| A playback-observation identity discloses no raw server selector | Only a complete unique `matched` lookup derives it, by hashing the bounded remote item ID inside profile/publication/selector context and then binding that digest to the canonical author. `not_found` carries neither item nor observation fingerprint; raw item IDs and paths never enter the ledger |
+| The playback-evidence persistence substrate preserves the first persisted row | Revision `0008` constrains canonical UUIDs, lowercase SHA-256 digests, timestamp order, unique observation identity and `RESTRICT` author/publication-Job parents. The repository has create-or-exact-replay only; a conflicting identity fails closed, and a non-empty table prevents downgrade |
 | Signed CDN URLs are runtime-only | Detail-protocol children carry them in bounded frames/memory; recursive strip before persistence (executions 0009, 0013+); retained-tree scans assert zero-match |
 | Creator authority references are secret-typed | `SecretValue` provenance for `creator_input.secret_ref`; ambiguous query/fragment URLs fail closed |
 | Media-server configuration cannot be supplied by an API request | One immutable environment-owned profile is validated at startup; the API returns only a hand-built summary without the API key, complete reference, Library ID, server path or network ranges |
@@ -42,7 +44,7 @@ Scope: the claim-by-claim self-review introduced at the 0046 boundary, calibrate
 | Browser mutations require same-origin proof | Login requires an exact configured Origin. Every unsafe cookie-authenticated request additionally requires that Origin plus the session-bound CSRF header. CORS is disabled; forwarded Host/proto headers confer no authority |
 | Container loopback topology is explicit | The image binds `0.0.0.0` internally, while example Compose publishes `127.0.0.1:8632`, mounts the required credential from outside the repository, and allowlists exactly `http://127.0.0.1:8632`. Non-loopback browser origins require HTTPS |
 | Web integration is not overstated | Console v2 and `/legacy` do not yet bootstrap the session or propagate CSRF. They are not currently operable administration clients even though the backend boundary is active |
-| Structured logs and durable operation surfaces are redacted | Classified secret names are masked at sinks; raw adapter exceptions never surface to CLI/API output. Selector-bearing dependency wire messages are replaced with fixed text. Raw or percent-encoded media-server paths/provider values, remote item IDs, Etags and remote error bodies cannot enter logs, SQLite, Events, SSE, API results or support bundles |
+| Structured logs and durable operation/evidence surfaces are redacted | Classified secret names are masked at sinks; raw adapter exceptions never surface to CLI/API output. Selector-bearing dependency wire messages are replaced with fixed text. Raw or percent-encoded media-server paths/provider values, remote item IDs, Etags and remote error bodies cannot enter logs, SQLite, Events, SSE, API results or support bundles; revision `0008` stores only context-bound digests and canonical local identities |
 
 ## 5. Privacy
 
@@ -51,8 +53,9 @@ Scope: the claim-by-claim self-review introduced at the 0046 boundary, calibrate
 
 ## 6. Residual risks (honest list)
 
-1. The Web clients are temporarily behind the backend contract: they cannot log in, retain CSRF in memory, or recover uniformly from session expiry. This fails closed as 401/403 rather than reopening anonymous access, but blocks Web administration and live QR qualification until the remaining 0055 frontend work is verified.
+1. The Web clients are temporarily behind the backend contract: they cannot log in, retain CSRF in memory, or recover uniformly from session expiry. Web has synchronized only the matched lookup response type; it has no confirmation UI. This fails closed as 401/403 rather than reopening anonymous access, but blocks Web administration and live QR qualification until the remaining 0055 frontend work is verified.
 2. This is single-operator authentication, not multi-user authorization. The optional Bearer is broad automation authority, and non-loopback deployment still requires reviewed HTTPS termination and exact Host preservation. Public-network deployment, RBAC, SSO/MFA and trusted reverse-proxy identity remain unsupported.
-3. SQLite is the single store; disk access equals full data access (including credential *references*, which still require the secret provider to use).
-4. Upstream platform behavior changes can alter what the pinned crawler does; the license gate is an acknowledgement, not a technical control on upstream behavior.
-5. No external audit has been performed (`NOT_RUN`, operator option).
+3. A ledger schema and repository are not confirmation authority. Until a browser-only authenticated confirmation service/API/UI revalidates the current observation and qualification schema v3 ships, `playback_evidence` remains `NOT_IMPLEMENTED` and live playback remains `NOT_RUN`.
+4. SQLite is the single supported production store; disk access equals full data access, including credential *references* (which still require the secret provider) and any future playback-association digests. PostgreSQL repository semantics have an isolated optional race harness, but its new cases have not run on this workstation and do not establish complete-schema or production PostgreSQL support.
+5. Upstream platform behavior changes can alter what the pinned crawler does; the license gate is an acknowledgement, not a technical control on upstream behavior.
+6. No external audit has been performed (`NOT_RUN`, operator option).

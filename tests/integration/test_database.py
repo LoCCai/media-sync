@@ -79,6 +79,7 @@ DOMAIN_TABLES = {
     "operation_events",
     "operation_subjects",
     "operations",
+    "playback_evidence",
     "run_events",
     "scheduler_lanes",
     "subscriptions",

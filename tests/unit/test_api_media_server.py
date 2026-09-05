@@ -15,7 +15,10 @@ from _api_client import authenticated_test_client
 from fastapi.testclient import TestClient
 
 import media_sync.interfaces.api as api_module
-from media_sync.application.media_server_observation import MediaServerAuthorLookupResult
+from media_sync.application.media_server_observation import (
+    MediaServerAuthorLookupResult,
+    media_server_observation_fingerprint,
+)
 from media_sync.application.media_server_publication import MediaServerPublicationTarget
 from media_sync.application.operation_payloads import operation_request_fingerprint, operation_result_summary
 from media_sync.application.operations import OperationOutcome
@@ -667,6 +670,7 @@ def test_author_lookup_returns_only_complete_safe_evidence_with_no_store(
     author_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
     target = _publication_target(author_id)
     observation = _FakeMediaServerObservationService({author_id: target})
+    item_fingerprint = "e" * 64 if lookup_state == "matched" else None
     result = MediaServerAuthorLookupResult(
         schema_version=1,
         author_id=author_id,
@@ -676,7 +680,18 @@ def test_author_lookup_returns_only_complete_safe_evidence_with_no_store(
         selector_fingerprint=target.selector_fingerprint,
         lookup_state=lookup_state,  # type: ignore[arg-type]
         match_count=1 if lookup_state == "matched" else 0,
-        item_fingerprint="e" * 64 if lookup_state == "matched" else None,
+        item_fingerprint=item_fingerprint,
+        observation_fingerprint=(
+            media_server_observation_fingerprint(
+                author_id=author_id,
+                profile_fingerprint="a" * 64,
+                publication_fingerprint=target.publication_fingerprint,
+                selector_fingerprint=target.selector_fingerprint,
+                item_fingerprint=item_fingerprint,
+            )
+            if item_fingerprint is not None
+            else None
+        ),
         observed_at="2026-09-05T08:00:00+00:00",
         complete=True,
     )

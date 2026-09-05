@@ -6,16 +6,16 @@
 
 ## Current status
 
-The single source of truth is [`docs/status.md`](docs/status.md). Summary at the current execution 0055 Phase-A implementation checkpoint:
+The single source of truth is [`docs/status.md`](docs/status.md). Summary at the current execution 0055 incremental implementation checkpoint:
 
 | Dimension | State |
 | --- | --- |
-| Offline implementation | The execution 0054 feature boundary remains intact. Execution 0055 now adds the backend single-operator credential/session/CSRF boundary and optional separate Bearer automation; playback evidence and the Web authentication integration are not implemented yet |
-| Offline verification | The current execution 0055 backend slice passes **2811 tests with 14 skips and 1 existing warning**; 3 skips are Windows/POSIX differences and 11 are real-PostgreSQL races because this workstation has no test URL. The 190-test auth/API focus, 69 Web tests, format/check/build, full static gates, docs/upstreams and distribution build also pass. The overall 0055 exit gate remains open for Web auth and playback evidence |
+| Offline implementation | Commit `f19bfaa` delivers the backend single-operator credential/session/CSRF boundary and optional separate Bearer automation. The current working change adds a matched-only observation fingerprint, revision `0008_playback_evidence`, and append-only create-or-replay repository primitives. It does **not** yet add the authenticated confirmation service/API/UI, qualification schema v3, or Web authentication integration |
+| Offline verification | The current tree passes **2868 tests with 22 skips and 1 existing warning**. The skips are 3 Windows/POSIX differences, 11 existing Operation PostgreSQL cases and 8 new PlaybackEvidence PostgreSQL cases because this workstation has no test URL. The 69 Web tests plus format/check/build, Ruff/format across 727 files, strict mypy across 105 source files, compileall and the 498-file docs check pass. Real PostgreSQL and Docker were not run; the isolated PostgreSQL harness does not establish complete deployment support |
 | REST API + web console | Every non-public backend route is now fail-closed behind exact Host plus browser session or optional Bearer authentication. The SvelteKit and `/legacy` clients do not yet provide the login shell, in-memory CSRF propagation, or unified expiry handling, so the Web console is not currently an operable administration surface |
 | Docker packaging | The example Compose deployment mounts a host-provided operator credential as a Docker secret and explicitly permits only the host-loopback browser origin while binding `0.0.0.0` inside the container. The 0047 Linux restart/restore/process evidence remains `NOT_RUN` |
 | Live qualification | **Every implemented live platform/CDN/media-server row remains `NOT_RUN`**; provider task completion, playback evidence and automatic post-export scan are `NOT_IMPLEMENTED`, not unexecuted live rows |
-| Release blockers | Web authentication integration, the remaining 0055 playback-evidence slice, the Linux operator baseline, and zero live rows; see [`docs/status.md`](docs/status.md) |
+| Release blockers | Web authentication integration, authenticated playback confirmation service/API/UI plus qualification v3, the Linux operator baseline, and zero live rows; see [`docs/status.md`](docs/status.md) |
 
 Per-execution detail, evidence and exact commands live in [`docs/executions/`](docs/README.md) — this README intentionally does not stack execution narratives.
 

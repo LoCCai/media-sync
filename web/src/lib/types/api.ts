@@ -442,11 +442,13 @@ export type MediaServerAuthorLookup = MediaServerAuthorLookupBase &
         lookup_state: 'not_found';
         match_count: 0;
         item_fingerprint?: never;
+        observation_fingerprint?: never;
       }
     | {
         lookup_state: 'matched';
         match_count: 1;
         item_fingerprint: string;
+        observation_fingerprint: string;
       }
   );
 

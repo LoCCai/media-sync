@@ -138,6 +138,27 @@ def _quoted_values(values: frozenset[str]) -> str:
     return ", ".join(f"'{value}'" for value in sorted(values))
 
 
+def _lower_hex_only(column: str) -> str:
+    expression = column
+    for character in "0123456789abcdef":
+        expression = f"replace({expression}, '{character}', '')"
+    return f"{expression} = ''"
+
+
+def _canonical_uuid_check(column: str) -> str:
+    compact = f"replace({column}, '-', '')"
+    return (
+        f"length({column}) = 36 AND lower({column}) = {column} "
+        f"AND substr({column}, 9, 1) = '-' AND substr({column}, 14, 1) = '-' "
+        f"AND substr({column}, 19, 1) = '-' AND substr({column}, 24, 1) = '-' "
+        f"AND length({compact}) = 32 AND {_lower_hex_only(compact)}"
+    )
+
+
+def _sha256_check(column: str) -> str:
+    return f"length({column}) = 64 AND lower({column}) = {column} AND {_lower_hex_only(column)}"
+
+
 class TimestampMixin:
     """UTC creation and update timestamps shared by mutable records."""
 
@@ -692,6 +713,55 @@ class SchedulerLane(TimestampMixin, Base):
     revision: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
 
 
+class PlaybackEvidence(Base):
+    """Append-only operator attestation bound to one playback observation."""
+
+    __tablename__ = "playback_evidence"
+    __table_args__ = (
+        UniqueConstraint("observation_fingerprint"),
+        CheckConstraint("schema_version = 1", name="schema_version_supported"),
+        CheckConstraint(_canonical_uuid_check("id"), name="id_canonical_uuid"),
+        CheckConstraint(_canonical_uuid_check("author_id"), name="author_id_canonical_uuid"),
+        CheckConstraint(
+            _canonical_uuid_check("publication_job_id"),
+            name="publication_job_id_canonical_uuid",
+        ),
+        CheckConstraint(_sha256_check("profile_fingerprint"), name="profile_fingerprint_sha256"),
+        CheckConstraint(
+            _sha256_check("publication_fingerprint"),
+            name="publication_fingerprint_sha256",
+        ),
+        CheckConstraint(_sha256_check("selector_fingerprint"), name="selector_fingerprint_sha256"),
+        CheckConstraint(_sha256_check("item_fingerprint"), name="item_fingerprint_sha256"),
+        CheckConstraint(
+            _sha256_check("observation_fingerprint"),
+            name="observation_fingerprint_sha256",
+        ),
+        CheckConstraint("observed_at <= confirmed_at", name="timestamps_ordered"),
+        Index("ix_playback_evidence_author_confirmed", "author_id", "confirmed_at", "id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    schema_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
+    author_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("authors.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    publication_job_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("jobs.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    profile_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    publication_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    selector_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    item_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    observation_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    observed_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    confirmed_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
 class OperationEventStreamState(Base):
     """Singleton transactional clock used by the resumable operation stream."""
 
@@ -1036,6 +1106,7 @@ __all__ = [
     "OperationEvent",
     "OperationEventStreamState",
     "OperationSubject",
+    "PlaybackEvidence",
     "RunEvent",
     "SchedulerLane",
     "Subscription",

@@ -168,7 +168,8 @@ describe('library console derivations', () => {
       ...base,
       lookup_state: 'matched',
       match_count: 1,
-      item_fingerprint: '4'.repeat(64)
+      item_fingerprint: '4'.repeat(64),
+      observation_fingerprint: '5'.repeat(64)
     };
 
     expect(mediaServerLookupPresentation(missing)).toMatchObject({
