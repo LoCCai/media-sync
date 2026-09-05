@@ -38,6 +38,7 @@ from media_sync.integrations.mediacrawler.checkout import (
     verify_mediacrawler_checkout,
     verify_mediacrawler_python,
 )
+from media_sync.integrations.mediacrawler.cookie_login import cookie_pairs, parse_cookie_header
 from media_sync.integrations.mediacrawler.login_runner import (
     _guard_completed_login_tree,
     _profile_is_present,
@@ -59,6 +60,7 @@ from media_sync.integrations.mediacrawler.runner import (
     is_attempt_cleanup_blocked,
     record_attempt_cleanup_incident,
 )
+from media_sync.security.secrets import SecretValue
 
 CREATOR_PROFILE_SCHEMA_VERSION = 1
 MAX_PROFILE_REQUEST_BYTES = 64 * 1024
@@ -110,12 +112,17 @@ class MediaCrawlerCreatorProfileRequest:
     request_id: UUID
     timeout_seconds: float = MAX_PROFILE_EXECUTION_SECONDS
     poll_seconds: float = 0.05
+    cookie: SecretValue | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         if not isinstance(self.account_id, UUID) or not isinstance(self.request_id, UUID):
             raise ValueError("creator_profile_identity_invalid")
         object.__setattr__(self, "platform", Platform(self.platform))
         _uid(self.creator_remote_id)
+        if self.cookie is not None:
+            if not isinstance(self.cookie, SecretValue):
+                raise ValueError("creator_profile_identity_invalid")
+            object.__setattr__(self, "cookie", parse_cookie_header(self.cookie.reveal()))
         for value in (self.timeout_seconds, self.poll_seconds):
             if type(value) not in (float, int) or not math.isfinite(value) or value <= 0:
                 raise ValueError("creator_profile_budget_invalid")
@@ -350,7 +357,7 @@ class MediaCrawlerCreatorProfileProcessRunner:
             _safe_directory(paths.account_root)
             if is_attempt_cleanup_blocked(paths):
                 return _result(request, MediaCrawlerCreatorProfileStatus.CLEANUP_FAILED)
-            if not _profile_is_present(paths.profile_root):
+            if request.cookie is None and not _profile_is_present(paths.profile_root):
                 return _result(request, MediaCrawlerCreatorProfileStatus.AUTH_EXPIRED)
         except (OSError, ValueError):
             return _result(request, MediaCrawlerCreatorProfileStatus.AUTH_EXPIRED)
@@ -371,6 +378,7 @@ class MediaCrawlerCreatorProfileProcessRunner:
                     "lock_path": str(self._lock_path),
                     "python_executable": str(self._python_executable),
                     "deadline": deadline,
+                    **({"cookie": request.cookie.reveal()} if request.cookie is not None else {}),
                 },
                 MAX_PROFILE_REQUEST_BYTES,
             )
@@ -496,7 +504,7 @@ class _Envelope:
     def load(cls, payload: bytes) -> _Envelope:
         raw = _json(payload, MAX_PROFILE_REQUEST_BYTES)
         if (
-            set(raw)
+            (set(raw) - {"cookie"})
             != {
                 "schema_version",
                 "account_id",
@@ -514,7 +522,11 @@ class _Envelope:
         ):
             raise ValueError("creator_profile_frame_invalid")
         request = MediaCrawlerCreatorProfileRequest(
-            UUID(raw["account_id"]), Platform(raw["platform"]), raw["creator_remote_id"], UUID(raw["request_id"])
+            UUID(raw["account_id"]),
+            Platform(raw["platform"]),
+            raw["creator_remote_id"],
+            UUID(raw["request_id"]),
+            cookie=parse_cookie_header(raw["cookie"]) if "cookie" in raw else None,
         )
         if request.platform is not Platform.BILI:
             raise ValueError("creator_profile_identity_invalid")
@@ -560,6 +572,7 @@ def _run_guardian(envelope: _Envelope) -> MediaCrawlerCreatorProfileResult:
                     "platform": request.platform.value,
                     "creator_remote_id": request.creator_remote_id,
                     "request_id": str(request.request_id),
+                    **({"cookie": request.cookie.reveal()} if request.cookie is not None else {}),
                 },
                 "checkout_root": str(checkout.root),
                 "upstream_sha": checkout.commit,
@@ -663,8 +676,18 @@ def _fetch_api_json(url: str, headers: Mapping[str, str], deadline: float) -> di
     ):
         if response.status_code != 200:
             raise _LookupFailure(MediaCrawlerCreatorProfileStatus.TEMPORARY)
+        if (
+            response.headers.get("content-encoding", "identity").lower() != "identity"
+            or response.headers.get("content-type", "").split(";", 1)[0].strip().lower() != "application/json"
+        ):
+            raise _LookupFailure(MediaCrawlerCreatorProfileStatus.RESULT_INVALID)
+        length = response.headers.get("content-length")
+        if length is not None and (
+            not length.isascii() or not length.isdecimal() or int(length) > MAX_PROFILE_API_BYTES
+        ):
+            raise _LookupFailure(MediaCrawlerCreatorProfileStatus.RESULT_INVALID)
         chunks = bytearray()
-        for chunk in response.iter_bytes(chunk_size=8192):
+        for chunk in response.iter_raw(chunk_size=8192):
             if time.monotonic() >= deadline:
                 raise _LookupFailure(MediaCrawlerCreatorProfileStatus.TIMED_OUT)
             if len(chunks) + len(chunk) > MAX_PROFILE_API_BYTES:
@@ -725,7 +748,9 @@ def _origin(module: Any, expected: Path) -> None:
         raise _LookupFailure(MediaCrawlerCreatorProfileStatus.CONFIGURATION_INVALID)
 
 
-async def _lookup_bili(checkout: Path, profile: Path, remote_id: str, deadline: float) -> MediaCrawlerCreatorProfile:
+async def _lookup_bili(
+    checkout: Path, profile: Path, remote_id: str, deadline: float, *, cookie: SecretValue | None = None
+) -> MediaCrawlerCreatorProfile:
     os.chdir(checkout)
     sys.path.insert(0, str(checkout))
     if "config" in sys.modules or "media_platform.bilibili.core" in sys.modules:
@@ -750,15 +775,30 @@ async def _lookup_bili(checkout: Path, profile: Path, remote_id: str, deadline: 
     playwright_api = importlib.import_module("playwright.async_api")
     crawler = core.BilibiliCrawler()
     async with playwright_api.async_playwright() as playwright:
+        browser = None
         try:
-            context = await playwright.chromium.launch_persistent_context(
-                user_data_dir=str(profile),
-                executable_path=playwright.chromium.executable_path,
-                headless=True,
-                accept_downloads=False,
-                service_workers="block",
-                timeout=max(1, int(min(15, deadline - time.monotonic()) * 1000)),
-            )
+            if cookie is None:
+                context = await playwright.chromium.launch_persistent_context(
+                    user_data_dir=str(profile),
+                    executable_path=playwright.chromium.executable_path,
+                    headless=True,
+                    accept_downloads=False,
+                    service_workers="block",
+                    timeout=max(1, int(min(15, deadline - time.monotonic()) * 1000)),
+                )
+            else:
+                browser = await playwright.chromium.launch(
+                    executable_path=playwright.chromium.executable_path,
+                    headless=True,
+                    timeout=max(1, int(min(15, deadline - time.monotonic()) * 1000)),
+                )
+                context = await browser.new_context(accept_downloads=False, service_workers="block")
+                await context.add_cookies(
+                    [
+                        {"name": name, "value": value, "domain": ".bilibili.com", "path": "/", "secure": True}
+                        for name, value in cookie_pairs(cookie.reveal()).items()
+                    ]
+                )
         except Exception:
             raise _LookupFailure(MediaCrawlerCreatorProfileStatus.BROWSER_LAUNCH_FAILED) from None
         try:
@@ -784,6 +824,9 @@ async def _lookup_bili(checkout: Path, profile: Path, remote_id: str, deadline: 
             config.COOKIES = ""
             with contextlib.suppress(Exception):
                 await asyncio.wait_for(context.close(), timeout=max(0.01, min(2.0, deadline - time.monotonic())))
+            if browser is not None:
+                with contextlib.suppress(Exception):
+                    await asyncio.wait_for(browser.close(), timeout=max(0.01, min(2.0, deadline - time.monotonic())))
 
 
 def _worker_entry() -> int:
@@ -801,7 +844,7 @@ def _worker_entry() -> int:
             return 20
         if type(raw["schema_version"]) is not int or raw["schema_version"] != CREATOR_PROFILE_SCHEMA_VERSION:
             return 20
-        if type(raw["request"]) is not dict or set(raw["request"]) != {
+        if type(raw["request"]) is not dict or (set(raw["request"]) - {"cookie"}) != {
             "account_id",
             "platform",
             "creator_remote_id",
@@ -813,6 +856,7 @@ def _worker_entry() -> int:
             Platform(raw["request"]["platform"]),
             raw["request"]["creator_remote_id"],
             UUID(raw["request"]["request_id"]),
+            cookie=parse_cookie_header(raw["request"]["cookie"]) if "cookie" in raw["request"] else None,
         )
         checkout = Path(raw["checkout_root"])
         paths = build_run_paths(
@@ -826,13 +870,17 @@ def _worker_entry() -> int:
             or checkout.resolve() != Path.cwd().resolve()
         ):
             return 20
-        if not _profile_is_present(profile) or not 0 < deadline - time.monotonic() <= MAX_PROFILE_EXECUTION_SECONDS:
+        if (
+            request.cookie is None and not _profile_is_present(profile)
+        ) or not 0 < deadline - time.monotonic() <= MAX_PROFILE_EXECUTION_SECONDS:
             return 20
     except (ValueError, TypeError, OSError, KeyError):
         return 20
     try:
         with _silenced_upstream():
-            result = asyncio.run(_lookup_bili(checkout, profile, request.creator_remote_id, deadline))
+            result = asyncio.run(
+                _lookup_bili(checkout, profile, request.creator_remote_id, deadline, cookie=request.cookie)
+            )
         outcome = _result(request, MediaCrawlerCreatorProfileStatus.SUCCEEDED, sha, result)
     except _LookupFailure as error:
         outcome = _result(request, error.status, sha)

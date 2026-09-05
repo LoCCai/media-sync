@@ -80,6 +80,7 @@ ASSET_REFRESH_OBSERVATION_KINDS = frozenset({"ingested", "legacy_unique_inferred
 OPERATION_KINDS = frozenset(
     {
         "account-login",
+        "account-cookie-login",
         "creator-profile",
         "asset-download",
         "emby-export",

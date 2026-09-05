@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID
 
+import pytest
 from _api_client import authenticated_test_client
 
 from media_sync.config import Settings
@@ -14,7 +15,7 @@ from media_sync.infrastructure.db.database import Database
 from media_sync.infrastructure.db.migration import upgrade_database
 from media_sync.infrastructure.db.models import Account, Author, Operation
 
-EXPECTED_REVISION = "0010_creator_profiles"
+EXPECTED_REVISION = "0011_cookie_login"
 PRIVATE_TIME = datetime(2037, 1, 2, 3, 4, 5, tzinfo=UTC)
 
 
@@ -188,3 +189,35 @@ def test_support_bundle_database_failure_has_only_a_fixed_safe_code(tmp_path: Pa
     assert str(database_path) not in response.text
     assert database_path.as_posix() not in response.text
     assert "sqlite" not in response.text.lower()
+
+
+@pytest.mark.parametrize("error_code", ["cookie_login_rejected", "cookie_login_rejected_extra"])
+def test_support_bundle_cookie_vocabulary_is_exact_and_does_not_export_material(
+    tmp_path: Path, error_code: str
+) -> None:
+    settings = _migrated_settings(tmp_path)
+    sentinel = "cookie-private-sentinel"
+    database = Database(settings.resolved_database_url)
+    try:
+        with database.session() as session:
+            operation = _failed_operation(number=503, error_code=error_code, private_sentinel=sentinel)
+            operation.kind = "account-cookie-login"
+            session.add(operation)
+    finally:
+        database.dispose()
+
+    with authenticated_test_client(settings) as client:
+        response = client.get("/api/v1/support-bundle")
+
+    assert response.headers["cache-control"] == "no-store"
+    assert sentinel not in response.text
+    if error_code == "cookie_login_rejected":
+        assert response.status_code == 200
+        body = response.json()
+        assert body["database"]["schema_revision"] == EXPECTED_REVISION
+        assert {"kind": "account-cookie-login", "count": 1} in body["operations"]["kind_counts"]
+        assert body["operations"]["recent_error_counts"] == [{"error_code": error_code, "count": 1}]
+    else:
+        assert response.status_code == 503
+        assert response.json() == {"detail": "support_bundle_content_unsafe"}
+        assert error_code not in response.text

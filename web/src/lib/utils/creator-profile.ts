@@ -107,7 +107,7 @@ export function creatorLookupIdentity(account: Account | null, creatorId: string
     !uuid(account.id) ||
     account.platform !== 'bili' ||
     account.adapter !== 'mediacrawler' ||
-    account.login_method !== 'saved_session' ||
+    !['saved_session', 'cookie'].includes(account.login_method ?? '') ||
     account.auth_status !== 'authenticated' ||
     !validUid(uid)
   )
@@ -118,10 +118,10 @@ export function creatorLookupIdentity(account: Account | null, creatorId: string
 export function creatorLookupEligibility(account: Account | null): string {
   if (!account) return '请先选择平台账户。';
   if (account.platform !== 'bili') return '此平台的远端作者资料查询尚未接入；仍可填写本地备注并校验订阅。';
-  if (account.adapter !== 'mediacrawler' || account.login_method !== 'saved_session')
-    return '当前只支持 B 站 MediaCrawler 已保存会话；本次不会使用 Cookie、扫码或其他登录方式查询。';
+  if (account.adapter !== 'mediacrawler' || !['saved_session', 'cookie'].includes(account.login_method ?? ''))
+    return '当前只支持 B 站 MediaCrawler Cookie 凭据或已保存会话；此处不会启动扫码或其他登录方式。';
   if (account.auth_status !== 'authenticated')
-    return '账户没有已认证的保存会话；请到账户页面手动处理登录，此处不会自动扫码。';
+    return '账户没有已认证的 Cookie 凭据或保存会话；请到账户页面手动处理登录，此处不会自动扫码。';
   return '';
 }
 

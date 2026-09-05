@@ -23,6 +23,8 @@
 
 ### media-sync 0.x 对外能力
 
+执行[0058](executions/0058-cookie-login/progress.zh.md)为**B站、小红书、微博、知乎**新增明确粘贴Cookie、远程认证验证和不可变私密保存。抖音/贴吧的本地pong标记及快手仅返回result的GraphQL不足以证明已认证身份，因此暂不开放这三平台粘贴校验。上表七平台的上游Cookie源码列不代表本UI均可验证。Cookie复用改为向全新非持久上下文注入完整键值对；B站单作者资料流程支持已验证Cookie账户。其他六平台资料及真实端到端验收仍开放。
+
 执行 0012 当前工作树已为七个平台标识开放针对一个合格初始 MediaCrawler QR 账户或精确 `saved_session/expired` 账户的显式阻塞登录命令。在读取设置、数据库或启动 child 前，必须同时提供 `--enable-mediacrawler` 与 `--accept-mediacrawler-license`。隔离的仅登录 child 强制有头浏览器并保存状态；重认证启动时原子变为 `qr/authenticating`，持久成功交接会把账户切换为派生的逐账户 `saved_session/authenticated`，非成功则留在可重试 QR 状态。Child 会一直处于 START/CANCEL/EOF 父进程控制及结果 guardian 下，直到完整树关停。Cookie 继续走非交互密钥引用，显式重认证之外的 saved session 只允许后台无头使用，且**不开放手机号登录**。这一点有意区别于上游过宽的枚举声明。
 
 离线专项门禁证明封闭七标识协议、状态迁移、进程树 join 与脱敏行为，但不证明真人二维码可渲染或可登录。全部真人行保持 `NOT_RUN`；手机号仍为不支持，而不是仅未测试。

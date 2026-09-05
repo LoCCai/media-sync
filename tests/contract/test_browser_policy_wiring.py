@@ -18,7 +18,7 @@ from typing import Any
 import pytest
 
 from media_sync.domain import LoginMethod, Platform
-from media_sync.integrations.mediacrawler import browser_policy, detail_runner, login_runner, runner
+from media_sync.integrations.mediacrawler import browser_policy, cookie_reuse, detail_runner, login_runner, runner
 from media_sync.integrations.mediacrawler.checkout import verify_mediacrawler_checkout
 from media_sync.integrations.mediacrawler.login import MediaCrawlerLoginMode, MediaCrawlerLoginStatus
 from media_sync.integrations.mediacrawler.policies import WatchdogLimits
@@ -194,6 +194,14 @@ def _runtime(
     monkeypatch.setattr(browser_policy, "install_bundled_chromium_policy", observed_install)
     monkeypatch.setattr(login_runner, "install_bundled_chromium_policy", observed_install)
     monkeypatch.setattr(detail_runner, "install_bundled_chromium_policy", observed_install)
+
+    def synthetic_cookie_reuse(root: Path, selected: Platform, cookie: str) -> None:
+        # This fixture executes extracted upstream browser bodies, not a full
+        # checkout. Cookie injection has its own actual-module contract tests.
+        assert root == checkout and selected is platform and cookie == "session=fixture"
+        events.append("cookie-reuse")
+
+    monkeypatch.setattr(cookie_reuse, "install_cookie_reuse", synthetic_cookie_reuse)
     return SimpleNamespace(
         checkout=checkout, config=config, main=upstream, events=events, chromium=chromium, policy_modes=policy_modes
     )
@@ -297,8 +305,8 @@ async def test_real_creator_entry_installs_policy_before_pinned_main_dispatch(
         max_items=1,
     )
 
-    assert await runner._execute_child(manifest, "fixture-author", None, None) == 0
-    assert fixture.events == ["install", f"factory:{platform.value}", "start", "browser", "cleanup"]
+    assert await runner._execute_child(manifest, "fixture-author", "session=fixture", None) == 0
+    assert fixture.events == ["install", "cookie-reuse", f"factory:{platform.value}", "start", "browser", "cleanup"]
     assert fixture.policy_modes == [False]
 
 
@@ -314,10 +322,11 @@ async def test_real_detail_entry_installs_policy_before_pinned_main_dispatch(
         platform=platform,
         login_method=LoginMethod.COOKIE,
         detail_reference="fixture-reference",
+        cookie="session=fixture",
     )
 
     assert await detail_runner._run_upstream(request) == (fixture.main, None)
-    assert fixture.events == ["install", f"factory:{platform.value}", "start", "browser"]
+    assert fixture.events == ["install", "cookie-reuse", f"factory:{platform.value}", "start", "browser"]
     assert fixture.policy_modes == [False]
 
 
@@ -332,8 +341,9 @@ async def test_real_bilibili_aid_detail_branch_uses_same_installed_factory(
         login_method=LoginMethod.COOKIE,
         detail_reference="123",
         bili_progressive_detail=False,
+        cookie="session=fixture",
     )
 
     assert await detail_runner._run_upstream(request) == (fixture.main, None)
-    assert fixture.events == ["install", "factory:bili", "start", "browser", "aid-detail"]
+    assert fixture.events == ["install", "cookie-reuse", "factory:bili", "start", "browser", "aid-detail"]
     assert fixture.policy_modes == [False]

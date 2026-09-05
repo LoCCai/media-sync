@@ -23,6 +23,7 @@ from media_sync.integrations.mediacrawler.creator_profile_runner import (
 )
 from media_sync.integrations.mediacrawler.policies import build_run_paths
 from media_sync.integrations.mediacrawler.runner import _AccountFileLock
+from media_sync.security.secrets import SecretValue
 
 SOURCE_ROOT = Path(__file__).resolve().parents[2] / "src"
 ACCOUNT = UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
@@ -69,6 +70,52 @@ def run(envelope):
 
 module._run_guardian = run
 raise SystemExit(module._guardian_entry())
+"""
+_PRIVATE_COOKIE = 'SESSDATA=PRIVATE_PROFILE_COOKIE==; bili_jct="quoted_value=="'
+_TWO_HOP_PROCESS = r"""
+import json
+import os
+from pathlib import Path
+import sys
+from types import SimpleNamespace
+
+sys.path.insert(0, SOURCE_ROOT)
+from media_sync.integrations.mediacrawler import creator_profile_runner as module
+
+script = Path(__file__).resolve()
+module._command = lambda mode, executable: (str(executable), "-I", "-u", "-B", str(script), mode)
+module.verify_mediacrawler_checkout = lambda *args, **kwargs: SimpleNamespace(
+    root=script.parent / "checkout", commit=SHA
+)
+module.verify_mediacrawler_python = lambda executable: SimpleNamespace(executable=executable)
+
+def report(stage, cookie, representations, profile):
+    observed = {
+        "pid": os.getpid(), "argv": sys.argv,
+        "private_environment_inherited": "MEDIA_SYNC_PRIVATE_SENTINEL" in os.environ,
+        "cookie_present": cookie is not None,
+        "cookie_preserved": cookie is not None and cookie.reveal() == PRIVATE_COOKIE,
+        "repr_leaked": any("PRIVATE_PROFILE_COOKIE" in value for value in representations),
+        "profile_present": profile.exists(),
+    }
+    (script.parent / (stage + ".json")).write_text(json.dumps(observed), encoding="utf-8")
+    # These intentionally noisy synthetic upstream writes must not enter public output.
+    print(PRIVATE_COOKIE)
+    print(PRIVATE_COOKIE, file=sys.stderr)
+
+original_guardian = module._run_guardian
+def guardian(envelope):
+    report("guardian", envelope.request.cookie,
+           [repr(envelope), repr(envelope.request)], envelope.paths.profile_root)
+    return original_guardian(envelope)
+
+async def lookup(checkout, profile, remote_id, deadline, *, cookie=None):
+    report("worker", cookie, [repr(cookie)], profile)
+    return module.MediaCrawlerCreatorProfile(remote_id, "Offline creator", None)
+
+module._run_guardian = guardian
+module._lookup_bili = lookup
+raise SystemExit(module._guardian_entry() if sys.argv[1] == "--guardian" else module._worker_entry())
 """
 
 
@@ -134,6 +181,66 @@ def _runner(runtime: Path, mode: str) -> MediaCrawlerCreatorProfileProcessRunner
 
 def _request(timeout: float = 8) -> MediaCrawlerCreatorProfileRequest:
     return MediaCrawlerCreatorProfileRequest(ACCOUNT, Platform.BILI, "123", uuid4(), timeout_seconds=timeout)
+
+
+@pytest.mark.parametrize("login_method", ["cookie", "saved_session"])
+def test_real_private_frames_reach_worker_without_cookie_output_or_saved_profile_dependency(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capfd: pytest.CaptureFixture[str],
+    login_method: str,
+) -> None:
+    runtime = tmp_path / "runtime"
+    paths = build_run_paths(runtime, Platform.BILI, ACCOUNT, uuid4())
+    paths.account_root.mkdir(parents=True)
+    has_cookie = login_method == "cookie"
+    if not has_cookie:
+        paths.profile_root.mkdir(parents=True)
+        (paths.profile_root / "saved-profile").write_bytes(b"offline profile presence only")
+    (tmp_path / "checkout").mkdir()
+    script = tmp_path / "two-hop.py"
+    script.write_text(
+        f"SOURCE_ROOT = {str(SOURCE_ROOT)!r}\nSHA = {SHA!r}\nPRIVATE_COOKIE = {_PRIVATE_COOKIE!r}\n" + _TWO_HOP_PROCESS,
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        module, "_command", lambda mode, executable: (str(executable), "-I", "-u", "-B", str(script), mode)
+    )
+    monkeypatch.setenv("MEDIA_SYNC_PRIVATE_SENTINEL", _PRIVATE_COOKIE)
+    request = MediaCrawlerCreatorProfileRequest(
+        ACCOUNT,
+        Platform.BILI,
+        "123",
+        uuid4(),
+        timeout_seconds=12,
+        cookie=SecretValue(_PRIVATE_COOKIE) if has_cookie else None,
+    )
+
+    result = _runner(runtime, "two-hop").run(request)
+
+    assert result.status.value == "succeeded"
+    assert result.upstream_sha == SHA
+    assert result.profile is not None and result.profile.display_name == "Offline creator"
+    assert "PRIVATE_PROFILE_COOKIE" not in repr(request)
+    assert "PRIVATE_PROFILE_COOKIE" not in repr(result)
+    assert b"PRIVATE_PROFILE_COOKIE" not in module._result_frame(result)
+    assert "PRIVATE_PROFILE_COOKIE" not in str(capfd.readouterr())
+    for stage in ("guardian", "worker"):
+        observed = json.loads((tmp_path / f"{stage}.json").read_text(encoding="utf-8"))
+        assert observed["cookie_present"] is has_cookie
+        assert observed["cookie_preserved"] is has_cookie
+        assert observed["profile_present"] is not has_cookie
+        assert not observed["private_environment_inherited"]
+        assert not observed["repr_leaked"]
+        assert "PRIVATE_PROFILE_COOKIE" not in str(observed["argv"])
+        assert str(ACCOUNT) not in str(observed["argv"])
+        assert str(request.request_id) not in str(observed["argv"])
+        _until(lambda pid=observed["pid"]: not _pid_alive(pid))
+    assert paths.profile_root.exists() is not has_cookie
+    assert not (runtime / "jobs").exists()
+    lock = _AccountFileLock(paths.account_root)
+    assert lock.acquire()
+    lock.release()
 
 
 @pytest.mark.parametrize(

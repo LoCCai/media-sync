@@ -553,6 +553,12 @@ class Settings(BaseSettings):
         return (self.secret_file_dir or self.state_dir / "secrets").expanduser().resolve()
 
     @property
+    def resolved_managed_credential_dir(self) -> Path:
+        """Dedicated mutable credential root, independent of read-only secret mounts."""
+
+        return (self.state_dir / "credentials").expanduser().absolute()
+
+    @property
     def resolved_mediacrawler_runtime_dir(self) -> Path:
         """Return the root for isolated bridge profiles, manifests, and output."""
 

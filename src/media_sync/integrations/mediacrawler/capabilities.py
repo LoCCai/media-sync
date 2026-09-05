@@ -165,6 +165,7 @@ class MediaCrawlerPlatformCapability:
             "display_name": self.display_name,
             "login_methods": [method.value for method in self.login_methods],
             "qr_login": self.qr_login,
+            "pasted_cookie_login": self.platform in {Platform.BILI, Platform.WB, Platform.XHS, Platform.ZHIHU},
             "creator_input": self.creator_input.to_payload(),
             "requires_full_history_acknowledgement": self.requires_full_history_acknowledgement,
             "offline_shapes": list(self.offline_shapes),

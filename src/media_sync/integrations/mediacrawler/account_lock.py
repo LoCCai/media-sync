@@ -44,5 +44,11 @@ class MediaCrawlerAccountLock:
 
         self._lock.release()
 
+    @property
+    def descriptor(self) -> int:
+        """Expose the held OS descriptor for supervised child inheritance."""
+
+        return self._lock.descriptor
+
 
 __all__ = ["MediaCrawlerAccountLock"]

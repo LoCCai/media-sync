@@ -116,6 +116,15 @@ from pathlib import Path
 
 import config
 
+# This fixture implements detail framing only, not real upstream browser APIs.
+# Real Cookie injection/old-session exclusion is covered in the locked-module
+# Cookie contract; preserve this fake's independently tested detail protocol.
+from media_sync.integrations.mediacrawler import cookie_reuse
+def fixture_cookie_reuse(checkout, platform, raw_cookie):
+    assert raw_cookie == config.COOKIES
+    config.SAVE_LOGIN_STATE = False
+cookie_reuse.install_cookie_reuse = fixture_cookie_reuse
+
 crawler = None
 
 
@@ -134,15 +143,14 @@ class FakeCrawler:
         assert config.ENABLE_GET_SUB_COMMENTS is False
         assert config.ENABLE_GET_MEIDAS is False
         assert config.ENABLE_GET_MEDIAS is False
-        assert config.SAVE_LOGIN_STATE is True
+        assert config.SAVE_LOGIN_STATE is False
         assert config.CRAWLER_MAX_SLEEP_SEC == 0.25
         profile = Path(
             os.path.join(os.getcwd(), "browser_data", config.USER_DATA_DIR % config.PLATFORM)
         ).resolve()
         assert profile.name == "dy_user_data_dir"
         assert profile.parent.name == "browser_data"
-        profile.mkdir(parents=True, exist_ok=True)
-        (profile / "session.marker").write_text("stable fixture profile", encoding="utf-8")
+        assert not (profile / "session.marker").exists()
         print("upstream stdout must not contaminate the detail frame")
         os.write(2, b"upstream stderr must not contaminate the detail frame\n")
         target = Path(config.SAVE_DATA_PATH) / "douyin" / "jsonl" / "detail_contents_fixture.jsonl"
@@ -1664,8 +1672,7 @@ def test_detail_process_runner_uses_detail_mode_and_cleans_signed_jsonl(tmp_path
     assert COOKIE_SENTINEL.encode() not in retained
     assert DY_COVER_SENTINEL.encode() not in retained
     profile = integration_root / "accounts" / "dy" / str(ACCOUNT_ID) / "browser_data" / "dy_user_data_dir"
-    assert profile.is_dir()
-    assert (profile / "session.marker").read_text(encoding="utf-8") == "stable fixture profile"
+    assert not (profile / "session.marker").exists()
 
 
 def test_weibo_numeric_detail_installs_media_shim_and_runs_cleanup(tmp_path: Path) -> None:

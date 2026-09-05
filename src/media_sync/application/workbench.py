@@ -128,6 +128,7 @@ class AccountWorkbenchResult:
     auth_status: str
     created_at: datetime
     created: bool
+    auth_revision: int = 0
 
     def to_payload(self) -> dict[str, object]:
         return {
@@ -137,6 +138,7 @@ class AccountWorkbenchResult:
             "display_name": self.display_name,
             "login_method": self.login_method,
             "auth_status": self.auth_status,
+            "auth_revision": self.auth_revision,
             "created_at": self.created_at.isoformat(),
             "created": self.created,
         }
@@ -375,6 +377,7 @@ def _account_result(account: Account, *, created: bool) -> AccountWorkbenchResul
         display_name=account.display_name,
         login_method=account.login_method,
         auth_status=account.auth_status,
+        auth_revision=account.auth_revision,
         created_at=account.created_at,
         created=created,
     )

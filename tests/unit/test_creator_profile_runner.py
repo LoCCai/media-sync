@@ -202,7 +202,7 @@ def test_http_api_transport_is_bounded_and_never_follows_redirects(
             "failed-code": b'{"code":-1,"data":{}}',
             "invalid-data": b'{"code":0,"data":[]}',
         }[response_mode]
-        return httpx.Response(200, content=body)
+        return httpx.Response(200, headers={"Content-Type": "application/json"}, stream=httpx.ByteStream(body))
 
     monkeypatch.setattr(network.SocketAddressResolver, "resolve", lambda *args: ["8.8.8.8"])
     monkeypatch.setattr(network, "PinnedHTTPTransport", lambda target: httpx.MockTransport(handler))
@@ -218,4 +218,57 @@ def test_http_api_rejects_private_dns_before_transport(monkeypatch: pytest.Monke
 
     monkeypatch.setattr(network.SocketAddressResolver, "resolve", lambda *args: ["127.0.0.1"])
     with pytest.raises(MediaDownloadError):
+        module._fetch_api_json("https://api.bilibili.com/x/web-interface/nav", {}, time.monotonic() + 2)
+
+
+def test_http_api_accepts_bounded_raw_json(monkeypatch: pytest.MonkeyPatch) -> None:
+    import media_sync.media.network as network
+
+    body = b'{"code":0,"data":{"isLogin":true}}'
+    monkeypatch.setattr(network.SocketAddressResolver, "resolve", lambda *args: ["8.8.8.8"])
+    monkeypatch.setattr(
+        network,
+        "PinnedHTTPTransport",
+        lambda target: httpx.MockTransport(
+            lambda request: httpx.Response(
+                200,
+                headers={"Content-Type": "application/json; charset=utf-8", "Content-Length": str(len(body))},
+                stream=httpx.ByteStream(body),
+            )
+        ),
+    )
+    assert module._fetch_api_json("https://api.bilibili.com/x/web-interface/nav", {}, time.monotonic() + 2) == {
+        "isLogin": True
+    }
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [
+        {"Content-Type": "application/json", "Content-Encoding": "gzip"},
+        {"Content-Type": "text/html"},
+        {},
+        {"Content-Type": "application/json", "Content-Length": "invalid"},
+        {"Content-Type": "application/json", "Content-Length": "-1"},
+        {"Content-Type": "application/json", "Content-Length": str(module.MAX_PROFILE_API_BYTES + 1)},
+    ],
+)
+def test_http_api_rejects_invalid_headers_before_reading_body(
+    monkeypatch: pytest.MonkeyPatch, headers: dict[str, str]
+) -> None:
+    import media_sync.media.network as network
+
+    class UnreadableStream(httpx.SyncByteStream):
+        def __iter__(self):
+            raise AssertionError("body must not be read")
+
+    monkeypatch.setattr(network.SocketAddressResolver, "resolve", lambda *args: ["8.8.8.8"])
+    monkeypatch.setattr(
+        network,
+        "PinnedHTTPTransport",
+        lambda target: httpx.MockTransport(
+            lambda request: httpx.Response(200, headers=headers, stream=UnreadableStream())
+        ),
+    )
+    with pytest.raises((ValueError, module._LookupFailure)):
         module._fetch_api_json("https://api.bilibili.com/x/web-interface/nav", {}, time.monotonic() + 2)

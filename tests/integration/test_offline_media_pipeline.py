@@ -318,7 +318,7 @@ async def test_offline_sync_download_export_pipeline_is_secure_and_idempotent(tm
             assert session.scalar(select(func.count()).select_from(Content)) == 1
             assert session.scalar(select(func.count()).select_from(Asset)) == 1
             assert session.scalar(select(func.count()).select_from(SyncRun)) == 2
-        assert revision == "0010_creator_profiles"
+        assert revision == "0011_cookie_login"
         assert persisted_author is not None and persisted_author.display_name == author_snapshot.display_name
         assert persisted_content is not None and persisted_content.remote_id == content_snapshot.remote_id
         assert persisted_subscription is not None and persisted_subscription.checkpoint_revision == 2

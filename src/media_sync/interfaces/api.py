@@ -66,6 +66,7 @@ from media_sync.application.authentication import (
     AccountLoginRequest,
     MediaCrawlerQrLoginService,
 )
+from media_sync.application.cookie_login import CookieLoginService
 from media_sync.application.creator_profiles import CreatorProfileService, lookup_error_code, profile_payload
 from media_sync.application.emby import EmbyExportRequest, EmbyExportService, export_error_is_retryable
 from media_sync.application.explorer import CatalogExplorerError, ContentAssetExplorer
@@ -112,12 +113,14 @@ from media_sync.infrastructure.db import (
     SubscriptionRepository,
     SyncRun,
 )
+from media_sync.infrastructure.db.cookie_account_repository import CookieAccountError
 from media_sync.infrastructure.db.creator_profile_repository import (
     CreatorProfileError,
     CreatorProfileRepository,
     ProfileSnapshot,
 )
 from media_sync.integrations.mediacrawler import platform_capabilities_payload
+from media_sync.integrations.mediacrawler.cookie_login_runner import CookieLoginProcessRunner
 from media_sync.integrations.mediacrawler.creator_profile_runner import MediaCrawlerCreatorProfileProcessRunner
 from media_sync.integrations.mediacrawler.login_runner import (
     LOGIN_QR_IMAGE_NAME,
@@ -145,6 +148,7 @@ from media_sync.interfaces.cli import (
     _UnavailableMediaCrawlerLoginRunner,
     collect_deep_readiness_report,
 )
+from media_sync.interfaces.cookie_request import CookieRequestError, read_cookie_login_body
 from media_sync.scheduler import DurableSchedulerService, SchedulerRepository, StaleLaneError
 from media_sync.security import (
     OPERATOR_SESSION_COOKIE_NAME,
@@ -767,6 +771,24 @@ def create_api_app(
         )
         if resolved.mediacrawler_python_executable is not None
         else None,
+        secret_resolver=SecretResolver.local(
+            file_root=resolved.resolved_secret_file_dir,
+            managed_root=resolved.state_dir / "credentials",
+        ),
+    )
+    cookie_login_service = CookieLoginService(
+        operation_database,
+        CookieLoginProcessRunner(
+            lock_path=resolved.mediacrawler_lock_path,
+            integration_root=resolved.resolved_mediacrawler_runtime_dir,
+            python_executable=resolved.mediacrawler_python_executable,
+            enabled=True,
+            license_acknowledged=True,
+        )
+        if resolved.mediacrawler_python_executable is not None
+        else None,
+        integration_root=resolved.resolved_mediacrawler_runtime_dir,
+        credential_root=resolved.state_dir / "credentials",
     )
     media_server_profile = resolved.media_server_profile
     media_server_observation_service = (
@@ -816,6 +838,7 @@ def create_api_app(
     app.state.playback_evidence_query = playback_evidence_query
     app.state.library_inspection_service = library_inspection_service
     app.state.creator_profile_service = creator_profile_service
+    app.state.cookie_login_service = cookie_login_service
     deep_readiness_cache: dict[bool, tuple[float, dict[str, object]]] = {}
     deep_readiness_lock = threading.Lock()
     web_root = _resolve_web_root()
@@ -2152,6 +2175,74 @@ def create_api_app(
                 phase="preparing",
                 execute=run_login,
             )
+        )
+        return _operation_start_payload(submission)
+
+    @app.post("/api/v1/accounts/{account_id}/cookie-login", status_code=202)
+    async def start_cookie_login(account_id: UUID, request: Request) -> dict[str, object]:
+        try:
+            body = await read_cookie_login_body(request)
+        except CookieRequestError as error:
+            raise HTTPException(status_code=error.status, detail=error.code) from None
+        if not body.enable_mediacrawler:
+            raise _bad_request("mediacrawler_not_enabled")
+        if not body.accept_mediacrawler_license:
+            raise _bad_request("license_acknowledgement_required")
+        fingerprint, key_hash = _operation_identity(
+            request,
+            "account-cookie-login",
+            target_id=str(account_id),
+            parameters={
+                "identity_digest": hashlib.sha256(
+                    (body.platform.value + "\0" + body.cookie.reveal()).encode("ascii")
+                ).hexdigest(),
+                "expected_auth_revision": body.expected_auth_revision,
+                "frontend_generation": str(body.frontend_generation),
+                "enable_mediacrawler": body.enable_mediacrawler,
+                "accept_mediacrawler_license": body.accept_mediacrawler_license,
+            },
+        )
+        replay = await asyncio.to_thread(
+            _idempotent_replay,
+            "account-cookie-login",
+            key_hash=key_hash,
+            request_fingerprint=fingerprint,
+        )
+        if replay is not None:
+            return _operation_start_payload(replay)
+        try:
+            await asyncio.to_thread(
+                cookie_login_service.preflight, str(account_id), body.platform, body.expected_auth_revision
+            )
+        except CookieAccountError as error:
+            status = (
+                404
+                if error.code == "cookie_login_account_not_found"
+                else 409
+                if error.code in {"cookie_login_conflict", "cookie_login_busy"}
+                else 400
+            )
+            raise HTTPException(status_code=status, detail=error.code) from None
+        except SQLAlchemyError:
+            raise HTTPException(status_code=503, detail="cookie_login_unavailable") from None
+        submission = await asyncio.to_thread(
+            _submit_operation,
+            OperationExecution(
+                kind="account-cookie-login",
+                request_fingerprint=fingerprint,
+                idempotency_key_hash=key_hash,
+                exclusive_key=f"account-login:{account_id}",
+                target_type="account",
+                target_id=str(account_id),
+                phase="preparing",
+                execute=lambda context: cookie_login_service.execute(
+                    context,
+                    account_id=str(account_id),
+                    platform=body.platform,
+                    expected_auth_revision=body.expected_auth_revision,
+                    candidate=body.cookie,
+                ),
+            ),
         )
         return _operation_start_payload(submission)
 

@@ -194,7 +194,7 @@ app.add_typer(asset_app, name="asset")
 app.add_typer(emby_app, name="emby")
 app.add_typer(pipeline_app, name="pipeline")
 
-_EXPECTED_DATABASE_REVISION = "0010_creator_profiles"
+_EXPECTED_DATABASE_REVISION = "0011_cookie_login"
 _REQUIRED_DATABASE_TABLES = frozenset(str(name) for name in Base.metadata.tables)
 
 
@@ -609,6 +609,7 @@ def _account_payload(account: Account, *, created: bool | None = None) -> dict[s
         "display_name": account.display_name,
         "login_method": account.login_method,
         "auth_status": account.auth_status,
+        "auth_revision": account.auth_revision,
         "created_at": _iso_datetime(account.created_at),
     }
     if created is not None:
@@ -981,7 +982,9 @@ def _build_subscription_worker(
             lock_path=settings.mediacrawler_lock_path,
             integration_root=settings.resolved_mediacrawler_runtime_dir,
             python_executable=settings.mediacrawler_python_executable,
-            secret_resolver=SecretResolver.local(file_root=settings.resolved_secret_file_dir),
+            secret_resolver=SecretResolver.local(
+                file_root=settings.resolved_secret_file_dir, managed_root=settings.state_dir / "credentials"
+            ),
             enabled=True,
             license_acknowledged=accept_mediacrawler_license,
         )
@@ -1014,7 +1017,9 @@ def _build_pipeline_worker(
             mediacrawler_lock_path=settings.mediacrawler_lock_path,
             mediacrawler_runtime_root=settings.resolved_mediacrawler_runtime_dir,
             mediacrawler_python_executable=settings.mediacrawler_python_executable,
-            secret_resolver=SecretResolver.local(file_root=settings.resolved_secret_file_dir),
+            secret_resolver=SecretResolver.local(
+                file_root=settings.resolved_secret_file_dir, managed_root=settings.state_dir / "credentials"
+            ),
             enable_mediacrawler=enable_mediacrawler,
             accept_mediacrawler_license=accept_mediacrawler_license,
             xhs_detail_reference_ref=xhs_detail_reference_ref,
@@ -2302,7 +2307,9 @@ def _execute_asset_download(
             lock_path=settings.mediacrawler_lock_path,
             integration_root=settings.resolved_mediacrawler_runtime_dir,
             python_executable=settings.mediacrawler_python_executable,
-            secret_resolver=SecretResolver.local(file_root=settings.resolved_secret_file_dir),
+            secret_resolver=SecretResolver.local(
+                file_root=settings.resolved_secret_file_dir, managed_root=settings.state_dir / "credentials"
+            ),
             license_acknowledged=True,
             detail_reference_ref=(xhs_detail_reference_ref if asset_platform == Platform.XHS.value else None),
         )

@@ -120,7 +120,6 @@ describe('Bili saved-session eligibility and closed profile projection', () => {
     null,
     { ...account, platform: 'dy' },
     { ...account, adapter: 'fake' },
-    { ...account, login_method: 'cookie' },
     { ...account, login_method: 'qr' },
     { ...account, login_method: null },
     { ...account, auth_status: 'expired' },
@@ -128,6 +127,18 @@ describe('Bili saved-session eligibility and closed profile projection', () => {
   ])('does not query an unsupported or unauthenticated account %j', (candidate) => {
     expect(creatorLookupIdentity(candidate as Account | null, '123456')).toBeNull();
     expect(creatorLookupEligibility(candidate as Account | null)).not.toBe('');
+  });
+
+  it('allows authenticated Bili Cookie credentials without starting QR', () => {
+    const current = { ...account, login_method: 'cookie' as const };
+    expect(creatorLookupIdentity(current, '123456')).toEqual({
+      account_id: accountId,
+      platform: 'bili',
+      creator_remote_id: '123456'
+    });
+    expect(creatorLookupEligibility(current)).toBe('');
+    expect(creatorLookupIdentity({ ...current, auth_status: 'expired' }, '123456')).toBeNull();
+    expect(creatorLookupIdentity({ ...current, platform: 'xhs' }, '123456')).toBeNull();
   });
 
   it('projects only exact-account public fields and retains independent avatar observation time', () => {

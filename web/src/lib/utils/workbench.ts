@@ -21,6 +21,7 @@ export function loginPreflightDisposition(
   account: Account | null,
   status: LoginStatus | null
 ): 'not_needed' | 'status_unavailable' | 'required' {
+  if (account?.login_method === 'cookie' && account.auth_status === 'authenticated') return 'not_needed';
   if (!account || !status || status.account_id !== account.id) return 'status_unavailable';
   return status.auth_status === 'authenticated' ? 'not_needed' : 'required';
 }
@@ -59,7 +60,7 @@ export function loginMethodLabel(method: string | null | undefined): string {
   return (
     {
       qr: '扫码',
-      cookie: 'Cookie 引用',
+      cookie: 'Cookie 凭据',
       saved_session: '已保存会话',
       phone: '手机号'
     }[method ?? ''] ??
@@ -105,6 +106,19 @@ export function accountCompositeState(
   }
   if (!account.login_method || !capability.login_methods.some((method) => method === account.login_method)) {
     return { status: 'failed_terminal', label: '组合不支持', detail: '账户登录方式不在平台能力范围内' };
+  }
+  if (account.login_method === 'cookie') {
+    if (account.auth_status === 'authenticated')
+      return {
+        status: 'authenticated',
+        label: '已认证',
+        detail: '当前 Cookie 认证记录；历史扫码结果不覆盖此状态，未实时复验平台凭据'
+      };
+    return {
+      status: account.auth_status,
+      label: account.auth_status === 'expired' ? 'Cookie 已过期' : 'Cookie 认证待处理',
+      detail: '请明确粘贴 Cookie 校验并保存；历史扫码会话不是当前认证结果'
+    };
   }
   if (status?.auth_status === 'authenticated') {
     return { status: 'authenticated', label: '已认证', detail: '本地保存的认证结果；未实时验证平台会话' };

@@ -206,7 +206,9 @@ class OperationSnapshot:
             return False
         # A restarted targeted scan has no durable remote task identity.  Its
         # POST may already have been accepted, so resubmission is never safe.
-        return self.kind != "media-server-scan"
+        # Cookie candidates are process-local and never persisted for replay.
+        # An interrupted attempt requires a fresh explicit candidate submission.
+        return self.kind not in {"media-server-scan", "account-cookie-login"}
 
     @property
     def allowed_actions(self) -> tuple[str, ...]:

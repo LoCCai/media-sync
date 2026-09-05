@@ -2,9 +2,9 @@
 
 # media-sync project journal
 
-Current work: [0057 creator profiles](executions/0057-creator-profile-lookup/progress.md) connects Bili saved-session nickname/avatar lookup, separate local notes and profile receipts. [0056 subscription usability](executions/0056-subscription-usability/progress.md) delivered reversible removal/paused restore, per-Job reports and independent local-output guidance. Six other platforms, Cookie profiles/login and real capture/archive qualification remain pending. See [0057 verification](executions/0057-creator-profile-lookup/verification.md) for actual tests/publication limits; the first slice does not complete the overall goal.
+Current work: [0058 Cookie login](executions/0058-cookie-login/progress.md) implements Bili/XHS/WB/Zhihu explicit remote validation, private save and fresh-context reuse, including Bili Cookie nickname/avatar lookup. [0057](executions/0057-creator-profile-lookup/progress.md) delivered Bili saved-session profiles and separate local notes; [0056](executions/0056-subscription-usability/progress.md) delivered reversible removal/paused restore, per-Job reports and independent local-output guidance. Three paste validators, six-platform profiles, bounded capture and real archive/playback qualification remain required. See [0058 verification](executions/0058-cookie-login/verification.md); the overall goal is not complete.
 
-Latest P0 follow-up: [scheduler failure diagnostics](executions/0055-operator-auth-playback-evidence/scheduler-diagnostics/progress.md) after the [failed real Bili canary](executions/0055-operator-auth-playback-evidence/bili-success-followup/verification.md), with bilingual goals/plans/progress/verification. Login success and Worker completion do not prove capture success. See [unified status](status.md) for implemented and pending work. Bounded Bili capture and pasted-Cookie validation/persistence/reuse remain pending; the seven-platform goal is unchanged.
+Latest P0 follow-up: [scheduler failure diagnostics](executions/0055-operator-auth-playback-evidence/scheduler-diagnostics/progress.md) after the [failed real Bili canary](executions/0055-operator-auth-playback-evidence/bili-success-followup/verification.md). Login success and Worker completion do not prove capture success. [Unified status](status.md) separates implemented and pending work; bounded Bili capture remains required and the seven-platform goal is unchanged.
 
 This directory is the durable audit trail for the project. Every execution milestone has four records: goal, plan, progress, and verification. Since execution 0028 every document is maintained as two editions — English `<name>.md` and Chinese `<name>.zh.md` — and each edition links to its counterpart in its header.
 
@@ -29,6 +29,8 @@ This directory is the durable audit trail for the project. Every execution miles
 
 | ID | Milestone | Status | Commit |
 | --- | --- | --- | --- |
+| 0058 | Cookie validation, private save and reuse | Four validators and Bili Cookie profiles implemented; three validators/live gates open; [verification](executions/0058-cookie-login/verification.md) | Plan `f94d557`; implementation is the commit containing this row |
+| 0057 | Single-creator profiles | Bili saved-session profiles, local aliases and receipt-bound subscriptions; [verification](executions/0057-creator-profile-lookup/verification.md) | `141f7c4`, `68c4004` |
 | 0056 | Subscription usability and local delivery | Removal/paused restore, local output guidance and exact-Job reports implemented; automatic creator profiles still required; [progress](executions/0056-subscription-usability/progress.md), [verification](executions/0056-subscription-usability/verification.md) | Plan `fe54aba`; implementation is the commit containing this row |
 | 0001 | Bootstrap and pin upstreams | Complete | `59da120` |
 | 0002 | Upstream analysis and architecture | Complete | `af813bd`, `201fbbf` |

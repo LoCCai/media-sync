@@ -23,6 +23,7 @@ from uuid import UUID
 from media_sync.ports.media_server import validate_media_server_version
 
 OperationKind: TypeAlias = Literal[
+    "account-cookie-login",
     "creator-profile",
     "account-login",
     "asset-download",
@@ -61,6 +62,7 @@ MAX_IDEMPOTENCY_KEY_LENGTH: Final = 128
 
 OPERATION_KINDS: Final = frozenset(
     {
+        "account-cookie-login",
         "creator-profile",
         "account-login",
         "asset-download",
@@ -90,6 +92,7 @@ OPERATION_EVENT_CODES: Final = frozenset(
 
 _KIND_TARGET_TYPES: Final = MappingProxyType(
     {
+        "account-cookie-login": "account",
         "creator-profile": "account",
         "account-login": "account",
         "asset-download": "asset",
@@ -102,6 +105,7 @@ _KIND_TARGET_TYPES: Final = MappingProxyType(
 )
 _KIND_ROUTES: Final = MappingProxyType(
     {
+        "account-cookie-login": "/api/v1/accounts/{account_id}/cookie-login",
         "creator-profile": "/api/v1/accounts/{account_id}/creator-lookups",
         "account-login": "/api/v1/accounts/{account_id}/login",
         "asset-download": "/api/v1/assets/{asset_id}/download",
@@ -185,6 +189,15 @@ _RECONCILIATION_STATES: Final = (
 
 _REQUEST_PARAMETER_FIELDS: Final = MappingProxyType(
     {
+        "account-cookie-login": frozenset(
+            {
+                "identity_digest",
+                "expected_auth_revision",
+                "frontend_generation",
+                "enable_mediacrawler",
+                "accept_mediacrawler_license",
+            }
+        ),
         "creator-profile": frozenset(
             {"identity_digest", "frontend_generation", "enable_mediacrawler", "accept_mediacrawler_license"}
         ),
@@ -244,7 +257,22 @@ _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 _SENSITIVE_CODE_ATOMS: Final = frozenset(
     {"authorization", "cookie", "credential", "password", "secret", "token", "workerid"}
 )
-_SAFE_SENSITIVE_ERROR_CODES: Final = frozenset({"locator_secret_forbidden"})
+_SAFE_SENSITIVE_ERROR_CODES: Final = frozenset(
+    {
+        "locator_secret_forbidden",
+        "cookie_login_account_not_found",
+        "cookie_login_conflict",
+        "cookie_login_busy",
+        "cookie_login_unavailable",
+        "cookie_login_rejected",
+        "cookie_login_verification_unavailable",
+        "cookie_login_timed_out",
+        "cookie_login_cancelled",
+        "cookie_login_result_invalid",
+        "cookie_login_cleanup_failed",
+        "cookie_login_save_failed",
+    }
+)
 
 
 class OperationPayloadError(ValueError):
@@ -652,7 +680,20 @@ def operation_result_summary(kind: object, payload: object) -> dict[str, object]
 
     normalized_kind = _kind(kind)
     normalized_payload = _mapping(payload, error_code="operation_result_invalid")
-    if normalized_kind == "creator-profile":
+    if normalized_kind == "account-cookie-login":
+        error_code = "operation_result_invalid"
+        _exact_fields(
+            normalized_payload, {"account_id", "auth_status", "login_method", "auth_revision"}, error_code=error_code
+        )
+        if normalized_payload["auth_status"] != "authenticated" or normalized_payload["login_method"] != "cookie":
+            raise _fail(error_code)
+        result = {
+            "account_id": _uuid(normalized_payload["account_id"], error_code=error_code),
+            "auth_status": "authenticated",
+            "login_method": "cookie",
+            "auth_revision": _count(normalized_payload["auth_revision"], error_code=error_code, minimum=1),
+        }
+    elif normalized_kind == "creator-profile":
         error_code = "operation_result_invalid"
         _exact_fields(normalized_payload, {"profile_id", "generation", "revision"}, error_code=error_code)
         result = {
@@ -797,6 +838,14 @@ def _request_parameters(kind: OperationKind, parameters: object) -> dict[str, ob
     _exact_fields(payload, expected, error_code="operation_request_identity_invalid")
     error_code = "operation_request_identity_invalid"
 
+    if kind == "account-cookie-login":
+        return {
+            "identity_digest": _sha256(payload["identity_digest"], error_code=error_code),
+            "expected_auth_revision": _count(payload["expected_auth_revision"], error_code=error_code),
+            "frontend_generation": _uuid(payload["frontend_generation"], error_code=error_code),
+            "enable_mediacrawler": _bool(payload["enable_mediacrawler"], error_code=error_code),
+            "accept_mediacrawler_license": _bool(payload["accept_mediacrawler_license"], error_code=error_code),
+        }
     if kind == "creator-profile":
         return {
             "identity_digest": _sha256(payload["identity_digest"], error_code=error_code),

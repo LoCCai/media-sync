@@ -32,7 +32,7 @@ from media_sync.infrastructure.db.models import (
 )
 
 NOW = datetime(2026, 9, 4, 1, 2, 3, tzinfo=UTC)
-REVISION = "0010_creator_profiles"
+REVISION = "0011_cookie_login"
 
 
 def _database_url(path: Path) -> str:
@@ -172,6 +172,7 @@ def test_bundle_has_only_closed_keys_and_aggregate_counts(database: Database) ->
     }
     assert kind_counts | {} == {
         "creator-profile": 0,
+        "account-cookie-login": 0,
         "account-login": 0,
         "asset-download": 1,
         "emby-export": 1,
@@ -299,6 +300,33 @@ def test_safe_redacted_secret_classification_is_allowed(database: Database) -> N
 
 
 @pytest.mark.parametrize(
+    "error_code",
+    [
+        "cookie_login_account_not_found",
+        "cookie_login_conflict",
+        "cookie_login_busy",
+        "cookie_login_unavailable",
+        "cookie_login_rejected",
+        "cookie_login_verification_unavailable",
+        "cookie_login_timed_out",
+        "cookie_login_cancelled",
+        "cookie_login_result_invalid",
+        "cookie_login_cleanup_failed",
+        "cookie_login_save_failed",
+    ],
+)
+def test_fixed_cookie_login_kind_and_error_codes_are_safe(database: Database, error_code: str) -> None:
+    with database.session() as session:
+        session.add(_operation(31, kind="account-cookie-login", error_code=error_code))
+
+    _, bundle = _decoded(_service(database))
+    operations = bundle["operations"]
+    assert isinstance(operations, dict)
+    assert {"kind": "account-cookie-login", "count": 1} in operations["kind_counts"]
+    assert operations["recent_error_counts"] == [{"error_code": error_code, "count": 1}]
+
+
+@pytest.mark.parametrize(
     "unsafe_code",
     [
         "https://example.invalid/?token=private-sentinel",
@@ -310,6 +338,12 @@ def test_safe_redacted_secret_classification_is_allowed(database: Database) -> N
         "credential_material_leaked",
         "raw_traceback_leaked",
         "private_sentinel",
+        "cookie_login_rejected_extra",
+        "extra_cookie_login_rejected",
+        "cookie_login_unrecognized",
+        "COOKIE_LOGIN_REJECTED",
+        "account-cookie-login",
+        "0011_cookie_login",
     ],
 )
 def test_unsafe_error_codes_fail_closed_without_reflection(database: Database, unsafe_code: str) -> None:
@@ -340,9 +374,20 @@ def test_revision_mismatch_is_reported_without_becoming_unreachable(database: Da
     }
 
 
-def test_malformed_database_revision_fails_without_reflection(database: Database) -> None:
+@pytest.mark.parametrize(
+    "revision",
+    [
+        "private-sentinel-revision",
+        "0011_cookie_login_extra",
+        "extra_0011_cookie_login",
+        "0011_COOKIE_LOGIN",
+        "cookie_login_rejected",
+        "account-cookie-login",
+    ],
+)
+def test_malformed_database_revision_fails_without_reflection(database: Database, revision: str) -> None:
     with database.session() as session:
-        session.execute(text("UPDATE alembic_version SET version_num = 'private-sentinel-revision'"))
+        session.execute(text("UPDATE alembic_version SET version_num = :revision"), {"revision": revision})
 
     with pytest.raises(SupportBundleError) as captured:
         _service(database).build()
@@ -350,6 +395,42 @@ def test_malformed_database_revision_fails_without_reflection(database: Database
     assert captured.value.code == "support_bundle_database_failed"
     assert "private-sentinel" not in str(captured.value)
     assert "private-sentinel" not in repr(captured.value)
+    assert revision not in str(captured.value)
+    assert revision not in repr(captured.value)
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("version", "0011_cookie_login"),
+        ("version", "account-cookie-login"),
+        ("version", "cookie_login_rejected"),
+        ("kind", "account-cookie-login-extra"),
+        ("kind", "cookie_login_rejected"),
+        ("schema_revision", "0011_cookie_login_extra"),
+        ("schema_revision", "cookie_login_rejected"),
+        ("expected_schema_revision", "0011_cookie_login_extra"),
+        ("expected_schema_revision", "account-cookie-login"),
+        ("error_code", "cookie_login_rejected_extra"),
+        ("error_code", "0011_cookie_login"),
+    ],
+)
+def test_encoded_exemptions_require_exact_field_and_fixed_value(field: str, value: str) -> None:
+    encoded = json.dumps({field: value}, separators=(",", ":")).encode("ascii")
+    with pytest.raises(SupportBundleError) as captured:
+        support_bundle_module._assert_encoded_safe(encoded)
+
+    assert captured.value.code == "support_bundle_content_unsafe"
+    assert value not in str(captured.value)
+
+
+@pytest.mark.parametrize("revision", ["0011_cookie_login_extra", "account-cookie-login", "cookie_login_rejected"])
+def test_sensitive_expected_revision_is_not_exempted(database: Database, revision: str) -> None:
+    with pytest.raises(SupportBundleError) as captured:
+        _service(database, expected_revision=revision).build()
+
+    assert captured.value.code == "support_bundle_content_unsafe"
+    assert revision not in str(captured.value)
 
 
 def test_database_failure_is_fixed_and_does_not_expose_database_url(database: Database) -> None:

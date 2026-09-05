@@ -61,6 +61,7 @@ _DEFAULT_JOIN_TIMEOUT_SECONDS = 5.0
 _WRITE_ATTEMPTS = 4
 _WRITE_RETRY_SECONDS = 0.01
 _KIND_TARGET_TYPES: Mapping[str, str | None] = {
+    "account-cookie-login": "account",
     "creator-profile": "account",
     "account-login": "account",
     "asset-download": "asset",
@@ -320,7 +321,7 @@ class OperationExecutionContext:
         return snapshot
 
     def commit_effect(self, action: Callable[[Session], _T]) -> _T:
-        """Commit a short database-only profile effect under the live lease.
+        """Commit a short database-only credential/profile effect under the live lease.
 
         Network, filesystem and subprocess work must finish before this call.
         The callback may be retried on a transaction conflict and must not
@@ -330,7 +331,7 @@ class OperationExecutionContext:
         return self._coordinator._commit_effect(self._handle, self.operation_id, action)
 
     def commit_success(self, action: Callable[[Session], Mapping[str, object]]) -> Mapping[str, object]:
-        """Publish the final profile and terminal safe result in one transaction."""
+        """Publish the final credential/profile and terminal safe result atomically."""
 
         return self._coordinator._commit_effect(self._handle, self.operation_id, action, finish_success=True)
 
@@ -1067,7 +1068,7 @@ class OperationCoordinator:
                     update(Operation)
                     .where(
                         Operation.id == operation_id,
-                        Operation.kind == "creator-profile",
+                        Operation.kind.in_(("creator-profile", "account-cookie-login")),
                         Operation.state == "running",
                         Operation.lease_owner == handle.lease_owner,
                         Operation.lease_token == handle.lease_token,
@@ -1089,13 +1090,13 @@ class OperationCoordinator:
             # outlived its lease or observed a process-local cancellation.
             linearized_at = fence()
             if finish_success:
-                summary = operation_result_summary("creator-profile", result)
                 # A callback may keep an ORM Operation alive in the identity
                 # map. Refresh the exact row after synchronize_session=False
                 # fences, otherwise its cached revision can reject final CAS.
                 session.get(Operation, operation_id, populate_existing=True)
                 repository = OperationRepository(session)
                 snapshot = repository.require_for_update(operation_id)
+                summary = operation_result_summary(snapshot.kind, result)
                 repository.finish_succeeded(
                     operation_id,
                     expected_revision=snapshot.revision,

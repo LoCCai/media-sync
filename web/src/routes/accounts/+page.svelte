@@ -5,6 +5,8 @@
   import { api, apiBlob, apiMessage } from '$lib/api/client';
   import { AccountPreflightReader } from '$lib/api/account-preflight';
   import { initialLoginAttemptView, LoginAttemptMonitor } from '$lib/api/login-attempt';
+  import { cookieLoginEligibility } from '$lib/api/cookie-login';
+  import CookieLoginDialog from '$lib/components/CookieLoginDialog.svelte';
   import EmptyState from '$lib/components/EmptyState.svelte';
   import Modal from '$lib/components/Modal.svelte';
   import PageHeader from '$lib/components/PageHeader.svelte';
@@ -56,6 +58,9 @@
   let selectedAccountId = '';
   let addOpen = false;
   let qrOpen = false;
+  let cookieOpen = false;
+  let cookieAccount: Account | null = null;
+  let cookieCapability: PlatformCapability | null = null;
   let formPlatform: Platform = 'bili';
   let formName = '';
   let qrAccount: Account | null = null;
@@ -77,9 +82,10 @@
   $: selectedCapability = capabilityByPlatform(capabilities, selectedAccount?.platform);
   $: selectedPreflight = selectedAccount ? (preflights[selectedAccount.id] ?? null) : null;
   $: selectedLoginStatus = selectedAccount ? (statuses[selectedAccount.id] ?? null) : null;
-  $: selectedLoginExplanation = selectedAccount
-    ? accountLoginExplanation(selectedLoginStatus, selectedAccount.id)
-    : null;
+  $: selectedLoginExplanation =
+    selectedAccount && selectedAccount.login_method !== 'cookie'
+      ? accountLoginExplanation(selectedLoginStatus, selectedAccount.id)
+      : null;
   $: selectedLoginDiagnostic =
     selectedAccount && selectedLoginStatus
       ? safeLoginDiagnostic(selectedLoginStatus, selectedAccount.id)
@@ -91,6 +97,7 @@
   $: selectedCanStart =
     !loading && canStartQrLogin(selectedAccount, selectedCapability, selectedPreflight, selectedLoginStatus);
   $: formCapability = capabilityByPlatform(capabilities, formPlatform);
+  $: if (cookieOpen && cookieAccount?.id !== selectedAccountId) cookieOpen = false;
 
   async function load(): Promise<void> {
     const revision = ++loadRevision;
@@ -175,11 +182,21 @@
   }
 
   function selectForPreflight(account: Account): void {
+    cookieOpen = false;
     preflightReader.invalidate();
     preflightLoading = '';
     selectedAccountId = account.id;
     preflightBlock = '';
     void loadPreflight(account.id);
+  }
+
+  function openCookie(account: Account): void {
+    const capability = capabilityByPlatform(capabilities, account.platform);
+    if (destroyed || loading || cookieLoginEligibility(account, capability)) return;
+    selectedAccountId = account.id;
+    cookieAccount = { ...account };
+    cookieCapability = capability;
+    cookieOpen = true;
   }
 
   function openAdd(): void {
@@ -341,6 +358,16 @@
       description={`能力契约 v${capabilityVersion ?? '—'} · ${selectedAccount.display_name}`}
     >
       <svelte:fragment slot="actions">
+        <button
+          class="button secondary small"
+          type="button"
+          on:click={() => openCookie(selectedAccount)}
+          disabled={loading ||
+            !!loginStarting ||
+            !!cookieLoginEligibility(selectedAccount, selectedCapability)}
+          title={cookieLoginEligibility(selectedAccount, selectedCapability) ||
+            '明确粘贴后校验并保存，支持替换当前认证'}>粘贴 Cookie</button
+        >
         {#if selectedPreflightDisposition !== 'required'}
           <button class="button secondary small" type="button" on:click={load} disabled={loading}>
             <RefreshCw class={loading ? 'spin' : ''} size={14} />刷新本地状态
@@ -395,6 +422,10 @@
               <div>
                 <dt>扫码能力</dt>
                 <dd>{selectedCapability.qr_login ? '可用' : '未开放'}</dd>
+              </div>
+              <div>
+                <dt>粘贴 Cookie 校验</dt>
+                <dd>{selectedCapability.pasted_cookie_login === true ? '可用' : '尚未接入'}</dd>
               </div>
               <div>
                 <dt>离线形状</dt>
@@ -468,7 +499,17 @@
           {/if}
         </section>
       </div>
-      {#if statusErrors[selectedAccount.id]}
+      {#if selectedAccount.login_method === 'cookie'}
+        <div class="notice login-result-notice" role="status">
+          <strong>当前认证方式：Cookie · {statusLabel(selectedAccount.auth_status)}</strong>
+          <span
+            >以账户当前认证记录为准；最近扫码会话仅为历史，不覆盖本次 Cookie 认证。保存成功不代表内容已采集。</span
+          >
+          {#if selectedAccount.platform === 'bili'}<span
+              >B 站 Cookie 作者资料查询已接入，请到订阅页面单独查询；不代表真实平台端到端验收完成。</span
+            >{/if}
+        </div>
+      {:else if statusErrors[selectedAccount.id]}
         <div class="notice warning login-result-notice" role="status">{LOGIN_STATUS_UNAVAILABLE}</div>
       {:else if selectedLoginExplanation}
         <section
@@ -518,7 +559,8 @@
           <tbody>
             {#each accounts as account}
               {@const login = statuses[account.id]}
-              {@const loginExplanation = accountLoginExplanation(login ?? null, account.id)}
+              {@const loginExplanation =
+                account.login_method === 'cookie' ? null : accountLoginExplanation(login ?? null, account.id)}
               {@const capability = capabilityByPlatform(capabilities, account.platform)}
               {@const composite = accountCompositeState(
                 account,
@@ -542,20 +584,42 @@
                 </td>
                 <td>
                   <StatusBadge status={composite.status} label={composite.label} />
-                  <span class="cell-sub">认证：{statusLabel(login?.auth_status ?? account.auth_status)}</span>
+                  <span class="cell-sub"
+                    >认证：{statusLabel(
+                      account.login_method === 'cookie'
+                        ? account.auth_status
+                        : (login?.auth_status ?? account.auth_status)
+                    )}</span
+                  >
                 </td>
                 <td>
                   <span class="cell-main">{statusLabel(login?.login_session_status)}</span>
+                  {#if account.login_method === 'cookie'}<span class="cell-sub"
+                      >历史扫码会话，不是当前 Cookie 结果</span
+                    >{/if}
                   <span class="cell-sub mono">{shortId(login?.login_session_id)}</span>
                   {#if statusErrors[account.id]}<span class="cell-sub">最近结果读取失败，请刷新确认</span>
                   {:else if loginExplanation}<span class="cell-sub">{loginExplanation.title}</span>{/if}
                 </td>
                 <td>
                   <span class="cell-main">{capability?.qr_login ? 'QR 可用' : 'QR 未开放'}</span>
+                  <span class="cell-sub"
+                    >{capability?.pasted_cookie_login === true
+                      ? 'Cookie 校验可用'
+                      : 'Cookie 校验未接入'}</span
+                  >
                   <span class="cell-sub">{capability?.offline_shapes.length ?? 0} 种离线形状</span>
                 </td>
                 <td>{formatDate(login?.auth_updated_at ?? login?.updated_at ?? account.created_at)}</td>
                 <td class="action-cell">
+                  <button
+                    class="button secondary small"
+                    type="button"
+                    on:click={() => openCookie(account)}
+                    disabled={loading || !!loginStarting || !!cookieLoginEligibility(account, capability)}
+                    title={cookieLoginEligibility(account, capability) || '校验并保存 Cookie'}
+                    >粘贴 Cookie</button
+                  >
                   <button
                     class="button secondary small"
                     type="button"
@@ -581,6 +645,15 @@
     {/if}
   </Panel>
 </div>
+
+{#if cookieOpen && cookieAccount}
+  <CookieLoginDialog
+    bind:open={cookieOpen}
+    account={cookieAccount}
+    capability={cookieCapability}
+    on:saved={() => void load()}
+  />
+{/if}
 
 <Modal bind:open={addOpen} title="添加平台账户" description="平台与登录规则来自当前服务端能力契约。">
   {#if capabilityError || !capabilities.length}
@@ -613,8 +686,13 @@
           <strong class="notice-title">
             {formCapability.qr_login ? '支持隔离扫码登录' : '扫码登录尚未开放'}
           </strong>
-          可用方式：{formCapability.login_methods.map(loginMethodLabel).join('、')}。Cookie、会话内容与
-          profile 路径不会显示在网页中。
+          可用方式：{formCapability.login_methods
+            .map(loginMethodLabel)
+            .join('、')}。添加仅建立账户，不会自动扫码。
+          {formCapability.pasted_cookie_login === true
+            ? '添加后可明确选择粘贴 Cookie 校验并保存。'
+            : '此平台暂未接入粘贴 Cookie 校验。'}
+          已保存的 Cookie、会话内容与 profile 路径不会回显。
         </div>
       </div>
     {/if}

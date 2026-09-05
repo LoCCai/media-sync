@@ -2,9 +2,9 @@
 
 # 项目工作日志
 
-当前推进：[0057 创作者资料](executions/0057-creator-profile-lookup/progress.zh.md)接入 Bili saved-session 的昵称/头像查询、独立本地备注和资料凭单。[0056 订阅可用性](executions/0056-subscription-usability/progress.zh.md)已交付可恢复删除/暂停恢复、单 Job 报告和独立本地输出说明。其他六平台及 Cookie 资料/登录、真实采集归档仍待验收；实际测试与发布边界见[0057验证](executions/0057-creator-profile-lookup/verification.zh.md)，不据首片宣称完整目标完成。
+当前推进：[0058 Cookie登录](executions/0058-cookie-login/progress.zh.md)实现B站/小红书/微博/知乎的明确远程校验、私密保存和全新上下文复用，并接入B站Cookie昵称/头像查询。[0057](executions/0057-creator-profile-lookup/progress.zh.md)交付B站saved-session资料和独立备注；[0056](executions/0056-subscription-usability/progress.zh.md)交付可恢复删除/暂停恢复、单Job报告和独立本地输出。三平台粘贴验证器、六平台资料、有界采集及真实归档/播放验收仍须完成。见[0058验证](executions/0058-cookie-login/verification.zh.md)，整体目标未完成。
 
-最新 P0 后续：[首次真实 B 站采集失败](executions/0055-operator-auth-playback-evidence/bili-success-followup/verification.zh.md)后的[调度失败诊断](executions/0055-operator-auth-playback-evidence/scheduler-diagnostics/progress.zh.md)，保存双语目标/计划/推进/验证。登录成功和 Worker 完成不等于采集成功；已实现与待实现见[统一状态](status.zh.md)。有界 B 站采集与粘贴 Cookie 校验/保存/复用仍待实现，七平台目标不变。
+最新P0后续：[首次真实B站采集失败](executions/0055-operator-auth-playback-evidence/bili-success-followup/verification.zh.md)后的[调度失败诊断](executions/0055-operator-auth-playback-evidence/scheduler-diagnostics/progress.zh.md)。登录成功和Worker完成不等于采集成功；[统一状态](status.zh.md)区分已实现与待实现。有界B站采集仍须完成，七平台目标不变。
 
 本目录是项目的长期审计记录。每个执行里程碑固定保存四类文件：目标、计划、推进结果和验证过程。自执行 0028 起，每份文档维护两种语言版本：英文 `<name>.md` 与中文 `<name>.zh.md`，两个版本顶部互相链接。
 
@@ -29,6 +29,8 @@
 
 | ID | 里程碑 | 状态 | 提交 |
 | --- | --- | --- | --- |
+| 0058 | Cookie校验、私密保存与复用 | 四平台验证器及B站Cookie资料已实现，三平台验证器/真人门仍开放；[验证](executions/0058-cookie-login/verification.zh.md) | 计划 `f94d557`；实现为包含本行的提交 |
+| 0057 | 单作者资料 | B站saved-session资料、本地备注、凭单绑定订阅；[验证](executions/0057-creator-profile-lookup/verification.zh.md) | `141f7c4`、`68c4004` |
 | 0056 | 订阅可用性与本地交付 | 删除/暂停恢复、本地输出说明和精确 Job 报告已实现；自动作者资料仍必做；[进度](executions/0056-subscription-usability/progress.zh.md)、[验证](executions/0056-subscription-usability/verification.zh.md) | 计划 `fe54aba`；实现为包含本行的提交 |
 | 0001 | 初始化并锁定上游 | 已完成 | `59da120` |
 | 0002 | 上游分析与架构 | 已完成 | `af813bd`, `201fbbf` |

@@ -9,7 +9,7 @@ from uuid import UUID
 from sqlalchemy.orm import Session
 
 from media_sync.domain import Platform
-from media_sync.infrastructure.db import Database
+from media_sync.infrastructure.db import Account, Database
 from media_sync.infrastructure.db.creator_profile_repository import (
     PROFILE_ERROR_CODES,
     CreatorProfileError,
@@ -22,6 +22,7 @@ from media_sync.integrations.mediacrawler.creator_profile_runner import (
     MediaCrawlerCreatorProfileResult,
     MediaCrawlerCreatorProfileRunner,
 )
+from media_sync.security.secrets import SecretError, SecretResolver
 
 from .creator_avatar import fetch_creator_avatar
 from .operations import OperationExecutionContext, OperationOutcome
@@ -91,10 +92,12 @@ class CreatorProfileService:
         runner: MediaCrawlerCreatorProfileRunner | None,
         *,
         avatar_fetcher: Callable[[str | None], bytes | None] = fetch_creator_avatar,
+        secret_resolver: SecretResolver | None = None,
     ) -> None:
         self.database = database
         self.runner = runner
         self.avatar_fetcher = avatar_fetcher
+        self.secret_resolver = secret_resolver
 
     def preflight(self, account_id: str, platform: str, creator_remote_id: str) -> str:
         if platform != "bili":
@@ -131,11 +134,24 @@ class CreatorProfileService:
             if context.cancel_requested:
                 return OperationOutcome.cancelled()
             context.phase("looking_up_creator")
+            cookie = None
+            with self.database.session() as session:
+                if CreatorProfileRepository(session).credential_snapshot(account_id, platform) != credential_digest:
+                    raise CreatorProfileError("creator_profile_auth_required")
+                account = session.get(Account, account_id)
+                if account is not None and account.login_method == "cookie":
+                    if self.secret_resolver is None or account.credential_ref is None:
+                        raise CreatorProfileError("creator_profile_auth_required")
+                    try:
+                        cookie = self.secret_resolver.resolve(account.credential_ref)
+                    except SecretError:
+                        raise CreatorProfileError("creator_profile_auth_required") from None
             request = MediaCrawlerCreatorProfileRequest(
                 account_id=UUID(account_id),
                 platform=Platform(platform),
                 creator_remote_id=creator_remote_id,
                 request_id=UUID(context.operation_id),
+                cookie=cookie,
             )
             try:
                 if self.runner is None:

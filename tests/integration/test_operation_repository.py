@@ -1333,6 +1333,27 @@ def test_expired_reconciliation_is_fenced_and_preserves_live_foreign_lease(datab
         assert repository.require(live_id).state == "running"
 
 
+def test_interrupted_cookie_attempt_requires_fresh_explicit_candidate(database: Database) -> None:
+    operation_id, _lease = _create_claimed(database, suffix=58, kind="account-cookie-login", lease_seconds=1)
+    with database.session() as session:
+        repository = OperationRepository(session)
+        observed_at = NOW + timedelta(seconds=2)
+        candidate = next(
+            row for row in repository.list_expired_candidates(at=observed_at) if row.operation_id == operation_id
+        )
+        terminal = repository.reconcile(
+            candidate,
+            state="interrupted",
+            error_code="lease_expired",
+            context={"subject_type": "account", "subject_state": "lease_expired"},
+            at=observed_at,
+        )
+        assert terminal.state == "interrupted"
+        assert terminal.retryable is False
+        assert terminal.allowed_actions == ()
+        assert repository.require(operation_id).result_summary == {}
+
+
 def test_metadata_create_all_seeds_exactly_one_stream_state_and_cascades(database: Database) -> None:
     database.create_schema()
     database.create_schema()

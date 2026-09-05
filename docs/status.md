@@ -2,11 +2,17 @@
 
 # Unified project status (single source of truth)
 
-## Latest: Bili single-creator profiles (2026-09-05)
+## Latest: pasted Cookie validation and reuse (0058)
+
+[Execution 0058](executions/0058-cookie-login/progress.md) implements Bili/XHS/WB/Zhihu remote self-account checks, private immutable managed storage, atomic Account/Operation publication and the Accounts paste dialog. Bili Cookie accounts now also support single-creator nickname/avatar lookup; downstream Cookie contexts cannot silently use an old saved profile. Complete offline directory runs passed 4256 tests (23 skipped), Web passed 553, and final wheel sources match current code. See [verification](executions/0058-cookie-login/verification.md) for exact timing/scope, failure corrections, package/publication state and live exclusions.
+
+DY/KS/Tieba paste validators, profiles on six platforms, bounded creator-history coverage and real capture/archive/Emby/Jellyfin qualification remain required. Four-platform implementation is not seven-platform completion. The historical zero-content Bili canary remains failed/unresolved, and this increment performs no production deployment or supervisor restart.
+
+## Previous checkpoint: Bili single-creator profiles (2026-09-05)
 
 [Execution 0057](executions/0057-creator-profile-lookup/progress.md) implements a standalone Bili saved-session profile runner, account-scoped nickname/avatar storage, subscription local notes, successful-profile receipts and the subscription UI. Profile publication and Operation success share one transaction with authentication/generation/lease/cancel fences. Avatars are restricted same-origin PNGs without weakening CSP. The full offline checkpoint passed 3972 tests (22 skipped); final hardened-source regression passed 575, and Web passed 492. These are overlapping checkpoints, not summed coverage. See [verification](executions/0057-creator-profile-lookup/verification.md) for exact scope, synthetic browser limits and publication status.
 
-The other six platforms and Cookie-mode profiles remain unimplemented. Pasted-Cookie login, correct bounded history coverage, real capture/archive/Emby/Jellyfin qualification remain open. No production deployment, live lookup or supervisor restart occurred. 0056 and the overall seven-platform goal stay open.
+At the 0057 checkpoint the other six platforms and Cookie-mode profiles were unimplemented; 0058 above adds Bili Cookie profiles and four paste validators. Correct bounded history coverage and real capture/archive/Emby/Jellyfin qualification remain open. No production deployment, live lookup or supervisor restart occurred. 0056 and the overall seven-platform goal stay open.
 
 ## Previous checkpoint: subscription usability and local delivery
 

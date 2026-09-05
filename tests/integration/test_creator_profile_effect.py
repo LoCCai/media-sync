@@ -30,7 +30,8 @@ from media_sync.infrastructure.db.models import Account, Operation
 @pytest.mark.parametrize(
     "boundary", ["valid", "cancel_before", "cancel_during", "expire_before", "expire_during", "raise"]
 )
-def test_effect_rolls_back_if_lease_or_cancellation_boundary_changes(tmp_path: Path, boundary: str) -> None:
+@pytest.mark.parametrize("kind", ["creator-profile", "account-cookie-login"])
+def test_effect_rolls_back_if_lease_or_cancellation_boundary_changes(tmp_path: Path, boundary: str, kind: Any) -> None:
     database = Database(f"sqlite+pysqlite:///{(tmp_path / 'effects.sqlite3').as_posix()}")
     database.create_schema()
     now = datetime.now(UTC)
@@ -69,7 +70,7 @@ def test_effect_rolls_back_if_lease_or_cancellation_boundary_changes(tmp_path: P
         with OperationCoordinator(database, clock=lambda: clock[0]) as coordinator:
             submitted = coordinator.submit(
                 OperationExecution(
-                    kind="creator-profile",
+                    kind=kind,
                     request_fingerprint="a" * 64,
                     target_type="account",
                     target_id=account_id,
@@ -88,7 +89,8 @@ def test_effect_rolls_back_if_lease_or_cancellation_boundary_changes(tmp_path: P
         database.dispose()
 
 
-def test_completed_operation_cannot_use_held_effect_capability(tmp_path: Path) -> None:
+@pytest.mark.parametrize("kind", ["creator-profile", "account-cookie-login"])
+def test_completed_operation_cannot_use_held_effect_capability(tmp_path: Path, kind: Any) -> None:
     database = Database(f"sqlite+pysqlite:///{(tmp_path / 'effects.sqlite3').as_posix()}")
     database.create_schema()
     captured = []
@@ -103,7 +105,7 @@ def test_completed_operation_cannot_use_held_effect_capability(tmp_path: Path) -
         with OperationCoordinator(database) as coordinator:
             submitted = coordinator.submit(
                 OperationExecution(
-                    kind="creator-profile",
+                    kind=kind,
                     request_fingerprint="b" * 64,
                     target_type="account",
                     target_id=str(uuid4()),
@@ -125,7 +127,10 @@ def test_completed_operation_cannot_use_held_effect_capability(tmp_path: Path) -
 
 
 @pytest.mark.parametrize("invalid_result", [False, True])
-def test_profile_success_is_atomic_with_effect_and_fresh_orm_revision(tmp_path: Path, invalid_result: bool) -> None:
+@pytest.mark.parametrize("kind", ["creator-profile", "account-cookie-login"])
+def test_profile_success_is_atomic_with_effect_and_fresh_orm_revision(
+    tmp_path: Path, invalid_result: bool, kind: Any
+) -> None:
     database = Database(f"sqlite+pysqlite:///{(tmp_path / 'atomic.sqlite3').as_posix()}")
     database.create_schema()
     with database.session() as session:
@@ -139,6 +144,13 @@ def test_profile_success_is_atomic_with_effect_and_fresh_orm_revision(tmp_path: 
             session.execute(update(Account).where(Account.id == account_id).values(display_name="changed"))
             if invalid_result:
                 return {"raw_nickname_or_secret": "must-not-persist"}
+            if kind == "account-cookie-login":
+                return {
+                    "account_id": account_id,
+                    "auth_status": "authenticated",
+                    "login_method": "cookie",
+                    "auth_revision": 1,
+                }
             return {"profile_id": str(uuid4()), "generation": 1, "revision": 1}
 
         try:
@@ -150,7 +162,7 @@ def test_profile_success_is_atomic_with_effect_and_fresh_orm_revision(tmp_path: 
         with OperationCoordinator(database) as coordinator:
             submission = coordinator.submit(
                 OperationExecution(
-                    kind="creator-profile",
+                    kind=kind,
                     request_fingerprint="c" * 64,
                     target_type="account",
                     target_id=account_id,

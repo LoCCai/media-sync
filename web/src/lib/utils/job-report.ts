@@ -56,6 +56,7 @@ const CONTROL_ERRORS = [
 ];
 const KINDS = [
   'account-login',
+  'account-cookie-login',
   'creator-profile',
   'asset-download',
   'emby-export',
@@ -85,7 +86,8 @@ const REVISIONS = [
   '0007_media_server_operations',
   '0008_playback_evidence',
   '0009_subscription_removal',
-  '0010_creator_profiles'
+  '0010_creator_profiles',
+  '0011_cookie_login'
 ];
 const OBSERVATIONS: Record<string, string> = {
   no_attached_run: '任务尚未关联采集运行；不能据此判断已产生内容。',

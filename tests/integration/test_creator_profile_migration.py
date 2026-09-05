@@ -63,7 +63,7 @@ def test_populated_upgrade_preserves_author_paths_alias_checkpoint_tombstone_and
         with database.engine.connect() as connection:
             events = connection.scalar(text("SELECT COUNT(*) FROM operation_events"))
             subjects = connection.scalar(text("SELECT COUNT(*) FROM operation_subjects"))
-        upgrade_database(database.url)
+        upgrade_database(database.url, HEAD)
         with database.engine.connect() as connection:
             assert connection.scalar(text("SELECT version_num FROM alembic_version")) == HEAD
             assert connection.scalar(text("SELECT auth_revision FROM accounts")) == 0
@@ -98,7 +98,7 @@ def test_fresh_schema_metadata_nullable_binary_and_auth_default_match(tmp_path: 
     database = Database(f"sqlite+pysqlite:///{(tmp_path / 'fresh.sqlite3').as_posix()}")
     metadata = Database("sqlite+pysqlite:///:memory:")
     try:
-        upgrade_database(database.url)
+        upgrade_database(database.url, HEAD)
         metadata.create_schema()
         for table in ("accounts", "subscriptions", "creator_profiles", "creator_profile_lookups"):
             migration_columns = {item["name"]: item for item in inspect(database.engine).get_columns(table)}
@@ -112,7 +112,7 @@ def test_fresh_schema_metadata_nullable_binary_and_auth_default_match(tmp_path: 
             }
         _downgrade(database)
         assert "creator_profiles" not in inspect(database.engine).get_table_names()
-        upgrade_database(database.url)
+        upgrade_database(database.url, HEAD)
         assert "creator_profiles" in inspect(database.engine).get_table_names()
     finally:
         database.dispose()
@@ -122,7 +122,7 @@ def test_fresh_schema_metadata_nullable_binary_and_auth_default_match(tmp_path: 
 def test_creator_operation_history_prevents_destructive_downgrade(tmp_path: Path) -> None:
     database = Database(f"sqlite+pysqlite:///{(tmp_path / 'history.sqlite3').as_posix()}")
     try:
-        upgrade_database(database.url)
+        upgrade_database(database.url, HEAD)
         with database.session() as session:
             operation = OperationRepository(session).create_or_replay(
                 kind="creator-profile", request_fingerprint="a" * 64, target_type="account", target_id=str(uuid4())

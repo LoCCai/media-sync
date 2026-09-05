@@ -77,6 +77,7 @@ _REVISIONS = frozenset(
         "0008_playback_evidence",
         "0009_subscription_removal",
         "0010_creator_profiles",
+        "0011_cookie_login",
     }
 )
 

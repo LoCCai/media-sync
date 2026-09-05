@@ -48,7 +48,29 @@ _QR_PATTERN: Final = re.compile(r"(?i)(?:^|[^a-z0-9])(?:qr|qrcode|qr_code)(?:[^a
 _SENSITIVE_PATTERN: Final = re.compile(r"(?i)(?:authorization|bearer|cookie|credential|password|secret|session|token)")
 _EXCEPTION_PATTERN: Final = re.compile(r"(?i)(?:exception|stack[ _-]?trace|traceback)")
 _SENTINEL_PATTERN: Final = re.compile(r"(?i)sentinel")
-_SAFE_SENSITIVE_ERROR_FRAGMENT: Final = '"error_code":"locator_secret_forbidden"'
+_SAFE_SENSITIVE_REVISIONS: Final = frozenset({"0011_cookie_login"})
+_SAFE_SENSITIVE_ERROR_CODES: Final = frozenset(
+    {
+        "locator_secret_forbidden",
+        "cookie_login_account_not_found",
+        "cookie_login_conflict",
+        "cookie_login_busy",
+        "cookie_login_unavailable",
+        "cookie_login_rejected",
+        "cookie_login_verification_unavailable",
+        "cookie_login_timed_out",
+        "cookie_login_cancelled",
+        "cookie_login_result_invalid",
+        "cookie_login_cleanup_failed",
+        "cookie_login_save_failed",
+    }
+)
+_SAFE_SENSITIVE_FIELDS: Final = {
+    "error_code": _SAFE_SENSITIVE_ERROR_CODES,
+    "kind": frozenset({"account-cookie-login"}),
+    "schema_revision": _SAFE_SENSITIVE_REVISIONS,
+    "expected_schema_revision": _SAFE_SENSITIVE_REVISIONS,
+}
 
 _ERROR_MESSAGES: Final = {
     "support_bundle_configuration_invalid": "support bundle configuration is invalid",
@@ -112,7 +134,7 @@ def _schema_revision(session: Session) -> str:
         not isinstance(revision, str)
         or _REVISION_PATTERN.fullmatch(revision) is None
         or _QR_PATTERN.search(revision)
-        or _SENSITIVE_PATTERN.search(revision)
+        or (_SENSITIVE_PATTERN.search(revision) and revision not in _SAFE_SENSITIVE_REVISIONS)
         or _EXCEPTION_PATTERN.search(revision)
         or _SENTINEL_PATTERN.search(revision)
     ):
@@ -237,10 +259,13 @@ def _assert_encoded_safe(encoded: bytes) -> None:
     except UnicodeDecodeError:
         raise _fail("support_bundle_content_unsafe") from None
 
-    # This is the sole error code whose word "secret" describes a rejection,
-    # not retained secret material.  The exact JSON field/value pair is the
-    # only exemption; versions and revisions receive no such exemption.
-    scanned = material.replace(_SAFE_SENSITIVE_ERROR_FRAGMENT, '"error_code":""')
+    # These exact field/value pairs describe fixed schema and operation
+    # vocabulary, never user material. Do not exempt prefixes, substrings, or
+    # the same values in another field (for example the application version).
+    scanned = material
+    for field, values in _SAFE_SENSITIVE_FIELDS.items():
+        for value in values:
+            scanned = scanned.replace(f'"{field}":"{value}"', f'"{field}":""')
     if (
         _URL_PATTERN.search(scanned)
         or _QUERY_PATTERN.search(scanned)

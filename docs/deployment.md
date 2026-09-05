@@ -4,6 +4,16 @@
 
 This guide deploys media-sync with the pinned MediaCrawler runtime on a Linux host with Docker Compose v2. The current 0055 secure console and startup preflight are implemented and locally verified, including synthetic-browser checks; exact status is in [verification](executions/0055-operator-auth-playback-evidence/secure-console/verification.md). Backend authentication, Web session/memory-only CSRF, logout/expiry and QR/SSE are wired; `/legacy` is a protected migration notice, while root without a v2 build offers only a build/CLI notice. The current Linux image, runtime-user permissions and live platform/media-server workflows remain NOT_RUN; neither historical 0050 image PASS nor public health success substitutes for them.
 
+## Pasted Cookie login (0058)
+
+The Accounts page now has an explicit **paste → remote self-check → private save** workflow for Bili, XHS, WB and Zhihu. Paste only the browser request Cookie header value, not `Cookie:`, Set-Cookie attributes or JSON exports; never send credentials to chat or attach them to a support report. Maximum input is 16 KiB and 128 unique pairs. Values containing equals signs and valid outer quotes are preserved. DY, KS and Tieba still lack a qualified remote identity validator and are explicitly unavailable, not considered authenticated from local Cookie markers.
+
+Use the existing exact HTTPS origin and operator session/CSRF protections. The operator must explicitly acknowledge the upstream license before validation. Failures preserve the account's previous credentials. When an outcome is unknown or interrupted, check the current account and its exact Operation before a fresh explicit submission; closing the dialog does not cancel server work. Validation does not crawl content or start downloads.
+
+Successful candidates are immutable private files referenced as `managed:UUID`, under `MEDIA_SYNC_STATE_DIR/credentials` (`/data/state/credentials` in the image), **not** the read-only `/run/secrets` mount. The application runtime user must own and be able to create/read this private directory. On Linux directories/files use 0700/0600; Windows uses protected DACLs. Back up the state database and complete credentials directory together with protected storage and access controls; do not commit, expose or copy them into diagnostic bundles. Old and potentially unreferenced versions are intentionally retained; no automatic garbage collection is provided. Restoring the database without its referenced files breaks login reuse. Existing file/env/keyring references remain supported where explicitly configured.
+
+Bili Cookie accounts can query a single creator's nickname/avatar through the subscription workflow. Subsequent Cookie-based capture/detail workers use fresh nonpersistent browser contexts and the complete supplied Cookie instead of an older saved profile. These are source/offline-tested capabilities, not live qualification. This increment does not deploy production, restart supervisor, fix the historical zero-content canary by assertion, or prove seven-platform capture/archive/playback. See [0058 verification](executions/0058-cookie-login/verification.md).
+
 ## 1. Build
 
 ```bash
@@ -18,7 +28,7 @@ Before running any Compose command, create the referenced UTF-8 file outside the
 
 The example Compose file mounts that host file as the Docker secret `/run/secrets/operator_credential`, sets `MEDIA_SYNC_SECRET_FILE_DIR=/run/secrets`, and gives the application only the typed reference `file:operator_credential`. It also sets the exact browser origin `http://127.0.0.1:8632`. No credential value is committed to Git, copied into the image, or stored in SQLite.
 
-The build now compiles the SvelteKit 5 console in a dedicated Node/pnpm stage and copies only its static output into the Python application. Node.js, pnpm and `node_modules` are not present in the final runtime image. The build manifest records their build-time versions and the frontend lock-file digest.
+The build compiles the SvelteKit 5 console in a dedicated Node/pnpm stage and copies only its static output into the Python application. pnpm and frontend `node_modules` are not present in the final runtime image; a separate Debian Node.js runtime is required for the pinned crawler's JavaScript signing. The build manifest records build-time versions, the frontend lock-file digest and `javascript_runtime`.
 
 Step 0 (`fetch_mediacrawler.sh`) clones the exact MediaCrawler commit from `upstreams.lock.json` into the git-ignored `.mediacrawler-local/` directory; the build COPYs and SHA-verifies it, so **the build container itself never touches github.com** (mainland hosts whose container network cannot reach GitHub set `BUILD_HTTPS_PROXY=...` for this host-side clone instead). Re-run the script after `git pull` changes the locked commit.
 

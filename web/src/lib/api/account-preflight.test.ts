@@ -9,6 +9,7 @@ const account: Account = {
   display_name: 'synthetic account',
   login_method: 'qr',
   auth_status: 'unknown',
+  auth_revision: 0,
   created_at: null
 };
 const status: LoginStatus = {

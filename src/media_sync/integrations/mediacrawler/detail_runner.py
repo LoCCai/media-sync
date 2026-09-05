@@ -1229,6 +1229,10 @@ async def _run_upstream(request: _ChildRequest) -> tuple[Any, _BiliPlaybackResul
         install_kuaishou_media_capture(request.checkout_root)
     elif request.platform is Platform.XHS:
         install_xhs_live_capture(request.checkout_root)
+    if request.login_method is LoginMethod.COOKIE:
+        from media_sync.integrations.mediacrawler.cookie_reuse import install_cookie_reuse
+
+        install_cookie_reuse(request.checkout_root, request.platform, request.cookie or "")
 
     async def dispatch() -> _BiliPlaybackResult | None:
         if (

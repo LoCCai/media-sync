@@ -25,6 +25,7 @@ const biliCapability: PlatformCapability = {
   display_name: '哔哩哔哩',
   login_methods: ['qr', 'cookie', 'saved_session'],
   qr_login: true,
+  pasted_cookie_login: true,
   creator_input: {
     kind: 'uid',
     label: 'UID',
@@ -45,6 +46,7 @@ const account: Account = {
   display_name: '主账号',
   login_method: 'qr',
   auth_status: 'unknown',
+  auth_revision: 0,
   created_at: null
 };
 

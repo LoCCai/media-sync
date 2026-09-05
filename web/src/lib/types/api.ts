@@ -19,6 +19,7 @@ export type AccountLoginMethod = LoginMethod | 'phone';
 export type CreatorInputKind = 'profile_id' | 'sec_user_id' | 'user_id' | 'uid' | 'portrait_id' | 'url_token';
 export type OperationKind =
   | 'account-login'
+  | 'account-cookie-login'
   | 'creator-profile'
   | 'asset-download'
   | 'scheduler-run'
@@ -59,6 +60,7 @@ export interface PlatformCapability {
   display_name: string;
   login_methods: LoginMethod[];
   qr_login: boolean;
+  pasted_cookie_login: boolean;
   creator_input: {
     kind: CreatorInputKind;
     label: string;
@@ -113,6 +115,7 @@ export interface Account {
   display_name: string;
   login_method: AccountLoginMethod | null;
   auth_status: string;
+  auth_revision: number;
   created_at: string | null;
   created?: boolean;
 }

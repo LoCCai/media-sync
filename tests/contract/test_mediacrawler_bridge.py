@@ -108,6 +108,14 @@ import sys
 
 import config
 
+# Non-browser protocol fixture: real Cookie injection is qualified separately
+# by test_cookie_login_upstream with complete locked client/login modules.
+from media_sync.integrations.mediacrawler import cookie_reuse
+def fixture_cookie_reuse(checkout, platform, raw_cookie):
+    assert raw_cookie == config.COOKIES
+    config.SAVE_LOGIN_STATE = False
+cookie_reuse.install_cookie_reuse = fixture_cookie_reuse
+
 COOKIE_AT_MAIN_IMPORT = config.COOKIES
 CLEANUP_CALLS = 0
 ACTIVE_CREATOR = ""
@@ -1061,7 +1069,7 @@ def test_fake_child_proves_config_cwd_profile_and_private_env_contract(
     assert flags == {
         "headless": False,
         "cdp_headless": False,
-        "save_login": True,
+        "save_login": False,
         "cdp": False,
         "connect_existing": False,
         "comments": False,

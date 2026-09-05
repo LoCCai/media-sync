@@ -141,12 +141,16 @@ class _AccountFileLock:
         self._descriptor: int | None = None
 
     def acquire(self) -> bool:
+        if self._descriptor is not None:
+            return False
         flags = os.O_RDWR | os.O_CREAT
         flags |= getattr(os, "O_NOFOLLOW", 0)
         try:
             if self.path.is_symlink():
                 return False
-            descriptor = os.open(self.path, flags, 0o600)
+            descriptor = (
+                _open_exclusive_windows_lock(self.path) if os.name == "nt" else os.open(self.path, flags, 0o600)
+            )
             opened_stat = os.fstat(descriptor)
             if not stat.S_ISREG(opened_stat.st_mode) or opened_stat.st_nlink != 1:
                 os.close(descriptor)
@@ -154,11 +158,7 @@ class _AccountFileLock:
             if opened_stat.st_size == 0:
                 os.write(descriptor, b"\0")
             os.lseek(descriptor, 0, os.SEEK_SET)
-            if os.name == "nt":
-                import msvcrt
-
-                msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
-            else:
+            if os.name != "nt":
                 fcntl = importlib.import_module("fcntl")
                 fcntl.__dict__["flock"](
                     descriptor,
@@ -178,11 +178,7 @@ class _AccountFileLock:
             return
         with contextlib.suppress(OSError, ImportError):
             os.lseek(descriptor, 0, os.SEEK_SET)
-            if os.name == "nt":
-                import msvcrt
-
-                msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
-            else:
+            if os.name != "nt":
                 fcntl = importlib.import_module("fcntl")
                 fcntl.__dict__["flock"](descriptor, int(fcntl.__dict__["LOCK_UN"]))
         with contextlib.suppress(OSError):
@@ -194,6 +190,53 @@ class _AccountFileLock:
         if descriptor is None:
             raise RuntimeError("account lock is not held")
         return descriptor
+
+
+def _open_exclusive_windows_lock(path: Path) -> int:
+    """Open a non-reparse lock file with HANDLE-lifetime exclusive sharing.
+
+    Windows byte-range locks belong to their acquiring process, so inheriting
+    such a HANDLE cannot preserve exclusion after the parent's descriptor
+    closes. Share mode zero does: every inherited HANDLE must close before a
+    contender can open the lock file. This matches flock's inherited lifetime.
+    """
+    if sys.platform != "win32":
+        raise OSError("Windows account-lock handles are unavailable")
+
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.CreateFileW.argtypes = (
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    )
+    kernel.CreateFileW.restype = wintypes.HANDLE
+    kernel.CloseHandle.argtypes = (wintypes.HANDLE,)
+    kernel.CloseHandle.restype = wintypes.BOOL
+    handle = kernel.CreateFileW(
+        str(path),
+        0xC0000000,  # GENERIC_READ | GENERIC_WRITE
+        0,  # No read/write/delete sharing, also retained by inherited HANDLEs.
+        None,
+        4,  # OPEN_ALWAYS; never truncate an existing lock file.
+        0x00200080,  # FILE_FLAG_OPEN_REPARSE_POINT | FILE_ATTRIBUTE_NORMAL
+        None,
+    )
+    if handle == ctypes.c_void_p(-1).value:
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        # Successful conversion transfers HANDLE ownership to the CRT fd.
+        return int(msvcrt.open_osfhandle(int(handle), os.O_RDWR | os.O_BINARY | os.O_NOINHERIT))
+    except BaseException:
+        kernel.CloseHandle(handle)
+        raise
 
 
 class _WindowsJob:
@@ -1473,6 +1516,10 @@ async def _execute_child(
 
             install_xhs_live_capture(verified.root)
         config.__dict__["COOKIES"] = cookie or ""
+        if manifest.login_method.value == "cookie":
+            from media_sync.integrations.mediacrawler.cookie_reuse import install_cookie_reuse
+
+            install_cookie_reuse(verified.root, manifest.platform, cookie or "")
         cookie = None
         if cancellation is not None and cancellation.is_set():
             return EXIT_CANCELLED

@@ -4,6 +4,16 @@
 
 本指南使用内含锁定 MediaCrawler 运行时的自托管容器部署 media-sync，要求 Linux 主机与 Docker Compose v2。当前 0055 安全控制台与启动预检已实现，本地离线与合成浏览器门禁已通过；准确状态见[验证](executions/0055-operator-auth-playback-evidence/secure-console/verification.zh.md)。后端鉴权、Web session／内存 CSRF、退出／过期与二维码／SSE 已接线，`/legacy` 仅提供受保护迁移提示；无 v2 构建时根页仅提示构建／CLI。当前 Linux 镜像、运行用户权限与平台／媒体服务器真人流程仍为 NOT_RUN，不能用旧 0050 镜像 PASS 或公开 health 成功替代。
 
+## 粘贴 Cookie 登录（0058）
+
+账户页现提供 B 站、小红书、微博、知乎的明确 **粘贴 → 远程本人认证校验 → 私密保存** 流程。只粘贴浏览器请求中的 Cookie 头值，不含 `Cookie:` 前缀、Set-Cookie 属性或 JSON 导出；不要把凭据发到聊天或附进支持报告。最多16 KiB、128个唯一键值对，保留值内等号和合法外层引号。抖音、快手、贴吧仍缺少可靠远程身份验证器，明确标记不可用，不会凭本地 Cookie 标记判定已认证。
+
+继续使用精确 HTTPS Origin、后台会话和 CSRF 保护；验证前须由操作者明确确认上游许可证。失败保留账户原凭据。结果未知或进程中断时，先查看当前账户和精确 Operation，再决定是否明确重新提交；关闭弹窗不等于取消服务端工作。校验不会采集内容或启动下载。
+
+成功候选保存为 `managed:UUID` 引用的不可变私密文件，位于 `MEDIA_SYNC_STATE_DIR/credentials`（镜像默认 `/data/state/credentials`），**不写入**只读 `/run/secrets`。运行用户必须拥有该私密目录并可创建/读取；Linux目录/文件权限为0700/0600，Windows使用受保护DACL。应在受保护存储中配套备份状态数据库和完整credentials目录；不得提交、暴露或放进诊断包。旧版本和可能未引用版本有意保留，暂不提供自动清理。只恢复数据库、不恢复其引用文件会导致登录复用失败。现有明确配置的file/env/keyring引用仍受支持。
+
+B站Cookie账户可在订阅流程单独查询作者昵称/头像。后续Cookie采集/详情子进程使用全新非持久浏览器上下文和完整输入，不会误用旧保存会话。这些是源码/离线验证能力，不是真实平台验收。本增量不部署生产、不恢复supervisor，也不以断言“修复”历史零内容采集，更不代表七平台采集/归档/播放通过。见[0058验证](executions/0058-cookie-login/verification.zh.md)。
+
 ## 1. 构建
 
 ```bash
@@ -18,7 +28,7 @@ docker compose build          # 如需改端口/路径，先编辑你的本地�
 
 示例 Compose 会把宿主机文件挂载成 Docker secret `/run/secrets/operator_credential`，设置 `MEDIA_SYNC_SECRET_FILE_DIR=/run/secrets`，并只向应用提供类型化引用 `file:operator_credential`；同时设置精确浏览器 origin `http://127.0.0.1:8632`。凭据值不会提交到 Git、复制进镜像或写入 SQLite。
 
-构建现在会在独立 Node/pnpm 阶段编译 SvelteKit 5 控制台，只把静态产物复制进 Python 应用；最终运行镜像不包含 Node.js、pnpm 或 `node_modules`。构建清单会记录其构建期版本与前端锁文件摘要。
+构建在独立 Node/pnpm 阶段编译 SvelteKit 5 控制台，只把静态产物复制进 Python 应用；最终运行镜像不包含 pnpm 和前端 `node_modules`，但包含锁定爬虫 JavaScript 签名所需的独立 Debian Node.js 运行时。构建清单记录构建期版本、前端锁文件摘要和 `javascript_runtime`。
 
 第 0 步（`fetch_mediacrawler.sh`）按 `upstreams.lock.json` 的精确提交把 MediaCrawler 克隆到 git 忽略的 `.mediacrawler-local/`；构建会 COPY 并校验其 SHA，因此**构建容器自身不再访问 github.com**（容器网络到不了 GitHub 的大陆主机，改在宿主机这一步设置 `BUILD_HTTPS_PROXY=...`）。`git pull` 变更锁定提交后需重跑该脚本。
 

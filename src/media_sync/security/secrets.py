@@ -10,6 +10,7 @@ from enum import StrEnum
 from importlib import import_module
 from pathlib import Path, PureWindowsPath
 from typing import Protocol, cast
+from uuid import UUID
 
 MAX_SECRET_BYTES = 65_536
 _ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
@@ -34,6 +35,7 @@ class SecretScheme(StrEnum):
     ENV = "env"
     FILE = "file"
     KEYRING = "keyring"
+    MANAGED = "managed"
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,6 +69,12 @@ class SecretReference:
             service, account = locator.split("/", maxsplit=1)
             if not service or not account:
                 raise InvalidSecretReferenceError("keyring secret reference must use service/account")
+        if scheme is SecretScheme.MANAGED:
+            try:
+                if str(UUID(locator)) != locator:
+                    raise ValueError
+            except ValueError:
+                raise InvalidSecretReferenceError("managed secret reference must use one canonical UUID") from None
         if scheme is SecretScheme.FILE:
             candidate = Path(locator)
             windows_candidate = PureWindowsPath(locator)
@@ -205,14 +213,17 @@ class SecretResolver:
         self._providers = dict(providers)
 
     @classmethod
-    def local(cls, *, file_root: Path) -> SecretResolver:
-        return cls(
-            {
-                SecretScheme.ENV: EnvironmentSecretProvider(),
-                SecretScheme.FILE: FileSecretProvider(file_root),
-                SecretScheme.KEYRING: KeyringSecretProvider(),
-            }
-        )
+    def local(cls, *, file_root: Path, managed_root: Path | None = None) -> SecretResolver:
+        providers: dict[SecretScheme, SecretProvider] = {
+            SecretScheme.ENV: EnvironmentSecretProvider(),
+            SecretScheme.FILE: FileSecretProvider(file_root),
+            SecretScheme.KEYRING: KeyringSecretProvider(),
+        }
+        if managed_root is not None:
+            from .managed_credentials import ManagedCredentialStore
+
+            providers[SecretScheme.MANAGED] = ManagedCredentialStore(managed_root)
+        return cls(providers)
 
     def resolve(self, reference: SecretReference | str) -> SecretValue:
         parsed = SecretReference.parse(reference) if isinstance(reference, str) else reference

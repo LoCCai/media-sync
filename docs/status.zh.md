@@ -2,11 +2,17 @@
 
 # 项目统一状态（单一事实来源）
 
-## 最新：B 站单作者资料查询（2026-09-05）
+## 最新：粘贴Cookie校验与复用（0058）
+
+[执行0058](executions/0058-cookie-login/progress.zh.md)实现B站/小红书/微博/知乎远程本人认证检查、不可变managed私密保存、Account/Operation原子发布和账户粘贴弹窗。B站Cookie账户还支持单作者昵称/头像；后续Cookie上下文不再静默误用旧保存会话。完整离线目录检查4256通过（23跳过）、Web553通过，最终wheel源码与工作区一致。精确时间/范围、失败修正、打包/发布状态和真人边界见[验证](executions/0058-cookie-login/verification.zh.md)。
+
+抖音/快手/贴吧粘贴校验、六平台资料、有界作者历史覆盖和真实采集/归档/Emby/Jellyfin验收仍须完成。四平台实现不等于七平台完成；历史B站零内容金丝雀仍失败/待定位，本增量未部署生产或恢复supervisor。
+
+## 上一检查点：B站单作者资料查询（2026-09-05）
 
 [执行0057](executions/0057-creator-profile-lookup/progress.zh.md)已实现 Bili saved-session 的独立单资料 runner、账户隔离昵称/头像、订阅本地备注、成功资料凭单和实际订阅界面。资料成功与 Operation 成功同事务；认证/代际/租约/取消均复核。头像为受限同源 PNG，不放宽 CSP。完整离线检查点3972项通过（22项跳过），最终加固源码联合回归575项通过，Web492项通过；这些是覆盖重叠的检查点，不相加计算。具体范围、合成浏览器限制和发布状态见[验证记录](executions/0057-creator-profile-lookup/verification.zh.md)。
 
-其他六平台及 Cookie 模式资料查询仍待实现；粘贴 Cookie 登录、正确有界历史覆盖、实际采集/归档/Emby/Jellyfin 验收仍开放。未部署生产、未真人查询，未恢复 supervisor。0056 和整体七平台目标保持开放。
+0057发布时其他六平台及Cookie模式资料仍未实现；上面的0058新增B站Cookie资料和四平台粘贴校验。正确有界历史覆盖及实际采集/归档/Emby/Jellyfin验收仍开放。未部署生产、未真人查询、未恢复supervisor。0056和整体七平台目标保持开放。
 
 ## 上一检查点：订阅可用性与本地交付
 

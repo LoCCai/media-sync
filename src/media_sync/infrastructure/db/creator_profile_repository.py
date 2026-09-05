@@ -242,9 +242,10 @@ class CreatorProfileRepository:
             raise CreatorProfileError("creator_profile_identity_mismatch")
         if (
             account.adapter != "mediacrawler"
-            or account.login_method != "saved_session"
+            or account.login_method not in {"saved_session", "cookie"}
             or account.auth_status != "authenticated"
-            or account.credential_ref is not None
+            or (account.login_method == "saved_session" and account.credential_ref is not None)
+            or (account.login_method == "cookie" and account.credential_ref is None)
             or account.profile_path is not None
         ):
             raise CreatorProfileError("creator_profile_auth_required")

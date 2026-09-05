@@ -68,6 +68,7 @@
     mergeSelectedOperation,
     operationCanCancel,
     operationDisplayLabel,
+    operationErrorLabel,
     operationIsActive,
     operationMatches,
     operationProgressLabel,
@@ -682,6 +683,7 @@
             <option value="all">全部类型</option>
             <option value="account-login">账户登录</option>
             <option value="creator-profile">作者资料查询</option>
+            <option value="account-cookie-login">Cookie 校验与保存</option>
             <option value="asset-download">资产下载</option>
             <option value="scheduler-run">订阅同步</option>
             <option value="pipeline-run">下载 / 导出</option>
@@ -794,7 +796,8 @@
                       <div class="progress-bar" style={`width: ${progressPercent}%`}></div>
                     </div>{/if}</td
                 ><td>{formatDate(operation.requested_at)}</td><td
-                  >{#if operation.error_code}<span class="error-code mono">{operation.error_code}</span
+                  >{#if operation.error_code}<span class="error-code mono"
+                      >{operationErrorLabel(operation)}</span
                     >{#if truthNotice}<span class="cell-sub truth-copy">{truthNotice.title}</span>{/if}
                     >{:else if truthNotice && workerStateLabel}<span
                       class="worker-outcome"
@@ -1006,7 +1009,7 @@
         <div class="key-value-row">
           <dt>error_code</dt>
           <dd class:error-code={!!selectedOperation.error_code} class="mono">
-            {selectedOperation.error_code ?? '—'}
+            {operationErrorLabel(selectedOperation)}
           </dd>
         </div>
       </dl>

@@ -145,6 +145,7 @@ def test_payload_rows_have_only_the_closed_public_fields_and_canonical_examples(
             "display_name",
             "login_methods",
             "qr_login",
+            "pasted_cookie_login",
             "creator_input",
             "requires_full_history_acknowledgement",
             "offline_shapes",
@@ -152,6 +153,7 @@ def test_payload_rows_have_only_the_closed_public_fields_and_canonical_examples(
             "live_qualification",
         }
         creator_input = row["creator_input"]
+        assert row["pasted_cookie_login"] is (row["platform"] in {"bili", "wb", "xhs", "zhihu"})
         assert isinstance(creator_input, dict)
         assert set(creator_input) == {
             "kind",

@@ -17,6 +17,7 @@ import pytest
 
 from media_sync.integrations.mediacrawler import creator_profile_runner as module
 from media_sync.integrations.mediacrawler.checkout import verify_mediacrawler_checkout
+from media_sync.security.secrets import SecretValue
 
 
 @pytest.fixture(scope="module")
@@ -147,6 +148,7 @@ def locked_modules(checkout: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Mod
 @pytest.mark.parametrize(
     "cached_wbi, authenticated", [(False, True), (True, True), (False, False)], ids=["nav-wbi", "saved-wbi", "expired"]
 )
+@pytest.mark.parametrize("cookie_mode", [False, True], ids=["saved-session", "pasted-cookie"])
 async def test_locked_bili_modules_only_authenticate_and_query_exact_profile(
     checkout: Path,
     locked_modules: tuple[ModuleType, ModuleType, ModuleType],
@@ -154,6 +156,7 @@ async def test_locked_bili_modules_only_authenticate_and_query_exact_profile(
     tmp_path: Path,
     cached_wbi: bool,
     authenticated: bool,
+    cookie_mode: bool,
 ) -> None:
     import sys
 
@@ -163,6 +166,18 @@ async def test_locked_bili_modules_only_authenticate_and_query_exact_profile(
     chromium_options: dict[str, Any] = {}
     page_requests: list[str] = []
     closed: list[bool] = []
+    injected: list[dict[str, Any]] = []
+    expected_cookie = "SESSDATA=NEW_COOKIE==" if cookie_mode else "SESSDATA=PRIVATE_COOKIE"
+
+    async def exact_cookies(context: object, urls: list[str]) -> tuple[str, dict[str, str]]:
+        assert urls == ["https://www.bilibili.com"]
+        if cookie_mode:
+            assert injected == [
+                {"name": "SESSDATA", "value": "NEW_COOKIE==", "domain": ".bilibili.com", "path": "/", "secure": True}
+            ]
+        return expected_cookie, {"SESSDATA": expected_cookie.partition("=")[2]}
+
+    monkeypatch.setattr(core.utils, "convert_browser_context_cookies", exact_cookies)
     actual_profile = client_module.BilibiliClient.get_creator_info
 
     async def counted_profile(client: Any, creator_id: int) -> object:
@@ -172,7 +187,7 @@ async def test_locked_bili_modules_only_authenticate_and_query_exact_profile(
     monkeypatch.setattr(client_module.BilibiliClient, "get_creator_info", counted_profile)
 
     def fetch(url: str, headers: dict[str, str], deadline: float) -> dict[str, object]:
-        assert headers["Cookie"] == "SESSDATA=PRIVATE_COOKIE" and deadline > time.monotonic()
+        assert headers["Cookie"] == expected_cookie and deadline > time.monotonic()
         calls.append(url)
         if urlsplit(url).path == module._NAV_PATH:
             return {
@@ -227,6 +242,10 @@ async def test_locked_bili_modules_only_authenticate_and_query_exact_profile(
     class Context:
         router: Any
 
+        async def add_cookies(self, pairs: list[dict[str, Any]]) -> None:
+            assert cookie_mode
+            injected.extend(pairs)
+
         async def route(self, pattern: str, handler: object) -> None:
             assert pattern == "**/*"
             self.router = handler
@@ -239,14 +258,31 @@ async def test_locked_bili_modules_only_authenticate_and_query_exact_profile(
 
     context = Context()
 
+    class Browser:
+        async def new_context(self, **options: object) -> Context:
+            assert cookie_mode and "user_data_dir" not in options
+            chromium_options.update(options)
+            return context
+
+        async def close(self) -> None:
+            closed.append(False)
+
     class Playwright:
         async def __aenter__(self) -> object:
             async def launch(**options: object) -> Context:
+                assert not cookie_mode, "Cookie path must never open a saved profile"
                 chromium_options.update(options)
                 return context
 
+            async def fresh_launch(**options: object) -> Browser:
+                assert cookie_mode and "user_data_dir" not in options
+                chromium_options.update(options)
+                return Browser()
+
             return SimpleNamespace(
-                chromium=SimpleNamespace(executable_path="bundled-chromium", launch_persistent_context=launch)
+                chromium=SimpleNamespace(
+                    executable_path="bundled-chromium", launch_persistent_context=launch, launch=fresh_launch
+                )
             )
 
         async def __aexit__(self, *args: object) -> None:
@@ -270,17 +306,19 @@ async def test_locked_bili_modules_only_authenticate_and_query_exact_profile(
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(sys, "path", list(sys.path))
     profile = tmp_path / "profile"
+    cookie = SecretValue(expected_cookie) if cookie_mode else None
     if authenticated:
-        result = await module._lookup_bili(checkout, profile, "123", time.monotonic() + 10)
+        result = await module._lookup_bili(checkout, profile, "123", time.monotonic() + 10, cookie=cookie)
         assert result.remote_id == "123" and result.display_name == "Observed name"
         assert profile_calls == [123]
         assert sum(urlsplit(url).path == module._NAV_PATH for url in calls) == (1 if cached_wbi else 2)
         assert sum(urlsplit(url).path == module._PROFILE_PATH for url in calls) == 1
     else:
         with pytest.raises(module._LookupFailure, match="auth_expired"):
-            await module._lookup_bili(checkout, profile, "123", time.monotonic() + 10)
+            await module._lookup_bili(checkout, profile, "123", time.monotonic() + 10, cookie=cookie)
         assert profile_calls == [] and len(calls) == 1
     assert chromium_options["headless"] is True and chromium_options["service_workers"] == "block"
     assert chromium_options["accept_downloads"] is False and chromium_options["executable_path"] == "bundled-chromium"
-    assert chromium_options["user_data_dir"] == str(profile)
-    assert page_requests == ["https://www.bilibili.com/"] and closed == [True]
+    assert chromium_options.get("user_data_dir") == (None if cookie_mode else str(profile))
+    assert page_requests == ["https://www.bilibili.com/"] and closed == ([True, False] if cookie_mode else [True])
+    assert not profile.exists()

@@ -1,4 +1,5 @@
 import type { Operation, OperationEvent, OperationState, OperationStreamMessage } from '$lib/types/api';
+import { COOKIE_LOGIN_SUCCESS, cookieLoginFailure, safeCookieLoginErrorCode } from '../api/cookie-login';
 
 const ACTIVE_STATES = new Set<OperationState>(['queued', 'running']);
 const TERMINAL_STATES = new Set<OperationState>([
@@ -193,6 +194,11 @@ export function safeOperationResult(operation: Operation): SafeOperationResult |
     copyString(source, result, 'runner_status', LOGIN_RUNNER_STATUSES);
     copyString(source, result, 'login_session_status', LOGIN_SESSION_STATUSES);
     copyString(source, result, 'auth_status', AUTH_STATUSES);
+  } else if (operation.kind === 'account-cookie-login') {
+    copyString(source, result, 'account_id', UUID);
+    copyString(source, result, 'auth_status', new Set(['authenticated']));
+    copyString(source, result, 'login_method', new Set(['cookie']));
+    copyCount(source, result, 'auth_revision');
   } else if (operation.kind === 'creator-profile') {
     copyString(source, result, 'profile_id', UUID);
     copyCount(source, result, 'generation');
@@ -273,6 +279,18 @@ export function operationProgressPercent(operation: Operation): number | null {
 }
 
 export function operationTruthNotice(operation: Operation): OperationTruthNotice | null {
+  if (operation.kind === 'account-cookie-login') {
+    return {
+      tone: operation.state === 'succeeded' ? 'success' : 'info',
+      title: operation.state === 'succeeded' ? 'Cookie 校验与保存已完成' : 'Cookie 校验与保存状态',
+      detail:
+        operation.state === 'succeeded'
+          ? COOKIE_LOGIN_SUCCESS
+          : ACTIVE_STATES.has(operation.state)
+            ? '仅校验平台认证并私密保存，不扫码、不采集内容；请核对本次操作的终态。'
+            : cookieLoginFailure(operation.state === 'interrupted' ? null : operation.error_code)
+    };
+  }
   if (operation.kind === 'creator-profile') {
     return {
       tone: operation.state === 'succeeded' ? 'success' : 'info',
@@ -339,6 +357,12 @@ export function operationTruthNotice(operation: Operation): OperationTruthNotice
     title: '刷新并核验状态',
     detail: '仅显示后端返回的受控阶段和安全摘要；不据此推断 provider task completion 或可播放。'
   };
+}
+
+export function operationErrorLabel(operation: Operation): string {
+  if (operation.kind === 'account-cookie-login')
+    return safeCookieLoginErrorCode(operation.error_code) ?? (operation.error_code ? '结果未能确认' : '—');
+  return operation.error_code ?? '—';
 }
 
 export function operationIsActive(state: OperationState): boolean {
