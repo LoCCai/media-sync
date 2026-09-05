@@ -58,3 +58,9 @@ $affectedTests = Get-Content docs/executions/0062-bili-dynamic-workflow/affected
 ```
 
 Local report SHA256:final affected `2353b945d6f39219d002721e7ed3adba19e7b206b0feaa1a4d36723f16d6a970`; directory unit `debdea55f1b594491dae229860f07e265ba6eaf02d3a2148d191f5e7ee8bc344`; contract `3c2e91f6d8032679e5d3e09012626d87c2b1bdf3f0068637fc327b3bb8530ec3`; integration `1d5ed212a96f99d762fa74cdd3616799aa75680594808231381a2fe8928dca01`. Timestamps/timing make future report hashes differ normally. `python scripts/check_docs.py` passed632 Markdown files and `git diff --check` passed. Fresh fetch before staging found local plan commit ahead1/behind0; publication follows separately.
+
+## GitHub publication
+
+Bilingual frozen plan `50ea621` and implementation `82260aef25ef4e7d590ae2eab81c75b6364af810` were non-force pushed to `origin/main` at https://github.com/LoCCai/media-sync. A subsequent fresh fetch confirmed HEAD=origin/main at the full implementation SHA, divergence0 0 and a clean worktree. Staging contained only this task's59 source/test/Web/doc files; credentials, runtime snapshots, raw local JUnit artifacts, build output and temporary packages were not staged. Locked upstream/dependency inputs remain unchanged.
+
+This publication confirmation is a separate bilingual documentation-only commit, with another normal push and fresh-fetch equality check. It does not change the frozen-source regression/package evidence or deploy the production service. The seven-platform goal remains active; current Linux/live qualification, five remaining creator profiles and three pasted-Cookie validators are still required.

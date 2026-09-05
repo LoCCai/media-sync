@@ -58,3 +58,9 @@ $affectedTests = Get-Content docs/executions/0062-bili-dynamic-workflow/affected
 ```
 
 本地报告SHA256：最终affected `2353b945d6f39219d002721e7ed3adba19e7b206b0feaa1a4d36723f16d6a970`；目录unit `debdea55f1b594491dae229860f07e265ba6eaf02d3a2148d191f5e7ee8bc344`；contract `3c2e91f6d8032679e5d3e09012626d87c2b1bdf3f0068637fc327b3bb8530ec3`；integration `1d5ed212a96f99d762fa74cdd3616799aa75680594808231381a2fe8928dca01`。以后复跑受时间戳/耗时影响，报告哈希自然不同。`python scripts/check_docs.py`632份Markdown通过，`git diff --check`通过。暂存前fresh fetch确认本地仅计划提交领先1/落后0；发布另记。
+
+## GitHub发布
+
+双语冻结计划 `50ea621` 与实现 `82260aef25ef4e7d590ae2eab81c75b6364af810` 已非强制推送至 https://github.com/LoCCai/media-sync 的 `origin/main`。随后fresh fetch确认HEAD=origin/main均为该完整实现SHA、分歧0 0、工作区干净。暂存仅包含本任务59份源码/测试/Web/文档文件；凭据、运行快照、本地JUnit原始报告、构建输出及临时包未暂存。锁定上游/依赖输入未变化。
+
+此发布确认以独立双语纯文档提交记录，并再次正常推送及fresh-fetch一致性检查；不改变冻结源码回归/包验证证据，也不部署生产服务。七平台目标仍活动；当前Linux/真实平台验收、其他五平台作者资料和三平台粘贴Cookie校验仍需完成。
