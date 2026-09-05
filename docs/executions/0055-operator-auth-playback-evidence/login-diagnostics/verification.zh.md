@@ -34,7 +34,7 @@ uv run --frozen --with pillow==12.3.0 pytest -q tests/unit/test_browser_launch_d
 
 独立系统临时输出目录中的 `uv build --offline` 产出 128 项 wheel、888 项 sdist，包含当前实现文件。构建早于最终文档/Cookie 草案编辑，是代码打包快照，不是最终文档归档；默认包不含编译 Web，由 Docker 另行构建。没有夹带私人 Compose、实际 `.env`、凭据、profile、数据库、日志或工具/运行目录。七个似私网 IP 候选路径逐项核实为既有 CIDR/示例/测试，相对 `f61a3c4` 均未修改，历史精确 LAN 计划 blob 也一致；未使用私网地址全局豁免。
 
-文档/上游及最终 Git 发布将在收尾记录；本地原始测试 XML 保持在忽略的 `artifacts` 内。
+最终 `scripts/check_docs.py` 检查 552 份 Markdown 通过，`scripts/check_upstreams.py` 验证两个干净锁定 checkout 通过；原始测试 XML 保持在忽略的 `artifacts` 内。显式暂存及 `git diff --cached --check` 通过。提交 `1e487f4c618d2addd572d4733d227e36e0b79865` 已推至 `origin/main`，随后 fetch 确认 HEAD/远端哈希相同、分歧 `0 0`、工作树为空。本发布记录属于随后的纯文档提交；代理没有执行服务器部署。
 
 ## 待跑门槛
 

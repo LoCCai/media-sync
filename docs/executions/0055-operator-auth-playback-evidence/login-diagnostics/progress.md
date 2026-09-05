@@ -2,7 +2,7 @@
 
 # Login diagnostics progress
 
-- Status: Implemented and locally verified; publication closeout in progress
+- Status: Implemented and locally verified; repair commit `1e487f4` published
 
 Frozen plan `488ce20` is implemented. Login alone opts into `browser_launch_failed` at the actual Chromium launch awaits; creator/detail retain exception identity. The strict v1 two-field protocol accepts legacy frames and the new closed status, but older readers safely reject that new status. Parent cancellation/timeout/tree-cleanup precedence remains unchanged.
 

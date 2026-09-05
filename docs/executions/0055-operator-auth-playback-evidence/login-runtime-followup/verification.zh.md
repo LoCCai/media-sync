@@ -26,4 +26,4 @@
 
 保留已可用的私人 Compose、精确 Origin、命名数据卷和凭据权限，先备份状态。GitHub 发布后依次执行 `git pull --ff-only`、`docker-compose build media-sync`、既有仅配置检查和 `docker-compose up -d --no-deps --force-recreate media-sync`，任一步失败即停。最终构建现在要求 JS 可执行，仅重启旧镜像不够；已启用的 supervisor 也从同一新镜像重建。不执行 `down -v`，不覆盖部署配置。
 
-刷新账户页、预检一个账户，再由操作者启动并扫码；记录实际结果后再扩大平台。精确部署 SHA/镜像摘要、新镜像构建/扫码/会话复用、采集及 Emby/Jellyfin 仍待验证。粘贴 Cookie 登录已有目标与[草案](../cookie-login/plan.zh.md)，本增量没有实现。
+合并修复已以 `1e487f4` 发布，fetch 后本地/远端哈希一致且工作树干净。更新镜像后刷新账户页、预检一个账户，再由操作者启动并扫码；记录实际结果后再扩大平台。精确部署 SHA/镜像摘要、新镜像构建/扫码/会话复用、采集及 Emby/Jellyfin 仍待验证。粘贴 Cookie 登录已有目标与[草案](../cookie-login/plan.zh.md)，本增量没有实现。

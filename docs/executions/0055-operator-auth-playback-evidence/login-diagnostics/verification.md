@@ -34,7 +34,7 @@ Web commands ran serially in `web`: `pnpm test`, `pnpm check`, `pnpm format:chec
 
 `uv build --offline` in an isolated system temporary output directory produced a 128-entry wheel and 888-entry sdist with all current implementation files. This build preceded final documentation/Cookie-draft edits; it is a code packaging snapshot, not the final documentation archive. Neither default package includes compiled Web output; Docker builds that separately. Private Compose, actual `.env`, credentials, profiles, databases, logs and tool/runtime roots were absent. Seven private-IP-like candidate paths were inspected as existing CIDR/examples/tests and all were unchanged from `f61a3c4`; the historical exact LAN-plan blob also matched. No blanket private-address exemption was used.
 
-Documentation/upstream checks and final Git publication will be recorded at closeout. Raw local test XMLs stay ignored under `artifacts`.
+Final `scripts/check_docs.py` passed for 552 Markdown files; `scripts/check_upstreams.py` verified both clean locked checkouts. Raw local test XMLs stay ignored under `artifacts`. Explicit staging and `git diff --cached --check` passed. Commit `1e487f4c618d2addd572d4733d227e36e0b79865` was pushed to `origin/main`; the subsequent fetch returned identical HEAD/remote hashes, divergence `0 0`, and an empty worktree. This publication record is a subsequent documentation-only commit. No deployment was performed by the agent.
 
 ## Remaining gates
 
