@@ -249,7 +249,9 @@ library/
 ## 安全边界
 
 - 执行 0055 的后端检查点已由提交 `f19bfaa` 交付，它把执行 0040 的匿名 REST 边界改为关闭失败的单操作者鉴权。`serve` 会在绑定前解析必需的类型化浏览器凭据及可选独立 Bearer 凭据。最外层 ASGI middleware 首先校验精确原始 Host，只开放固定 health/readiness/login/bootstrap/静态白名单，并在 handler 工作前鉴权其余全部当前或未来路由。
-- 浏览器权限由唯一轮换的进程内 HttpOnly、`SameSite=Strict` Cookie 与仅存内存的 CSRF 值组成。登录与 Cookie 鉴权不安全请求要求精确配置的 Origin；CORS 与 forwarding-header 权限继续关闭。重启、退出、过期或凭据替换都会使 session 失效。Console v2 与 `/legacy` 尚未接入该 login/CSRF 契约，因此后端已受保护，但 Web 管理面当前不可操作。
+- 未登录 HTML GET／HEAD 导航只对 `/accounts`、`/subscriptions`、`/contents`、`/assets`、`/library`、`/jobs`、`/settings`、`/diagnostics` 八个精确路径由 middleware 返回 303 到根登录；丢弃任意 query，只保留固定白名单 return path，不执行下游 handler。Host 仍最先检查，API、未知路径及非 HTML 请求继续固定拒绝。
+- `serve --check-config` 复用正常 serve 的 settings／secret／origin 与 host-port 语法验证，仅输出固定安全状态；不构造 app／数据库、创建目录、查询 DNS、绑定端口或迁移。容器入口规范化 `-- serve` 后在 Xvfb／`db init` 前预检；显式 help／check-only 不迁移。检查通过不等于运行就绪或当前 Linux 镜像已验收。
+- 浏览器权限由唯一轮换的进程内 HttpOnly、`SameSite=Strict` Cookie 与仅存内存的 CSRF 值组成。登录与 Cookie 鉴权不安全请求要求精确配置的 Origin；CORS 与 forwarding-header 权限继续关闭。重启、退出、过期或凭据替换都会使 session 失效。Console v2 现实现串行 login → session bootstrap／logout，session 成功后才挂载私有组件树；CSRF 仅存内存，过期／401 清除状态，旧 session epoch 的延迟响应不能恢复或清除新登录。QR／SSE 接入会话边界，直接媒体继续只用同源 Cookie，不自动重放写请求。`/legacy` 改为受保护迁移提示；无 v2 构建时根页仅提示构建／CLI。当前实现已通过[本地合成浏览器验证](executions/0055-operator-auth-playback-evidence/secure-console/verification.zh.md)。
 - 默认进程仍绑定回环。镜像只在容器内部绑定 wildcard；示例 Compose 从仓库外挂载操作者凭据、只发布宿主机回环，并显式允许该回环 HTTP 浏览器 origin。任何非回环浏览器 origin 都必须是精确 HTTPS，位于另行审查且保留允许 Host 的代理之后。
 - 凭据值优先保存在 OS keyring；无头环境可使用环境变量/文件 provider，数据库行只保存 provider/key。
 - 日志构造时先脱敏，并在 sink 边界再次脱敏。
@@ -269,6 +271,6 @@ library/
 
 执行 0012 的仅登录协议使用相互独立的有界请求/结果长度 frame，并持续保留 START/CANCEL/EOF 父进程控制。父侧收容在 START 前附加，child 自持收容与控制 watcher 在导入上游前建立。结果发布后，guardian 会继续持有后代所有权及继承账户锁，直到父进程开始完整树关停；因此父进程被硬杀时，会先关闭所属 Windows Job 或 POSIX 进程组，另一次登录才可能获取该账户锁。持久恢复使用独立的截止时间权威：只有精确过期的 `pending|waiting_user` 二维码会话，在 Account 仍为 `qr/authenticating`、持有同一账户锁且通过仓储 CAS 时，才能原子切换为 `expired` 与 `qr/required`。PID 与仅凭锁可获取都不是恢复权威。
 
-监督器仍是本地前台进程，Docker 打包（执行 0041）通过可选 compose profile 运行它而非安装为服务。执行 0054-B 目前只有 Operation checkpoint/cancel/final 行锁竞态的真实 PostgreSQL 证据。执行 0055 新增面向 PostgreSQL 的仓储语义及隔离 Author/Job/PlaybackEvidence 竞态 harness，但该新 harness 尚未在本工作站运行。分布式 HA、完整 schema 的 PostgreSQL 支持与生产部署、公网部署及 Web login/CSRF 集成仍属后续工作。执行 0055 后端鉴权检查点不能替代操作者侧的真人部署门（执行 0047）。原生平台适配器可逐步替换受限桥接；经过脱敏的 raw envelope 允许在上游或模型升级后重新归一化。
+监督器仍是本地前台进程，Docker 打包（执行 0041）通过可选 compose profile 运行它而非安装为服务。执行 0054-B 目前只有 Operation checkpoint/cancel/final 行锁竞态的真实 PostgreSQL 证据。执行 0055 新增面向 PostgreSQL 的仓储语义及隔离 Author/Job/PlaybackEvidence 竞态 harness，但该新 harness 尚未在本工作站运行。分布式 HA、完整 schema 的 PostgreSQL 支持与生产部署、公网部署仍属后续工作；Web login/CSRF 已实现且本地合成浏览器门禁已通过。执行 0055 后端鉴权检查点不能替代操作者侧的真人部署门（执行 0047）。原生平台适配器可逐步替换受限桥接；经过脱敏的 raw envelope 允许在上游或模型升级后重新归一化。
 
-执行 0054 引入资格 schema v2；执行 0055 现已将响应推进到 v3，而 revision 仍为 `0008`。既有自动化计数与 Operation 证据继续和真人资格分开。`/api/v1/qualifications` 只接受一个可选规范 `author_id`：无作者时播放 scope 为 `not_requested`，不查询证据／远端；指定时有界查询 service 只评估该作者。没有精确当前证据则 playback 为 IMPLEMENTED/NOT_RUN；PASS 显式携带作者范围。`provider_task_completion` 仍为 NOT_IMPLEMENTED，原因 `provider_api_unsupported`，导出后自动扫描也保持 NOT_IMPLEMENTED。仓库真人行继续为 NOT_RUN。下一步为 Web login/session/CSRF 与确认 UI；可写设置、多配置与保留／破坏性维护仍不属于阶段 A。
+执行 0054 引入资格 schema v2；执行 0055 现已将响应推进到 v3，而 revision 仍为 `0008`。既有自动化计数与 Operation 证据继续和真人资格分开。`/api/v1/qualifications` 只接受一个可选规范 `author_id`：无作者时播放 scope 为 `not_requested`，不查询证据／远端；指定时有界查询 service 只评估该作者。没有精确当前证据则 playback 为 IMPLEMENTED/NOT_RUN；PASS 显式携带作者范围。`provider_task_completion` 仍为 NOT_IMPLEMENTED，原因 `provider_api_unsupported`，导出后自动扫描也保持 NOT_IMPLEMENTED。仓库真人行继续为 NOT_RUN。当前 Web login/session/CSRF 已通过本地合成浏览器验证；随后优先当前 Linux 基线与 Bilibili／小红书获授权金丝雀，P1 确认 UI 不前置；可写设置、多配置与保留／破坏性维护仍不属于阶段 A。

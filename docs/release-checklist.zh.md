@@ -32,5 +32,6 @@
 - [ ] 如打发布 tag，先升 `pyproject.toml` 版本；tag 附注写明包含的执行索引区间。
 - [ ] README 当前状态段引用最新收尾提交。
 - [ ] `[主机]` 干净 clone 演练：全新 `git clone` → 创建外部操作者凭据文件 → 导出其绝对路径 → 按 `docs/deployment.zh.md` 操作 → 公开 health/readiness 通过且匿名业务路由被拒绝 → 一次离线冒烟（`media-sync doctor`）。
-- [ ] `[主机]` 执行 0055 Web 检查点收尾前，不能把“控制台可达”记录成“控制台可用”：后端鉴权边界已存在，但已检入 Web 客户端仍缺 login/session bootstrap 与 CSRF 传播。
+- [ ] `[主机]` 当前安全控制台已实现且已通过[本地合成浏览器验证](executions/0055-operator-auth-playback-evidence/secure-console/verification.zh.md)；不能把根 HTML 或 health 可达写成完整控制台／真人可用。逐项记录 login→session、CSRF 修改、QR／直接媒体／SSE、退出／过期；P1 确认 UI 不前置于 CLI 金丝雀。
+- [ ] `[主机]` 对精确当前镜像按[部署指南](deployment.zh.md)覆盖 entrypoint 运行 `serve --check-config`，核实真实运行 UID 下凭据可读且非法配置先于迁移失败；命令不证明 DNS／端口或完整就绪。当前 Linux／Docker 门未执行时保持 NOT_RUN，不复用 0050 历史 PASS。
 - [ ] `[主机]` 遵守提醒：Docker 镜像内嵌非商业上游 checkout——绝不推送至任何 registry。

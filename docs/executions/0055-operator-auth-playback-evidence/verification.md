@@ -2,17 +2,18 @@
 
 # Execution 0055 Phase A verification
 
-- Status: Backend authentication, observation identity/ledger and browser-only confirmation published; bounded author projection and qualification v3 pass full regression, with final publication gates in the child checkpoint
+- Status: Projection/qualification v3 published as `2e1949f`; secure console/pre-migration checks implemented and verified with local synthetic-browser fixtures, with exact current gates in the secure-console child record
 - Date: 2026-09-05
 - Planning baseline: `d0a8cc2`; authentication implementation baseline: `4564b2a`
 - Published authentication commit: `f19bfaa`
 - Published persistence commit: `1d5b448`
 - Published confirmation commit: `13de3b7`; projection frozen planning commit: `9fd74de`
+- Published projection commit: `2e1949f`; current secure-console frozen plan: `714c849`
 - Current revision: `0008_playback_evidence`
 
 ## Evidence policy
 
-Planning checks establish scope against the code at that time. The sections below retain historical authentication evidence for `f19bfaa`, observation identity/persistence for `1d5b448`, and confirmation writes for `13de3b7`; current focused/full-regression and publication evidence for bounded author projection and qualification v3 lives in the [child verification](evidence-projection/verification.md). Offline evidence does not prove the missing Web login/confirmation surface, current Linux-image usability, real-server compatibility or authorized playback. Historical no-P0/P1/P2 findings within those review scopes do not close the Web, credential-readability or pre-migration-validation issues in the [delivery review](delivery-priorities.md). Implementation evidence and live qualification remain separate.
+This parent record preserves verification for historical commits, including the 2999-test full projection gate for `2e1949f`; those results do not substitute for the current secure-console version. Login/session/memory-only CSRF/QR/SSE and pre-migration checks are implemented with a passing [local synthetic-browser verification](secure-console/verification.md) result. Current full Python: 3155 passed, 22 skipped, one existing warning in 670.16s; Web passes 114 tests in 9 files plus check/build, and local synthetic-browser gates pass with video loading/decoding only, not a play click. The subsequent fixture-only read-only hardening passes 4 tests in 1.76s, not a new full-suite total; exact publication evidence follows the child record. Historical no-P0/P1/P2 findings do not close new delivery-review issues. Implementation, current-image verification and live qualification remain separate; every unexecuted platform/media-server live row stays NOT_RUN.
 
 ## Planning baseline evidence
 
@@ -95,7 +96,9 @@ This section is historical evidence for published `13de3b7`, including the 2941-
 | Docker and PostgreSQL execution | executable/environment checks | `NOT_RUN` — Docker executable is unavailable and `MEDIA_SYNC_TEST_POSTGRESQL_URL` is unset; source/tests do not substitute for execution |
 | Complete Python regression after all logging fixes | `uv run --frozen pytest -q` | `PASS` — 2941 passed, 22 skipped and 1 existing Starlette/httpx warning in 594.72s (`0:09:54`). Three skips are Windows/POSIX differences; 11 Operation and 8 PlaybackEvidence PostgreSQL cases remain `NOT_RUN` because the test URL is unset |
 
-## Current author projection and qualification v3 checkpoint evidence
+## Published author projection and qualification v3 historical evidence
+
+This section belongs to `2e1949f`; “current” means that projection version. See [current verification](secure-console/verification.md) for the secure-console checkpoint.
 
 Exact commands, attempt history and final documentation/package/Git gates are in [projection verification](evidence-projection/verification.md). This summary covers only the gates actually run for this increment.
 
@@ -138,8 +141,8 @@ Exact commands, attempt history and final documentation/package/Git gates are in
 
 The current checkpoint closes the offline fingerprint, revision/model, guarded downgrade, natural replay, SQLite, confirmation authority, browser-only POST, bounded author projection and qualification v3 portions. P0 order is in the [delivery priority addendum](delivery-priorities.md). Remaining work still requires exact passing evidence for:
 
-1. Complete credential-readability and pre-migration configuration validation; prove invalid/unreadable credentials fail before database changes rather than inferring an untouched database from a failed server start.
-2. Prioritize Web login/session/logout/expiry, memory-only CSRF, centralized 401 reset and cookie-only EventSource/direct media; then finish accessible current/history display and matched-only attestation. The latter does not block authorized canaries through the existing CLI.
+1. Pre-migration configuration checks are implemented; execute credential-readability and fail-before-migration verification under the final Linux image's actual mapped UID. Windows/stub-process evidence is not real Docker, and configuration preflight does not prove DNS/ports or readiness.
+2. Local [synthetic-browser verification](secure-console/verification.md) passed after fixes and reruns, including session/CSRF, QR/SSE, cross-tab logout and natural expiry. Video evidence is loading/decoding only, with no play click. P1 current/history evidence and matched-only confirmation UI remain pending but do not block authorized CLI canaries.
 3. Verify configuration, runtime-user secret reads, migration boundary, startup, restart persistence and backup restore for the exact current commit/image on a Docker-capable Linux host, then prioritize authorized Bilibili/XHS canaries. Historical-image PASS does not substitute for the current version.
 4. Run the eight PlaybackEvidence PostgreSQL races and re-run the previously skipped PostgreSQL coverage on a configured host; source inspection is not a substitute.
 5. Preserve credential/session/CSRF/reference/raw-selector non-retention through final repository, package, and publication scans.
@@ -147,7 +150,7 @@ The current checkpoint closes the offline fingerprint, revision/model, guarded d
 
 ## Live qualification
 
-No 0055-A live authentication or real Emby/Jellyfin playback has run. Planning, mocks, generated media, database rows created by tests, and item observation cannot produce a checked-in human PASS. Live playback remains `NOT_RUN` until an authorized operator actually plays and explicitly confirms an exact current item.
+No authorized live platform-account login or real Emby/Jellyfin playback has run. Current real local browser authentication uses disposable synthetic fixtures and is recorded in [secure-console verification](secure-console/verification.md); it does not qualify a platform, CDN or media server. Planning, mocks, generated media, database rows created by tests and item observation cannot produce a checked-in human PASS. Live playback remains `NOT_RUN` until an authorized operator actually plays and explicitly confirms an exact current item.
 
 ## Exit gate
 

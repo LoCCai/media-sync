@@ -1,8 +1,8 @@
 **English** | [中文](deployment.zh.md)
 
-# Docker deployment and backend-authentication checkpoint
+# Docker deployment and secure-console checkpoint
 
-This guide deploys media-sync as a self-hosted container with the pinned MediaCrawler runtime. It was introduced by executions 0040/0041, updated by 0050, and expects a Linux host with Docker Compose v2. At the current execution 0055 checkpoint, the backend single-operator authentication boundary is implemented, but Console v2 and `/legacy` have not yet integrated its login, in-memory CSRF, logout, or expiry flow. The container can be started and its public health/readiness probes can be verified; do not claim the Web administration, QR-login, or media-server-control workflow usable yet.
+This guide deploys media-sync with the pinned MediaCrawler runtime on a Linux host with Docker Compose v2. The current 0055 secure console and startup preflight are implemented and locally verified, including synthetic-browser checks; exact status is in [verification](executions/0055-operator-auth-playback-evidence/secure-console/verification.md). Backend authentication, Web session/memory-only CSRF, logout/expiry and QR/SSE are wired; `/legacy` is a protected migration notice, while root without a v2 build offers only a build/CLI notice. The current Linux image, runtime-user permissions and live platform/media-server workflows remain NOT_RUN; neither historical 0050 image PASS nor public health success substitutes for them.
 
 ## 1. Build
 
@@ -50,20 +50,20 @@ The image contains two layers:
 
 Before starting or upgrading, verify that the credential file is readable by the **final image's runtime user**. The Dockerfile uses UID 1000. With ordinary rootful Linux mappings, a root-owned `0600` source is not readable by that user: align only this file's owner or restricted read access with the effective runtime identity. Rootless/user-namespace mappings require host-specific checks. File-backed Compose secrets must not be assumed to remap uid/gid/mode; do not use world-readable permissions or recursive ownership changes.
 
-After building, this manual read-only preflight bypasses the normal entrypoint and does not print the credential:
+After building, use this configuration-only preflight to bypass the normal entrypoint; it reads and validates configuration as the final image's runtime identity without printing credentials:
 
 ```bash
-docker compose run --rm --no-deps --entrypoint /bin/sh media-sync -c 'test -f /run/secrets/operator_credential && test -r /run/secrets/operator_credential'
+docker compose run --rm --no-deps --entrypoint /app/.venv/bin/media-sync media-sync serve --check-config
 ```
 
-This command is documented, not executed on the current Windows workstation (Docker is unavailable). It checks readability only, not credential content/origin validity. The normal entrypoint still runs `db init` before `serve` validates authentication; therefore a startup failure may already have migrated the database. Take a compatible backup before upgrade. Automated configuration validation before migration remains [P0 work](executions/0055-operator-auth-playback-evidence/delivery-priorities.md); current-image startup/restart/restore is not yet qualified.
+This Docker example has not run on the current Windows workstation (Docker is unavailable); it is not a Linux UID/mount-permission pass. `serve --check-config` shares normal serve's settings, credential, origin and bind-syntax validation and host/port overrides. Success emits only fixed safe status, with no app/database construction, directory creation, DNS lookup, bind or migration. It does not prove port availability, complete readiness or final-image qualification; actual mounted-secret readability still requires execution on the deployment host. The entrypoint now preflights `serve` (including `-- serve`) before Xvfb/`db init`; explicit `--check-config`/`--help` do not migrate. Normal startup still migrates after a successful preflight, so retain compatible pre-upgrade backups and qualify current-image startup/restart/restore separately.
 
 ```bash
 docker compose up -d
 ```
 
-- Public root shell: <http://127.0.0.1:8632/> (published to host loopback only). The current bundle has no operator-login shell, so it cannot operate protected APIs yet.
-- `/legacy` and `/api/docs` are protected routes. They require an established browser session, but the checked-in clients do not yet establish one.
+- Public root login entry: <http://127.0.0.1:8632/> (host loopback only). Login success must be followed by session/CSRF bootstrap before private pages mount; eight exact SPA HTML deep links redirect unauthenticated navigation here with 303.
+- `/legacy` is a protected migration notice, and `/api/docs` remains protected; neither reopens anonymous business access.
 - `GET`/`HEAD /api/v1/health` and `/api/v1/ready` remain intentionally public for container probes; deep readiness and every business route require authentication.
 - SQLite state, archive, Emby tree and MediaCrawler runtime live in the `media-sync-data` volume under `/data`.
 
@@ -124,11 +124,11 @@ MediaCrawler-enabled workers disabled.
 
 The backend now exposes strict operator login/session/logout contracts, an HttpOnly `SameSite=Strict` process-local cookie, and CSRF enforcement for cookie-authenticated unsafe requests. A successful login rotates the sole session; restart, logout, expiry, or credential change invalidates it. An optional, separately resolved Bearer credential may be configured for non-browser automation, but it cannot replace the browser-only confirmation authority planned later in 0055.
 
-Console v2 currently calls protected APIs before establishing that session and does not attach the in-memory CSRF value to mutations. `/legacy` has the same limitation. Consequently the prior click-through QR instructions are suspended: receiving the public root HTML or a green healthcheck is not proof that the console works. Continue to use the CLI and, for already configured subscriptions, the resident supervisor. Resume browser QR qualification only after the Web login/CSRF checkpoint has its own verified closeout.
+Console v2 now implements serialized login/session/logout, memory-only CSRF, private-page gating, expiry/401 reset and QR/SSE session wiring; these have a passing [local synthetic-browser verification](executions/0055-operator-auth-playback-evidence/secure-console/verification.md) result, with video loading/decoding only (no play click), not live platform/media-server qualification. Login 200 alone does not grant private access: session bootstrap must succeed. Late old responses cannot restore old sessions, and writes are not automatically replayed. Onboarding supports “later” browsing without accepting the MediaCrawler license or starting a crawler. CLI/resident-supervisor workflows remain available; authorized live canaries do not require the P1 playback-confirmation UI.
 
 ## 4. Subscribe and download
 
-The subscription, scheduler, download, archive and Emby/Jellyfin publication backends remain available. At this checkpoint, administer them with the existing CLI rather than the incomplete Web authentication client. For an already configured unattended chain, enable the resident supervisor service with `docker compose --profile supervisor up -d`; it does not run `serve` and receives no operator credential. The resulting library still lands at `/data/library`.
+Subscription, scheduler, download, archive and Emby/Jellyfin publication backends remain available. Web administration-session wiring is implemented with a passing [local synthetic-browser verification](executions/0055-operator-auth-playback-evidence/secure-console/verification.md) result; the CLI remains available for authorized workflows. An already configured unattended chain can use `docker compose --profile supervisor up -d`; that resident supervisor does not run serve or receive operator credentials. The resulting library remains at `/data/library`.
 
 ## 5. Point Emby/Jellyfin at the library
 
@@ -150,7 +150,7 @@ Stage 0054-A supports one immutable, environment-owned connection. Add the compl
 
 Inject the API-key value through the environment variable or secret file named by the reference; never commit it. The configuration API returns a hand-built redacted summary and never echoes the key, full secret reference, Library ID, server path, or network ranges. The connector disables environment proxies and redirects, validates every DNS answer and pins the actual connection IP while retaining the original Host/TLS SNI.
 
-Start with `MEDIA_SYNC_MEDIA_SERVER_OPERATIONS_ENABLED=false`. After checking the configured origin, TLS posture, network-rule count and Library digest through a reviewed authenticated client, open the gate and restart. The following backend behaviors are implemented, but their former Console v2 controls remain unavailable until the Web authentication integration lands:
+Start with `MEDIA_SYNC_MEDIA_SERVER_OPERATIONS_ENABLED=false`. After checking the configured origin, TLS posture, network-rule count and Library digest through a reviewed authenticated client, open the gate and restart. The following backend behaviors are implemented; Console v2 authentication wiring has passed local synthetic-browser verification, while the new playback-confirmation UI is outside this P0 slice:
 
 1. Managed-tree inspection verifies pages of the manifest authorized by the successful database publication chain. It is read-only: it does not repair, delete, create an author lock, or expose a host path.
 2. Connection probe calls only `GET /System/Info` and `GET /Library/VirtualFolders`, requiring an exact unique Library ID and path match.
@@ -158,7 +158,7 @@ Start with `MEDIA_SYNC_MEDIA_SERVER_OPERATIONS_ENABLED=false`. After checking th
 4. The strict legacy `{}` refresh calls only `POST /Items/{configured-library-id}/Refresh`; `404/405/501` fail closed and never fall back to global `/Library/Refresh`. A successful Operation proves only a trusted 2xx acceptance.
 5. Author refresh-and-verify accepts exactly `{"author_id":"<uuid>"}` after a current, complete tree inspection grants the action. It first requires a complete absent baseline. If the exact item already exists, it sends no POST and returns `media_server_scan_observation_precondition_failed`. Success requires one accepted refresh followed by two separated observations of the same unique item; it still does not prove provider task completion or playback.
 6. Durable `media-server-probe` / `media-server-scan` Operations keep accepted, observed, acceptance-unknown and completion-unknown distinct. After transport entry, uncertain acceptance becomes non-retryable `media_server_scan_acceptance_unknown`. After trusted acceptance, an unproven observation becomes non-retryable `media_server_scan_completion_unknown` while retaining the accepted checkpoint. Never retry either ambiguity automatically.
-7. Playback confirmation uses `POST /api/v1/media-server/playback-evidence`. It is not an automation endpoint: it requires a logged-in browser session, exact Origin and CSRF, and rejects Bearer-only or mixed Cookie/Authorization before handler work. The strict body contains only canonical `author_id` and the matched lookup's opaque `observation_fingerprint`; `Idempotency-Key`, selectors, paths, remote IDs, timestamps and notes are rejected. The server performs resolve → one complete unique lookup → resolve before a short create-or-replay transaction and returns no fingerprint or internal context digest. Until the Web checkpoint lands, this backend contract is not exposed as a supported console workflow.
+7. Playback confirmation uses `POST /api/v1/media-server/playback-evidence`. It is not an automation endpoint: it requires a logged-in browser session, exact Origin and CSRF, and rejects Bearer-only or mixed Cookie/Authorization before handler work. The strict body contains only canonical `author_id` and the matched lookup's opaque `observation_fingerprint`; `Idempotency-Key`, selectors, paths, remote IDs, timestamps and notes are rejected. The server performs resolve → one complete unique lookup → resolve before a short create-or-replay transaction and returns no fingerprint or internal context digest. Playback-confirmation UI remains P1 work; this backend contract is not yet a ready console interaction and does not block CLI live canaries.
 8. Authenticated Cookie or Bearer clients can read `GET /api/v1/media-server/playback-evidence/by-author/{author_id}?limit=20`. Only canonical author UUID and one optional limit (1–50) are accepted. One fresh stable complete lookup precedes read-only history/current queries. Current evidence is returned separately; history truncation is explicit. Remote uncertainty yields unavailable current authority and unknown history, never stale or PASS.
 
 On restart, an author observation in `preparing` or `baselining` is a pre-dispatch interruption; `dispatching` becomes acceptance unknown; `accepted` or `polling` becomes completion unknown with its accepted checkpoint preserved; only a valid persisted `observed` checkpoint may reconcile to success. Legacy targetless scans retain their conservative 0054-A recovery. A probe may be retried manually, but a scan ambiguity requires server-side inspection before any new request.
@@ -169,7 +169,7 @@ On restart, an author observation in `preparing` or `baselining` is a pre-dispat
 
 | Row | Evidence |
 | --- | --- |
-| Real QR login (which platform/account) | Remains `NOT_RUN` at this checkpoint; record the authenticated console outcome plus `login-status` only after Web auth is delivered |
+| Real QR login (which platform/account) | Still `NOT_RUN`; record the exact commit, CLI or verified Web flow and `login-status` only after authorized platform execution. Synthetic QR does not constitute live login |
 | Creator crawl (which creator, item count) | scheduler job result + asset counts |
 | Real media download | asset rows reaching `verified`/`archived`; SHA-256 files under `/data/archive` |
 | Emby tree published | `/data/library` author directory listing |

@@ -10,12 +10,12 @@
 
 | 维度 | 状态 |
 | --- | --- |
-| 离线实现 | 已实现鉴权（`f19bfaa`）、revision `0008` 与账本（`1d5b448`）、仅浏览器确认（`13de3b7`），以及当前有界作者证据查询与资格 schema v3。Web login/session/CSRF 及确认交互仍待实现 |
-| 离线验证 | 当前完整 Python 为 2999 项通过、22 项跳过、1 个 warning（613.66 秒）；Web 69 项及 format/check/build 通过。准确命令与其他门见[投影验证](docs/executions/0055-operator-auth-playback-evidence/evidence-projection/verification.zh.md)。本工作站 Docker 与真实 PostgreSQL 仍不可用 |
-| REST API + Web 控制台 | 所有非公开后端路由现已在精确 Host 与浏览器 session 或可选 Bearer 鉴权之后关闭失败。SvelteKit 与 `/legacy` 客户端尚未提供登录壳、内存 CSRF 传播或统一过期处理，因此当前不能把 Web 控制台当作可操作的管理界面 |
+| 离线实现 | 鉴权、revision `0008`／账本、浏览器确认及作者证据／资格 v3 已发布（投影 `2e1949f`）；当前安全 Web login/session/CSRF 与迁移前预检已实现且本地合成浏览器门禁已通过。播放确认 UI 仍待实现 |
+| 离线验证 | 当前 Python 为 3155 项通过、22 项跳过、1 个既有 warning（670.16 秒）；Web 9 文件／114 项、Svelte check 零 error/warning 与 build 通过；准确结果见[安全控制台验证](docs/executions/0055-operator-auth-playback-evidence/secure-console/verification.zh.md)；投影 2999 项属于 `2e1949f` 历史门。本工作站 Docker／Linux UID 与真实 PostgreSQL 尚未执行 |
+| REST API + Web 控制台 | 安全控制台与启动预检已实现，本地离线与合成浏览器门禁已通过；会话串行初始化、内存 CSRF、退出／过期／401、QR／SSE 已接线。私有页面仅在 session 成功后挂载；`/legacy` 为受保护迁移提示，没有 v2 构建时根页只提示构建／CLI  本地视频只验证加载／解码，未点击播放，不等于真人播放资格 |
 | Docker 打包 | 示例 Compose 把宿主机提供的操作者凭据挂载为 Docker secret，容器内绑定 `0.0.0.0` 时只显式允许宿主机回环浏览器 origin；0047 Linux 重启/恢复/进程证据仍为 `NOT_RUN` |
 | 真人验收 | **全部已实现平台/CDN/媒体服务器真人行保持 `NOT_RUN`**。Schema v3 将播放证据标为 IMPLEMENTED，只评估显式指定的一个作者；仅重验通过的持久确认可产生该作者范围 PASS。Provider completion 与自动扫描仍为 NOT_IMPLEMENTED |
-| 发布阻塞 | 优先安全 Web 登录／CSRF 与凭据／迁移前预检、当前 Linux 镜像及 Bilibili／小红书获授权金丝雀；最小证据 UI 不阻塞 CLI 真人流程。见[交付优先级](docs/executions/0055-operator-auth-playback-evidence/delivery-priorities.zh.md)与[状态](docs/status.zh.md) |
+| 发布阻塞 | 精确当前 Linux 镜像及 Bilibili／小红书获授权金丝雀；P1 确认 UI 不阻塞 CLI 真人流程。见[当前验证](docs/executions/0055-operator-auth-playback-evidence/secure-console/verification.zh.md)与[状态](docs/status.zh.md) |
 
 逐执行细节、证据与准确命令都在 [`docs/executions/`](docs/README.zh.md)——本 README 有意不堆叠执行叙事。
 
@@ -35,12 +35,12 @@ uv run media-sync pipeline run --max-jobs 1 --json
 
 ## 部署与真人验证
 
-Docker 部署与七平台资格验收流程见 [`docs/deployment.zh.md`](docs/deployment.zh.md)（构建/运行）、[`docs/operations.zh.md`](docs/operations.zh.md)（备份/恢复/升级）与 [`docs/executions/0047-seven-platform-live-qualification/`](docs/executions/0047-seven-platform-live-qualification/)（带支持等级的验收计划）。`media-sync serve` 现在必须先从外部解析操作者凭据才能绑定端口。示例端口应继续只发布到宿主机回环；非回环浏览器 origin 必须使用 HTTPS。当前 Web bundle 尚未接入该后端 session/CSRF 契约，因此请使用 CLI 或常驻 supervisor；0055 前端工作完成前，不得宣称 Web 扫码/登录流程可用。
+Docker 部署与七平台资格验收流程见 [`docs/deployment.zh.md`](docs/deployment.zh.md)（构建/运行）、[`docs/operations.zh.md`](docs/operations.zh.md)（备份/恢复/升级）与 [`docs/executions/0047-seven-platform-live-qualification/`](docs/executions/0047-seven-platform-live-qualification/)（带支持等级的验收计划）。`media-sync serve` 现在必须先从外部解析操作者凭据才能绑定端口。示例端口应继续只发布到宿主机回环；非回环浏览器 origin 必须使用 HTTPS。当前 Web 鉴权已接线，已按[检查点记录](docs/executions/0055-operator-auth-playback-evidence/secure-console/verification.zh.md)通过本地合成浏览器验证；CLI 与常驻 supervisor 继续可用。配置预检不替代当前 Linux 镜像、平台账户或媒体服务器真人资格。
 
 ## 范围
 
 - 平台：小红书、抖音、快手、哔哩哔哩、微博、贴吧、知乎（适配框架；逐平台真人状态以资格矩阵为准，不作隐含声明）。
-- 登录：平台账户继续使用显式双重门禁扫码登录、不透明 Cookie 引用与仅后台保存会话；管理后端另有单一进程内操作者 session 及可选独立 Bearer 自动化，但 Web 登录客户端仍待实现。不支持手机号登录。
+- 登录：平台账户继续使用显式双重门禁扫码登录、不透明 Cookie 引用与仅后台保存会话；管理后端另有单一进程内操作者 session 及可选独立 Bearer 自动化，Web 登录客户端现已实现且本地合成浏览器门禁已通过。不支持手机号登录。
 - 非目标：评论/关键词抓取、番剧/直播媒体、多用户/公网部署。
 
 ## 许可证边界

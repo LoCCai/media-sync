@@ -3,6 +3,39 @@ import type { Asset, AssetAction, AssetKind, AssetStatus, ContentKind, Platform 
 export const EXPLORER_RESULT_LIMIT = 200;
 export const EXPLORER_QUERY_LIMIT = 200;
 
+/** Auth-gated pages may mount after the router's initial afterNavigate notification. */
+export class ExplorerNavigationGate<T> {
+  private active = false;
+  private disposed = false;
+  private previous: string | null = null;
+
+  constructor(private apply: (query: T) => void) {}
+
+  mount(query: T): void {
+    if (this.disposed) return;
+    this.active = true;
+    this.navigate(query);
+  }
+
+  navigate(query: T): void {
+    if (!this.active || this.disposed) return;
+    const key = JSON.stringify(query);
+    if (key === this.previous) return;
+    this.previous = key;
+    this.apply(query);
+  }
+
+  /** A local replaceState already applied the query; keep the navigation baseline in sync. */
+  remember(query: T): void {
+    if (this.active && !this.disposed) this.previous = JSON.stringify(query);
+  }
+
+  dispose(): void {
+    this.active = false;
+    this.disposed = true;
+  }
+}
+
 export type ExplorerFilterValue = string | number | boolean | null | undefined;
 export type AssetPreviewKind = 'image' | 'video' | 'audio' | 'new-tab' | 'none';
 

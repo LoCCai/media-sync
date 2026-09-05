@@ -524,6 +524,26 @@ export function createOperationStreamHealth(): OperationStreamHealth {
   return { mode: 'connecting', failureCount: 0, pollDelayMs: fallbackPollDelay(0) };
 }
 
+/** Explicit inputs keep the legacy Svelte reactive call subscribed to both state updates. */
+export function operationStreamStatusCopy(
+  health: OperationStreamHealth,
+  cursor: OperationStreamCursorState
+): { title: string; detail: string } {
+  if (health.mode === 'live') {
+    return {
+      title: '实时事件流已连接',
+      detail: `已处理到全局事件 #${cursor.lastSequence}；列表按事件序列去重。`
+    };
+  }
+  if (health.mode === 'fallback') {
+    return {
+      title: '实时流重连中',
+      detail: `当前使用有界轮询，下一次刷新间隔最多 ${Math.round(health.pollDelayMs / 1000)} 秒。`
+    };
+  }
+  return { title: '正在连接实时事件流', detail: '连接就绪后会先读取一次有界操作快照。' };
+}
+
 export function operationStreamConnected(_state: OperationStreamHealth): OperationStreamHealth {
   return { mode: 'live', failureCount: 0, pollDelayMs: fallbackPollDelay(0) };
 }

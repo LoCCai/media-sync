@@ -1,8 +1,8 @@
 [English](deployment.md) | **中文**
 
-# Docker 部署与后端鉴权检查点
+# Docker 部署与安全控制台检查点
 
-本指南使用内含锁定 MediaCrawler 运行时的自托管容器部署 media-sync。它由执行 0040/0041 首次建立、由 0050 更新，要求 Linux 主机与 Docker Compose v2。当前执行 0055 检查点已经实现后端单操作者鉴权边界，但 Console v2 与 `/legacy` 尚未接入登录、内存 CSRF、退出或过期流程。容器可以启动，也可以验证公开 health/readiness 探针；目前不得宣称 Web 管理、扫码登录或媒体服务器控制流程可用。
+本指南使用内含锁定 MediaCrawler 运行时的自托管容器部署 media-sync，要求 Linux 主机与 Docker Compose v2。当前 0055 安全控制台与启动预检已实现，本地离线与合成浏览器门禁已通过；准确状态见[验证](executions/0055-operator-auth-playback-evidence/secure-console/verification.zh.md)。后端鉴权、Web session／内存 CSRF、退出／过期与二维码／SSE 已接线，`/legacy` 仅提供受保护迁移提示；无 v2 构建时根页仅提示构建／CLI。当前 Linux 镜像、运行用户权限与平台／媒体服务器真人流程仍为 NOT_RUN，不能用旧 0050 镜像 PASS 或公开 health 成功替代。
 
 ## 1. 构建
 
@@ -49,20 +49,20 @@ compose 模板会把 `BASE_IMAGE` 作为 build arg 透传，构建清单记录�
 
 启动或升级前，先确认凭据文件对**最终镜像的运行用户**可读。Dockerfile 使用 UID 1000；普通 rootful Linux 映射下，root 所有的 `0600` 源文件对此用户不可读，应只调整该文件的所有者或受限读取权限来匹配实际运行身份。Rootless／user namespace 映射须按主机检查。不能假设文件型 Compose secret 会重映射 uid/gid/mode，不得改成所有人可读或递归变更所有权。
 
-构建后可用以下手工只读预检绕过普通 entrypoint，且不输出凭据：
+构建后，可使用以下仅配置预检绕过普通 entrypoint；它按最终镜像运行身份读取并验证配置，不输出凭据：
 
 ```bash
-docker compose run --rm --no-deps --entrypoint /bin/sh media-sync -c 'test -f /run/secrets/operator_credential && test -r /run/secrets/operator_credential'
+docker compose run --rm --no-deps --entrypoint /app/.venv/bin/media-sync media-sync serve --check-config
 ```
 
-本命令只是文档示例，未在当前 Windows 工作站执行（无 Docker），仅检查可读性，不校验凭据内容／origin。普通 entrypoint 仍先 `db init` 再由 `serve` 校验鉴权，因此启动失败时数据库可能已迁移。升级前须取得兼容备份。迁移前自动配置校验仍属 [P0 待办](executions/0055-operator-auth-playback-evidence/delivery-priorities.zh.md)，当前镜像的启动／重启／恢复尚未完成资格验证。
+这是尚未在当前 Windows 工作站执行的 Docker 示例（无 Docker），不是 Linux UID／挂载权限通过声明。`serve --check-config` 与正常 serve 共用 settings、凭据、origin 和 bind 语法验证，支持相同 host/port 覆盖；成功只输出固定安全状态，不构造 app／数据库、不创建目录、不解析 DNS、不绑定端口或迁移。它不证明端口可用、完整运行就绪或最终镜像已合格；真实挂载可读性仍须在部署主机执行。当前 entrypoint 已对 `serve`（包括 `-- serve`）在 Xvfb／`db init` 前预检，显式 `--check-config`／`--help` 不迁移。正常启动通过预检后仍会迁移，因此升级前仍须兼容备份，当前镜像启动／重启／恢复继续待验证。
 
 ```bash
 docker compose up -d
 ```
 
-- 公开根壳：<http://127.0.0.1:8632/>（默认只发布到宿主机回环）。当前 bundle 没有操作者登录壳，因此尚不能操作受保护 API。
-- `/legacy` 与 `/api/docs` 是受保护路由，需要已建立的浏览器 session；当前已检入客户端还不能建立该 session。
+- 公开根登录入口：<http://127.0.0.1:8632/>（仅宿主回环）。成功 login 后还须完成 session/CSRF 初始化才挂载私有页面；8 个精确 SPA HTML 深链接会把未登录导航 303 到该入口。
+- `/legacy` 为受保护的迁移提示，`/api/docs` 也继续受保护；二者均不重新开放匿名业务访问。
 - `GET`/`HEAD /api/v1/health` 与 `/api/v1/ready` 为容器探针有意保持公开；深度就绪及全部业务路由都要求鉴权。
 - SQLite 状态库、归档、Emby 目录与 MediaCrawler 运行时都在 `media-sync-data` 卷的 `/data` 下。
 
@@ -119,11 +119,11 @@ checkout 的逐项状态、稳定 `detail_code`、实际 Chromium 版本和构�
 
 后端现已提供严格的操作者 login/session/logout 契约、HttpOnly `SameSite=Strict` 进程内 Cookie，以及对 Cookie 鉴权不安全请求的 CSRF 强制。登录成功会轮换唯一 session；重启、退出、过期或凭据变化都会使其失效。非浏览器自动化可以另配独立解析的 Bearer 凭据，但它不能替代 0055 后续规划的浏览器专属确认权限。
 
-Console v2 当前会在建立 session 前请求受保护 API，也不会为 mutation 附加仅存内存的 CSRF 值；`/legacy` 同样如此。因此此前的控制台扫码步骤暂停：收到公开根 HTML 或 healthcheck 变绿都不能证明控制台可用。请继续使用 CLI；已有订阅的常驻处理可使用 supervisor。只有 Web 登录/CSRF 检查点完成独立验证收尾后，才能恢复浏览器扫码资格验证。
+Console v2 现已实现串行 login/session/logout、仅内存 CSRF、私有页面门、过期／401 重置与 QR／SSE 会话接线；这些功能已通过[本地合成浏览器验证](executions/0055-operator-auth-playback-evidence/secure-console/verification.zh.md)，视频仅加载／解码、未点击播放，不构成平台／媒体服务器真人资格。登录 200 本身不授予私有页面权限，仍须 session 初始化成功；延迟旧响应不能恢复旧会话，不自动重放写请求。引导允许“稍后”仅浏览，不接受 MediaCrawler 许可证或启动爬虫。CLI／常驻 supervisor 继续可用；获授权真人金丝雀不以 P1 播放确认 UI 为前置。
 
 ## 4. 订阅与下载
 
-订阅、调度、下载、归档及 Emby/Jellyfin 发布后端保持可用。当前检查点应使用既有 CLI 管理，而不是尚未完成鉴权集成的 Web 客户端。已有配置的无人值守链路可用 `docker compose --profile supervisor up -d` 启动常驻 supervisor；它不运行 `serve`，也不会获得操作者凭据。最终媒体库仍落在 `/data/library`。
+订阅、调度、下载、归档与 Emby/Jellyfin 发布后端继续可用。Web 管理会话接线已实现并通过[本地合成浏览器验证](executions/0055-operator-auth-playback-evidence/secure-console/verification.zh.md)；CLI 可继续用于已授权流程。已有配置的无人值守链路可通过 `docker compose --profile supervisor up -d` 启动常驻 supervisor；它不运行 serve，也不接收操作者凭据。最终媒体库位于 `/data/library`。
 
 ## 5. 将媒体库接入 Emby/Jellyfin
 
@@ -145,7 +145,7 @@ Console v2 当前会在建立 session 前请求受保护 API，也不会为 muta
 
 API key 值应通过引用指向的环境变量或 secret 文件注入，不得写入仓库。配置 API 只返回脱敏摘要：不会回显 key、完整 secret reference、Library ID、服务器路径或网络范围。连接器禁止环境代理与重定向，校验全部 DNS 答案并绑定实际连接 IP，同时保留原始 Host/TLS SNI。
 
-先保持 `MEDIA_SYNC_MEDIA_SERVER_OPERATIONS_ENABLED=false`。通过经过审查的鉴权客户端核对配置 origin、TLS 姿态、网络规则数量与 Library 摘要后，再打开门并重启。以下后端行为已经实现，但原 Console v2 控件要等 Web 鉴权集成后才能使用：
+先保持 `MEDIA_SYNC_MEDIA_SERVER_OPERATIONS_ENABLED=false`。通过经过审查的鉴权客户端核对配置 origin、TLS 姿态、网络规则数量与 Library 摘要后，再打开门并重启。以下后端行为已实现；Console v2 鉴权接线已通过本地合成浏览器验证，而新增播放确认 UI 不属于当前 P0 切片：
 
 1. 受管树检查会分页验证数据库成功发布链授权的 manifest；它只读，不修复、删除、创建作者锁或泄露宿主路径。
 2. 连接探测只调用 `GET /System/Info` 与 `GET /Library/VirtualFolders`，并要求 Library ID 和路径精确唯一匹配。
@@ -153,7 +153,7 @@ API key 值应通过引用指向的环境变量或 secret 文件注入，不得�
 4. 严格 legacy `{}` 刷新只调用 `POST /Items/{configured-library-id}/Refresh`；`404/405/501` 会关闭失败，绝不回退到全库 `/Library/Refresh`。Operation 成功只证明收到可信 2xx 接受。
 5. 作者刷新并核验在当前且完整的媒体树检查授予动作后，只接受精确 `{"author_id":"<uuid>"}`。作者模式先要求完整 absent baseline；精确项目已经存在时不会发送 POST，并返回 `media_server_scan_observation_precondition_failed`。成功需要一次刷新被接受，随后间隔两次观察到同一唯一项目；仍不证明 provider task completion 或可播放。
 6. 持久 `media-server-probe` / `media-server-scan` Operation 会区分 accepted、observed、acceptance unknown 与 completion unknown。进入 transport 后无法确认接受时以不可重试的 `media_server_scan_acceptance_unknown` 收尾；已经可信接受但无法证明观察时以不可重试的 `media_server_scan_completion_unknown` 收尾，并保留 accepted checkpoint。两种歧义都不得自动重试。
-7. 播放确认使用 `POST /api/v1/media-server/playback-evidence`。它不是自动化 endpoint：必须具有已登录浏览器 session、精确 Origin 与 CSRF，并在进入 handler 前拒绝 Bearer-only 或 Cookie/Authorization 混用。严格正文只含规范 `author_id` 与 matched lookup 返回的不透明 `observation_fingerprint`；`Idempotency-Key`、selector、路径、远端 ID、timestamp 与说明文本均被拒绝。服务端先执行 resolve → 一次完整唯一 lookup → resolve，再打开短 create-or-replay 事务，且不返回 fingerprint 或内部上下文摘要。Web 检查点交付前，该后端契约尚未成为受支持的控制台工作流。
+7. 播放确认使用 `POST /api/v1/media-server/playback-evidence`。它不是自动化 endpoint：必须具有已登录浏览器 session、精确 Origin 与 CSRF，并在进入 handler 前拒绝 Bearer-only 或 Cookie/Authorization 混用。严格正文只含规范 `author_id` 与 matched lookup 返回的不透明 `observation_fingerprint`；`Idempotency-Key`、selector、路径、远端 ID、timestamp 与说明文本均被拒绝。服务端先执行 resolve → 一次完整唯一 lookup → resolve，再打开短 create-or-replay 事务，且不返回 fingerprint 或内部上下文摘要。播放确认 UI 仍待 P1 实现，该后端契约尚未成为现成控制台交互，也不阻塞 CLI 真人金丝雀。
 8. 经 Cookie 或 Bearer 鉴权的客户端可读取 `GET /api/v1/media-server/playback-evidence/by-author/{author_id}?limit=20`。只接受规范作者 UUID 和一个可选 limit（1–50）；一次稳定完整的新 lookup 完成后才只读查询 current/history。当前证据单独返回，历史截断显式报告。远端不确定使当前权威不可用、历史未知，不能误标过期或 PASS。
 
 服务重启时，处于 `preparing` 或 `baselining` 的作者观察属于 dispatch 前中断；`dispatching` 收敛为 acceptance unknown；`accepted` 或 `polling` 收敛为 completion unknown 并保留 accepted checkpoint；只有有效持久 `observed` checkpoint 才能收敛为成功。Legacy targetless scan 保持 0054-A 的保守恢复。Probe 可人工重试；scan 歧义则必须先在服务器侧检查，才能考虑新请求。
@@ -164,7 +164,7 @@ API key 值应通过引用指向的环境变量或 secret 文件注入，不得�
 
 | 验收行 | 证据 |
 | --- | --- |
-| 真人扫码登录（哪个平台/账户） | 当前检查点保持 `NOT_RUN`；Web 鉴权交付后才记录鉴权控制台结果及 `login-status` |
+| 真人扫码登录（哪个平台／账户） | 仍为 `NOT_RUN`；仅在获授权平台实测后记录精确提交、CLI 或已验证 Web 流程与 `login-status`，合成二维码不构成真人登录 |
 | 创作者抓取（哪个创作者、条数） | 调度任务结果 + 资产计数 |
 | 真实媒体下载 | 资产行达到 `verified`/`archived`；`/data/archive` 下出现 SHA-256 文件 |
 | Emby 目录发布 | `/data/library` 的作者目录列表 |

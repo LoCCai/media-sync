@@ -372,7 +372,7 @@ def test_login_body_is_bounded_single_field_strict_json(
     assert "two" not in response.text
 
 
-def test_public_legacy_head_response_has_no_asgi_body(
+def test_public_build_notice_head_response_has_no_asgi_body(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -417,6 +417,83 @@ def test_public_legacy_head_response_has_no_asgi_body(
     assert starts[0]["status"] == 200
     assert int(dict(starts[0]["headers"])[b"content-length"]) > 0
     assert all(message.get("body", b"") == b"" for message in messages if message["type"] == "http.response.body")
+
+
+def test_missing_build_root_and_protected_legacy_are_inert_notices(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(api_module, "_resolve_web_root", lambda: None)
+    app = api_module.create_api_app(_authenticated_settings(tmp_path))
+    client = TestClient(app, base_url=TEST_OPERATOR_ORIGIN)
+
+    notice = client.get("/?credential=private-query-sentinel")
+    assert notice.status_code == 200
+    assert "Console build missing" in notice.text
+    assert "pnpm build" in notice.text
+    assert "uv run media-sync --help" in notice.text
+    assert notice.headers["cache-control"] == "no-store"
+    assert "default-src 'none'" in notice.headers["content-security-policy"]
+    assert "private-query-sentinel" not in notice.text
+    for forbidden in ("<script", "<form", "<input", "<button", "fetch(", "{{NOTICE_"):
+        assert forbidden not in notice.text
+    for method in ("GET", "HEAD"):
+        refused = client.request(method, "/legacy", headers={"Accept": "text/html"}, follow_redirects=False)
+        assert refused.status_code == 401
+        assert "location" not in refused.headers
+
+    login = client.post(
+        "/api/v1/operator-auth/login",
+        json={"credential": TEST_OPERATOR_CREDENTIAL},
+        headers={"Origin": TEST_OPERATOR_ORIGIN},
+    )
+    assert login.status_code == 200
+    legacy = client.get("/legacy")
+    assert legacy.status_code == 200
+    assert "Legacy console retired" in legacy.text
+    assert "Console build missing" not in legacy.text
+    assert '<a href="/">' in legacy.text
+    assert legacy.headers["cache-control"] == "no-store"
+    for forbidden in ("<script", "<form", "<input", "<button", "fetch(", "{{NOTICE_"):
+        assert forbidden not in legacy.text
+    head = client.head("/legacy")
+    assert head.status_code == 200
+    assert head.content == b""
+    assert head.headers["content-length"] == legacy.headers["content-length"]
+
+
+def test_browser_deep_link_redirect_login_and_authenticated_spa(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    web_root = tmp_path / "web"
+    web_root.mkdir()
+    (web_root / "index.html").write_text("<!doctype html><title>Console v2</title>", encoding="utf-8")
+    monkeypatch.setattr(api_module, "_resolve_web_root", lambda: web_root)
+    app = api_module.create_api_app(_authenticated_settings(tmp_path))
+    client = TestClient(app, base_url=TEST_OPERATOR_ORIGIN)
+
+    redirected = client.get(
+        "/subscriptions?return_to=https://evil.example&credential=private-query-sentinel",
+        headers={"Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"},
+        follow_redirects=False,
+    )
+    assert redirected.status_code == 303
+    assert redirected.headers["location"] == "/?return_to=%2Fsubscriptions"
+    public_login = client.get(redirected.headers["location"])
+    assert public_login.status_code == 200
+    assert "Console v2" in public_login.text
+    assert "private-query-sentinel" not in public_login.text
+    login = client.post(
+        "/api/v1/operator-auth/login",
+        json={"credential": TEST_OPERATOR_CREDENTIAL},
+        headers={"Origin": TEST_OPERATOR_ORIGIN},
+    )
+    assert login.status_code == 200
+    authenticated = client.get("/subscriptions", headers={"Accept": "text/html"}, follow_redirects=False)
+    assert authenticated.status_code == 200
+    assert "location" not in authenticated.headers
+    assert "Console v2" in authenticated.text
 
 
 def test_https_origin_sets_secure_host_only_cookie_for_non_loopback_bind(tmp_path: Path) -> None:

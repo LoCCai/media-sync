@@ -22,12 +22,37 @@ import {
   operationProgressPercent,
   operationStreamConnected,
   operationStreamFailed,
+  operationStreamStatusCopy,
   operationTruthNotice,
   parseOperationStreamMessage,
   reduceOperationStreamMessage,
   safeOperationContextRows,
   safeOperationResult
 } from './operations';
+
+describe('reactive stream status copy', () => {
+  it('follows connecting, connected, fallback and reconnected health inputs', () => {
+    const cursor = createOperationStreamCursor();
+    const initial = createOperationStreamHealth();
+    expect(operationStreamStatusCopy(initial, cursor).title).toBe('正在连接实时事件流');
+    const live = operationStreamConnected(initial);
+    expect(operationStreamStatusCopy(live, cursor).title).toBe('实时事件流已连接');
+    const failed = operationStreamFailed(live);
+    const fallback = operationStreamStatusCopy(failed, cursor);
+    expect(fallback.title).toBe('实时流重连中');
+    expect(fallback.detail).toContain(`${Math.round(failed.pollDelayMs / 1000)} 秒`);
+    expect(operationStreamStatusCopy(operationStreamConnected(failed), cursor).title).toBe(
+      '实时事件流已连接'
+    );
+  });
+
+  it('updates the displayed sequence when only the cursor input changes', () => {
+    const live = operationStreamConnected(createOperationStreamHealth());
+    const initial = createOperationStreamCursor();
+    expect(operationStreamStatusCopy(live, initial).detail).toContain('#0');
+    expect(operationStreamStatusCopy(live, { ...initial, lastSequence: 123 }).detail).toContain('#123');
+  });
+});
 
 const operation: Operation = {
   id: '11111111-1111-4111-8111-111111111111',

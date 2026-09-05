@@ -1,10 +1,19 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import { Check, Database, ShieldCheck, Sparkles } from '@lucide/svelte';
 
   import { acceptOnboarding, onboardingAccepted, onboardingHydrated } from '$lib/stores/onboarding';
   import Modal from './Modal.svelte';
 
-  $: open = $onboardingHydrated && !$onboardingAccepted;
+  let deferred = false;
+  $: open = $onboardingHydrated && !$onboardingAccepted && !deferred;
+  onMount(() => {
+    const review = (): void => {
+      deferred = false;
+    };
+    window.addEventListener('media-sync:onboarding-review', review);
+    return () => window.removeEventListener('media-sync:onboarding-review', review);
+  });
 </script>
 
 <Modal
@@ -26,10 +35,18 @@
   </div>
 
   <div class="notice warning" style="margin-top:16px">
-    控制台当前无鉴权，只应发布到本机或可信内网。若需要公网访问，请先在反向代理层启用 HTTPS 与身份认证。
+    控制台已启用单操作者会话与 CSRF 保护。默认仅限本机使用；非回环部署必须配置精确 HTTPS
+    Origin，不代表支持公网、多用户或 SSO。
   </div>
 
   <svelte:fragment slot="footer">
+    <button
+      class="button secondary"
+      type="button"
+      on:click={() => {
+        deferred = true;
+      }}>稍后确认，仅浏览</button
+    >
     <button class="button" type="button" on:click={acceptOnboarding}>
       <Check size={16} strokeWidth={2} />
       我已知晓，进入控制台

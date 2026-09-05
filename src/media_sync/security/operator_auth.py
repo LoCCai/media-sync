@@ -46,6 +46,7 @@ _TOKEN_TEXT_LENGTH = 43
 _MAX_COOKIE_HEADER_BYTES = 4_096
 _MAX_AUTHORIZATION_HEADER_BYTES = MAX_OPERATOR_SECRET_BYTES + 16
 _MAX_HOST_HEADER_BYTES = 512
+_MAX_ACCEPT_HEADER_BYTES = 4_096
 _DEFAULT_LOGIN_FAILURE_LIMIT = 5
 _DEFAULT_LOGIN_FAILURE_WINDOW_SECONDS = 60
 _DEFAULT_MINIMUM_LOGIN_SECONDS = 0.075
@@ -72,6 +73,20 @@ _DEFAULT_BROWSER_ONLY_ROUTES = frozenset(
         ("POST", "/api/v1/media-server/playback-evidence"),
     }
 )
+_CONSOLE_LOGIN_REDIRECTS = {
+    path: f"/?return_to=%2F{path[1:]}".encode("ascii")
+    for path in (
+        "/accounts",
+        "/subscriptions",
+        "/contents",
+        "/assets",
+        "/library",
+        "/jobs",
+        "/settings",
+        "/diagnostics",
+    )
+}
+_ACCEPT_QUALITY = re.compile(r"(?:0(?:\.[0-9]{0,3})?|1(?:\.0{0,3})?)\Z")
 _STATIC_COMPONENT = re.compile(r"[A-Za-z0-9_-][A-Za-z0-9._-]*\Z")
 _OPAQUE_TOKEN = re.compile(rf"[A-Za-z0-9_-]{{{_TOKEN_TEXT_LENGTH}}}\Z")
 _BEARER_TOKEN = re.compile(r"[A-Za-z0-9\-._~+/]+={0,2}\Z")
@@ -738,6 +753,38 @@ def operator_auth_method(scope: Scope) -> OperatorAuthMethod | None:
         return None
 
 
+def _console_login_location(scope: Scope, method: str, path: str) -> bytes | None:
+    """Offer only fixed login navigation, never anonymous downstream access."""
+
+    location = _CONSOLE_LOGIN_REDIRECTS.get(path)
+    if method not in {"GET", "HEAD"} or location is None:
+        return None
+    # ASGI path is decoded: do not make encoded aliases into additional entries.
+    if scope.get("raw_path", path.encode("ascii")) != path.encode("ascii"):
+        return None
+    accept = _single_header(scope.get("headers", ()), b"accept", max_bytes=_MAX_ACCEPT_HEADER_BYTES)
+    if accept is None:
+        return None
+    html_ranges = [
+        item.split(";") for item in accept.split(",") if item.split(";", 1)[0].strip().lower() == "text/html"
+    ]
+    if len(html_ranges) != 1:
+        return None
+    quality: str | None = None
+    for parameter in html_ranges[0][1:]:
+        name, separator, value = parameter.strip().partition("=")
+        if not separator:
+            return None
+        if name.strip().lower() == "q":
+            value = value.strip()
+            if quality is not None or _ACCEPT_QUALITY.fullmatch(value) is None:
+                return None
+            quality = value
+    if quality is not None and float(quality) <= 0:
+        return None
+    return location
+
+
 class OperatorAuthMiddleware:
     """Pure ASGI Host/auth/origin boundary with denial as the default."""
 
@@ -789,6 +836,21 @@ class OperatorAuthMiddleware:
         await send({"type": "http.response.start", "status": status_code, "headers": headers})
         await send({"type": "http.response.body", "body": b"" if is_head else body, "more_body": False})
 
+    async def _redirect_to_login(self, send: Send, location: bytes) -> None:
+        # No request query or credential is ever copied into this fixed location.
+        headers = [
+            (b"location", location),
+            (b"cache-control", b"no-store"),
+            (b"content-length", b"0"),
+            (b"content-security-policy", b"default-src 'none'; base-uri 'none'; frame-ancestors 'none'"),
+            (b"permissions-policy", b"camera=(), microphone=(), geolocation=()"),
+            (b"referrer-policy", b"no-referrer"),
+            (b"x-content-type-options", b"nosniff"),
+            (b"x-frame-options", b"DENY"),
+        ]
+        await send({"type": "http.response.start", "status": 303, "headers": headers})
+        await send({"type": "http.response.body", "body": b"", "more_body": False})
+
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         scope_type = scope.get("type")
         if scope_type == "lifespan":
@@ -839,6 +901,10 @@ class OperatorAuthMiddleware:
             return
         auth_method = self.runtime.authenticate(cookie, bearer)
         if auth_method is None:
+            location = _console_login_location(scope, method, path)
+            if location is not None:
+                await self._redirect_to_login(send, location)
+                return
             await self._reject(scope, send, OperatorAuthErrorCode.AUTH_REQUIRED, 401)
             return
         if route in self.browser_only_routes and auth_method is not OperatorAuthMethod.BROWSER:

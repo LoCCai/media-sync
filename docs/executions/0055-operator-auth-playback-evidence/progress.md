@@ -2,15 +2,18 @@
 
 # Execution 0055 Phase A progress
 
-- Status: Backend authentication, observation identity/ledger and browser-only confirmation published; bounded author evidence projection and qualification v3 implemented with full regression complete, publication closeout in progress
+- Status: Author projection/qualification v3 published as `2e1949f`; secure console/pre-migration checks implemented and locally verified, including synthetic-browser checks; publication closeout remains
 - Date: 2026-09-05
 - Planning baseline: `d0a8cc2`; authentication implementation baseline: `4564b2a`
 - Published authentication commit: `f19bfaa`
 - Published persistence commit: `1d5b448`
 - Published confirmation commit: `13de3b7`; projection frozen planning commit: `9fd74de`
+- Published projection commit: `2e1949f`; current secure-console frozen plan: `714c849`
 - Current revision: `0008_playback_evidence`
 
 ## Completed checkpoints
+
+Items 1–30 retain historical implementation/verification through projection `2e1949f`; “current” within them refers to those checkpoints. Current P0 work is item 31 and the secure-console child record.
 
 1. Committed the bilingual planning baseline as `4564b2a`, fetched `origin/main` again before implementation closeout, and preserved the original product goal: seven-platform login/subscription/capture with Emby/Jellyfin-compatible output.
 2. Added bounded operator settings for one required typed browser-credential reference, an optional distinct Bearer reference, exact browser origins, and a 60-second-to-eight-hour session TTL. Resolution failures collapse to fixed startup codes without exposing secret values or locators.
@@ -44,6 +47,8 @@
 29. The current focused projection union passes 220 tests with one existing warning in 51.09s; the complete Python suite passes 2999 tests with 22 skips and one existing warning in 613.66s. Web passes 7 files/69 tests plus format/check/build; strict mypy passes 107 source files and format passes 743 files. Exact commands and final documentation/package/Git gates are in [projection verification](evidence-projection/verification.md); offline results do not substitute for current-image or live execution.
 30. The user delivery review is captured in the [priority addendum](delivery-priorities.md): after closing this increment, complete safe login/session/CSRF and credential/pre-migration validation, then verify the current Linux image and authorized Bilibili/XHS canaries. Minimal evidence UI remains promised follow-up work but does not block an authorized live flow through the existing CLI.
 
+31. Under frozen plan `714c849`, the current implementation adds serialized login/session, session-gated private mounting, memory-only CSRF, logout/expiry/401, QR/SSE, eight exact HTML deep-link login redirects, protected legacy migration and missing-v2-build notices. Onboarding permits later browsing without accepting the license or starting collection. Shared `serve --check-config` validates settings/credentials/origin/bind syntax without app/database/directory creation, DNS or bind; entrypoint normalization includes `-- serve` and preflights before Xvfb/migration, with no migration for help/check-only. The current full Python suite passes 3155 tests with 22 skips and one existing warning in 670.16s; the Web 114-test/9-file gate, check/build and local synthetic-browser gate have passed; video was only loaded/decoded, not clicked to play. Subsequent fixture-only read-only hardening passes 4 focused tests in 1.76s, without a new full-suite claim; exact evidence is in [secure-console verification](secure-console/verification.md). These results do not change Docker/Linux UID, real PostgreSQL or any platform/media-server live NOT_RUN.
+
 ## Playback-evidence boundary clarified before implementation
 
 1. Natural replay will compare immutable identity fields only: schema version, author/job identity, the four context digests, and observation fingerprint. Request-time `observed_at`/`confirmed_at` values are not required to equal the winning row; replay always returns the first persisted row and timestamps.
@@ -53,12 +58,12 @@
 
 ## Still pending
 
-- The packaged Svelte console and `/legacy` do not yet provide the login shell, in-memory CSRF store, centralized 401 reset, or logout/expiry lifecycle. The backend boundary is therefore implemented, but the current Web control surface is not yet operational for authenticated writes.
+- Local synthetic-browser verification has passed. Publication closeout, the exact current Linux image and authorized Bilibili/XHS canaries remain; minimal confirmation UI is P1 follow-up, not a prerequisite for CLI live workflows.
 - Minimal current/history evidence display and matched-only confirmation interaction remain pending. Projection and qualification v3 backend are implemented; no requested author or no exact current evidence yields `IMPLEMENTED/NOT_RUN`, not a live qualification pass.
-- No authorized live operator credential, platform account, or real Emby/Jellyfin playback flow has run. A local ledger row, mock connector or endpoint test cannot grant human PASS; live playback remains `NOT_RUN`.
+- No user platform account or real Emby/Jellyfin playback flow has run. Real local browser authentication with disposable synthetic fixtures is recorded separately in secure-console verification; it does not qualify a platform, CDN or media server. A local ledger row, mock connector or endpoint test cannot grant human PASS; live playback remains `NOT_RUN`.
 
 ## Next checkpoint
 
-Follow the [delivery priority addendum](delivery-priorities.md): close and publish the verified projection, then implement usable secure Web login/session/CSRF, 401/expiry reset, logout and credential/pre-migration validation, followed by current-Linux-image verification and authorized Bilibili/XHS canaries. Minimal evidence UI does not block an existing-CLI live run. A Linux/Docker/PostgreSQL-capable host still must execute current Compose startup, eight PlaybackEvidence PostgreSQL races and previously skipped PostgreSQL coverage; historical-image PASS does not qualify the current version.
+Local [secure-console synthetic-browser verification](secure-console/verification.md) has passed; finish publication gates, then follow [delivery priorities](delivery-priorities.md): the exact current Linux image and authorized Bilibili/XHS canaries. P1 confirmation UI is not a prerequisite. Runtime-UID readability, configuration/migration boundaries, startup/restart/restore and unexecuted PostgreSQL races still need host evidence, not reused old-image PASS.
 
 The pre-existing `.mimosa/` directory remains untracked, is now explicitly ignored, and is excluded from Git, distributions, and the Docker build context.

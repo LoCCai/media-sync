@@ -59,7 +59,11 @@ def test_health_ready_settings_and_console(tmp_path: Path, monkeypatch: pytest.M
     legacy = client.get("/legacy")
     assert legacy.status_code == 200
     assert "media-sync 控制台" in legacy.text
-    assert legacy.headers["cache-control"] == "no-cache"
+    assert "Legacy console retired" in legacy.text
+    assert "<script" not in legacy.text
+    assert "<form" not in legacy.text
+    assert legacy.headers["cache-control"] == "no-store"
+    assert client.head("/legacy").content == b""
 
     missing_api = client.get("/api/v1/not-a-route")
     assert missing_api.status_code == 404

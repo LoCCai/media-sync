@@ -39,6 +39,7 @@ export function resetOnboarding(): void {
   if (!browser) return;
   window.localStorage.removeItem(STORAGE_KEY);
   onboardingAccepted.set(false);
+  window.dispatchEvent(new CustomEvent('media-sync:onboarding-review'));
 }
 
 export function mediaCrawlerGate(): {

@@ -66,7 +66,7 @@ docker compose build
 docker compose up -d
 ```
 
-schema 迁移在容器启动时运行（`db init` 幂等），早于 `serve` 的操作者鉴权校验，因此鉴权启动失败不保证数据库未变。升级前须备份，并通过[覆盖 entrypoint 的运行用户凭据预检](deployment.zh.md)先检查可读性；完整迁移前配置校验仍待实现。凭据须保持受限且对实际容器用户可读，不能仅设为 root 所有的 `0600`。`uv.lock` 保证与发布时测试相同的依赖组合。本地 `docker-compose.yml` 被 git 忽略，上游更新不会与你的部署配置冲突。提交 `f19bfaa` 的后端鉴权边界已启用，但 Web login/session bootstrap 与 CSRF 传播仍待实现；在前端检查点收尾前使用 CLI/supervisor 工作流。
+当前容器入口会先为 `serve`（包括 `-- serve`）运行共享 `serve --check-config`，成功后才启动 Xvfb 并执行幂等 `db init`；显式 check-only／help 不迁移。通过预检后仍可能迁移，因此升级必须保留兼容备份，不能把后续启动失败等同于数据库未变。升级前按[部署指南](deployment.zh.md)覆盖 entrypoint 运行同一配置预检；此命令不做 DNS／端口绑定，不证明当前 Linux 挂载权限、端口可用或运行就绪。凭据须对实际映射的运行用户可读且保持受限，不能只设为 root 所有 `0600`、改为全员可读或递归更改所有权。当前 Windows 未运行 Docker／Linux UID 门。Web login/session／内存 CSRF 已实现并通过[本地合成浏览器验证](executions/0055-operator-auth-playback-evidence/secure-console/verification.zh.md)，CLI／supervisor 继续可用；`uv.lock` 固定依赖，git-ignored 的本地 compose 配置独立保留。
 
 数据库一旦包含任一 `media-server-probe` 或 `media-server-scan` 行，revision `0007_media_server_operations` 就是 forward-only。其 downgrade 会有意关闭失败而不是删除持久审计证据，旧应用也不得针对该数据库运行。没有新 kind 行的数据库可以使用经过测试的 downgrade 路径，但 down-migration 从不自动执行。签出旧 tag/SHA 前必须检查发布说明与数据库状态；若已有新 kind 行，应恢复兼容的升级前备份，或继续使用理解 revision `0007` 的应用版本。
 

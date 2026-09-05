@@ -1,4 +1,9 @@
+import { operatorAuth, OperatorAuthError } from '../stores/operator-auth';
+
 const ERROR_MESSAGES: Record<string, string> = {
+  operator_auth_required: '后台会话已失效，请重新登录。',
+  operator_csrf_forbidden: '会话已变化，请重新核验后手动重试；未自动重放操作。',
+  operator_request_forbidden: '请求必须使用同源后台会话。',
   account_not_found: '所选账户不存在或已失效。',
   account_exists_with_different_configuration: '同名账户已存在，但登录配置不同。',
   account_login_configuration_invalid: '登录运行环境未就绪，请先查看诊断。',
@@ -121,12 +126,33 @@ function errorCode(payload: unknown, status: number): string {
   return `http_${status}`;
 }
 
-export async function api<T>(path: string, init: RequestInit = {}, timeoutMs = 20_000): Promise<T> {
+export interface ApiBlobResult {
+  status: number;
+  blob: Blob | null;
+}
+
+async function sessionRequest<T>(
+  path: string,
+  init: RequestInit,
+  timeoutMs: number,
+  binary: boolean
+): Promise<T> {
+  const headers = new Headers(init.headers);
+  if (!path.startsWith('/api/') || path.includes('\\') || headers.has('authorization')) {
+    throw new ApiError(400, 'operator_request_forbidden', null);
+  }
+  const grant = operatorAuth.beginRequest();
+  const method = (init.method ?? 'GET').toUpperCase();
+  headers.set('Accept', binary ? 'image/png, application/json' : 'application/json');
+  headers.delete('x-media-sync-csrf');
+  if (!['GET', 'HEAD', 'OPTIONS'].includes(method)) headers.set('x-media-sync-csrf', grant.csrf);
+  if (init.body && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
   const controller = new AbortController();
   const callerSignal = init.signal;
   const abortFromCaller = (): void => controller.abort();
   if (callerSignal?.aborted) abortFromCaller();
   else callerSignal?.addEventListener('abort', abortFromCaller, { once: true });
+  grant.signal.addEventListener('abort', abortFromCaller, { once: true });
   let timedOut = false;
   const timeout = window.setTimeout(() => {
     if (controller.signal.aborted) return;
@@ -136,20 +162,41 @@ export async function api<T>(path: string, init: RequestInit = {}, timeoutMs = 2
   try {
     const response = await fetch(path, {
       ...init,
+      method,
       cache: 'no-store',
       credentials: 'same-origin',
-      headers: {
-        Accept: 'application/json',
-        ...(init.body ? { 'Content-Type': 'application/json' } : {}),
-        ...init.headers
-      },
+      redirect: 'error',
+      headers,
       signal: controller.signal
     });
+    grant.assertCurrent();
+    if (response.status === 401) {
+      // HTTP status revokes authority even when the error body is malformed or never finishes.
+      operatorAuth.rejectSession(grant.epoch);
+      void response.body?.cancel().catch(() => undefined);
+      throw new ApiError(401, 'operator_auth_required', null);
+    }
+    if (binary && [202, 404, 410].includes(response.status))
+      return { status: response.status, blob: null } as T;
+    if (response.status === 204) return undefined as T;
+    if (binary && response.ok) {
+      if (!(response.headers.get('content-type') ?? '').startsWith('image/png'))
+        throw new ApiError(502, 'request_validation_failed', null);
+      const blob = await response.blob();
+      grant.assertCurrent();
+      return { status: response.status, blob } as T;
+    }
     const contentType = response.headers.get('content-type') ?? '';
     const payload: unknown = contentType.includes('application/json')
       ? await response.json()
       : await response.text();
-    if (!response.ok) throw new ApiError(response.status, errorCode(payload, response.status), payload);
+    grant.assertCurrent();
+    if (!response.ok) {
+      const code = errorCode(payload, response.status);
+      if (response.status === 403 && code === 'operator_csrf_forbidden')
+        operatorAuth.rejectSession(grant.epoch, code);
+      throw new ApiError(response.status, code, payload);
+    }
     return payload as T;
   } catch (error) {
     if (timedOut && error instanceof DOMException && error.name === 'AbortError') {
@@ -159,10 +206,23 @@ export async function api<T>(path: string, init: RequestInit = {}, timeoutMs = 2
   } finally {
     window.clearTimeout(timeout);
     callerSignal?.removeEventListener('abort', abortFromCaller);
+    grant.signal.removeEventListener('abort', abortFromCaller);
+    grant.finish();
   }
 }
 
+export function api<T>(path: string, init: RequestInit = {}, timeoutMs = 20_000): Promise<T> {
+  return sessionRequest<T>(path, init, timeoutMs, false);
+}
+
+/** Consume QR bytes inside the session boundary; never return a late response body. */
+export function apiBlob(path: string, init: RequestInit = {}, timeoutMs = 20_000): Promise<ApiBlobResult> {
+  return sessionRequest<ApiBlobResult>(path, init, timeoutMs, true);
+}
+
 export function apiMessage(error: unknown): string {
+  if (error instanceof OperatorAuthError)
+    return ERROR_MESSAGES[error.code] ?? '无法确认后台会话，请重试登录。';
   if (error instanceof ApiError) return error.message;
   if (error instanceof Error) return error.message;
   return '操作失败，请稍后重试。';

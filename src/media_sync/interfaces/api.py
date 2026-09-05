@@ -308,6 +308,42 @@ def _static_response(web_root: Path, relative_path: str = "index.html") -> FileR
     )
 
 
+def _console_notice(*, missing_build: bool) -> Response:
+    """Render fixed, inert migration guidance instead of the retired client."""
+
+    if missing_build:
+        title = "控制台构建缺失 / Console build missing"
+        message_zh = "未找到 Console v2 构建。请安装包含前端构建的发行包。也可在源码的 web 目录完成构建后重启服务。"
+        message_en = (
+            "Console v2 is not built. Install a release containing the Web build, "
+            "or build it from the web source directory and restart the server."
+        )
+    else:
+        title = "旧控制台已停用 / Legacy console retired"
+        message_zh = "旧版交互控制台已停用。请返回首页并使用操作者凭据登录 Console v2。此旧入口仍受认证保护。"
+        message_en = (
+            "The legacy interactive client is retired. Return to the home page and sign in to Console v2 "
+            "with your operator credential. This legacy entry remains protected."
+        )
+    content = (
+        _CONSOLE_PATH.read_text(encoding="utf-8")
+        .replace("{{NOTICE_TITLE}}", title)
+        .replace("{{NOTICE_ZH}}", message_zh)
+        .replace("{{NOTICE_EN}}", message_en)
+    )
+    return Response(
+        content=content,
+        media_type="text/html; charset=utf-8",
+        headers={
+            "Cache-Control": "no-store",
+            "Content-Security-Policy": (
+                "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; "
+                "frame-ancestors 'none'; form-action 'none'"
+            ),
+        },
+    )
+
+
 class _ArchiveStreamingResponse(StreamingResponse):
     """Close the archive descriptor even when ASGI send or disconnect fails."""
 
@@ -1704,15 +1740,11 @@ def create_api_app(
     def console() -> Response:
         if web_root is not None:
             return _static_response(web_root)
-        return Response(content=_CONSOLE_PATH.read_text(encoding="utf-8"), media_type="text/html; charset=utf-8")
+        return _console_notice(missing_build=True)
 
-    @app.get("/legacy", include_in_schema=False)
+    @app.api_route("/legacy", methods=["GET", "HEAD"], include_in_schema=False)
     def legacy_console() -> Response:
-        return Response(
-            content=_CONSOLE_PATH.read_text(encoding="utf-8"),
-            media_type="text/html; charset=utf-8",
-            headers={"Cache-Control": "no-cache"},
-        )
+        return _console_notice(missing_build=False)
 
     # ------------------------------------------------------------- accounts
 

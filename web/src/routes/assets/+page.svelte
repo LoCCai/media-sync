@@ -1,6 +1,6 @@
 <script lang="ts">
   import { afterNavigate } from '$app/navigation';
-  import { onDestroy } from 'svelte';
+  import { onDestroy, onMount } from 'svelte';
   import {
     Archive,
     Download,
@@ -38,6 +38,7 @@
     assetRecoveryAvailable,
     assetRecoveryUrl,
     buildExplorerQuery,
+    ExplorerNavigationGate,
     EXPLORER_RESULT_LIMIT
   } from '$lib/utils/explorer';
   import { formatBytes, formatDate, formatDateLong, PLATFORM_META, shortId } from '$lib/utils/format';
@@ -55,6 +56,8 @@
   let contentId = '';
   let mounted = false;
   let listRequest = 0;
+  let listController: AbortController | null = null;
+  let detailController: AbortController | null = null;
   let searchTimer: number | undefined;
 
   let detailOpen = false;
@@ -84,6 +87,8 @@
     if (!mounted) return;
     if (searchTimer !== undefined) window.clearTimeout(searchTimer);
     const request = ++listRequest;
+    listController?.abort();
+    listController = new AbortController();
     loading = true;
     error = '';
     try {
@@ -97,13 +102,14 @@
           content_id: contentId,
           archived,
           limit: EXPLORER_RESULT_LIMIT
-        })
+        }),
+        { signal: listController.signal }
       );
-      if (request === listRequest) assets = result;
+      if (mounted && request === listRequest) assets = result;
     } catch (caught) {
-      if (request === listRequest) error = apiMessage(caught);
+      if (mounted && request === listRequest) error = apiMessage(caught);
     } finally {
-      if (request === listRequest) loading = false;
+      if (mounted && request === listRequest) loading = false;
     }
   }
 
@@ -119,11 +125,15 @@
     const next = new URL(window.location.href);
     next.searchParams.delete(scope === 'author' ? 'author_id' : 'content_id');
     window.history.replaceState({}, '', `${next.pathname}${next.search}${next.hash}`);
+    navigation.remember(assetExplorerQueryState(next.searchParams));
     void load();
   }
 
   async function openDetail(asset: Asset): Promise<void> {
+    if (!mounted) return;
     const request = ++detailRequest;
+    detailController?.abort();
+    detailController = new AbortController();
     selectedSummary = asset;
     detail = null;
     detailError = '';
@@ -132,12 +142,14 @@
     previewOpen = false;
     previewFailed = false;
     try {
-      const result = await api<AssetDetail>(`/api/v1/assets/${encodeURIComponent(asset.id)}`);
-      if (request === detailRequest) detail = result;
+      const result = await api<AssetDetail>(`/api/v1/assets/${encodeURIComponent(asset.id)}`, {
+        signal: detailController.signal
+      });
+      if (mounted && request === detailRequest) detail = result;
     } catch (caught) {
-      if (request === detailRequest) detailError = apiMessage(caught);
+      if (mounted && request === detailRequest) detailError = apiMessage(caught);
     } finally {
-      if (request === detailRequest) detailLoading = false;
+      if (mounted && request === detailRequest) detailLoading = false;
     }
   }
 
@@ -206,8 +218,7 @@
       : `${minutes}:${String(seconds).padStart(2, '0')}`;
   }
 
-  afterNavigate(() => {
-    const query = assetExplorerQueryState(new URLSearchParams(window.location.search));
+  const navigation = new ExplorerNavigationGate((query: ReturnType<typeof assetExplorerQueryState>) => {
     search = query.q;
     platform = query.platform;
     kind = query.kind;
@@ -215,13 +226,24 @@
     authorId = query.author_id;
     contentId = query.content_id;
     archived = query.archived;
-    mounted = true;
     void load();
   });
 
+  onMount(() => {
+    mounted = true;
+    navigation.mount(assetExplorerQueryState(new URLSearchParams(window.location.search)));
+  });
+  afterNavigate(() =>
+    navigation.navigate(assetExplorerQueryState(new URLSearchParams(window.location.search)))
+  );
+
   onDestroy(() => {
+    mounted = false;
+    navigation.dispose();
     listRequest += 1;
     detailRequest += 1;
+    listController?.abort();
+    detailController?.abort();
     if (searchTimer !== undefined) window.clearTimeout(searchTimer);
   });
 </script>

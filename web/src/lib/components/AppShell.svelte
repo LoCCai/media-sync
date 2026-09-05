@@ -1,5 +1,6 @@
 <script lang="ts">
   import { page } from '$app/stores';
+  import { operatorAuth } from '$lib/stores/operator-auth';
   import {
     Activity,
     Archive,
@@ -153,7 +154,12 @@
         <span class="topbar-title">{titles[$page.url.pathname] ?? 'media-sync'}</span>
       </div>
       <div class="topbar-right">
+        {#if $operatorAuth.code === 'operator_csrf_forbidden'}
+          <span class="session-notice">会话已重新核验，请手动重试之前操作</span>
+        {/if}
         <span class="service-chip"><span></span>本机服务</span>
+        <button class="topbar-link" type="button" on:click={() => void operatorAuth.logout()}>退出后台</button
+        >
         <a class="topbar-link desktop-only" href="/api/docs" target="_blank" rel="noreferrer">
           <Boxes size={15} /> API
         </a>
@@ -380,6 +386,12 @@
   .topbar-link:hover {
     background: #f8fafc;
     color: #27354b;
+  }
+
+  .session-notice {
+    max-width: 220px;
+    color: #92400e;
+    font-size: 11px;
   }
 
   .main-content {

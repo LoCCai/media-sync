@@ -2,15 +2,18 @@
 
 # 执行 0055 阶段 A 进展
 
-- 状态：后端鉴权、观察身份／持久账本及仅浏览器确认均已发布；有界作者证据投影与资格 v3 已实现并完成完整回归，正在收尾发布
+- 状态：作者投影／资格 v3 已发布为 `2e1949f`；当前安全控制台／迁移前预检已实现且本地合成浏览器门禁已通过，待发布收尾
 - 日期：2026-09-05
 - 规划基线：`d0a8cc2`；鉴权实现基线：`4564b2a`
 - 已发布鉴权提交：`f19bfaa`
 - 已发布持久化提交：`1d5b448`
 - 已发布确认提交：`13de3b7`；投影冻结规划提交：`9fd74de`
+- 已发布投影提交：`2e1949f`；当前安全控制台冻结计划：`714c849`
 - 当前 revision：`0008_playback_evidence`
 
 ## 已完成检查点
+
+第 1–30 项保留截至投影 `2e1949f` 的历史实现／验证；其中“当前”指对应当时检查点。当前 P0 见第 31 项及安全控制台子记录。
 
 1. 中英双语规划基线已提交为 `4564b2a`；实现收尾前再次 fetch `origin/main`。原始产品目标保持不变：七平台登录/订阅/抓取及 Emby/Jellyfin 兼容输出。
 2. 已增加有界操作者设置：一个必需的类型化浏览器凭据引用、一个可选且独立的 Bearer 引用、精确浏览器 origin，以及 60 秒至八小时 session TTL。解析失败只返回固定启动码，不暴露 secret 值或 locator。
@@ -44,6 +47,8 @@
 29. 当前投影专项并集通过 220 项、1 个既有 warning（51.09 秒）；完整 Python 套件通过 2999 项、跳过 22 项、1 个既有 warning（613.66 秒）。Web 7 文件／69 项及 format/check/build、107 个源文件 strict mypy 与 743 文件 format 通过。详细命令及最终文档／包／Git 门见[投影验证](evidence-projection/verification.zh.md)；不能用这些离线结果替代当前镜像或真人执行。
 30. 按用户交付核查补充[优先级计划](delivery-priorities.zh.md)：本增量收尾后，先完成安全 login/session/CSRF 与凭据／迁移前预检，再验证当前 Linux 镜像并推进 Bilibili／小红书获授权真人金丝雀。最小证据 UI 属于后续已承诺工作，但不阻塞可通过既有 CLI 开始的获授权真人流程。
 
+31. 当前 `714c849` 冻结计划已实现安全 login/session 串行、session 后私有树挂载、内存 CSRF、退出／过期／401、QR／SSE、8 个精确 HTML 深链接登录重定向、受保护 legacy 迁移提示与无 v2 构建提示。引导可稍后仅浏览，不接受许可证或启动采集。共享 `serve --check-config` 在不创建 app／数据库／目录、不查 DNS／绑定的情况下验证配置／凭据／origin／bind 语法；入口含 `-- serve` 规范化，在 Xvfb／迁移前预检，help/check-only 不迁移。当前 Python 完整套件通过 3155 项、22 项跳过、1 个既有 warning，670.16 秒；Web 9 文件／114 项、check/build 与本地合成浏览器门已通过，视频只加载／解码、未点击播放。随后仅 fixture 只读增强专项 4 项通过（1.76 秒），不产生新的完整套件数量；准确证据见[安全控制台验证](secure-console/verification.zh.md)。这些结果不改变 Docker／Linux UID、真实 PostgreSQL 或任何平台／媒体服务器真人 NOT_RUN。
+
 ## 播放证据实现前澄清
 
 1. 自然重放只比较不可变身份字段：schema version、author/job 身份、四个 context digest 与 observation fingerprint。新请求的 `observed_at`/`confirmed_at` 不要求等于胜出行；重放始终返回首个持久行及其时间戳。
@@ -53,12 +58,12 @@
 
 ## 仍待实现
 
-- 打包的 Svelte 控制台与 `/legacy` 尚无登录壳、内存 CSRF store、集中 401 reset 或 logout/expiry 生命周期。因此后端边界已经实现，但当前 Web 控制面尚不能完成经鉴权写操作。
+- 当前本地合成浏览器门已通过；仍须发布收尾、验证精确当前 Linux 镜像并推进获授权 Bilibili／小红书金丝雀。最小确认 UI 是 P1 后续，不前置于 CLI 真人流程。
 - 仍须完成最小当前／历史证据展示与 matched-only 确认交互。投影与资格 v3 后端已实现，无指定作者或无精确当前证据时为 `IMPLEMENTED/NOT_RUN`；这不代表真人资格已经通过。
-- 尚未运行任何获授权真人操作者凭据、平台账户或真实 Emby/Jellyfin 播放流程。本地账本行、mock connector 或 endpoint 测试都不能授予真人 PASS；真人播放仍为 `NOT_RUN`。
+- 尚未运行用户平台账户或真实 Emby/Jellyfin 播放流程。真实本地浏览器与可丢弃合成夹具的鉴权验证单独记录在 secure-console 验证中，不授予平台、CDN 或媒体服务器资格。本地账本行、mock connector 或 endpoint 测试都不能授予真人 PASS；真人播放仍为 `NOT_RUN`。
 
 ## 下一检查点
 
-按[交付优先级补充计划](delivery-priorities.zh.md)，先收尾发布已验证投影，再实现安全可用的 Web login/session/CSRF、401／过期重置、登出与凭据／迁移前预检，随后验证当前 Linux 镜像并推进获授权 Bilibili／小红书金丝雀。最小证据 UI 不阻塞既有 CLI 真人运行。具备 Linux/Docker/PostgreSQL 的主机仍须执行当前 Compose 启动、8 项 PlaybackEvidence PostgreSQL 竞态及此前跳过的 PostgreSQL 覆盖；旧镜像 PASS 不替代当前版本。
+当前[安全控制台合成浏览器验证](secure-console/verification.zh.md)已通过；完成发布门，再按[交付优先级](delivery-priorities.zh.md)验证精确当前 Linux 镜像、推进获授权 Bilibili／小红书金丝雀。P1 确认 UI 不前置。真实运行 UID 可读性、配置／迁移边界、启动／重启／恢复和未运行 PostgreSQL 竞态仍须部署主机证据，不能复用旧镜像 PASS。
 
 既有 `.mimosa/` 目录保持未跟踪，现已显式忽略，并同时从 Git、distribution 与 Docker build context 排除。

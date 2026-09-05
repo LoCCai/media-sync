@@ -1,6 +1,6 @@
 <script lang="ts">
   import { afterNavigate } from '$app/navigation';
-  import { onDestroy } from 'svelte';
+  import { onDestroy, onMount } from 'svelte';
   import {
     Archive,
     Download,
@@ -31,6 +31,7 @@
     assetRecoveryUrl,
     buildExplorerQuery,
     contentExplorerQueryState,
+    ExplorerNavigationGate,
     EXPLORER_RESULT_LIMIT
   } from '$lib/utils/explorer';
   import { formatBytes, formatDate, formatDateLong, PLATFORM_META, shortId } from '$lib/utils/format';
@@ -46,6 +47,8 @@
   let authorId = '';
   let mounted = false;
   let listRequest = 0;
+  let listController: AbortController | null = null;
+  let detailController: AbortController | null = null;
   let searchTimer: number | undefined;
 
   let detailOpen = false;
@@ -71,6 +74,8 @@
     if (!mounted) return;
     if (searchTimer !== undefined) window.clearTimeout(searchTimer);
     const request = ++listRequest;
+    listController?.abort();
+    listController = new AbortController();
     loading = true;
     error = '';
     try {
@@ -83,13 +88,14 @@
           archived,
           exported,
           limit: EXPLORER_RESULT_LIMIT
-        })
+        }),
+        { signal: listController.signal }
       );
-      if (request === listRequest) contents = result;
+      if (mounted && request === listRequest) contents = result;
     } catch (caught) {
-      if (request === listRequest) error = apiMessage(caught);
+      if (mounted && request === listRequest) error = apiMessage(caught);
     } finally {
-      if (request === listRequest) loading = false;
+      if (mounted && request === listRequest) loading = false;
     }
   }
 
@@ -104,11 +110,15 @@
     const next = new URL(window.location.href);
     next.searchParams.delete('author_id');
     window.history.replaceState({}, '', `${next.pathname}${next.search}${next.hash}`);
+    navigation.remember(contentExplorerQueryState(next.searchParams));
     void load();
   }
 
   async function openDetail(item: ContentItem): Promise<void> {
+    if (!mounted) return;
     const request = ++detailRequest;
+    detailController?.abort();
+    detailController = new AbortController();
     selectedSummary = item;
     detail = null;
     detailError = '';
@@ -117,12 +127,14 @@
     previewAssetId = '';
     previewFailures = {};
     try {
-      const result = await api<ContentDetail>(`/api/v1/contents/${encodeURIComponent(item.id)}`);
-      if (request === detailRequest) detail = result;
+      const result = await api<ContentDetail>(`/api/v1/contents/${encodeURIComponent(item.id)}`, {
+        signal: detailController.signal
+      });
+      if (mounted && request === detailRequest) detail = result;
     } catch (caught) {
-      if (request === detailRequest) detailError = apiMessage(caught);
+      if (mounted && request === detailRequest) detailError = apiMessage(caught);
     } finally {
-      if (request === detailRequest) detailLoading = false;
+      if (mounted && request === detailRequest) detailLoading = false;
     }
   }
 
@@ -168,21 +180,31 @@
     );
   }
 
-  afterNavigate(() => {
-    const query = contentExplorerQueryState(new URLSearchParams(window.location.search));
+  const navigation = new ExplorerNavigationGate((query: ReturnType<typeof contentExplorerQueryState>) => {
     search = query.q;
     platform = query.platform;
     kind = query.kind;
     authorId = query.author_id;
     archived = query.archived;
     exported = query.exported;
-    mounted = true;
     void load();
   });
 
+  onMount(() => {
+    mounted = true;
+    navigation.mount(contentExplorerQueryState(new URLSearchParams(window.location.search)));
+  });
+  afterNavigate(() =>
+    navigation.navigate(contentExplorerQueryState(new URLSearchParams(window.location.search)))
+  );
+
   onDestroy(() => {
+    mounted = false;
+    navigation.dispose();
     listRequest += 1;
     detailRequest += 1;
+    listController?.abort();
+    detailController?.abort();
     if (searchTimer !== undefined) window.clearTimeout(searchTimer);
   });
 </script>

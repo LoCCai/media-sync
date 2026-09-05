@@ -15,6 +15,8 @@
   } from '@lucide/svelte';
 
   import { api, apiMessage, LatestRequestGate } from '$lib/api/client';
+  import { SessionStreamRecovery } from '$lib/api/session-stream';
+  import { operatorAuth } from '$lib/stores/operator-auth';
   import EmptyState from '$lib/components/EmptyState.svelte';
   import Modal from '$lib/components/Modal.svelte';
   import PageHeader from '$lib/components/PageHeader.svelte';
@@ -49,6 +51,7 @@
     operationProgressPercent,
     operationStreamConnected,
     operationStreamFailed,
+    operationStreamStatusCopy,
     operationTruthNotice,
     parseOperationStreamMessage,
     reduceOperationStreamMessage,
@@ -86,6 +89,15 @@
   let streamCursor = createOperationStreamCursor();
   let streamHealth = createOperationStreamHealth();
   let snapshotLoading = false;
+  let destroyed = false;
+  const streamRecovery = new SessionStreamRecovery(
+    () => operatorAuth.checkSession(),
+    () => {
+      if (destroyed || operatorAuth.snapshot.phase !== 'authenticated') return;
+      streamHealth = operationStreamFailed(streamHealth);
+      scheduleFallbackPoll();
+    }
+  );
 
   $: filteredJobs = jobStatusFilter === 'all' ? jobs : jobs.filter((item) => item.status === jobStatusFilter);
   $: filteredOperations = operations.filter((operation) =>
@@ -100,7 +112,7 @@
   ).length;
   $: failedCount = jobs.filter((item) => item.status.startsWith('failed')).length;
   $: activeOperationCount = operations.filter((item) => operationIsActive(item.state)).length;
-  $: streamCopy = streamStatusCopy();
+  $: streamCopy = operationStreamStatusCopy(streamHealth, streamCursor);
   $: selectedTruthNotice = selectedOperation ? operationTruthNotice(selectedOperation) : null;
   $: selectedProgressPercent = selectedOperation ? operationProgressPercent(selectedOperation) : null;
   $: selectedSafeResult = selectedOperation ? safeOperationResult(selectedOperation) : null;
@@ -122,22 +134,6 @@
         operation_reconciled: '重启协调完成'
       }[code] ?? code
     );
-  }
-
-  function streamStatusCopy(): { title: string; detail: string } {
-    if (streamHealth.mode === 'live') {
-      return {
-        title: '实时事件流已连接',
-        detail: `已处理到全局事件 #${streamCursor.lastSequence}；列表按事件序列去重。`
-      };
-    }
-    if (streamHealth.mode === 'fallback') {
-      return {
-        title: '实时流重连中',
-        detail: `当前使用有界轮询，下一次刷新间隔最多 ${Math.round(streamHealth.pollDelayMs / 1000)} 秒。`
-      };
-    }
-    return { title: '正在连接实时事件流', detail: '连接就绪后会先读取一次有界操作快照。' };
   }
 
   async function loadJobs(skipIfBusy = false): Promise<void> {
@@ -306,21 +302,35 @@
   }
 
   function scheduleFallbackPoll(): void {
-    if (fallbackTimer !== null || streamHealth.mode !== 'fallback') return;
+    if (
+      destroyed ||
+      operatorAuth.snapshot.phase !== 'authenticated' ||
+      fallbackTimer !== null ||
+      streamHealth.mode !== 'fallback'
+    )
+      return;
     fallbackTimer = window.setTimeout(async () => {
       fallbackTimer = null;
-      if (streamHealth.mode !== 'fallback') return;
+      if (destroyed || operatorAuth.snapshot.phase !== 'authenticated' || streamHealth.mode !== 'fallback')
+        return;
       await load(true);
       if (detailOpen && selectedOperation) await loadOperationDetail(selectedOperation.id, true);
-      if (streamHealth.mode === 'fallback') {
+      if (!destroyed && operatorAuth.snapshot.phase === 'authenticated' && streamHealth.mode === 'fallback') {
         streamHealth = operationStreamFailed(streamHealth);
         scheduleFallbackPoll();
+        startOperationStream();
       }
     }, streamHealth.pollDelayMs);
   }
 
   async function loadReadySnapshot(): Promise<void> {
-    if (snapshotLoading || streamCursor.snapshotGeneration >= streamCursor.readyGeneration) return;
+    if (
+      destroyed ||
+      operatorAuth.snapshot.phase !== 'authenticated' ||
+      snapshotLoading ||
+      streamCursor.snapshotGeneration >= streamCursor.readyGeneration
+    )
+      return;
     const generation = streamCursor.readyGeneration;
     snapshotLoading = true;
     try {
@@ -336,7 +346,7 @@
   }
 
   function scheduleDetailRefresh(operationId: string): void {
-    if (detailRefreshTimer !== null) return;
+    if (destroyed || detailRefreshTimer !== null) return;
     detailRefreshTimer = window.setTimeout(() => {
       detailRefreshTimer = null;
       if (detailOpen && selectedOperation?.id === operationId) {
@@ -346,7 +356,7 @@
   }
 
   function scheduleOperationRefresh(): void {
-    if (operationRefreshTimer !== null) return;
+    if (destroyed || operationRefreshTimer !== null) return;
     operationRefreshTimer = window.setTimeout(() => {
       operationRefreshTimer = null;
       void loadOperationSnapshot().catch(() => undefined);
@@ -354,6 +364,7 @@
   }
 
   function handleStreamMessage(raw: Event): void {
+    if (destroyed || operatorAuth.snapshot.phase !== 'authenticated') return;
     if (!(raw instanceof MessageEvent) || typeof raw.data !== 'string') return;
     const message = parseOperationStreamMessage(raw.data);
     if (!message) return;
@@ -376,19 +387,26 @@
   }
 
   function startOperationStream(): void {
+    if (destroyed || operationStream || operatorAuth.snapshot.phase !== 'authenticated') return;
     if (typeof EventSource === 'undefined') {
       streamHealth = operationStreamFailed(streamHealth);
       scheduleFallbackPoll();
       return;
     }
-    operationStream = new EventSource('/api/v1/operations/events');
-    operationStream.onopen = () => {
+    const source = new EventSource('/api/v1/operations/events');
+    operationStream = source;
+    source.onopen = () => {
+      if (destroyed || source !== operationStream) return;
       streamHealth = operationStreamConnected(streamHealth);
       clearFallbackTimer();
     };
-    operationStream.onerror = () => {
-      streamHealth = operationStreamFailed(streamHealth);
-      scheduleFallbackPoll();
+    source.onerror = () => {
+      if (destroyed || source !== operationStream) return;
+      void streamRecovery.recover(() => {
+        source.close();
+        operationStream = null;
+        clearFallbackTimer();
+      });
     };
     operationStream.onmessage = handleStreamMessage;
     operationStream.addEventListener('ready', handleStreamMessage);
@@ -402,6 +420,8 @@
   });
 
   onDestroy(() => {
+    destroyed = true;
+    streamRecovery.dispose();
     operationStream?.close();
     jobsRequest.cancel();
     if (jobsRefreshTimer !== null) window.clearInterval(jobsRefreshTimer);

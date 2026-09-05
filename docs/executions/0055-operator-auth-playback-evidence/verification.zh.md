@@ -2,17 +2,18 @@
 
 # 执行 0055 阶段 A 验证
 
-- 状态：后端鉴权、观察身份／持久账本及仅浏览器确认均已发布；有界作者投影与资格 v3 已通过完整回归，最终发布门见子检查点
+- 状态：投影／资格 v3 已发布为 `2e1949f`；当前安全控制台／迁移前预检已实现且本地合成浏览器门禁已通过，准确当前门见 secure-console 子记录
 - 日期：2026-09-05
 - 规划基线：`d0a8cc2`；鉴权实现基线：`4564b2a`
 - 已发布鉴权提交：`f19bfaa`
 - 已发布持久化提交：`1d5b448`
 - 已发布确认提交：`13de3b7`；投影冻结规划提交：`9fd74de`
+- 已发布投影提交：`2e1949f`；当前安全控制台冻结计划：`714c849`
 - 当前 revision：`0008_playback_evidence`
 
 ## 证据政策
 
-规划检查只能证明切片范围明确且基于当时代码。下方分节保留 `f19bfaa` 鉴权、`1d5b448` 观察身份／持久化和 `13de3b7` 确认写入的历史证据；当前有界作者投影与资格 v3 的专项、完整回归及发布证据统一见[子检查点验证](evidence-projection/verification.zh.md)。离线证据不证明仍缺失的 Web 登录／确认表面、当前 Linux 镜像可用性、真实服务器兼容或获授权真人播放。历史审查范围内的“无 P0/P1/P2”不关闭[交付核查](delivery-priorities.zh.md)中的 Web、凭据可读性与迁移前预检问题。实现证据与真人资格继续分开。
+本父记录保留各历史提交的验证，含 `2e1949f` 投影的 2999 项完整门；这些不替代当前安全控制台版本。当前 login/session／内存 CSRF／QR／SSE 与迁移前预检已实现，已通过[本地合成浏览器验证](secure-console/verification.zh.md)。当前 Python 完整套件为 3155 项通过、22 项跳过、1 个既有 warning，670.16 秒；Web 9 文件／114 项及 check/build、本地合成浏览器门已通过，视频仅加载／解码、未点击播放；其后仅 fixture 只读增强专项 4 项通过（1.76 秒），不是新的全量数量。发布证据以子记录为准。历史审查“无 P0/P1/P2”不关闭新交付核查问题；实现、当前镜像验证与真人资格分开，全部未执行平台／媒体服务器真人行仍为 NOT_RUN。
 
 ## 规划基线证据
 
@@ -95,7 +96,9 @@
 | Docker 与 PostgreSQL 执行 | executable/environment 检查 | `NOT_RUN`——Docker executable 不可用且未设置 `MEDIA_SYNC_TEST_POSTGRESQL_URL`；源码/测试不能替代执行 |
 | 全部日志修复后的完整 Python 回归 | `uv run --frozen pytest -q` | `PASS`——594.72 秒（`0:09:54`）内 2941 项通过、22 项跳过、1 个既有 Starlette/httpx warning。3 项 skip 为 Windows/POSIX 差异；11 项 Operation 与 8 项 PlaybackEvidence PostgreSQL 用例因未设置测试 URL 继续为 `NOT_RUN` |
 
-## 当前作者投影与资格 v3 检查点证据
+## 已发布作者投影与资格 v3 历史证据
+
+本节对应 `2e1949f`；“当前”指当时投影版本。最新安全控制台结果见[当前验证](secure-console/verification.zh.md)。
 
 完整命令、尝试记录与最终文档／包／Git 门见[投影验证](evidence-projection/verification.zh.md)。以下摘要只涵盖本次实际已运行的门。
 
@@ -138,8 +141,8 @@
 
 当前检查点已关闭本地 fingerprint、revision/model、受保护 downgrade、自然重放、SQLite、确认权威、仅浏览器 POST、有界作者投影与资格 v3 的离线部分；P0 顺序见[交付优先级补充计划](delivery-priorities.zh.md)。剩余工作仍须提供精确 passing evidence：
 
-1. 完成凭据可读性及迁移前配置预检；证明无效／不可读凭据会在数据库修改前失败，不用服务启动失败推断数据库未变。
-2. 优先实现并验证 Web login/session/logout/expiry、内存 CSRF、集中 401 reset 与 cookie-only EventSource／直接媒体；随后完成可访问的当前／历史展示与 matched-only 播放确认。后者不阻塞通过既有 CLI 开始获授权真人金丝雀。
+1. 迁移前配置检查已实现；仍须在最终 Linux 镜像／实际映射 UID 下执行凭据可读性与失败先于迁移验证。Windows／替身进程结果不等于真实 Docker，配置预检也不证明 DNS／端口或运行就绪。
+2. 当前[本地合成浏览器验证](secure-console/verification.zh.md)已在修复／复验后通过，覆盖 session／CSRF、QR／SSE、跨标签退出与自然过期；视频证据仅为加载／解码，未点击播放。P1 当前／历史证据与 matched-only 确认 UI 仍待实现，但不阻塞获授权 CLI 金丝雀。
 3. 在安装 Docker 的 Linux 主机验证精确当前提交／镜像的配置、运行用户 secret 读取、迁移边界、启动、重启持久性与备份恢复，然后优先完成 Bilibili／小红书获授权金丝雀。历史镜像 PASS 不替代当前版本。
 4. 在已配置主机上运行 8 项 PlaybackEvidence PostgreSQL 竞态并重跑此前跳过的 PostgreSQL 覆盖；源码检查不能替代执行。
 5. 通过最终仓库、包与发布扫描继续保证 credential/session/CSRF/reference/raw selector 零保留。
@@ -147,7 +150,7 @@
 
 ## 真人资格
 
-尚未运行任何 0055-A 真人鉴权或真实 Emby/Jellyfin 播放。规划、mock、生成媒体、测试创建的数据库行与 item observation 都不能产生仓库中的真人 PASS。只有获授权操作者实际播放并显式确认精确当前 item 后，真人播放状态才可离开 `NOT_RUN`。
+尚未运行获授权真人平台账户登录或真实 Emby/Jellyfin 播放。当前真实本地浏览器鉴权使用可丢弃合成夹具，记录于[安全控制台验证](secure-console/verification.zh.md)，不授予平台、CDN 或媒体服务器资格。规划、mock、生成媒体、测试创建的数据库行与 item observation 都不能产生仓库中的真人 PASS。只有获授权操作者实际播放并显式确认精确当前 item 后，真人播放状态才可离开 `NOT_RUN`。
 
 ## 退出门
 

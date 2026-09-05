@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import hashlib
 import hmac
+import ipaddress
 import json
 import math
 import os
@@ -25,6 +26,7 @@ from uuid import UUID, uuid4
 
 import typer
 from pydantic import ValidationError
+from pydantic_settings import SettingsError
 from sqlalchemy import create_engine, inspect, select, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import IntegrityError, OperationalError, SQLAlchemyError
@@ -2740,18 +2742,23 @@ def serve_api(
         int | None,
         typer.Option(min=1, max=65_535, help="Port override; defaults to MEDIA_SYNC_API_PORT (8632)."),
     ] = None,
+    check_config: Annotated[
+        bool,
+        typer.Option("--check-config", help="Validate startup configuration only; do not create state or serve."),
+    ] = False,
 ) -> None:
     """Serve the REST API and web console behind single-operator authentication."""
 
     try:
         settings = get_settings()
-    except ValidationError:
+    except (ValidationError, SettingsError, OSError, UnicodeError):
         typer.echo('{"detail":"service_configuration_invalid"}', err=True)
         raise typer.Exit(code=2) from None
-    resolved_host = host or settings.api_host
-    resolved_port = port or settings.api_port
-    if not resolved_host or not math.isfinite(float(resolved_port)) or not 1 <= int(resolved_port) <= 65_535:
-        raise typer.BadParameter("invalid bind address")
+    resolved_host = settings.api_host if host is None else host
+    resolved_port = settings.api_port if port is None else port
+    if not _serve_bind_host_is_valid(resolved_host) or not 1 <= resolved_port <= 65_535:
+        typer.echo('{"detail":"service_configuration_invalid"}', err=True)
+        raise typer.Exit(code=2) from None
 
     try:
         operator_auth_runtime = resolve_operator_auth_runtime(
@@ -2765,9 +2772,13 @@ def serve_api(
             int(resolved_port),
             settings.operator_allowed_origins,
         )
-    except OperatorAuthConfigurationError:
+    except (OperatorAuthConfigurationError, SecretError, OSError, UnicodeError, RuntimeError):
         typer.echo('{"detail":"operator_auth_configuration_invalid"}', err=True)
         raise typer.Exit(code=2) from None
+
+    if check_config:
+        typer.echo('{"service":"media-sync-api","configuration":"valid"}')
+        return
 
     import uvicorn
 
@@ -2798,6 +2809,24 @@ def serve_api(
         proxy_headers=False,
         access_log=False,
     )
+
+
+def _serve_bind_host_is_valid(host: str) -> bool:
+    """Validate bind syntax without DNS, socket or filesystem work."""
+
+    if not host or len(host) > 253 or not host.isascii():
+        return False
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        return all(
+            1 <= len(label) <= 63
+            and label[0].isalnum()
+            and label[-1].isalnum()
+            and all(character.isalnum() or character == "-" for character in label)
+            for label in host.split(".")
+        )
+    return "%" not in host
 
 
 def run() -> None:

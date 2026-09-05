@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import type { Asset } from '$lib/types/api';
 
@@ -10,8 +10,47 @@ import {
   assetRecoveryUrl,
   buildExplorerQuery,
   contentExplorerQueryState,
+  ExplorerNavigationGate,
   previewKind
 } from './explorer';
+
+describe('auth-gated explorer mounting', () => {
+  it('loads on mount even when the initial afterNavigate happened before authentication', () => {
+    const apply = vi.fn();
+    const navigation = new ExplorerNavigationGate(apply);
+    const query = assetExplorerQueryState(new URLSearchParams('author_id=author-one'));
+    navigation.navigate(query);
+    expect(apply).not.toHaveBeenCalled();
+    navigation.mount(query);
+    expect(apply).toHaveBeenCalledExactlyOnceWith(query);
+  });
+
+  it('deduplicates mount and afterNavigate while preserving subsequent same-route query changes', () => {
+    const apply = vi.fn();
+    const navigation = new ExplorerNavigationGate(apply);
+    const initial = contentExplorerQueryState(new URLSearchParams('q=initial'));
+    const changed = contentExplorerQueryState(new URLSearchParams('q=changed'));
+    navigation.mount(initial);
+    navigation.navigate({ ...initial });
+    expect(apply).toHaveBeenCalledOnce();
+    navigation.navigate(changed);
+    expect(apply).toHaveBeenCalledTimes(2);
+    expect(apply).toHaveBeenLastCalledWith(changed);
+  });
+
+  it('does not load after teardown and does not reuse an obsolete location after local replaceState', () => {
+    const apply = vi.fn();
+    const navigation = new ExplorerNavigationGate(apply);
+    navigation.mount({ q: 'first' });
+    navigation.remember({ q: 'cleared' });
+    navigation.navigate({ q: 'first' });
+    expect(apply).toHaveBeenCalledTimes(2);
+    navigation.dispose();
+    navigation.navigate({ q: 'later' });
+    navigation.mount({ q: 'later' });
+    expect(apply).toHaveBeenCalledTimes(2);
+  });
+});
 
 const asset: Asset = {
   id: '11111111-1111-4111-8111-111111111111',

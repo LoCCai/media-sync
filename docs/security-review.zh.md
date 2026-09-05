@@ -2,7 +2,7 @@
 
 # 安全与隐私审查（执行 0046）
 
-范围：执行 0046 自审，已校准到 0054 及 0055 的鉴权、持久账本、浏览器确认与当前有界作者证据／资格 v3。这是自审，不是外部审计。后端鉴权、确认与读取投影已实现，Web login/CSRF/确认集成仍待完成。
+范围：执行 0046 自审，校准至当前 0055 安全控制台与启动预检实现。这不是外部审计；当前 login/session／内存 CSRF／QR／SSE 与迁移前预检已实现，已通过[本地合成浏览器验证](executions/0055-operator-auth-playback-evidence/secure-console/verification.zh.md)；播放确认 UI 与当前 Linux／真人资格仍待完成。
 
 ## 1. 凭据与机密
 
@@ -40,11 +40,11 @@
 | 声明 | 强制机制 |
 | --- | --- |
 | 缺少有效操作者权限时 `serve` 在绑定前失败 | 缺失、畸形、弱、无法解析或冲突的凭据输入会在 Uvicorn 启动前统一成为固定配置错误；不存在生产匿名模式开关 |
-| 默认拒绝的路由边界 | 首先校验精确原始 Host。只有 health/readiness、login/session bootstrap、公开根与实际存在的 immutable 启动资源可匿名访问；业务 API、二维码/归档字节、SSE、深度就绪、支持包、OpenAPI/docs、`/legacy` 与经鉴权 SPA 深链接都要求有效 session，或在允许处使用可选 Bearer |
+| 默认拒绝的路由边界 | 首先校验精确原始 Host。只有 health/readiness、login/session bootstrap、公开根与实际存在的 immutable 启动资源可匿名访问；业务 API、二维码/归档字节、SSE、深度就绪、支持包、OpenAPI/docs、`/legacy` 与SPA 私有页面都要求有效 session，或在允许处使用可选 Bearer。仅 8 个精确 HTML 深链接的未登录 GET／HEAD 可由 middleware 303 到根登录，丢弃任意 query、不执行业务 handler；API／未知路径仍拒绝 |
 | 浏览器 mutation 要求同源证明 | 登录要求精确配置的 Origin；每个 Cookie 鉴权不安全请求还要求同一 Origin 与绑定 session 的 CSRF header。CORS 关闭；转发 Host/proto header 不授予权限 |
 | 播放确认仅允许浏览器并重新校验当前权威 | 最外层 middleware 会在读取正文或进入 handler 前拒绝该 endpoint 的 Bearer-only 及任意 Cookie/Authorization 混用请求。Handler 再要求浏览器 auth 标记、精确 Origin 与 CSRF，拒绝 `Idempotency-Key`，并且只接受最大 1 KiB、无重复成员、包含规范作者 UUID 与小写 observation fingerprint 的 JSON 对象。Service 使用一个有界 deadline 与 authority lock 执行 resolve A → 一次完整唯一 lookup → resolve B，比对两个 target 与重算身份，释放 authority lock 后才打开短 create-or-replay 事务。任一漂移、不匹配、未完成或歧义 lookup 都零写入 |
 | 容器回环拓扑是显式配置 | 镜像内部绑定 `0.0.0.0`，示例 Compose 只发布 `127.0.0.1:8632`，从仓库外挂载必需凭据，并只允许 `http://127.0.0.1:8632`；非回环浏览器 origin 必须使用 HTTPS |
-| 不夸大 Web 集成 | Console v2 与 `/legacy` 尚未 bootstrap session 或传播 CSRF；即使后端边界已启用，它们当前也不是可操作的管理客户端 |
+| 不夸大 Web 集成 | Console v2 已实现串行鉴权、session 后挂载私有页面、内存 CSRF、退出／过期／401 与 QR／SSE，已通过[本地合成浏览器验证](executions/0055-operator-auth-playback-evidence/secure-console/verification.zh.md)；旧响应不恢复会话、写入不自动重放。Legacy 仅为受保护迁移提示，确认 UI 仍待实现 |
 | 结构化日志与持久 Operation/证据界面已脱敏 | 机密分类名称在落点掩码；原始适配器异常绝不进入 CLI/API 输出。含 selector 的依赖 wire 消息会整体替换为固定文本；原始或百分号编码的媒体服务器路径/provider 值、远端 item ID、Etag 与远端错误正文不能进入日志、SQLite、Event、SSE、API 结果或支持包；revision `0008` 只保存绑定上下文的摘要与规范本地身份。确认响应只返回 schema version、证据/作者 ID、服务端时间戳及 replay 状态，绝不返回提交的 fingerprint、publication Job 或四个内部 digest |
 
 ## 5. 隐私
@@ -54,7 +54,7 @@
 
 ## 6. 残余风险（如实清单）
 
-1. Web 客户端暂时落后于后端契约：不能登录、在内存持有 CSRF 或统一恢复 session 过期。Web 只同步了 matched lookup response 类型，尚无确认 UI。该状态以 401/403 关闭失败，不会重新开放匿名访问，但会阻塞 Web 管理与真人扫码资格，直到 0055 剩余前端工作完成验证。
+1. 安全 Web 与迁移前配置检查已实现，本地合成浏览器门禁已通过；准确证据与部署边界见[验证](executions/0055-operator-auth-playback-evidence/secure-console/verification.zh.md)。配置预检不创建 app／数据库、不查询 DNS／绑定端口，不证明真实 Linux 挂载权限、端口可用或镜像就绪。保持兼容升级备份，当前 Linux 镜像与获授权 Bilibili／小红书金丝雀优先于 P1 确认 UI。
 2. 这是单操作者鉴权，不是多用户授权。可选 Bearer 拥有广泛自动化权限；非回环部署仍要求经过审查的 HTTPS 终止及精确 Host 保留。公网部署、RBAC、SSO/MFA 与可信反向代理身份均不受支持。
 3. 资格 v3 只接受一个可选规范作者。无作者则不查询证据／远端且为 NOT_RUN；精确持久当前确认只可授予作者范围 PASS。失败／不完整／歧义或变化的权威使历史证据未知。响应省略全部上下文摘要、publication Job、路径与远端 ID。本地／mock 测试不能产生仓库真人 PASS；真人播放保持 NOT_RUN，Web 确认 UI 仍待实现。
 4. SQLite 是唯一受支持的生产存储；拿到磁盘即拿到全部数据，包括凭据*引用*（仍需 secret provider 才能使用）与任何未来播放关联摘要。PostgreSQL 仓储语义带有隔离可选竞态 harness，但新用例尚未在本工作站运行，且不能证明完整 schema 或生产 PostgreSQL 支持。

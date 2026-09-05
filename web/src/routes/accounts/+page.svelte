@@ -2,7 +2,7 @@
   import { onDestroy, onMount } from 'svelte';
   import { LoaderCircle, Plus, QrCode, RefreshCw, ShieldAlert, XCircle } from '@lucide/svelte';
 
-  import { api, apiMessage } from '$lib/api/client';
+  import { api, apiBlob, apiMessage, LatestRequestGate } from '$lib/api/client';
   import EmptyState from '$lib/components/EmptyState.svelte';
   import Modal from '$lib/components/Modal.svelte';
   import PageHeader from '$lib/components/PageHeader.svelte';
@@ -56,6 +56,8 @@
   let qrState = 'running';
   let pollTimer: number | null = null;
   let pollBusy = false;
+  let destroyed = false;
+  const qrRequest = new LatestRequestGate();
 
   $: selectedAccount = accounts.find((item) => item.id === selectedAccountId) ?? null;
   $: selectedCapability = capabilityByPlatform(capabilities, selectedAccount?.platform);
@@ -174,6 +176,7 @@
     preflightBlock = '';
     try {
       const preflight = await loadPreflight(account.id);
+      if (destroyed) return;
       const capability = capabilityByPlatform(capabilities, account.platform);
       if (!canStartQrLogin(account, capability, preflight)) {
         preflightBlock = preflight?.code ?? preflightErrors[account.id] ?? 'login_preflight_unavailable';
@@ -184,6 +187,7 @@
         method: 'POST',
         body: JSON.stringify({ timeout_seconds: 180, ...mediaCrawlerGate() })
       });
+      if (destroyed) return;
       qrAccount = account;
       qrOperationId = started.operation_id;
       qrLoginSessionId = '';
@@ -205,25 +209,31 @@
   }
 
   async function pollLogin(): Promise<void> {
-    if (!qrAccount || !qrOperationId || pollBusy) return;
+    if (destroyed || !qrAccount || !qrOperationId || pollBusy) return;
+    const account = qrAccount;
+    const operationId = qrOperationId;
     pollBusy = true;
     try {
-      const login = await api<LoginStatus>(`/api/v1/accounts/${qrAccount.id}/login-status`);
-      statuses = { ...statuses, [qrAccount.id]: login };
-      if (login.login_session_id) qrLoginSessionId = login.login_session_id;
-
-      const qrPath = qrLoginSessionId
-        ? `/api/v1/login-sessions/${encodeURIComponent(qrLoginSessionId)}/qr.png`
-        : `/api/v1/accounts/${qrAccount.id}/login-qr.png`;
-      const [qrResponse, operation] = await Promise.all([
-        fetch(`${qrPath}?t=${Date.now()}`, { cache: 'no-store' }),
-        api<Operation>(`/api/v1/operations/${qrOperationId}`)
-      ]);
-
-      if (qrResponse.ok) {
-        const blob = await qrResponse.blob();
+      const result = await qrRequest.run(async (signal) => {
+        const login = await api<LoginStatus>(`/api/v1/accounts/${account.id}/login-status`, { signal });
+        const sessionId = login.login_session_id ?? qrLoginSessionId;
+        const qrPath = sessionId
+          ? `/api/v1/login-sessions/${encodeURIComponent(sessionId)}/qr.png`
+          : `/api/v1/accounts/${account.id}/login-qr.png`;
+        const [qrResponse, operation] = await Promise.all([
+          apiBlob(`${qrPath}?t=${Date.now()}`, { signal }),
+          api<Operation>(`/api/v1/operations/${operationId}`, { signal })
+        ]);
+        return { login, qrResponse, operation, sessionId };
+      });
+      if (result.status === 'superseded' || destroyed || !qrOpen || qrAccount?.id !== account.id) return;
+      if (result.status === 'rejected') throw result.reason;
+      const { login, qrResponse, operation, sessionId } = result.value;
+      statuses = { ...statuses, [account.id]: login };
+      qrLoginSessionId = sessionId;
+      if (qrResponse.blob) {
         if (qrImageUrl) URL.revokeObjectURL(qrImageUrl);
-        qrImageUrl = URL.createObjectURL(blob);
+        qrImageUrl = URL.createObjectURL(qrResponse.blob);
         qrHint = '请使用对应平台 App 扫码确认';
       } else if (qrResponse.status === 202) {
         qrHint = '登录环境已启动，正在等待二维码…';
@@ -237,7 +247,7 @@
       if (operation.state === 'succeeded') {
         qrHint = '登录成功，账户状态已更新。';
         stopPolling();
-        toast(`${qrAccount.display_name} 登录成功。`);
+        toast(`${account.display_name} 登录成功。`);
         await load();
       } else if (operationIsTerminal(operation.state)) {
         qrHint = `登录已结束（${statusLabel(operation.state)}）：${operation.error_code ?? '无错误码'}`;
@@ -246,7 +256,7 @@
         await load();
       }
     } catch {
-      qrHint = '暂时无法读取登录状态，将自动重试…';
+      if (!destroyed && qrOpen) qrHint = '暂时无法读取登录状态，将自动重试…';
     } finally {
       pollBusy = false;
     }
@@ -255,6 +265,7 @@
   function stopPolling(): void {
     if (pollTimer !== null) window.clearInterval(pollTimer);
     pollTimer = null;
+    qrRequest.cancel();
   }
 
   function closeQr(): void {
@@ -268,7 +279,10 @@
   }
 
   onMount(() => void load());
-  onDestroy(closeQr);
+  onDestroy(() => {
+    destroyed = true;
+    closeQr();
+  });
 </script>
 
 <div class="page">

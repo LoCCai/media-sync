@@ -260,13 +260,13 @@
     {/if}
   </Panel>
 
-  <Panel title="迁移与维护" description="Web Console v2 与旧控制台并行一个发布周期">
+  <Panel title="迁移与维护" description="旧版交互控制台已退役，管理操作请使用当前控制台">
     <div class="maintenance-list">
       <a href="/legacy" target="_blank" rel="noreferrer"
         ><span class="maintenance-icon"><FolderCog size={18} /></span>
         <div>
-          <strong>打开旧版控制台</strong>
-          <p>仅用于迁移期回退；日常操作请使用当前分页面板。</p>
+          <strong>查看旧版迁移说明</strong>
+          <p>旧入口仅保留受保护的迁移提示，不再提供管理操作。</p>
         </div>
         <ExternalLink size={16} /></a
       >
