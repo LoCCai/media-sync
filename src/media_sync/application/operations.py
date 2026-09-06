@@ -39,6 +39,7 @@ from media_sync.infrastructure.db import (
 )
 from media_sync.infrastructure.db.database import SQLITE_IMMEDIATE_OPTION
 
+from .observability import EventSink, elapsed_ms, emit_event, event_context
 from .operation_payloads import (
     OPERATION_KINDS,
     OperationKind,
@@ -70,6 +71,17 @@ _KIND_TARGET_TYPES: Mapping[str, str | None] = {
     "emby-export": "author",
     "media-server-probe": None,
     "media-server-scan": None,
+}
+_KIND_EVENT_MODULES: Mapping[str, str] = {
+    "account-cookie-login": "cookie_login",
+    "creator-profile": "creator_profile",
+    "account-login": "login",
+    "asset-download": "download",
+    "scheduler-run": "scheduler",
+    "pipeline-run": "pipeline",
+    "emby-export": "exporter",
+    "media-server-probe": "media_server",
+    "media-server-scan": "media_server",
 }
 
 
@@ -249,6 +261,11 @@ class _OperationHandle:
     lease_owner: str
     lease_token: str = field(repr=False)
     thread: threading.Thread = field(repr=False)
+    event_ids: Mapping[str, object] = field(default_factory=dict, repr=False)
+    event_started: float = field(default_factory=time.monotonic)
+    event_phase: str | None = None
+    event_terminal: bool = False
+    event_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -368,6 +385,7 @@ class OperationCoordinator:
         heartbeat_interval_seconds: float = _DEFAULT_HEARTBEAT_SECONDS,
         join_timeout_seconds: float = _DEFAULT_JOIN_TIMEOUT_SECONDS,
         clock: Callable[[], datetime] | None = None,
+        event_sink: EventSink | None = None,
     ) -> None:
         if not isinstance(database, Database):
             raise TypeError("database must be a Database")
@@ -389,6 +407,7 @@ class OperationCoordinator:
             raise TypeError("clock must be callable")
 
         self._database = database
+        self._event_sink = event_sink
         self._lease_seconds = lease_seconds
         self._heartbeat_interval_seconds = float(heartbeat_interval_seconds)
         self._join_timeout_seconds = float(join_timeout_seconds)
@@ -474,6 +493,13 @@ class OperationCoordinator:
         cancellation = threading.Event()
         placeholder = threading.current_thread()
         handle = _OperationHandle(cancellation, owner, lease.lease_token, placeholder)
+        handle.event_ids = {
+            "operation_id": snapshot.id,
+            "correlation_id": snapshot.correlation_id,
+        }
+        if snapshot.target_type in {"account", "author"}:
+            handle.event_ids = {**handle.event_ids, f"{snapshot.target_type}_id": snapshot.target_id}
+        self._emit_operation(snapshot, handle, "operation_started")
         try:
             context = OperationExecutionContext(
                 operation_id=start.operation_id,
@@ -720,6 +746,17 @@ class OperationCoordinator:
         context: OperationExecutionContext,
         handle: _OperationHandle,
     ) -> None:
+        # Ordinary threading.Thread does not inherit ContextVars. Bind only
+        # this committed operation's local UUIDs, never the submitter's scope.
+        with event_context(clear=True, **handle.event_ids):
+            self._execute_bound(execution, context, handle)
+
+    def _execute_bound(
+        self,
+        execution: OperationExecution,
+        context: OperationExecutionContext,
+        handle: _OperationHandle,
+    ) -> None:
         if handle.cancellation.is_set():
             intent = self._terminal_intent(execution.kind, OperationOutcome.cancelled())
         else:
@@ -873,13 +910,42 @@ class OperationCoordinator:
             )
 
         try:
-            self._run_write(finish)
+            snapshot = self._run_write(finish)
         except (OperationLeaseLostError, OperationStateConflictError):
             handle.cancellation.set()
             return True
         except Exception:
             return False
+        if snapshot.state not in {"queued", "running"}:
+            self._emit_operation(snapshot, handle, "operation_finished")
         return True
+
+    def _emit_operation(self, snapshot: OperationSnapshot, handle: _OperationHandle, event_code: str) -> None:
+        # Deduplication is bounded by the existing local handle lifetime. It
+        # never changes durable OperationEvent or lease state.
+        with handle.event_lock:
+            if event_code == "operation_finished":
+                if handle.event_terminal:
+                    return
+                handle.event_terminal = True
+            elif event_code == "operation_phase_changed" and handle.event_phase == snapshot.phase:
+                return
+            handle.event_phase = snapshot.phase
+        fields: dict[str, object] = {
+            **handle.event_ids,
+            "action": snapshot.kind,
+            "phase": snapshot.phase,
+            "outcome": snapshot.state,
+        }
+        if event_code == "operation_finished":
+            fields["duration_ms"] = elapsed_ms(handle.event_started)
+        with event_context(clear=True, **handle.event_ids):
+            emit_event(
+                self._event_sink,
+                event_code=event_code,
+                module=_KIND_EVENT_MODULES.get(snapshot.kind, "application"),
+                **fields,
+            )
 
     @staticmethod
     def _media_server_observation_checkpoint(
@@ -981,7 +1047,9 @@ class OperationCoordinator:
                 at=self._now(),
             )
 
-        return self._run_write(progress)
+        snapshot = self._run_write(progress)
+        self._emit_operation(snapshot, handle, "operation_phase_changed")
+        return snapshot
 
     def _phase(
         self,
@@ -1005,7 +1073,9 @@ class OperationCoordinator:
                 at=self._now(),
             )
 
-        return self._run_write(change_phase)
+        snapshot = self._run_write(change_phase)
+        self._emit_operation(snapshot, handle, "operation_phase_changed")
+        return snapshot
 
     def _checkpoint(
         self,
@@ -1047,7 +1117,9 @@ class OperationCoordinator:
                 at=self._now(),
             )
 
-        return self._run_write(checkpoint)
+        snapshot = self._run_write(checkpoint)
+        self._emit_operation(snapshot, handle, "operation_phase_changed")
+        return snapshot
 
     def _commit_effect(
         self,

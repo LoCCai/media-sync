@@ -8,12 +8,14 @@ import hashlib
 import hmac
 import ipaddress
 import json
+import logging
 import math
 import os
 import platform as runtime_platform
 import shutil
 import signal
 import sys
+import time
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from copy import deepcopy
@@ -62,9 +64,11 @@ from media_sync.application.emby import (
     EmbyExportService,
     export_error_is_retryable,
 )
+from media_sync.application.log_center import create_log_store
 from media_sync.application.login_diagnostics import LoginDiagnostic, latest_session_login_diagnostic
 from media_sync.application.mediacrawler import NormalizedMediaCrawlerOutput, load_normalized_output
 from media_sync.application.mediacrawler_download import LazyMediaCrawlerLocatorRefresher
+from media_sync.application.observability import SafeEventLoggingHandler, elapsed_ms, emit_event, event_context
 from media_sync.application.operations import DurableSubjectHook
 from media_sync.application.output_directories import OutputDirectoryError, OutputDirectoryService
 from media_sync.application.subscription_removal import SubscriptionRemovalError, SubscriptionRemovalService
@@ -690,8 +694,9 @@ class _UnavailableMediaCrawlerLoginRunner:
         *,
         on_account_locked: Any = None,
         cancellation: Any = None,
+        diagnostic_hook: Any = None,
     ) -> MediaCrawlerLoginResult:
-        del request, on_account_locked, cancellation
+        del request, on_account_locked, cancellation, diagnostic_hook
         return MediaCrawlerLoginResult(MediaCrawlerLoginStatus.CONFIGURATION_INVALID)
 
 
@@ -707,6 +712,7 @@ class _DeferredMediaCrawlerLoginRunner:
         *,
         on_account_locked: Any = None,
         cancellation: Any = None,
+        diagnostic_hook: Any = None,
     ) -> MediaCrawlerLoginResult:
         python_executable = self._settings.mediacrawler_python_executable
         if python_executable is None:  # pragma: no cover - caller selects the unavailable boundary
@@ -721,6 +727,7 @@ class _DeferredMediaCrawlerLoginRunner:
             request,
             on_account_locked=on_account_locked,
             cancellation=cancellation,
+            diagnostic_hook=diagnostic_hook,
         )
 
 
@@ -989,6 +996,7 @@ def _build_subscription_worker(
     *,
     enable_mediacrawler: bool,
     accept_mediacrawler_license: bool,
+    event_sink: Callable[[Mapping[str, object]], None] | None = None,
 ) -> SubscriptionWorker:
     """Compose the same closed handler registry for bounded and resident workers."""
 
@@ -1009,6 +1017,7 @@ def _build_subscription_worker(
         database,
         SubscriptionHandlerRegistry(handlers),
         claim_registered_only=True,
+        event_sink=event_sink,
         bili_scan_continuation=BiliScanContinuationPolicy.from_lock(
             settings.mediacrawler_lock_path, delay_seconds=settings.bili_scan_continuation_delay_seconds
         ),
@@ -1024,6 +1033,7 @@ def _build_pipeline_worker(
     enable_mediacrawler: bool,
     accept_mediacrawler_license: bool,
     xhs_detail_reference_ref: str | None,
+    event_sink: Callable[[Mapping[str, object]], None] | None = None,
 ) -> PipelineSubscriptionWorker:
     """Compose one durable pipeline worker with a fixed, scope-validating handler."""
 
@@ -1089,7 +1099,28 @@ def _build_pipeline_worker(
         database,
         handle,
         retry_delay_seconds=retry_delay_seconds,
+        event_sink=event_sink,
     )
+
+
+@contextmanager
+def _cli_logs(settings: Settings) -> Iterator[Callable[[Mapping[str, object]], None]]:
+    store = create_log_store(settings)
+
+    def emit(event: Mapping[str, object]) -> None:
+        store.emit(event)
+
+    logger = logging.getLogger("media_sync")
+    handler = SafeEventLoggingHandler(emit)
+    logger.addHandler(handler)
+    emit({"event_code": "service_started", "module": "cli", "level": "info"})
+    try:
+        yield emit
+    finally:
+        logger.removeHandler(handler)
+        handler.close()
+        emit({"event_code": "service_stopped", "module": "cli", "level": "info"})
+        store.close()
 
 
 @contextmanager
@@ -1539,8 +1570,10 @@ def login_account(
         raise typer.BadParameter("timeout_seconds must be finite and between zero and 3600")
 
     database: Database | None = None
+    log_context = contextlib.ExitStack()
     try:
         settings = get_settings()
+        event_sink = log_context.enter_context(_cli_logs(settings))
         database = Database(settings.resolved_database_url)
         if settings.mediacrawler_python_executable is None:
             login_runner: Any = _UnavailableMediaCrawlerLoginRunner()
@@ -1555,7 +1588,8 @@ def login_account(
                 account_id=account_id,
                 timeout_seconds=timeout_seconds,
                 poll_seconds=min(0.05, timeout_seconds / 2),
-            )
+            ),
+            diagnostic_hook=event_sink,
         )
     except AccountLoginError as error:
         _emit_record(
@@ -1574,6 +1608,7 @@ def login_account(
     finally:
         if database is not None:
             database.dispose()
+        log_context.close()
 
     _emit_record(
         _account_login_outcome_payload(outcome),
@@ -1846,10 +1881,11 @@ def scheduler_run(
     if accept_mediacrawler_license and not enable_mediacrawler:
         raise typer.BadParameter("MediaCrawler license acknowledgement requires --enable-mediacrawler")
     settings = get_settings()
-    with _scheduler_runtime() as (database, _service):
+    with _scheduler_runtime() as (database, _service), _cli_logs(settings) as event_sink:
         worker = _build_subscription_worker(
             database,
             settings,
+            event_sink=event_sink,
             enable_mediacrawler=enable_mediacrawler,
             accept_mediacrawler_license=accept_mediacrawler_license,
         )
@@ -1962,8 +1998,10 @@ def scheduler_supervise(
 
     normalized_xhs_reference = _credential_reference(xhs_detail_reference_ref)
     database: Database | None = None
+    log_context = contextlib.ExitStack()
     try:
         settings = get_settings()
+        event_sink = log_context.enter_context(_cli_logs(settings))
         database = Database(settings.resolved_database_url)
         run_identity = f"resident-{uuid4()}"
         subscription_worker_id = f"{run_identity}:sync"
@@ -1971,12 +2009,14 @@ def scheduler_supervise(
         subscription_worker = _build_subscription_worker(
             database,
             settings,
+            event_sink=event_sink,
             enable_mediacrawler=enable_mediacrawler,
             accept_mediacrawler_license=accept_mediacrawler_license,
         )
         pipeline_worker = _build_pipeline_worker(
             database,
             settings,
+            event_sink=event_sink,
             worker_id=pipeline_worker_id,
             retry_delay_seconds=pipeline_retry_delay_seconds,
             enable_mediacrawler=enable_mediacrawler,
@@ -1988,6 +2028,7 @@ def scheduler_supervise(
             integration_root=settings.resolved_mediacrawler_runtime_dir,
         )
         supervisor = ResidentSchedulerSupervisor(
+            event_sink=event_sink,
             stale_login_sweep=reconciler.sweep,
             scheduler=DurableSchedulerService(
                 database,
@@ -2024,6 +2065,7 @@ def scheduler_supervise(
     finally:
         if database is not None:
             database.dispose()
+        log_context.close()
 
     _emit_record(
         _resident_supervisor_payload(result),
@@ -2099,10 +2141,13 @@ def pipeline_run(
     normalized_xhs_reference = _credential_reference(xhs_detail_reference_ref)
     settings = get_settings()
     database = Database(settings.resolved_database_url)
+    log_context = contextlib.ExitStack()
     try:
+        event_sink = log_context.enter_context(_cli_logs(settings))
         worker = _build_pipeline_worker(
             database,
             settings,
+            event_sink=event_sink,
             worker_id=normalized_worker_id,
             retry_delay_seconds=retry_delay_seconds,
             enable_mediacrawler=enable_mediacrawler,
@@ -2122,6 +2167,7 @@ def pipeline_run(
         raise typer.BadParameter("pipeline database operation failed safely") from None
     finally:
         database.dispose()
+        log_context.close()
 
     _emit_list(
         [_pipeline_worker_payload(result) for result in results],
@@ -2498,6 +2544,13 @@ def download_asset(
     normalized_detail_reference_ref = _credential_reference(xhs_detail_reference_ref)
     settings = get_settings()
     database = Database(settings.resolved_database_url)
+    log_context = contextlib.ExitStack()
+    started = time.monotonic()
+    event_sink = log_context.enter_context(_cli_logs(settings))
+    log_context.enter_context(event_context(clear=True, correlation_id=str(uuid4()), asset_id=str(asset_id)))
+    emit_event(event_sink, event_code="command_started", module="download", action="asset-download", outcome="started")
+    ok = False
+    payload: dict[str, object] = {}
     try:
         payload, ok = _execute_asset_download(
             asset_id=asset_id,
@@ -2517,6 +2570,16 @@ def download_asset(
         raise typer.BadParameter("asset download database operation failed safely") from None
     finally:
         database.dispose()
+        emit_event(
+            event_sink,
+            event_code="command_finished",
+            module="download",
+            action="asset-download",
+            outcome="succeeded" if ok else "failed",
+            duration_ms=elapsed_ms(started),
+            job_id=payload.get("job_id"),
+        )
+        log_context.close()
 
     _emit_record(payload, json_output=json_output, label="Asset download")
     if not ok:
@@ -2544,6 +2607,13 @@ def export_emby_author(
 
     settings = get_settings()
     database = Database(settings.resolved_database_url)
+    log_context = contextlib.ExitStack()
+    event_sink = log_context.enter_context(_cli_logs(settings))
+    log_context.enter_context(event_context(clear=True, correlation_id=str(uuid4()), author_id=str(author_id)))
+    started = time.monotonic()
+    emit_event(event_sink, event_code="command_started", module="exporter", action="emby-export", outcome="started")
+    succeeded = False
+    recorded_job_id: str | None = None
     try:
         outcome = EmbyExportService(
             database,
@@ -2559,6 +2629,8 @@ def export_emby_author(
                 max_attempts=max_attempts,
             )
         )
+        succeeded = True
+        recorded_job_id = outcome.job_id
     except (ExportError, OutputDirectoryError) as error:
         _emit_record(
             {
@@ -2589,6 +2661,16 @@ def export_emby_author(
         raise typer.Exit(code=1) from None
     finally:
         database.dispose()
+        emit_event(
+            event_sink,
+            event_code="command_finished",
+            module="exporter",
+            action="emby-export",
+            outcome="succeeded" if succeeded else "failed",
+            duration_ms=elapsed_ms(started),
+            job_id=recorded_job_id,
+        )
+        log_context.close()
 
     _emit_record(
         {

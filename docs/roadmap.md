@@ -8,6 +8,8 @@ Build a self-hosted service that can authenticate against all platforms supporte
 
 ## Phases
 
+Priority update (0068): [log center and login-stage evidence](executions/0068-log-center/progress.md) now have implementation; [verification](executions/0068-log-center/verification.md) separates offline results from missing live acceptance. Next deliver a controlled failed-platform attempt after operator deployment, address the reported Windows exporter directory-pin weakness, then continue exact subscription execution and history/download/incremental delivery. Do not resume supervisor or retry authenticated accounts automatically.
+
 Priority update (0067 amendment): [shared output directories](executions/0067-output-directories/progress.md) now reach settings, workers and publication. [Next-version logging and login-stage diagnostics](executions/0067-output-directories/next-delivery.md) come first instead of undiagnosed repeat scans, followed by exact-subscription execution, durable history-complete/incremental state and live download acceptance. Old-file migration is not implemented; earlier plans remain historical.
 
 Priority update (0066): [subscription-driven local delivery](executions/0066-login-failure-and-workflow/next-delivery.md) now precedes avatar expansion. Implement shared/per-platform output settings, exact-subscription discovery/download/directory writes, history-to-incremental state and bounded live acceptance. Manual export is maintenance; no media-server connection is required. [0066](executions/0066-login-failure-and-workflow/progress.md) addresses QR diagnostic loss and paced continuation of known pending Bili scans; it does not complete these next requirements.

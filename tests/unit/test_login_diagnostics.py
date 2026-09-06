@@ -42,6 +42,8 @@ from media_sync.integrations.mediacrawler.login import (
     MediaCrawlerLoginResult,
     MediaCrawlerLoginStatus,
 )
+from media_sync.integrations.mediacrawler.login_events import DiagnosticHook
+from media_sync.integrations.mediacrawler.login_events import event as diagnostic_event
 
 _NOW = datetime(2026, 9, 5, 8, tzinfo=UTC)
 _PRIVATE = "raw-private-browser-url-cookie-sentinel"
@@ -485,10 +487,13 @@ def test_runner_failure_flows_through_real_session_service_and_exact_api_diagnos
             *,
             on_account_locked: Callable[[], None] | None = None,
             cancellation: threading.Event | None = None,
+            diagnostic_hook: DiagnosticHook | None = None,
         ) -> MediaCrawlerLoginResult:
             assert str(request.account_id) == account_id
             assert on_account_locked is not None
             on_account_locked()
+            assert diagnostic_hook is not None
+            diagnostic_hook(diagnostic_event("qr_locate", "wait_selector", "failed", error_type="playwright_timeout"))
             return MediaCrawlerLoginResult(MediaCrawlerLoginStatus(runner_status))
 
     monkeypatch.setattr(api_module, "_UnavailableMediaCrawlerLoginRunner", FixedRunner)
@@ -521,6 +526,15 @@ def test_runner_failure_flows_through_real_session_service_and_exact_api_diagnos
         }
         assert latest["auth_status"] == "failed"
         assert _PRIVATE not in json.dumps(latest)
+        assert client.app.state.log_store.flush()
+        logs = client.get("/api/v1/logs", params={"operation_id": operation_id}).json()
+        stages = [record for record in logs["events"] if record["event_code"] == "login_stage"]
+        assert len(stages) == 1
+        assert stages[0]["account_id"] == account_id
+        assert stages[0]["login_session_id"] == latest["login_session_id"]
+        diagnostic = client.get(f"/api/v1/logs/operations/{operation_id}/diagnostic").json()
+        assert diagnostic["trace"]["operation"]["runner_status"] == runner_status
+        assert _PRIVATE not in json.dumps(diagnostic)
         untouched = client.get(f"/api/v1/accounts/{other_id}/login-status").json()
         assert untouched["auth_status"] == "authenticated"
         assert untouched["login_session_id"] is None

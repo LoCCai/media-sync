@@ -922,6 +922,9 @@
       {#if jobReport}<pre>{jobReportArtifact(jobReport, requestedJobId)?.text ?? ''}</pre>{/if}
     </details>
   {:else if selectedOperation}
+    <a class="button secondary" href={`/logs?operation_id=${encodeURIComponent(selectedOperation.id)}`}
+      >查看本次操作日志与诊断包</a
+    >
     <div class="operation-detail-heading">
       <div>
         <span class="eyebrow mono">{shortId(selectedOperation.id)}</span>

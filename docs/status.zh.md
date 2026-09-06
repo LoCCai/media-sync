@@ -2,7 +2,13 @@
 
 # 项目统一状态（单一事实来源）
 
-## 最新：共享输出目录与扫码问题复核（0067）
+## 最新：持久日志中心与精确登录证据（0068）
+
+[0068](executions/0068-log-center/progress.zh.md)实现私有轮转分片、可观察扫码阶段、精确生命周期关联、鉴权查询及中文诊断下载。这解决证据丢失，不代表平台登录已修复。默认16MiB/日期轮转、7天、1GiB，不记录凭据和第三方原文。覆盖范围、审查修正及测试见[验证](executions/0068-log-center/verification.zh.md)，部署与保留限制见[使用说明](executions/0068-log-center/usage.zh.md)。
+
+本轮没有生产部署/重试、Linux验收或supervisor恢复，旧扫码细节仍不可恢复。下一步是部署后受控单平台诊断、另行发现的Windows exporter目录pin修复，再继续精确订阅/历史转增量/下载验收。崩溃open自动回收和全部依赖原始日志尚未实现，总体目标继续活动。
+
+## 上阶段：共享输出目录与扫码问题复核（0067）
 
 [0067](executions/0067-output-directories/progress.zh.md)实现总目录/七平台覆盖、CAS保存、作者根绑定及API/CLI/独立调度器/媒体树接线。新库按平台分目录，旧库保留平铺；已有发布改根须显式迁移，迁移未实现。无需另外导出或连接媒体服务器。精确测试及发布见[验证](executions/0067-output-directories/verification.zh.md)。
 

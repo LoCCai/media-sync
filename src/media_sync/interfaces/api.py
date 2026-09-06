@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import os
 import re
 import stat
@@ -72,10 +73,12 @@ from media_sync.application.emby import EmbyExportRequest, EmbyExportService, ex
 from media_sync.application.explorer import CatalogExplorerError, ContentAssetExplorer
 from media_sync.application.job_diagnostics import JobDiagnosticError, JobDiagnosticService
 from media_sync.application.library import LibraryInspection, LibraryInspectionError, LibraryInspectionService
+from media_sync.application.log_center import LogCenterError, LogCenterService, create_log_store
 from media_sync.application.login_diagnostics import latest_session_login_diagnostic, login_operation_error_code
 from media_sync.application.media_server import MediaServerError, MediaServerService
 from media_sync.application.media_server_observation import MediaServerObservationService
 from media_sync.application.media_server_publication import MediaServerPublicationResolver
+from media_sync.application.observability import SafeEventLoggingHandler
 from media_sync.application.output_directories import OutputDirectoryError, OutputDirectoryService
 from media_sync.application.playback_evidence import (
     PlaybackEvidenceConfirmationError,
@@ -120,6 +123,7 @@ from media_sync.infrastructure.db.creator_profile_repository import (
     CreatorProfileRepository,
     ProfileSnapshot,
 )
+from media_sync.infrastructure.observability.store import LogStoreError
 from media_sync.integrations.mediacrawler import platform_capabilities_payload
 from media_sync.integrations.mediacrawler.checkout import load_mediacrawler_lock
 from media_sync.integrations.mediacrawler.cookie_login_runner import CookieLoginProcessRunner
@@ -845,7 +849,17 @@ def create_api_app(
     assert operator_origin_policy is not None
     operation_database = Database(resolved.resolved_database_url)
     output_directories = OutputDirectoryService(operation_database, resolved)
-    operations = OperationCoordinator(operation_database)
+    log_store = create_log_store(resolved)
+    log_center = LogCenterService(operation_database, log_store, resolved)
+
+    def emit_log(event: Mapping[str, object]) -> None:
+        try:
+            log_store.emit(event)
+        except Exception:
+            # Evidence loss must not change authentication or domain outcomes.
+            return
+
+    operations = OperationCoordinator(operation_database, event_sink=emit_log)
     operation_reconciliation = _OperationReconciliationTrigger(operations)
     support_bundle_service = SupportBundleService(
         operation_database,
@@ -929,7 +943,12 @@ def create_api_app(
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         del _app
+        log_handler = SafeEventLoggingHandler(emit_log)
+        observed_loggers = [logging.getLogger("media_sync"), logging.getLogger("uvicorn.error")]
+        for logger in observed_loggers:
+            logger.addHandler(log_handler)
         try:
+            log_store.emit({"event_code": "service_started", "module": "api", "level": "info"})
             operations.start()
             # Recovery is single-flight and best effort so a busy durable store
             # cannot hold liveness or the ASGI event loop hostage.
@@ -943,6 +962,11 @@ def create_api_app(
                 timeout_seconds=_OPERATION_RECONCILE_SHUTDOWN_SECONDS,
             )
             operation_database.dispose()
+            for logger in observed_loggers:
+                logger.removeHandler(log_handler)
+            log_handler.close()
+            log_store.emit({"event_code": "service_stopped", "module": "api", "level": "info"})
+            await asyncio.to_thread(log_store.close)
 
     app = FastAPI(title="media-sync", version=__version__, docs_url="/api/docs", lifespan=lifespan)
     app.state.settings = resolved
@@ -955,6 +979,8 @@ def create_api_app(
     app.state.playback_evidence_query = playback_evidence_query
     app.state.library_inspection_service = library_inspection_service
     app.state.output_directories = output_directories
+    app.state.log_store = log_store
+    app.state.log_center = log_center
     app.state.creator_profile_service = creator_profile_service
     app.state.cookie_login_service = cookie_login_service
     deep_readiness_cache: dict[bool, tuple[float, dict[str, object]]] = {}
@@ -998,7 +1024,20 @@ def create_api_app(
 
     @app.middleware("http")
     async def security_headers(request: Request, call_next: Any) -> Response:
-        response: Response = await call_next(request)
+        started = time.monotonic()
+        try:
+            response: Response = await call_next(request)
+        except Exception:
+            emit_log(
+                {
+                    "event_code": "request_finished",
+                    "module": "api",
+                    "level": "error",
+                    "http_status": 500,
+                    "duration_ms": max(0, int((time.monotonic() - started) * 1000)),
+                }
+            )
+            raise
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
         response.headers.setdefault("Referrer-Policy", "no-referrer")
         response.headers.setdefault("X-Frame-Options", "DENY")
@@ -1012,6 +1051,16 @@ def create_api_app(
             )
         if request.url.path.startswith("/api/"):
             response.headers.setdefault("Cache-Control", "no-store")
+        if request.url.path.startswith("/api/") and not request.url.path.startswith(("/api/v1/logs", "/api/v1/health")):
+            emit_log(
+                {
+                    "event_code": "request_finished",
+                    "module": "api",
+                    "level": "info",
+                    "http_status": response.status_code,
+                    "duration_ms": max(0, int((time.monotonic() - started) * 1000)),
+                }
+            )
         return response
 
     def _database() -> Database:
@@ -1549,7 +1598,104 @@ def create_api_app(
                 else None
             ),
             "media_server": resolved.media_server_safe_summary.as_dict(),
+            "logging": {
+                "directory": str(resolved.state_dir / "logs"),
+                "segment_max_bytes": resolved.log_segment_max_bytes,
+                "total_max_bytes": resolved.log_total_max_bytes,
+                "retention_days": resolved.log_retention_days,
+            },
         }
+
+    def log_error(error: LogStoreError | LogCenterError) -> HTTPException:
+        status = {
+            "log_operation_not_found": 404,
+            "log_cursor_stale": 409,
+            "log_store_unavailable": 503,
+            "log_database_unavailable": 503,
+            "log_store_scan_limited": 503,
+            "log_diagnostic_too_large": 413,
+        }.get(error.code, 400)
+        return HTTPException(status_code=status, detail=error.code)
+
+    @app.get("/api/v1/logs/status")
+    def logs_status() -> dict[str, object]:
+        return log_store.status()
+
+    @app.get("/api/v1/logs")
+    def logs_query(
+        request: Request,
+        operation_id: str | None = None,
+        account_id: str | None = None,
+        login_session_id: str | None = None,
+        job_id: str | None = None,
+        run_id: str | None = None,
+        subscription_id: str | None = None,
+        platform: str | None = None,
+        module: str | None = None,
+        level: str | None = None,
+        event_code: str | None = None,
+        since: str | None = None,
+        until: str | None = None,
+        cursor: str | None = None,
+        limit: int = Query(default=100, ge=1, le=200),
+    ) -> dict[str, object]:
+        allowed = {
+            "operation_id",
+            "account_id",
+            "login_session_id",
+            "job_id",
+            "run_id",
+            "subscription_id",
+            "platform",
+            "module",
+            "level",
+            "event_code",
+            "since",
+            "until",
+            "cursor",
+            "limit",
+        }
+        pairs = request.query_params.multi_items()
+        if any(key not in allowed for key, _ in pairs) or len(pairs) != len({key for key, _ in pairs}):
+            raise HTTPException(status_code=400, detail="log_query_invalid")
+        try:
+            return log_store.query(
+                operation_id=operation_id,
+                account_id=account_id,
+                login_session_id=login_session_id,
+                job_id=job_id,
+                run_id=run_id,
+                subscription_id=subscription_id,
+                platform=platform,
+                module=module,
+                level=level,
+                event_code=event_code,
+                since=since,
+                until=until,
+                cursor=cursor,
+                limit=limit,
+            )
+        except LogStoreError as error:
+            raise log_error(error) from None
+
+    @app.get("/api/v1/logs/operations/{operation_id}")
+    def operation_logs(operation_id: str) -> dict[str, object]:
+        try:
+            return log_center.operation_trace(operation_id)
+        except (LogStoreError, LogCenterError) as error:
+            raise log_error(error) from None
+
+    @app.get("/api/v1/logs/operations/{operation_id}/diagnostic")
+    def operation_diagnostic(operation_id: str) -> Response:
+        try:
+            payload = log_center.diagnostic_bytes(operation_id)
+        except (LogStoreError, LogCenterError) as error:
+            raise log_error(error) from None
+        return Response(
+            content=payload,
+            media_type="application/json",
+            headers={"Content-Disposition": f'attachment; filename="media-sync-diagnostic-{operation_id}.json"'},
+        )
 
     @app.get("/api/v1/settings/output", response_model=None)
     def output_settings_view() -> dict[str, object] | JSONResponse:
@@ -2282,6 +2428,13 @@ def create_api_app(
                     ),
                     cancellation=context.cancellation,
                     subject_hook=context.subject_hook,
+                    diagnostic_hook=lambda event: emit_log(
+                        {
+                            **event,
+                            "operation_id": context.operation_id,
+                            "correlation_id": phase.correlation_id,
+                        }
+                    ),
                 )
                 raw_result = _account_login_outcome_payload(outcome)
                 result = {
@@ -2918,6 +3071,7 @@ def create_api_app(
                 worker = _build_subscription_worker(
                     worker_database,
                     run_settings,
+                    event_sink=emit_log,
                     enable_mediacrawler=body.enable_mediacrawler,
                     accept_mediacrawler_license=body.accept_mediacrawler_license,
                 )
@@ -2994,6 +3148,7 @@ def create_api_app(
                 worker = _build_pipeline_worker(
                     worker_database,
                     run_settings,
+                    event_sink=emit_log,
                     worker_id=context.worker_id,
                     retry_delay_seconds=body.retry_delay_seconds,
                     enable_mediacrawler=body.enable_mediacrawler,

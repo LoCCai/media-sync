@@ -26,6 +26,8 @@
 - **LOG-002** — 记录可证实的扫码细阶段、失败动作/安全栈及精确operation/session/job/run关联，不能只留通用失败或超时。
 - **LOG-003** — 中文日志中心提供筛选、关联详情和主动下载的有界诊断包；秘密不落普通日志，不自动上传，不允许任意文件读取。详见[下一版要求](executions/0067-output-directories/next-delivery.zh.md)。
 
+LOG实现及明确剩余范围记录在[0068](executions/0068-log-center/progress.zh.md)，离线证据不等于全部原始输出覆盖或真人扫码修复。
+
 ### 账户与登录
 
 - **AUTH-001** — 为七个平台分别建模账户。

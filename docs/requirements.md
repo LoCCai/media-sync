@@ -26,6 +26,8 @@
 - **LOG-002** — Preserve observable QR sub-stages, failed actions/safe frames and exact operation/session/job/run correlations, not generic failure/timeout alone.
 - **LOG-003** — Provide plain-language filters, correlated details and user-requested bounded diagnostic downloads. No ordinary-log secrets, automatic upload or arbitrary file reads. See [next-version requirements](executions/0067-output-directories/next-delivery.md).
 
+LOG implementation and explicit residual scope are recorded in [0068](executions/0068-log-center/progress.md); offline evidence is not a claim of complete raw-output coverage or live QR repair.
+
 ### Accounts and authentication
 
 - **AUTH-001** — Represent separate accounts for `xhs`, `dy`, `ks`, `bili`, `wb`, `tieba` and `zhihu`.

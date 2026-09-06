@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import math
+import time
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -12,6 +13,7 @@ from threading import Event
 from types import MappingProxyType
 from typing import Literal, Protocol, cast
 
+from media_sync.application.observability import EventSink, elapsed_ms, emit_event, event_context
 from media_sync.application.operations import DurableSubjectHook, DurableSubjectRef
 from media_sync.infrastructure.db import Database, JobRepository, LeaseLostError
 from media_sync.infrastructure.db.models import Job
@@ -263,6 +265,7 @@ class PipelineSubscriptionWorker:
         *,
         clock: Callable[[], datetime] = _utc_now,
         retry_delay_seconds: int = PIPELINE_RETRY_DELAY_SECONDS,
+        event_sink: EventSink | None = None,
     ) -> None:
         if not callable(handler):
             raise TypeError("pipeline handler must be callable")
@@ -272,6 +275,7 @@ class PipelineSubscriptionWorker:
             raise ValueError("retry_delay_seconds must be between 1 and 86400")
         self.database = database
         self.handler = handler
+        self.event_sink = event_sink
         self.clock = clock
         self.retry_delay_seconds = retry_delay_seconds
 
@@ -528,6 +532,61 @@ class PipelineSubscriptionWorker:
         if claim is None:
             return PipelineWorkerResult.idle()
 
+        started_at = time.monotonic()
+        with event_context(
+            job_id=claim.job_id,
+            subscription_id=claim.subscription_id,
+            account_id=claim.account_id,
+            run_id=claim.run_id,
+        ):
+            emit_event(
+                self.event_sink,
+                event_code="job_started",
+                module="pipeline",
+                action="execute",
+                outcome="claimed",
+                attempt=claim.attempt,
+                platform=claim.platform,
+            )
+            try:
+                result = await self._run_claimed(
+                    claim,
+                    worker_id=worker_id,
+                    lease_seconds=lease_seconds,
+                    heartbeat_interval=heartbeat_interval,
+                )
+            except BaseException as exc:
+                emit_event(
+                    self.event_sink,
+                    event_code="job_finished",
+                    module="pipeline",
+                    action="finish",
+                    outcome="cancelled" if isinstance(exc, asyncio.CancelledError) else "interrupted",
+                    attempt=claim.attempt,
+                    platform=claim.platform,
+                    duration_ms=elapsed_ms(started_at),
+                )
+                raise
+            emit_event(
+                self.event_sink,
+                event_code="job_finished",
+                module="pipeline",
+                action="finish",
+                outcome=result.status,
+                attempt=claim.attempt,
+                platform=claim.platform,
+                duration_ms=elapsed_ms(started_at),
+            )
+            return result
+
+    async def _run_claimed(
+        self,
+        claim: PipelineSubscriptionClaim,
+        *,
+        worker_id: str,
+        lease_seconds: int,
+        heartbeat_interval: float,
+    ) -> PipelineWorkerResult:
         try:
             with self.database.session() as session:
                 jobs = JobRepository(session)

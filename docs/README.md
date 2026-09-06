@@ -2,7 +2,7 @@
 
 # media-sync project journal
 
-Current delivery: [0067 shared output directories](executions/0067-output-directories/progress.md), with exact results in [0067 verification](executions/0067-output-directories/verification.md). The latest user request prioritizes [next-version log center and QR diagnostics](executions/0067-output-directories/next-delivery.md), then the subscription-to-files loop. Four QR platforms still fail; historical tests below do not mean live qualification is complete.
+Current delivery: [0068 persistent log center and QR stage evidence](executions/0068-log-center/progress.md), with exact results in [verification](executions/0068-log-center/verification.md) and [deployment/usage](executions/0068-log-center/usage.md). Four QR platforms are not proven repaired; next is controlled diagnosis after deployment, then the subscription-to-files loop. Historical tests below do not mean live qualification is complete.
 
 ## Previous feature checkpoint
 

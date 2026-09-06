@@ -422,6 +422,9 @@ class Settings(BaseSettings):
     api_host: str = "127.0.0.1"
     api_port: int = Field(default=8632, ge=1, le=65535)
     log_level: str = "INFO"
+    log_segment_max_bytes: int = Field(default=16_777_216, ge=16_384, le=268_435_456)
+    log_total_max_bytes: int = Field(default=1_073_741_824, ge=1_048_576, le=10_737_418_240)
+    log_retention_days: int = Field(default=7, ge=1, le=90)
     operator_credential_secret_ref: str | None = Field(default=None, repr=False)
     operator_api_token_secret_ref: str | None = Field(default=None, repr=False)
     operator_allowed_origins: Annotated[tuple[str, ...] | None, NoDecode] = None
@@ -452,6 +455,21 @@ class Settings(BaseSettings):
         if type(value) is not int or (value != 0 and not 60 <= value <= 604_800):
             raise ValueError("bili_scan_continuation_delay_seconds must be 0 or an integer between 60 and 604800")
         return value
+
+    @field_validator("log_segment_max_bytes", "log_total_max_bytes", "log_retention_days", mode="before")
+    @classmethod
+    def strict_log_integer(cls, value: object) -> int:
+        if type(value) is str and re.fullmatch(r"[1-9][0-9]{0,10}", value) is not None:
+            value = int(value)
+        if type(value) is not int:
+            raise ValueError("log limits must be positive integers")
+        return value
+
+    @model_validator(mode="after")
+    def validate_log_budget(self) -> Settings:
+        if self.log_total_max_bytes < 2 * self.log_segment_max_bytes:
+            raise ValueError("total log budget must hold at least two segments")
+        return self
 
     @field_validator("log_level")
     @classmethod

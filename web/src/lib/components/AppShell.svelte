@@ -46,6 +46,7 @@
 
   const bottomItems = [
     { href: '/jobs', label: '任务队列', icon: ClipboardList },
+    { href: '/logs', label: '日志中心', icon: BookOpen },
     { href: '/diagnostics', label: '诊断', icon: Activity },
     { href: '/settings', label: '设置', icon: Settings }
   ];
@@ -57,6 +58,7 @@
     '/contents': '内容',
     '/diagnostics': '诊断',
     '/jobs': '任务队列',
+    '/logs': '日志中心',
     '/library': '媒体库',
     '/settings': '设置',
     '/subscriptions': '创作者订阅'

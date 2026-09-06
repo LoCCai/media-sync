@@ -6,6 +6,7 @@ import asyncio
 import math
 import random
 import sqlite3
+import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -17,6 +18,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session, joinedload
 
+from media_sync.application.observability import EventSink, elapsed_ms, emit_event, event_context
 from media_sync.application.operations import DurableSubjectHook, DurableSubjectRef
 from media_sync.domain import AccountRef, Cursor, DomainError, LoginMethod, Platform
 from media_sync.infrastructure.db import Database
@@ -190,11 +192,13 @@ class SubscriptionWorker:
         random_fraction: Callable[[], float] = random.random,
         claim_registered_only: bool = False,
         bili_scan_continuation: BiliScanContinuationPolicy | None = None,
+        event_sink: EventSink | None = None,
     ) -> None:
         if type(claim_registered_only) is not bool:
             raise ValueError("claim_registered_only must be boolean")
         self.database = database
         self.handlers = handlers
+        self.event_sink = event_sink
         self.clock = clock
         self.random_fraction = random_fraction
         self.claim_adapter_allowlist = handlers.keys if claim_registered_only else None
@@ -652,6 +656,62 @@ class SubscriptionWorker:
         if claim is None:
             return SchedulerWorkerResult.idle()
 
+        started_at = time.monotonic()
+        with event_context(
+            job_id=claim.job_id,
+            subscription_id=claim.subscription_id,
+            account_id=claim.account_id,
+            run_id=None,
+        ):
+            emit_event(
+                self.event_sink,
+                event_code="job_started",
+                module="scheduler",
+                action="execute",
+                outcome="claimed",
+                attempt=claim.attempt,
+                platform=claim.platform,
+            )
+            try:
+                result = await self._run_claimed(
+                    claim,
+                    worker_id=worker_id,
+                    lease_seconds=lease_seconds,
+                    heartbeat_interval=heartbeat_interval,
+                )
+            except BaseException as exc:
+                emit_event(
+                    self.event_sink,
+                    event_code="job_finished",
+                    module="scheduler",
+                    action="finish",
+                    outcome="cancelled" if isinstance(exc, asyncio.CancelledError) else "interrupted",
+                    attempt=claim.attempt,
+                    platform=claim.platform,
+                    duration_ms=elapsed_ms(started_at),
+                )
+                raise
+            emit_event(
+                self.event_sink,
+                event_code="job_finished",
+                module="scheduler",
+                action="finish",
+                outcome=result.status,
+                attempt=claim.attempt,
+                platform=claim.platform,
+                run_id=result.run_id,
+                duration_ms=elapsed_ms(started_at),
+            )
+            return result
+
+    async def _run_claimed(
+        self,
+        claim: SchedulerClaim,
+        *,
+        worker_id: str,
+        lease_seconds: int,
+        heartbeat_interval: float,
+    ) -> SchedulerWorkerResult:
         result: SubscriptionHandlerResult | None = None
         try:
             with self.database.session() as session:

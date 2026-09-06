@@ -45,6 +45,16 @@ from media_sync.integrations.mediacrawler.login import (
     MediaCrawlerLoginResult,
     MediaCrawlerLoginStatus,
 )
+from media_sync.integrations.mediacrawler.login_events import (
+    DiagnosticHook,
+    EventReader,
+    EventWriter,
+    LoginObserver,
+    deliver,
+    event,
+    instrument_login,
+    safe_error_type,
+)
 from media_sync.integrations.mediacrawler.policies import (
     CREATOR_CONFIG_ATTRIBUTES,
     RunPaths,
@@ -164,6 +174,7 @@ class MediaCrawlerLoginProcessRunner:
         *,
         on_account_locked: Callable[[], None] | None = None,
         cancellation: threading.Event | None = None,
+        diagnostic_hook: DiagnosticHook | None = None,
     ) -> MediaCrawlerLoginResult:
         """Hold exact profile ownership from the optional state hook through tree join."""
 
@@ -173,7 +184,14 @@ class MediaCrawlerLoginProcessRunner:
             raise TypeError("on_account_locked must be callable")
         if cancellation is not None and not isinstance(cancellation, threading.Event):
             raise TypeError("cancellation must be a threading.Event")
+        if diagnostic_hook is not None and not callable(diagnostic_hook):
+            raise TypeError("diagnostic_hook must be callable")
+        deliver(diagnostic_hook, event("preflight", "prepare", "started", source_frame="parent"))
         if not self._enabled or not self._license_acknowledged:
+            deliver(
+                diagnostic_hook,
+                event("preflight", "prepare", "failed", error_type="configuration", source_frame="parent"),
+            )
             return MediaCrawlerLoginResult(MediaCrawlerLoginStatus.CONFIGURATION_INVALID)
 
         try:
@@ -181,10 +199,20 @@ class MediaCrawlerLoginProcessRunner:
             runtime = self._python_verifier(self._python_executable)
             paths = self._prepare_paths(request)
         except Exception:
+            deliver(
+                diagnostic_hook,
+                event("preflight", "prepare", "failed", error_type="configuration", source_frame="parent"),
+            )
             return MediaCrawlerLoginResult(MediaCrawlerLoginStatus.CONFIGURATION_INVALID)
 
         account_lock = _AccountFileLock(paths.account_root)
+        deliver(diagnostic_hook, event("preflight", "prepare", "succeeded", source_frame="parent"))
+        deliver(diagnostic_hook, event("account_lock", "acquire", "started", source_frame="parent"))
         if not account_lock.acquire():
+            deliver(
+                diagnostic_hook,
+                event("account_lock", "acquire", "failed", source_frame="parent"),
+            )
             return MediaCrawlerLoginResult(MediaCrawlerLoginStatus.ACCOUNT_BUSY, checkout.commit)
         result = MediaCrawlerLoginResult(MediaCrawlerLoginStatus.RESULT_INVALID, checkout.commit)
         cleanup_status = AttemptCleanupStatus.UNRESOLVED
@@ -209,6 +237,7 @@ class MediaCrawlerLoginProcessRunner:
             else:
                 if on_account_locked is not None:
                     on_account_locked()
+                deliver(diagnostic_hook, event("account_lock", "acquire", "succeeded", source_frame="parent"))
                 if cancellation is not None and cancellation.is_set():
                     result = MediaCrawlerLoginResult(MediaCrawlerLoginStatus.CANCELLED, checkout.commit)
                 else:
@@ -221,6 +250,7 @@ class MediaCrawlerLoginProcessRunner:
                         account_lock.descriptor,
                         cancellation,
                         checkout.commit,
+                        diagnostic_hook,
                     )
         finally:
             with contextlib.suppress(OSError):
@@ -259,6 +289,7 @@ class MediaCrawlerLoginProcessRunner:
         lock_descriptor: int,
         cancellation: threading.Event | None,
         upstream_sha: str,
+        diagnostic_hook: DiagnosticHook | None = None,
     ) -> MediaCrawlerLoginResult:
         command = (str(executable), "-I", "-u", "-B", str(Path(__file__).resolve()), "--child")
         environment = browser_child_environment()
@@ -278,9 +309,12 @@ class MediaCrawlerLoginProcessRunner:
             environment.pop(_CONTROL_ENV, None)
 
         windows_job = _WindowsJob.attach(process)
+        diagnostics = EventReader(process.stderr)
+        diagnostics.start()
         if os.name == "nt" and windows_job is None:
             _stop_child(process, None)
             joined = _close_process_tree(process, None)
+            diagnostics.close(diagnostic_hook)
             status = MediaCrawlerLoginStatus.START_FAILED if joined else MediaCrawlerLoginStatus.RESULT_INVALID
             return MediaCrawlerLoginResult(status, upstream_sha)
 
@@ -325,6 +359,7 @@ class MediaCrawlerLoginProcessRunner:
             reader.start()
             started = time.monotonic()
             while disposition is None:
+                diagnostics.drain(diagnostic_hook)
                 if cancellation is not None and cancellation.is_set():
                     disposition = MediaCrawlerLoginStatus.CANCELLED
                     _stop_child(process, windows_job)
@@ -349,6 +384,7 @@ class MediaCrawlerLoginProcessRunner:
             _close_control(process)
             if not tree_closed:
                 tree_closed = _close_process_tree(process, windows_job)
+            diagnostics.close(diagnostic_hook)
             reader.join(timeout=5.0)
             if process.stdout is not None:
                 try:
@@ -363,6 +399,19 @@ class MediaCrawlerLoginProcessRunner:
         if not tree_closed or reader.is_alive() or remainder != b"":
             return MediaCrawlerLoginResult(MediaCrawlerLoginStatus.RESULT_INVALID, upstream_sha)
         if disposition is not None:
+            deliver(
+                diagnostic_hook,
+                event(
+                    "upstream_execution",
+                    "execute",
+                    "cancelled" if disposition is MediaCrawlerLoginStatus.CANCELLED else "failed",
+                    error_type="cancelled"
+                    if disposition is MediaCrawlerLoginStatus.CANCELLED
+                    else ("timeout" if disposition is MediaCrawlerLoginStatus.TIMED_OUT else "unknown"),
+                    source_frame="parent",
+                    event_code="login_terminal",
+                ),
+            )
             return MediaCrawlerLoginResult(disposition, upstream_sha)
         if not output or output[0] is None:
             return MediaCrawlerLoginResult(MediaCrawlerLoginStatus.RESULT_INVALID, upstream_sha)
@@ -447,7 +496,7 @@ def _spawn_login_child(
         "shell": False,
         "stdin": subprocess.PIPE,
         "stdout": subprocess.PIPE,
-        "stderr": subprocess.DEVNULL,
+        "stderr": subprocess.PIPE,
         "close_fds": True,
     }
     if os.name != "nt":
@@ -648,7 +697,8 @@ def _configure_upstream(config: Any, request: _ChildRequest) -> None:
         setattr(config, attribute, [])
 
 
-def _install_client_guard(crawler: Any, platform: Platform) -> None:
+def _install_client_guard(crawler: Any, platform: Platform, observer: LoginObserver | None = None) -> None:
+    observer = observer or LoginObserver()
     factory_name = _CLIENT_FACTORY_NAMES[platform]
     original_factory = getattr(crawler, factory_name, None)
     if not callable(original_factory):
@@ -662,23 +712,26 @@ def _install_client_guard(crawler: Any, platform: Platform) -> None:
             raise _ChildConfigurationError
 
         async def guarded_pong(*pong_args: Any, **pong_kwargs: Any) -> Any:
-            authenticated = await original_pong(*pong_args, **pong_kwargs)
+            with observer.span("session_probe", "probe", "client"):
+                authenticated = await original_pong(*pong_args, **pong_kwargs)
+                if authenticated is not True and authenticated is not False:
+                    raise _ChildConfigurationError
             if authenticated is True:
                 raise _LoginAuthenticated
-            if authenticated is not False:
-                raise _ChildConfigurationError
             return False
 
         async def guarded_update(*update_args: Any, **update_kwargs: Any) -> Any:
-            await original_update(*update_args, **update_kwargs)
+            with observer.span("profile_finalize", "finalize", "client"):
+                await original_update(*update_args, **update_kwargs)
             if platform is Platform.BILI:
                 # Pinned Bilibili QR completion checks only Cookie markers.
                 # Confirm the updated headers remotely before stopping as success.
-                authenticated = await original_pong()
-                if authenticated is False:
-                    raise _LoginConfirmationFailed
-                if authenticated is not True:
-                    raise _ChildConfigurationError
+                with observer.span("login_confirmation", "confirm", "client"):
+                    authenticated = await original_pong()
+                    if authenticated is False:
+                        raise _LoginConfirmationFailed
+                    if authenticated is not True:
+                        raise _ChildConfigurationError
             raise _LoginAuthenticated
 
         client.pong = guarded_pong
@@ -782,7 +835,11 @@ def _normalize_qr_image(value: object) -> bytes | None:
 
 
 @contextlib.contextmanager
-def _disable_qr_export(checkout: Path, qr_relay: Path | None = None) -> Iterator[None]:
+def _disable_qr_export(
+    checkout: Path,
+    qr_relay: Path | None = None,
+    observer: LoginObserver | None = None,
+) -> Iterator[None]:
     """Keep the QR challenge out of the child terminal and optionally relay it.
 
     Without a relay destination the pinned ``show_qrcode`` helper becomes a
@@ -803,12 +860,24 @@ def _disable_qr_export(checkout: Path, qr_relay: Path | None = None) -> Iterator
         return None
 
     destination = qr_relay
+    observer = observer or LoginObserver()
 
     def relay_qr_to_file(value: object) -> None:
         if destination is None:
             return
+        deliver(observer.hook, event("qr_relay", "relay_write", "started", source_frame="qr_relay"))
         image_bytes = _normalize_qr_image(value)
         if image_bytes is None:
+            deliver(
+                observer.hook,
+                event(
+                    "qr_relay",
+                    "relay_write",
+                    "failed",
+                    error_type="configuration",
+                    source_frame="qr_relay",
+                ),
+            )
             return
         temporary: Path | None = None
         try:
@@ -817,7 +886,19 @@ def _disable_qr_export(checkout: Path, qr_relay: Path | None = None) -> Iterator
             with os.fdopen(descriptor, "wb") as output:
                 output.write(image_bytes)
             os.replace(temporary, destination)
+            observer.qr_relayed.set()
+            deliver(observer.hook, event("qr_relay", "relay_write", "succeeded", source_frame="qr_relay"))
         except OSError:
+            deliver(
+                observer.hook,
+                event(
+                    "qr_relay",
+                    "relay_write",
+                    "failed",
+                    error_type="os_error",
+                    source_frame="qr_relay",
+                ),
+            )
             return
         finally:
             if temporary is not None:
@@ -832,6 +913,7 @@ def _disable_qr_export(checkout: Path, qr_relay: Path | None = None) -> Iterator
 
 
 async def _run_upstream(request: _ChildRequest) -> MediaCrawlerLoginStatus:
+    observer = _CHILD_OBSERVER or LoginObserver()
     os.chdir(request.checkout_root)
     if str(request.checkout_root) not in sys.path:
         sys.path.insert(0, str(request.checkout_root))
@@ -849,24 +931,36 @@ async def _run_upstream(request: _ChildRequest) -> MediaCrawlerLoginStatus:
     install_bundled_chromium_policy(upstream_main, classify_launch_errors=True)
     crawler = upstream_main.CrawlerFactory.create_crawler(platform=request.platform.value)
     upstream_main.crawler = crawler
-    _install_client_guard(crawler, request.platform)
+    _install_client_guard(crawler, request.platform, observer)
     try:
         qr_fence = (
             fence_saved_session_qr_fallback(request.platform)
             if request.mode is MediaCrawlerLoginMode.SAVED_SESSION_PROBE
             else contextlib.nullcontext()
         )
-        with _disable_qr_export(request.checkout_root, request.paths.account_root / LOGIN_QR_IMAGE_NAME), qr_fence:
+        module_name, class_name = _LOGIN_CLASSES[request.platform]
+        login_class = getattr(importlib.import_module(module_name), class_name, None)
+        utils = importlib.import_module("tools.utils")
+        with (
+            _disable_qr_export(request.checkout_root, request.paths.account_root / LOGIN_QR_IMAGE_NAME, observer),
+            instrument_login(observer, crawler, login_class, utils),
+            qr_fence,
+        ):
             await crawler.start()
     except _LoginAuthenticated:
         return MediaCrawlerLoginStatus.AUTHENTICATED
     except SavedSessionQrFallbackBlocked:
         return MediaCrawlerLoginStatus.EXPIRED
+    except BaseException as error:
+        # Preserve the precise propagated failure separately from cleanup. A
+        # handled earlier timeout is never promoted to this terminal record.
+        observer.terminal(error)
+        raise
     finally:
         config.__dict__["COOKIES"] = ""
         cleanup = getattr(upstream_main, "async_cleanup", None)
         if callable(cleanup):
-            with contextlib.suppress(asyncio.TimeoutError, Exception):
+            with contextlib.suppress(asyncio.TimeoutError, Exception), observer.span("cleanup", "cleanup", "cleanup"):
                 await asyncio.wait_for(cleanup(), timeout=5.0)
     raise _ChildConfigurationError
 
@@ -889,6 +983,16 @@ def _is_playwright_timeout(error: Exception) -> bool:
     except Exception:
         return False
     return isinstance(timeout_type, type) and issubclass(timeout_type, Exception) and isinstance(error, timeout_type)
+
+
+def _login_error_type(error: BaseException) -> str:
+    if isinstance(error, _ChildConfigurationError):
+        return "configuration"
+    if isinstance(error, _LoginConfirmationFailed):
+        return "confirmation_rejected"
+    if isinstance(error, BrowserLaunchFailure):
+        return "browser_launch_failed"
+    return safe_error_type(error)
 
 
 async def _execute_controlled_child(
@@ -1012,6 +1116,7 @@ def _read_login_request() -> bytes:
 
 
 def _child_entry() -> int:
+    global _CHILD_OBSERVER
     control_version = os.environ.pop(_CONTROL_ENV, None)
     payload = b""
     cancellation: threading.Event | None = None
@@ -1020,6 +1125,7 @@ def _child_entry() -> int:
     child_windows_job: _WindowsJob | None = None
     result_complete = threading.Event()
     previous_sigterm: Any | None = None
+    diagnostic_writer: EventWriter | None = None
     try:
         if control_version != _CONTROL_VERSION:
             raise _ChildConfigurationError
@@ -1054,12 +1160,27 @@ def _child_entry() -> int:
             daemon=True,
         )
         control_thread.start()
+        diagnostic_descriptor: int | None = None
+        try:
+            diagnostic_descriptor = os.dup(2)
+            diagnostic_writer = EventWriter(diagnostic_descriptor)
+        except (OSError, RuntimeError):
+            if diagnostic_descriptor is not None:
+                with contextlib.suppress(OSError):
+                    os.close(diagnostic_descriptor)
+        _CHILD_OBSERVER = LoginObserver(
+            diagnostic_writer.emit if diagnostic_writer is not None else None,
+            error_classifier=_login_error_type,
+        )
         with _silenced_upstream():
             status = asyncio.run(_execute_controlled_child(request, cancellation))
     except BaseException:
         status = MediaCrawlerLoginStatus.CONFIGURATION_INVALID
     finally:
         payload = b""
+        _CHILD_OBSERVER = None
+        if diagnostic_writer is not None:
+            diagnostic_writer.close()
         if parent_lost is not None and parent_lost.is_set() and control_thread is not None:
             control_thread.join(timeout=_COOPERATIVE_STOP_SECONDS + 1.0)
     if control_thread is not None:
@@ -1080,6 +1201,9 @@ def _child_entry() -> int:
         with contextlib.suppress(ValueError):
             signal.signal(signal.SIGTERM, previous_sigterm)
     return 0 if status is MediaCrawlerLoginStatus.AUTHENTICATED else 20
+
+
+_CHILD_OBSERVER: LoginObserver | None = None
 
 
 if __name__ == "__main__":

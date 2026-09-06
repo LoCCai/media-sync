@@ -82,6 +82,7 @@ _CONSOLE_LOGIN_REDIRECTS = {
         "/assets",
         "/library",
         "/jobs",
+        "/logs",
         "/settings",
         "/diagnostics",
     )

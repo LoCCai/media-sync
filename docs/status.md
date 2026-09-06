@@ -2,7 +2,13 @@
 
 # Unified project status (single source of truth)
 
-## Latest: shared output directories and QR failure recheck (0067)
+## Latest: persistent log center and precise login evidence (0068)
+
+[0068](executions/0068-log-center/progress.md) implements private rolling segments, observable QR stages, exact lifecycle association, authenticated queries and Chinese diagnostic downloads. This addresses missing evidence, not proven platform login repair. Defaults are 16 MiB/day, 7 days, 1 GiB; raw credentials/third-party text are excluded. Exact coverage, review fixes and tests: [verification](executions/0068-log-center/verification.md). Deployment and retention limits: [usage](executions/0068-log-center/usage.md).
+
+No production deployment/retry, Linux qualification or supervisor restart this round. Old QR details remain unavailable. Next: controlled one-platform diagnosis after deployment, the separately identified Windows exporter pin fix, then exact subscriptions/history-to-incremental/download acceptance. Crash-open reclamation and comprehensive raw dependency logs are not implemented. Overall goal remains active.
+
+## Previous: shared output directories and QR failure recheck (0067)
 
 [0067](executions/0067-output-directories/progress.md) implements shared/seven-platform roots, CAS saves, author bindings and API/CLI/independent-worker/library-reader wiring. Fresh libraries use platform folders; existing ones remain flat. Published-root changes require explicit migration, which is not implemented. No extra export step or server connection is required. Exact tests/publication: [verification](executions/0067-output-directories/verification.md).
 

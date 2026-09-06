@@ -69,11 +69,11 @@ def test_app_factory_rejects_missing_auth_before_database_construction(
         api_module.create_api_app(_base_settings(tmp_path))
 
 
-def test_all_70_routes_are_denied_by_default_except_the_exact_public_table(tmp_path: Path) -> None:
+def test_all_74_routes_are_denied_by_default_except_the_exact_public_table(tmp_path: Path) -> None:
     settings = _authenticated_settings(tmp_path)
     app = api_module.create_api_app(settings)
     routes = app.routes
-    assert len(routes) == 70
+    assert len(routes) == 74
     public_routes = {
         ("GET", "/api/v1/health"),
         ("HEAD", "/api/v1/health"),
@@ -462,9 +462,11 @@ def test_missing_build_root_and_protected_legacy_are_inert_notices(
     assert head.headers["content-length"] == legacy.headers["content-length"]
 
 
+@pytest.mark.parametrize("console_path", ["subscriptions", "logs"])
 def test_browser_deep_link_redirect_login_and_authenticated_spa(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    console_path: str,
 ) -> None:
     web_root = tmp_path / "web"
     web_root.mkdir()
@@ -474,12 +476,12 @@ def test_browser_deep_link_redirect_login_and_authenticated_spa(
     client = TestClient(app, base_url=TEST_OPERATOR_ORIGIN)
 
     redirected = client.get(
-        "/subscriptions?return_to=https://evil.example&credential=private-query-sentinel",
+        f"/{console_path}?return_to=https://evil.example&credential=private-query-sentinel",
         headers={"Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"},
         follow_redirects=False,
     )
     assert redirected.status_code == 303
-    assert redirected.headers["location"] == "/?return_to=%2Fsubscriptions"
+    assert redirected.headers["location"] == f"/?return_to=%2F{console_path}"
     public_login = client.get(redirected.headers["location"])
     assert public_login.status_code == 200
     assert "Console v2" in public_login.text
@@ -490,7 +492,7 @@ def test_browser_deep_link_redirect_login_and_authenticated_spa(
         headers={"Origin": TEST_OPERATOR_ORIGIN},
     )
     assert login.status_code == 200
-    authenticated = client.get("/subscriptions", headers={"Accept": "text/html"}, follow_redirects=False)
+    authenticated = client.get(f"/{console_path}", headers={"Accept": "text/html"}, follow_redirects=False)
     assert authenticated.status_code == 200
     assert "location" not in authenticated.headers
     assert "Console v2" in authenticated.text

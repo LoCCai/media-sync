@@ -91,6 +91,19 @@
 
   <OutputDirectorySettings />
 
+  <Panel title="持久日志" description="各组件使用同一私有日志目录；无需连接媒体服务器。">
+    {#if settings?.logging}
+      <p>目录：<span class="mono">{settings.logging.directory}</span></p>
+      <p>
+        每片最多 {Math.round(settings.logging.segment_max_bytes / 1048576)} MiB，保留
+        {settings.logging.retention_days} 天，总量最多
+        {Math.round(settings.logging.total_max_bytes / 1048576)} MiB。限制通过部署环境变量配置。
+      </p>
+    {/if}
+    <p>记录安全阶段、任务关联与错误类别，不保存 Cookie、二维码或原始敏感输出。旧版缺失的阶段无法恢复。</p>
+    <a class="button secondary" href="/logs">打开日志中心</a>
+  </Panel>
+
   <div class="settings-grid">
     <Panel title="运行配置" description="环境变量解析后的只读值">
       {#if settingsLoading && !settings}

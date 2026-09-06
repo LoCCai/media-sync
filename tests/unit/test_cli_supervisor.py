@@ -154,16 +154,21 @@ def test_supervisor_cli_composes_fixed_full_chain_and_emits_only_final_counts(
         "pipeline_attempts": 1,
     }
     subscription_kwargs = captured["subscription_builder"][2]
+    event_sink = subscription_kwargs["event_sink"]
+    assert callable(event_sink)
     assert subscription_kwargs == {
         "enable_mediacrawler": True,
         "accept_mediacrawler_license": True,
+        "event_sink": event_sink,
     }
     pipeline_kwargs = captured["pipeline_builder"][2]
+    assert pipeline_kwargs["event_sink"] is event_sink
     assert pipeline_kwargs["retry_delay_seconds"] == 11
     assert pipeline_kwargs["enable_mediacrawler"] is True
     assert pipeline_kwargs["accept_mediacrawler_license"] is True
     assert pipeline_kwargs["xhs_detail_reference_ref"] == secret_reference
     supervisor_kwargs = captured["supervisor"]
+    assert supervisor_kwargs["event_sink"] is event_sink
     config = supervisor_kwargs["config"]
     assert config.idle_interval_seconds == 2.5
     assert config.login_sweep_limit == 7

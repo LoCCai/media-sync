@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import math
+import time
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from dataclasses import dataclass
 from typing import Literal, Protocol
+
+from media_sync.application.observability import EventSink, elapsed_ms, emit_event
 
 from .pipeline_worker import PipelineSubscriptionWorker, PipelineWorkerResult
 from .service import (
@@ -231,6 +234,7 @@ class ResidentSchedulerSupervisor:
         config: ResidentSupervisorConfig | None = None,
         stop_event: asyncio.Event | None = None,
         idle_wait: IdleWait | None = None,
+        event_sink: EventSink | None = None,
     ) -> None:
         if not callable(stale_login_sweep):
             raise TypeError("stale_login_sweep must be callable")
@@ -246,6 +250,7 @@ class ResidentSchedulerSupervisor:
             raise TypeError("config must be a ResidentSupervisorConfig")
 
         self.stale_login_sweep = stale_login_sweep
+        self.event_sink = event_sink
         self.scheduler = scheduler
         self.subscription_worker = subscription_worker
         self.pipeline_worker = pipeline_worker
@@ -475,6 +480,34 @@ class ResidentSchedulerSupervisor:
     async def run(self) -> ResidentSupervisorResult:
         """Run foreground cycles until ``request_stop`` wakes the supervisor."""
 
+        started_at = time.monotonic()
+        emit_event(
+            self.event_sink, event_code="supervisor_started", module="supervisor", action="start", outcome="started"
+        )
+        try:
+            result = await self._run_foreground()
+        except BaseException as exc:
+            cancelled = isinstance(exc, asyncio.CancelledError)
+            emit_event(
+                self.event_sink,
+                event_code="supervisor_stopped" if cancelled else "supervisor_failed",
+                module="supervisor",
+                action="stop",
+                outcome="cancelled" if cancelled else "failed",
+                duration_ms=elapsed_ms(started_at),
+            )
+            raise
+        emit_event(
+            self.event_sink,
+            event_code="supervisor_stopped",
+            module="supervisor",
+            action="stop",
+            outcome="stopped",
+            duration_ms=elapsed_ms(started_at),
+        )
+        return result
+
+    async def _run_foreground(self) -> ResidentSupervisorResult:
         aggregate = _Counts()
         while True:
             cycle = await self.run_cycle()

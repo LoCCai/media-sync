@@ -1270,7 +1270,8 @@ def test_pipeline_worker_cli_wires_bounded_runtime_and_fixed_output(
             captured.update(subscription_id=subscription_id, child_worker_id=worker_id)
 
     class _FakePipelineWorker:
-        def __init__(self, database: object, handler: object, *, retry_delay_seconds: int) -> None:
+        def __init__(self, database: object, handler: object, *, retry_delay_seconds: int, event_sink: object) -> None:
+            assert callable(event_sink)
             captured.update(worker_database=database, handler=handler, retry_delay_seconds=retry_delay_seconds)
 
         async def run_bounded(

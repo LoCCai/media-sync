@@ -125,6 +125,7 @@ export interface Settings {
   bili_scan_continuation_delay_seconds?: number;
   mediacrawler_python_executable: string | null;
   media_server: MediaServerConfiguration;
+  logging?: { directory: string; segment_max_bytes: number; total_max_bytes: number; retention_days: number };
 }
 
 export interface Account {

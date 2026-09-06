@@ -27,6 +27,7 @@ const RETURN_PATHS = new Set([
   '/assets',
   '/library',
   '/jobs',
+  '/logs',
   '/settings',
   '/diagnostics'
 ]);

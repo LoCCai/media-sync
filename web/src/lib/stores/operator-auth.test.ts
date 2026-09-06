@@ -171,12 +171,19 @@ describe('operator auth lifecycle', () => {
 });
 
 describe('fixed login return paths', () => {
-  it.each(['accounts', 'subscriptions', 'contents', 'assets', 'library', 'jobs', 'settings', 'diagnostics'])(
-    'accepts only the exact /%s path',
-    (path) => {
-      expect(operatorReturnPath(`?return_to=%2F${path}`)).toBe(`/${path}`);
-    }
-  );
+  it.each([
+    'accounts',
+    'subscriptions',
+    'contents',
+    'assets',
+    'library',
+    'jobs',
+    'logs',
+    'settings',
+    'diagnostics'
+  ])('accepts only the exact /%s path', (path) => {
+    expect(operatorReturnPath(`?return_to=%2F${path}`)).toBe(`/${path}`);
+  });
   it.each([
     '?return_to=https://example.invalid',
     '?return_to=//example.invalid',

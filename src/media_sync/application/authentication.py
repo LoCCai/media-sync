@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -31,6 +31,7 @@ from media_sync.integrations.mediacrawler import (
     MediaCrawlerLoginRunner,
     MediaCrawlerLoginStatus,
 )
+from media_sync.integrations.mediacrawler.login_events import DiagnosticHook, deliver, validate_event
 
 from .operations import DurableSubjectHook, DurableSubjectRef
 
@@ -314,6 +315,7 @@ class MediaCrawlerQrLoginService:
         *,
         cancellation: threading.Event | None = None,
         subject_hook: DurableSubjectHook | None = None,
+        diagnostic_hook: DiagnosticHook | None = None,
     ) -> AccountLoginOutcome:
         """Run one explicit QR attempt; a session starts only after account lock acquisition."""
 
@@ -330,9 +332,31 @@ class MediaCrawlerQrLoginService:
             poll_seconds=request.poll_seconds,
         )
         observed: LoginSessionState | None = None
+        committed_session_id: str | None = None
+
+        def scoped_diagnostic(value: Mapping[str, object]) -> None:
+            # Child events cannot supply or overwrite identity. The session is
+            # published only after its transaction and durable subject commit.
+            try:
+                validate_event(value)
+            except (TypeError, ValueError):
+                return
+            scoped = {key: item for key, item in value.items() if key != "schema_version"}
+            scoped["duration_ms"] = scoped.pop("elapsed_ms")
+            scoped.update(
+                {
+                    "module": "login",
+                    "level": "warning" if value["outcome"] in {"failed", "cancelled"} else "info",
+                    "account_id": str(scope.account_id),
+                    "platform": scope.platform.value,
+                }
+            )
+            if committed_session_id is not None:
+                scoped["login_session_id"] = committed_session_id
+            deliver(diagnostic_hook, scoped)
 
         def start_waiting_session() -> None:
-            nonlocal observed
+            nonlocal observed, committed_session_id
             started_at = self._now()
             with self._database.session() as session:
                 repository = LoginSessionRepository(session)
@@ -350,13 +374,22 @@ class MediaCrawlerQrLoginService:
                 # Publish the exact identity before commit. If commit fails,
                 # best-effort terminalization simply finds no durable row.
                 observed = waiting
+            committed_session_id = waiting.id
 
         try:
-            raw_result = self._runner.run(
-                integration_request,
-                on_account_locked=start_waiting_session,
-                cancellation=cancellation,
-            )
+            if diagnostic_hook is None:
+                raw_result = self._runner.run(
+                    integration_request,
+                    on_account_locked=start_waiting_session,
+                    cancellation=cancellation,
+                )
+            else:
+                raw_result = self._runner.run(
+                    integration_request,
+                    on_account_locked=start_waiting_session,
+                    cancellation=cancellation,
+                    diagnostic_hook=scoped_diagnostic,
+                )
         except NotFoundError:
             raise AccountLoginError("account_login_not_found") from None
         except (AccountLoginConflictError, LoginSessionConflictError):

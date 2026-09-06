@@ -2,7 +2,7 @@
 
 # 项目工作日志
 
-当前交付：[0067 共享输出目录](executions/0067-output-directories/progress.zh.md)，精确结果见[0067 验证](executions/0067-output-directories/verification.zh.md)。用户最新要求的[下版日志中心与扫码诊断](executions/0067-output-directories/next-delivery.zh.md)优先推进，之后继续订阅到文件闭环；四平台扫码仍失败，下方历史测试不代表真人验收完成。
+当前交付：[0068持久日志中心与扫码阶段证据](executions/0068-log-center/progress.zh.md)，精确结果见[验证](executions/0068-log-center/verification.zh.md)，部署及使用见[说明](executions/0068-log-center/usage.zh.md)。四平台扫码尚未证明修复，下一步是部署后受控诊断，再继续订阅到文件闭环；下方历史测试不代表真人验收完成。
 
 ## 上阶段功能检查点
 

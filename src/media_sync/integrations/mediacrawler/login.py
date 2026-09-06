@@ -11,6 +11,7 @@ from typing import Protocol
 from uuid import UUID
 
 from media_sync.domain import Platform
+from media_sync.integrations.mediacrawler.login_events import DiagnosticHook
 
 
 class MediaCrawlerLoginMode(StrEnum):
@@ -116,6 +117,7 @@ class MediaCrawlerLoginRunner(Protocol):
         *,
         on_account_locked: Callable[[], None] | None = None,
         cancellation: threading.Event | None = None,
+        diagnostic_hook: DiagnosticHook | None = None,
     ) -> MediaCrawlerLoginResult:
         """Run while holding the account lock through complete child-tree join."""
         ...
