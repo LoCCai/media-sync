@@ -1,0 +1,13 @@
+**English** | [中文](plan.zh.md)
+
+# Frozen plan
+
+1. JSONL under private state_dir/logs; defaults16MiB/UTC-date rotation,7days/1GiB total budget,1024-entry bounded queue. Process-owned single writers, no shared RotatingFileHandler races. Prune only known managed sealed regular files; protect active segments and reject links/reparse. Expose queue/disk loss, corruption/truncation and uncertain retention coverage. Enqueue is not durability; bounded flush/close.
+2. Closed schema: event_code/module/level, enumerated phase/action/outcome/error types, constrained code locations, UUID correlations and bounded numbers. Store mints time/sequence/writer identity. No free text/URLs/headers/Cookie/QR/locals/raw exceptions; generic logging retains safe category/module/severity without formatting message arguments.
+3. Keep login v1 result frame strict; add a versioned bounded realtime event side channel. Parent binds account/session/operation identity. Capture actual navigation/click/QR acquisition/relay/session-confirmation steps before swallowed exceptions; recovered fallback is not terminal failure, cleanup cannot replace the primary cause. Preserve upstream lock, platform request counts, cancellation/parent-death/tree-join and verification boundaries.
+4. Optional event_sink on OperationCoordinator, subscription/pipeline workers and supervisor records lifecycle without heartbeat/idle floods. API/CLI inject shared mounted storage and trusted context correlations.
+5. Authenticated status/filter/paging with fixed errors and bounded requests/encoded output/scan budgets. Operation-UUID diagnostic downloads resolve exact DB relationships, versions, existing events and retained logs; no arbitrary client paths or automatic upload. Preserve SupportBundle v1, mark old missing stages unrecoverable.
+6. Chinese log center filters time/component/platform/severity/identity, shows stage/action/outcome and loss/coverage, links from task detail and explicitly downloads diagnostics. Child-step failures do not grant final outcomes; existing auth state remains authoritative.
+7. Test stage-specific failures, swallowed/fallback errors, cancellation/protocol floods, multiprocess/queue/disk/rotation/truncation/restart, secret sentinels and auth/path rejection. Prove offline login events→segments→API→bundle→UI contracts. Record unrun Linux/live gates. Finish affected regression/static/build/package/docs, bilingual commits/push/equality.
+
+Ownership: storage agent events/store/security; login agent runner/authentication/stages; lifecycle agent operations/scheduler/pipeline/supervisor/safe logging handler; root config/API/bundles/UI/docs/combined qualification. Record scope amendments; do not redefine the user's goal around passing tests.
