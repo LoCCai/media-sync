@@ -184,6 +184,9 @@ describe('fixed login return paths', () => {
   ])('accepts only the exact /%s path', (path) => {
     expect(operatorReturnPath(`?return_to=%2F${path}`)).toBe(`/${path}`);
   });
+  it('accepts the exact crawler console path', () => {
+    expect(operatorReturnPath('?return_to=%2Fcrawler%2F')).toBe('/crawler/');
+  });
   it.each([
     '?return_to=https://example.invalid',
     '?return_to=//example.invalid',

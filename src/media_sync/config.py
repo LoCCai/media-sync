@@ -418,6 +418,7 @@ class Settings(BaseSettings):
     mediacrawler_lock_path: Path = Path("upstreams.lock.json")
     mediacrawler_python_executable: Path | None = None
     mediacrawler_runtime_dir: Path | None = None
+    mediacrawler_license_acknowledged: bool = False
     database_url: str | None = None
     api_host: str = "127.0.0.1"
     api_port: int = Field(default=8632, ge=1, le=65535)
@@ -455,6 +456,17 @@ class Settings(BaseSettings):
         if type(value) is not int or (value != 0 and not 60 <= value <= 604_800):
             raise ValueError("bili_scan_continuation_delay_seconds must be 0 or an integer between 60 and 604800")
         return value
+
+    @field_validator("mediacrawler_license_acknowledged", mode="before")
+    @classmethod
+    def normalize_mediacrawler_license_acknowledgement(cls, value: object) -> bool:
+        """Require an unambiguous deployment-level acknowledgement token."""
+
+        if type(value) is bool:
+            return value
+        if type(value) is str and value in {"true", "false"}:
+            return value == "true"
+        raise ValueError("mediacrawler_license_acknowledged must be true or false")
 
     @field_validator("log_segment_max_bytes", "log_total_max_bytes", "log_retention_days", mode="before")
     @classmethod

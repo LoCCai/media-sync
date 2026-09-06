@@ -30,6 +30,7 @@
     {
       label: '采集管理',
       items: [
+        { href: '/crawler/', label: '爬虫控制台', icon: Boxes },
         { href: '/accounts', label: '平台账户', icon: CircleUserRound },
         { href: '/subscriptions', label: '创作者订阅', icon: UsersRound },
         { href: '/contents', label: '内容', icon: BookOpen }
@@ -56,6 +57,7 @@
     '/accounts': '平台账户',
     '/assets': '资产与归档',
     '/contents': '内容',
+    '/crawler/': '爬虫控制台',
     '/diagnostics': '诊断',
     '/jobs': '任务队列',
     '/logs': '日志中心',
@@ -105,6 +107,7 @@
               class:active={isActive(item.href)}
               class="nav-item"
               href={item.href}
+              data-sveltekit-reload={item.href === '/crawler/' ? '' : undefined}
               on:click={closeMobile}
               title={item.label}
             >

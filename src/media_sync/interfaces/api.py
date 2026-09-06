@@ -135,6 +135,10 @@ from media_sync.integrations.mediacrawler import platform_capabilities_payload
 from media_sync.integrations.mediacrawler.checkout import load_mediacrawler_lock
 from media_sync.integrations.mediacrawler.cookie_login_runner import CookieLoginProcessRunner
 from media_sync.integrations.mediacrawler.creator_profile_runner import MediaCrawlerCreatorProfileProcessRunner
+from media_sync.integrations.mediacrawler.license_gate import (
+    create_mediacrawler_license_gate_app,
+    mediacrawler_license_required_response,
+)
 from media_sync.integrations.mediacrawler.login_runner import (
     LOGIN_QR_IMAGE_NAME,
     MediaCrawlerLoginProcessRunner,
@@ -145,6 +149,7 @@ from media_sync.integrations.mediacrawler.subscription_policy import (
     MediaCrawlerSubscriptionPolicyError,
     from_subscription_policy,
 )
+from media_sync.integrations.mediacrawler.webui import create_mediacrawler_webui_app
 from media_sync.interfaces.cli import (
     _EXPECTED_DATABASE_REVISION,
     _account_login_outcome_payload,
@@ -204,6 +209,13 @@ _OPERATION_RECONCILE_SHUTDOWN_SECONDS = 1.0
 _SUBSCRIPTION_DELIVERY_OBSERVE_SECONDS = 0.5
 _MAX_OPERATOR_LOGIN_BODY_BYTES = 8 * 1024
 _MAX_PLAYBACK_EVIDENCE_BODY_BYTES = 1_024
+_QUIET_CRAWLER_API_REQUEST_LOG_PATHS = frozenset(
+    {
+        "/crawler/api/crawler/logs",
+        "/crawler/api/crawler/qrcode",
+        "/crawler/api/crawler/status",
+    }
+)
 _LAST_EVENT_ID = re.compile(r"(?:0|[1-9][0-9]{0,18})\Z")
 _JSON_CONTENT_TYPE = re.compile(r"application/json(?:\s*;\s*charset=utf-8)?\Z", re.IGNORECASE)
 _OPERATOR_LOGIN_OPENAPI = {
@@ -999,12 +1011,17 @@ def create_api_app(
                 operation_reconciliation.close,
                 timeout_seconds=_OPERATION_RECONCILE_SHUTDOWN_SECONDS,
             )
-            operation_database.dispose()
-            for logger in observed_loggers:
-                logger.removeHandler(log_handler)
-            log_handler.close()
-            log_store.emit({"event_code": "service_stopped", "module": "api", "level": "info"})
-            await asyncio.to_thread(log_store.close)
+            mediacrawler_shutdown = getattr(mediacrawler_webui.state, "media_sync_shutdown", None)
+            try:
+                if callable(mediacrawler_shutdown):
+                    await mediacrawler_shutdown()
+            finally:
+                operation_database.dispose()
+                for logger in observed_loggers:
+                    logger.removeHandler(log_handler)
+                log_handler.close()
+                log_store.emit({"event_code": "service_stopped", "module": "api", "level": "info"})
+                await asyncio.to_thread(log_store.close)
 
     app = FastAPI(title="media-sync", version=__version__, docs_url="/api/docs", lifespan=lifespan)
     app.state.settings = resolved
@@ -1024,6 +1041,11 @@ def create_api_app(
     deep_readiness_cache: dict[bool, tuple[float, dict[str, object]]] = {}
     deep_readiness_lock = threading.Lock()
     web_root = _resolve_web_root()
+    mediacrawler_webui = (
+        create_mediacrawler_webui_app(resolved)
+        if resolved.mediacrawler_license_acknowledged
+        else create_mediacrawler_license_gate_app()
+    )
 
     @app.exception_handler(StarletteHTTPException)
     async def head_safe_http_exception(request: Request, error: StarletteHTTPException) -> Response:
@@ -1063,6 +1085,11 @@ def create_api_app(
     @app.middleware("http")
     async def security_headers(request: Request, call_next: Any) -> Response:
         started = time.monotonic()
+        request_path = request.url.path
+        is_api_request = request_path.startswith(("/api/", "/crawler/api/"))
+        is_quiet_api_request = request_path in _QUIET_CRAWLER_API_REQUEST_LOG_PATHS or request_path.startswith(
+            ("/api/v1/logs", "/api/v1/health")
+        )
         try:
             response: Response = await call_next(request)
         except Exception:
@@ -1080,16 +1107,18 @@ def create_api_app(
         response.headers.setdefault("Referrer-Policy", "no-referrer")
         response.headers.setdefault("X-Frame-Options", "DENY")
         response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
-        if not request.url.path.startswith("/api/"):
+        if request_path == "/crawler" or request_path.startswith("/crawler/"):
+            response.headers.setdefault("Cross-Origin-Resource-Policy", "same-origin")
+        if not is_api_request:
             response.headers.setdefault(
                 "Content-Security-Policy",
                 "default-src 'self'; img-src 'self' blob: data:; style-src 'self' 'unsafe-inline'; "
                 "script-src 'self' 'unsafe-inline'; connect-src 'self'; object-src 'none'; "
                 "base-uri 'self'; frame-ancestors 'none'",
             )
-        if request.url.path.startswith("/api/"):
+        if is_api_request:
             response.headers.setdefault("Cache-Control", "no-store")
-        if request.url.path.startswith("/api/") and not request.url.path.startswith(("/api/v1/logs", "/api/v1/health")):
+        if is_api_request and not is_quiet_api_request:
             emit_log(
                 {
                     "event_code": "request_finished",
@@ -4055,6 +4084,18 @@ def create_api_app(
     def get_operation(operation_id: str) -> dict[str, object]:
         _reconcile_operation_reads()
         return _operation_detail(operation_id)
+
+    if not resolved.mediacrawler_license_acknowledged:
+
+        @app.api_route(
+            "/crawler",
+            methods=["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+            include_in_schema=False,
+        )
+        def mediacrawler_license_gate_root() -> Response:
+            return mediacrawler_license_required_response()
+
+    app.mount("/crawler", mediacrawler_webui, name="mediacrawler-webui")
 
     @app.api_route("/{frontend_path:path}", methods=["GET", "HEAD"], include_in_schema=False)
     def console_spa(frontend_path: str) -> Response:

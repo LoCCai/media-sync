@@ -7,6 +7,8 @@
 # Dockerfile COPYs it so mainland builds need no in-container github.com
 # access. It is git-ignored via .gitignore instead.
 .venv
+.mediacrawler-local/webui/node_modules
+.mediacrawler-local/api/webui
 web/node_modules
 web/.svelte-kit
 web/build
@@ -15,6 +17,7 @@ web/test-results
 web/playwright-report
 .media-sync
 archive
+artifacts
 exports
 jobs
 dist

@@ -69,11 +69,11 @@ def test_app_factory_rejects_missing_auth_before_database_construction(
         api_module.create_api_app(_base_settings(tmp_path))
 
 
-def test_all_75_routes_are_denied_by_default_except_the_exact_public_table(tmp_path: Path) -> None:
+def test_all_77_routes_are_denied_by_default_except_the_exact_public_table(tmp_path: Path) -> None:
     settings = _authenticated_settings(tmp_path)
     app = api_module.create_api_app(settings)
     routes = app.routes
-    assert len(routes) == 75
+    assert len(routes) == 77
     public_routes = {
         ("GET", "/api/v1/health"),
         ("HEAD", "/api/v1/health"),
@@ -89,7 +89,13 @@ def test_all_75_routes_are_denied_by_default_except_the_exact_public_table(tmp_p
         observed: set[tuple[str, str]] = set()
         for route in routes:
             path_template = route.path
-            methods = route.methods
+            methods = getattr(route, "methods", None)
+            if methods is None:
+                assert path_template == "/crawler"
+                response = client.get("/crawler/", headers={"Accept": "application/json"})
+                assert response.status_code == 401
+                assert response.json() == {"detail": "operator_auth_required"}
+                continue
             for method in sorted(methods):
                 path = _concrete_path(path_template)
                 headers = (

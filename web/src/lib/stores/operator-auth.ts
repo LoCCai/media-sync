@@ -29,7 +29,8 @@ const RETURN_PATHS = new Set([
   '/jobs',
   '/logs',
   '/settings',
-  '/diagnostics'
+  '/diagnostics',
+  '/crawler/'
 ]);
 
 /** Never carry arbitrary query data or an external destination through login. */

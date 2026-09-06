@@ -44,6 +44,25 @@ RUN pnpm check \
          echo "web_lock_sha256: $(sha256sum pnpm-lock.yaml | cut -d' ' -f1)"; \
        } > /web/WEB-BUILD-MANIFEST.txt
 
+# Build the exact pinned upstream React console in an isolated copy.  The
+# deterministic patch only adapts its base path, existing operator CSRF
+# boundary and browser QR display; the locked checkout remains untouched.
+FROM ${NODE_IMAGE} AS mediacrawler-web-build
+ARG NPM_REGISTRY
+WORKDIR /mediacrawler/webui
+RUN npm config set registry "${NPM_REGISTRY}"
+COPY .mediacrawler-local/webui/ ./
+COPY docker/mediacrawler-webui-security-patch.mjs /tmp/mediacrawler-webui-security-patch.mjs
+COPY docker/mediacrawler-webui-patch.mjs /tmp/mediacrawler-webui-patch.mjs
+COPY docker/mediacrawler-webui/QrCodePanel.tsx ./src/components/login/QrCodePanel.tsx
+COPY docker/mediacrawler-webui/MainContent.tsx ./src/components/layout/MainContent.tsx
+RUN node /tmp/mediacrawler-webui-security-patch.mjs \
+    && npm install --package-lock-only --ignore-scripts --no-audit --fund=false \
+    && npm ci --no-audit --fund=false \
+    && npm audit --omit=dev --audit-level=low \
+    && node /tmp/mediacrawler-webui-patch.mjs \
+    && npm run build -- --base=/crawler/
+
 FROM ${BASE_IMAGE} AS base
 # Re-declare so the build manifest can record the (possibly digest-pinned) base.
 ARG BASE_IMAGE
@@ -137,6 +156,7 @@ RUN mkdir -p /app/.upstream \
     && mv /tmp/mediacrawler-prefetch /app/.upstream/MediaCrawler \
     && git -C /app/.upstream/MediaCrawler remote set-url origin "${MEDIACRAWLER_REPO}" \
     && git -C /app/.upstream/MediaCrawler rev-parse HEAD | grep -qx "${MEDIACRAWLER_COMMIT}"
+COPY --from=mediacrawler-web-build /mediacrawler/api/webui /app/.upstream/MediaCrawler/api/webui
 # The upstream venv installs from a hashed lock compiled from the pinned
 # checkout's requirements.txt (docker/mediacrawler-requirements.lock), so the
 # same source SHA always builds the same dependency set; playwright is thereby
@@ -201,6 +221,8 @@ COPY docker/entrypoint.sh /usr/local/bin/media-sync-entrypoint
 # symlink dereferencing while the image is still being built.
 RUN chmod +x /usr/local/bin/media-sync-entrypoint \
     && chown mediasync:mediasync /app/upstreams.lock.json /usr/local/bin/media-sync-entrypoint \
+    && su mediasync -s /bin/sh -c \
+      '/opt/mediacrawler-venv/bin/python -c "import sys; sys.path.insert(0, \"/app/src\"); import media_sync.integrations.mediacrawler.webui_child"' \
     && su mediasync -s /bin/sh -c \
       '/app/.venv/bin/media-sync mediacrawler doctor --accept-license --json'
 

@@ -85,8 +85,16 @@ _CONSOLE_LOGIN_REDIRECTS = {
         "/logs",
         "/settings",
         "/diagnostics",
+        "/crawler",
+        "/crawler/",
     )
 }
+_AUTHENTICATED_WEBSOCKET_ROUTES = frozenset(
+    {
+        "/crawler/api/ws/logs",
+        "/crawler/api/ws/status",
+    }
+)
 _ACCEPT_QUALITY = re.compile(r"(?:0(?:\.[0-9]{0,3})?|1(?:\.0{0,3})?)\Z")
 _STATIC_COMPONENT = re.compile(r"[A-Za-z0-9_-][A-Za-z0-9._-]*\Z")
 _OPAQUE_TOKEN = re.compile(rf"[A-Za-z0-9_-]{{{_TOKEN_TEXT_LENGTH}}}\Z")
@@ -858,7 +866,38 @@ class OperatorAuthMiddleware:
             await self.app(scope, receive, send)
             return
         if scope_type == "websocket":
-            await send({"type": "websocket.close", "code": 4403, "reason": OperatorAuthErrorCode.AUTH_REQUIRED.value})
+            headers = scope.get("headers", ())
+            host = _single_header(headers, b"host", max_bytes=_MAX_HOST_HEADER_BYTES)
+            origin = _single_header(headers, b"origin", max_bytes=MAX_OPERATOR_ORIGIN_BYTES)
+            path = scope.get("path")
+            cookie = session_cookie_from_headers(headers)
+            if (
+                not isinstance(path, str)
+                or path not in _AUTHENTICATED_WEBSOCKET_ROUTES
+                or not self.origin_policy.allows_host(host)
+                or not self.origin_policy.allows_origin(origin)
+                or self.runtime.authenticate(cookie, None) is not OperatorAuthMethod.BROWSER
+            ):
+                await send(
+                    {
+                        "type": "websocket.close",
+                        "code": 4403,
+                        "reason": OperatorAuthErrorCode.AUTH_REQUIRED.value,
+                    }
+                )
+                return
+            state = scope.setdefault("state", {})
+            if not isinstance(state, dict):
+                await send(
+                    {
+                        "type": "websocket.close",
+                        "code": 4403,
+                        "reason": OperatorAuthErrorCode.AUTH_REQUIRED.value,
+                    }
+                )
+                return
+            state[OPERATOR_AUTH_SCOPE_KEY] = OperatorAuthMethod.BROWSER.value
+            await self.app(scope, receive, send)
             return
         if scope_type != "http":
             await self.app(scope, receive, send)
