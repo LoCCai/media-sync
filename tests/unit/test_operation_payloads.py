@@ -26,6 +26,10 @@ ASSET_ID = "33333333-3333-4333-8333-333333333333"
 JOB_ID = "44444444-4444-4444-8444-444444444444"
 AUTHOR_ID = "55555555-5555-4555-8555-555555555555"
 SUBJECT_ID = "66666666-6666-4666-8666-666666666666"
+SUBSCRIPTION_ID = "77777777-7777-4777-8777-777777777777"
+RUN_ID = "88888888-8888-4888-8888-888888888888"
+PIPELINE_JOB_ID = "99999999-9999-4999-8999-999999999999"
+EXPORT_JOB_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 REFERENCE_DIGEST = "a" * 64
 PROFILE_FINGERPRINT = "b" * 64
 LIBRARY_ID_DIGEST = "c" * 64
@@ -37,6 +41,7 @@ KIND_ROUTES = {
     "creator-profile": "/api/v1/accounts/{account_id}/creator-lookups",
     "account-login": "/api/v1/accounts/{account_id}/login",
     "asset-download": "/api/v1/assets/{asset_id}/download",
+    "subscription-delivery": "/api/v1/subscriptions/{subscription_id}/execute",
     "scheduler-run": "/api/v1/scheduler/run",
     "pipeline-run": "/api/v1/pipeline/run",
     "emby-export": "/api/v1/emby/export",
@@ -48,6 +53,7 @@ KIND_TARGET_TYPES = {
     "creator-profile": "account",
     "account-login": "account",
     "asset-download": "asset",
+    "subscription-delivery": "subscription",
     "scheduler-run": None,
     "pipeline-run": None,
     "emby-export": "author",
@@ -78,6 +84,14 @@ def _request_parameters(kind: str) -> dict[str, object]:
             "lease_seconds": 60,
             "max_attempts": 3,
             "xhs_detail_reference_digest": REFERENCE_DIGEST,
+        }
+    if kind == "subscription-delivery":
+        return {
+            **common,
+            "expected_schedule_revision": 3,
+            "global_capacity": 1,
+            "lease_seconds": 300,
+            "retry_delay_seconds": 30,
         }
     if kind == "scheduler-run":
         return {
@@ -146,6 +160,53 @@ def _request_parameters(kind: str) -> dict[str, object]:
                 "disposition": "downloaded",
                 "generation": 2,
                 "size_bytes": 4096,
+            },
+        ),
+        (
+            "subscription-delivery",
+            {
+                "subscription_id": SUBSCRIPTION_ID,
+                "account_id": ACCOUNT_ID,
+                "author_id": AUTHOR_ID,
+                "platform": "bili",
+                "sync_job_id": JOB_ID,
+                "run_id": RUN_ID,
+                "pipeline_job_id": PIPELINE_JOB_ID,
+                "export_job_id": EXPORT_JOB_ID,
+                "discovery_count": 2,
+                "asset_identity_count": 3,
+                "updated_count": None,
+                "discovery_count_semantics": "created_rows",
+                "selection_scope": "author_active_snapshot",
+                "selected_asset_count": 4,
+                "verified_asset_count": 4,
+                "downloaded_count": 3,
+                "already_verified_count": 1,
+                "publication_disposition": "published",
+                "managed_file_count": 11,
+                "directory_verified": True,
+            },
+            {
+                "subscription_id": SUBSCRIPTION_ID,
+                "account_id": ACCOUNT_ID,
+                "author_id": AUTHOR_ID,
+                "platform": "bili",
+                "sync_job_id": JOB_ID,
+                "run_id": RUN_ID,
+                "pipeline_job_id": PIPELINE_JOB_ID,
+                "export_job_id": EXPORT_JOB_ID,
+                "discovery_count": 2,
+                "asset_identity_count": 3,
+                "updated_count": None,
+                "discovery_count_semantics": "created_rows",
+                "selection_scope": "author_active_snapshot",
+                "selected_asset_count": 4,
+                "verified_asset_count": 4,
+                "downloaded_count": 3,
+                "already_verified_count": 1,
+                "publication_disposition": "published",
+                "managed_file_count": 11,
+                "directory_verified": True,
             },
         ),
         (
@@ -224,6 +285,50 @@ def test_batch_summary_retains_only_bounded_counts_in_sorted_order() -> None:
     }
     assert "statuses" not in result
     assert "jobs" not in result
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        {"verified_asset_count": 3},
+        {"downloaded_count": 4},
+        {"directory_verified": False},
+        {"selection_scope": "new_rows_only"},
+        {"platform": "other"},
+        {"publication_disposition": "exported"},
+        {"updated_count": -1},
+        {"output_path": r"C:\private-sentinel"},
+    ],
+)
+def test_subscription_delivery_summary_rejects_false_or_sensitive_receipts(
+    mutation: dict[str, object],
+) -> None:
+    payload: dict[str, object] = {
+        "subscription_id": SUBSCRIPTION_ID,
+        "account_id": ACCOUNT_ID,
+        "author_id": AUTHOR_ID,
+        "platform": "bili",
+        "sync_job_id": JOB_ID,
+        "run_id": RUN_ID,
+        "pipeline_job_id": PIPELINE_JOB_ID,
+        "export_job_id": EXPORT_JOB_ID,
+        "discovery_count": 2,
+        "asset_identity_count": 3,
+        "updated_count": None,
+        "discovery_count_semantics": "created_rows",
+        "selection_scope": "author_active_snapshot",
+        "selected_asset_count": 4,
+        "verified_asset_count": 4,
+        "downloaded_count": 3,
+        "already_verified_count": 1,
+        "publication_disposition": "published",
+        "managed_file_count": 11,
+        "directory_verified": True,
+    }
+    payload.update(mutation)
+
+    with pytest.raises(OperationPayloadError, match="operation_result_invalid"):
+        operation_result_summary("subscription-delivery", payload)
 
 
 @pytest.mark.parametrize(

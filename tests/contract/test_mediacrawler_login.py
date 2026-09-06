@@ -16,7 +16,9 @@ from uuid import UUID
 
 import pytest
 
+from media_sync.application.observability import event_context
 from media_sync.domain import Platform
+from media_sync.infrastructure.observability.store import LogStore
 from media_sync.integrations.mediacrawler import login_runner as runner_module
 from media_sync.integrations.mediacrawler.checkout import VerifiedCheckout, VerifiedPython
 from media_sync.integrations.mediacrawler.login import (
@@ -88,7 +90,7 @@ async def async_cleanup():
     root = Path(__file__).parent
     if (root / "mode.txt").read_text(encoding="utf-8").strip() in {
         "browser_failure", "browser_timeout", "builtin_timeout", "lookalike_timeout",
-        "unknown_error", "system_exit_private", "post_update_false",
+        "unknown_error", "system_exit_private", "post_update_false", "output_diagnostic",
     }:
         (root / "cleanup-called").write_text("cleaned", encoding="utf-8")
     return None
@@ -163,6 +165,25 @@ class {login_class}:
 
     async def begin(self):
         selected = mode()
+        if selected == "output_diagnostic":
+            print(
+                "ERROR login output qrcode=QR-SECRET-MUST-STAY-IN-BROWSER "
+                + "profile=" + str(profile_root())
+                + " url=https://private.invalid/challenge?token=SIGNED-QR-SECRET-123456789",
+                file=sys.stderr,
+            )
+            print("ERROR Set-Cookie: sid=NEW-COOKIE-NOT-KNOWN-TO-PARENT", file=sys.stderr)
+            print(
+                "ERROR cookies: [{{'name':'SESSDATA','value':'NEW-STORAGE-COOKIE'}}]",
+                file=sys.stderr,
+            )
+            print("ERROR content=a creator caption says login error", file=sys.stderr)
+            print("ERROR <html><body>login error in remote DOM</body></html>", file=sys.stderr)
+            print(
+                "2026-09-06 15:00:00 MediaCrawler ERROR (login.py:99) - Playwright browser login failed",
+                file=sys.stderr,
+            )
+            raise RuntimeError("output diagnostic failure")
         if selected == "system_exit":
             raise SystemExit(0)
         if selected == "system_exit_private":
@@ -621,6 +642,70 @@ def test_child_diagnostic_type_survives_process_frame_without_sensitive_text_or_
     account_lock.release()
     captured = capfd.readouterr()
     assert "PRIVATE-UPSTREAM-DIAGNOSTIC" not in captured.out + captured.err + repr(result)
+
+
+def test_qr_login_output_uses_private_slices_without_corrupting_framed_diagnostics(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    checkout = _write_fake_checkout(tmp_path / "upstream")
+    (checkout / "mode.txt").write_text("output_diagnostic", encoding="utf-8")
+    state = tmp_path / "state"
+    runtime = tmp_path / "runtime"
+    monkeypatch.setenv("MEDIA_SYNC_STATE_DIR", str(state))
+    diagnostics: list[dict[str, object]] = []
+    operation_id = "11111111-1111-4111-8111-111111111111"
+    correlation_id = "22222222-2222-4222-8222-222222222222"
+    login_session_id = "33333333-3333-4333-8333-333333333333"
+    forged_operation_id = "44444444-4444-4444-8444-444444444444"
+    monkeypatch.setenv(
+        runner_module.PROCESS_OUTPUT_CONTEXT_ENV,
+        '{"schema_version":1,"operation_id":"' + forged_operation_id + '"}',
+    )
+
+    with event_context(clear=True, operation_id=operation_id, correlation_id=correlation_id):
+        result = _runner(checkout, runtime).run(
+            _request(Platform.DY, MediaCrawlerLoginMode.INTERACTIVE_QR),
+            on_account_locked=lambda: login_session_id,
+            diagnostic_hook=lambda event: diagnostics.append(dict(event)),
+        )
+
+    assert result.status is MediaCrawlerLoginStatus.FAILED
+    assert diagnostics
+    assert all(event["event_code"] != "login_diagnostics_degraded" for event in diagnostics)
+    reader = LogStore(state / "logs")
+    try:
+        events = reader.query(operation_id=operation_id, login_session_id=login_session_id)["events"]
+    finally:
+        reader.close()
+    lines = [event for event in events if event["event_code"] == "process_output"]
+    assert [event["message"] for event in lines] == [
+        "[REDACTED]",
+        "[REDACTED]",
+        "ERROR Playwright browser login failed",
+    ]
+    assert all(event["level"] == "error" for event in lines)
+    rendered = json.dumps(events)
+    assert "QR-SECRET-MUST-STAY-IN-BROWSER" not in rendered
+    assert "SIGNED-QR-SECRET" not in rendered
+    assert "NEW-COOKIE-NOT-KNOWN-TO-PARENT" not in rendered
+    assert "NEW-STORAGE-COOKIE" not in rendered
+    assert "creator caption" not in rendered
+    assert "remote DOM" not in rendered
+    assert str(runtime) not in rendered
+    assert forged_operation_id not in rendered
+    assert all(event["operation_id"] == operation_id for event in events)
+    assert all(event["correlation_id"] == correlation_id for event in events)
+    assert all(event["login_session_id"] == login_session_id for event in events)
+    assert all(event["account_id"] == str(ACCOUNT_ID) and event["platform"] == "dy" for event in events)
+    assert any(
+        event["event_code"] == "process_output_dropped"
+        and event["stream"] == "upstream"
+        and event["error_type"] == "policy_filtered"
+        and event["count"] == 3
+        for event in events
+    )
+    assert any(event["event_code"] == "process_output_summary" and event["stream"] == "upstream" for event in events)
 
 
 def test_hook_runs_once_with_lock_held_and_exception_prevents_spawn(

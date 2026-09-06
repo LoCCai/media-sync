@@ -32,7 +32,7 @@ from media_sync.infrastructure.db.models import (
 )
 
 NOW = datetime(2026, 9, 4, 1, 2, 3, tzinfo=UTC)
-REVISION = "0012_library_output_policy"
+REVISION = "0013_exact_subscription_delivery"
 
 
 def _database_url(path: Path) -> str:
@@ -180,6 +180,7 @@ def test_bundle_has_only_closed_keys_and_aggregate_counts(database: Database) ->
         "media-server-scan": 0,
         "pipeline-run": 2,
         "scheduler-run": 0,
+        "subscription-delivery": 0,
     }
     assert operations["recent_error_counts"] == [
         {"error_code": "pipeline_run_failed", "count": 2},

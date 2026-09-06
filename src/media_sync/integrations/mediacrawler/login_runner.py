@@ -30,6 +30,13 @@ if __name__ == "__main__" and (__package__ is None or __package__ == ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from media_sync.domain import Platform
+from media_sync.infrastructure.observability.output_capture import (
+    PROCESS_OUTPUT_CONTEXT_ENV,
+    capture_current_process_output,
+    decode_process_output_context,
+    encode_process_output_context,
+    log_environment_for_child,
+)
 from media_sync.integrations.mediacrawler.browser_environment import browser_child_environment
 from media_sync.integrations.mediacrawler.browser_policy import BrowserLaunchFailure, install_bundled_chromium_policy
 from media_sync.integrations.mediacrawler.checkout import (
@@ -172,7 +179,7 @@ class MediaCrawlerLoginProcessRunner:
         self,
         request: MediaCrawlerLoginRequest,
         *,
-        on_account_locked: Callable[[], None] | None = None,
+        on_account_locked: Callable[[], str | None] | None = None,
         cancellation: threading.Event | None = None,
         diagnostic_hook: DiagnosticHook | None = None,
     ) -> MediaCrawlerLoginResult:
@@ -186,6 +193,11 @@ class MediaCrawlerLoginProcessRunner:
             raise TypeError("cancellation must be a threading.Event")
         if diagnostic_hook is not None and not callable(diagnostic_hook):
             raise TypeError("diagnostic_hook must be callable")
+        from media_sync.application.observability import event_identities
+
+        output_event_context = {
+            key: value for key, value in event_identities().items() if key in {"operation_id", "correlation_id"}
+        }
         deliver(diagnostic_hook, event("preflight", "prepare", "started", source_frame="parent"))
         if not self._enabled or not self._license_acknowledged:
             deliver(
@@ -236,7 +248,13 @@ class MediaCrawlerLoginProcessRunner:
                 result = MediaCrawlerLoginResult(MediaCrawlerLoginStatus.EXPIRED, checkout.commit)
             else:
                 if on_account_locked is not None:
-                    on_account_locked()
+                    candidate_session_id = on_account_locked()
+                    if type(candidate_session_id) is str:
+                        try:
+                            if str(UUID(candidate_session_id)) == candidate_session_id:
+                                output_event_context["login_session_id"] = candidate_session_id
+                        except (AttributeError, ValueError):
+                            pass
                 deliver(diagnostic_hook, event("account_lock", "acquire", "succeeded", source_frame="parent"))
                 if cancellation is not None and cancellation.is_set():
                     result = MediaCrawlerLoginResult(MediaCrawlerLoginStatus.CANCELLED, checkout.commit)
@@ -250,6 +268,7 @@ class MediaCrawlerLoginProcessRunner:
                         account_lock.descriptor,
                         cancellation,
                         checkout.commit,
+                        output_event_context,
                         diagnostic_hook,
                     )
         finally:
@@ -289,6 +308,7 @@ class MediaCrawlerLoginProcessRunner:
         lock_descriptor: int,
         cancellation: threading.Event | None,
         upstream_sha: str,
+        output_event_context: Mapping[str, object] | None = None,
         diagnostic_hook: DiagnosticHook | None = None,
     ) -> MediaCrawlerLoginResult:
         command = (str(executable), "-I", "-u", "-B", str(Path(__file__).resolve()), "--child")
@@ -301,12 +321,19 @@ class MediaCrawlerLoginProcessRunner:
                 "PYTHONUNBUFFERED": "1",
             }
         )
+        safe_log_environment = log_environment_for_child()
+        if safe_log_environment is not None:
+            environment.update(safe_log_environment)
+            encoded_context = encode_process_output_context(output_event_context or {})
+            if encoded_context is not None:
+                environment[PROCESS_OUTPUT_CONTEXT_ENV] = encoded_context
         try:
             process = _spawn_login_child(command, checkout_root, environment, lock_descriptor)
         except OSError:
             return MediaCrawlerLoginResult(MediaCrawlerLoginStatus.START_FAILED, upstream_sha)
         finally:
             environment.pop(_CONTROL_ENV, None)
+            environment.pop(PROCESS_OUTPUT_CONTEXT_ENV, None)
 
         windows_job = _WindowsJob.attach(process)
         diagnostics = EventReader(process.stderr)
@@ -623,7 +650,10 @@ def _child_text(value: object, maximum: int) -> str:
 
 
 @contextlib.contextmanager
-def _silenced_upstream() -> Iterator[None]:
+def _silenced_upstream(capture_output: bool = False) -> Iterator[None]:
+    if capture_output:
+        yield
+        return
     stdout_copy = os.dup(1)
     stderr_copy = os.dup(2)
     with open(os.devnull, "w", encoding="utf-8") as sink:
@@ -1118,6 +1148,7 @@ def _read_login_request() -> bytes:
 def _child_entry() -> int:
     global _CHILD_OBSERVER
     control_version = os.environ.pop(_CONTROL_ENV, None)
+    raw_output_context = os.environ.pop(PROCESS_OUTPUT_CONTEXT_ENV, None)
     payload = b""
     cancellation: threading.Event | None = None
     parent_lost: threading.Event | None = None
@@ -1134,6 +1165,8 @@ def _child_entry() -> int:
             raise _ChildConfigurationError
         request = _ChildRequest.load(payload)
         payload = b""
+        output_event_context = decode_process_output_context(raw_output_context)
+        raw_output_context = None
 
         cancellation = threading.Event()
         parent_lost = threading.Event()
@@ -1172,12 +1205,29 @@ def _child_entry() -> int:
             diagnostic_writer.emit if diagnostic_writer is not None else None,
             error_classifier=_login_error_type,
         )
-        with _silenced_upstream():
+        private_paths = (
+            str(request.paths.account_root),
+            str(request.paths.profile_root),
+            str(request.paths.job_root),
+            str(request.paths.output_root),
+        )
+        with (
+            capture_current_process_output(
+                context={
+                    **output_event_context,
+                    "account_id": request.paths.account_root.name,
+                    "platform": request.platform.value,
+                },
+                known_secrets=private_paths,
+            ) as capture_output,
+            _silenced_upstream(capture_output),
+        ):
             status = asyncio.run(_execute_controlled_child(request, cancellation))
     except BaseException:
         status = MediaCrawlerLoginStatus.CONFIGURATION_INVALID
     finally:
         payload = b""
+        raw_output_context = None
         _CHILD_OBSERVER = None
         if diagnostic_writer is not None:
             diagnostic_writer.close()

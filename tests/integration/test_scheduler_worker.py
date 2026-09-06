@@ -14,8 +14,10 @@ from uuid import UUID, uuid4
 import pytest
 from sqlalchemy import func, select
 from sqlalchemy.exc import OperationalError
+from sqlalchemy.orm import Session
 
 from media_sync.adapters.fake import FakePlatformAdapter
+from media_sync.application.operations import DurableSubjectRef
 from media_sync.domain import (
     AccountRef,
     AdapterError,
@@ -569,6 +571,79 @@ async def test_waiting_user_is_dormant_until_explicit_resume(database: Database)
     assert resumed.status == "queued"
     assert succeeded.status == "succeeded"
     assert succeeded.attempt == 2
+
+
+@pytest.mark.asyncio
+async def test_exact_worker_runs_only_target_and_binds_claim_before_handler(database: Database) -> None:
+    other = _seed(database, remote_id="exact-other")
+    target = _seed(database, remote_id="creator-001")
+    clock = _Clock()
+    scheduler = DurableSchedulerService(database, clock=clock)
+    cycles = {cycle.subscription_id: cycle for cycle in scheduler.tick(limit=2).cycles}
+    with database.session() as session:
+        row = session.get(Job, cycles[other].job_id)
+        assert row is not None
+        row.priority = 100
+    subjects: list[str] = []
+
+    def bind(session: Session, subject: DurableSubjectRef) -> None:
+        assert subject.subject_id == cycles[target].job_id
+        row = session.get(Job, subject.subject_id)
+        assert row is not None and row.status == "claimed"
+        subjects.append(subject.subject_id)
+
+    worker = SubscriptionWorker(
+        database, SubscriptionHandlerRegistry({"fake": FakeSubscriptionHandler(database)}), clock=clock
+    )
+    result = await worker.run_exact(
+        cycles[target].job_id, expected_subscription_id=target, worker_id="exact-worker", subject_hook=bind
+    )
+    assert (result.status, result.job_id, result.subscription_id) == ("succeeded", cycles[target].job_id, target)
+    assert result.run_id is not None and subjects == [result.job_id]
+    with database.session() as session:
+        row = session.get(Job, cycles[other].job_id)
+        assert row is not None and (row.status, row.attempts) == ("queued", 0)
+        run = session.get(SyncRun, result.run_id)
+        assert run is not None and run.subscription_id == target and run.status == "succeeded"
+
+
+@pytest.mark.asyncio
+async def test_exact_worker_subject_hook_failure_rolls_back_claim(database: Database) -> None:
+    target = _seed(database, remote_id="exact-hook-rollback")
+    scheduler = DurableSchedulerService(database, clock=_Clock())
+    cycle = scheduler.materialize_one(target, expected_schedule_revision=0)
+
+    def reject(_session: Session, _subject: DurableSubjectRef) -> None:
+        raise RuntimeError("subject_bind_failed")
+
+    worker = SubscriptionWorker(database, SubscriptionHandlerRegistry({"fake": _SuccessHandler()}), clock=_Clock())
+    with pytest.raises(RuntimeError, match="subject_bind_failed"):
+        await worker.run_exact(
+            cycle.job_id, expected_subscription_id=target, worker_id="exact-worker", subject_hook=reject
+        )
+    with database.session() as session:
+        row = session.get(Job, cycle.job_id)
+        assert row is not None and (row.status, row.attempts, row.lease_token) == ("queued", 0, None)
+        assert list(session.scalars(select(SyncRun))) == []
+
+
+@pytest.mark.asyncio
+async def test_exact_worker_idle_does_not_run_another_subscription(database: Database) -> None:
+    target = _seed(database, remote_id="exact-not-ready")
+    other = _seed(database, remote_id="exact-still-ready")
+    scheduler = DurableSchedulerService(database, clock=_Clock())
+    cycles = {cycle.subscription_id: cycle for cycle in scheduler.tick(limit=2).cycles}
+    with database.session() as session:
+        row = session.get(Job, cycles[target].job_id)
+        assert row is not None
+        row.available_at = NOW + timedelta(minutes=1)
+    worker = SubscriptionWorker(database, SubscriptionHandlerRegistry({"fake": _SuccessHandler()}), clock=_Clock())
+    result = await worker.run_exact(cycles[target].job_id, expected_subscription_id=target, worker_id="exact-worker")
+    assert result.status == "idle" and result.job_id is None
+    with database.session() as session:
+        rows = list(session.scalars(select(Job)))
+        assert len(rows) == 2 and all(row.status == "queued" and row.attempts == 0 for row in rows)
+        assert other in {row.subscription_id for row in rows}
 
 
 @pytest.mark.asyncio

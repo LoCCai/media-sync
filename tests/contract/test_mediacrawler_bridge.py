@@ -19,6 +19,7 @@ from uuid import UUID, uuid4
 import pytest
 
 from media_sync.application.mediacrawler import load_normalized_output
+from media_sync.application.observability import event_context
 from media_sync.domain import LoginMethod, Platform
 from media_sync.integrations.mediacrawler.bridge import (
     LEGACY_MANIFEST_SCHEMA_VERSION,
@@ -226,6 +227,11 @@ async def main():
         path.write_bytes(b'{"partial":')
         return
     if "mode-raise" in creator:
+        print("2026-09-06 15:00:00 MediaCrawler ERROR (client.py:230) - upstream browser login failed")
+        os.write(
+            2,
+            b"2026-09-06 15:00:00 MediaCrawler WARNING (client.py:231) - upstream retry exhausted\n",
+        )
         _append(path, {"sentinel": config.COOKIES})
         raise RuntimeError(f"cookie={config.COOKIES} creator={creator}")
     if "mode-bytes" in creator:
@@ -1303,6 +1309,57 @@ def test_child_exception_and_native_output_are_fixed_and_redacted(fake_project: 
     assert completed.stderr == ""
     assert COOKIE_SENTINEL not in combined
     assert CREATOR_SENTINEL not in combined
+
+
+def test_supervised_capture_preserves_redacted_diagnostic_lines_and_exact_scope(
+    fake_project: FakeProject,
+    tmp_path: Path,
+) -> None:
+    secret = SecretValue(COOKIE_SENTINEL + ",")
+    spec = _bridge().prepare(
+        _request(
+            fake_project,
+            tmp_path / "captured",
+            creator="mode-raise-login-error",
+            login_method=LoginMethod.COOKIE,
+            cookie=secret,
+        )
+    )
+    events: list[dict[str, object]] = []
+    operation_id = str(uuid4())
+    correlation_id = str(uuid4())
+    with event_context(
+        clear=True,
+        operation_id=operation_id,
+        correlation_id=correlation_id,
+        job_id=str(uuid4()),
+        run_id=str(uuid4()),
+        subscription_id=str(uuid4()),
+    ):
+        result = MediaCrawlerProcessRunner(output_event_sink=lambda event: events.append(dict(event))).run(spec)
+
+    assert result.status is MediaCrawlerProcessStatus.UPSTREAM_FAILED
+    lines = [event for event in events if event["event_code"] == "process_output"]
+    assert len(lines) == 2, events
+    assert {event["message"] for event in lines} == {
+        "ERROR upstream browser login failed",
+        "WARNING upstream retry exhausted",
+    }
+    assert all(event["stream"] == "upstream" and event["module"] == "crawler" for event in lines)
+    assert all(event["account_id"] == str(spec.manifest.account_id) for event in events)
+    assert all(event["subscription_id"] == str(spec.manifest.subscription_id) for event in events)
+    assert all(event["job_id"] == str(spec.manifest.job_id) for event in events)
+    assert all(event["run_id"] == str(spec.manifest.sync_run_id) for event in events)
+    assert all(event["operation_id"] == operation_id for event in events)
+    assert all(event["correlation_id"] == correlation_id for event in events)
+    assert COOKIE_SENTINEL not in json.dumps(events)
+    assert all("message" not in event for event in events if event["stream"] == "stdout_protocol")
+    assert any(
+        event["event_code"] == "process_output_dropped"
+        and event["error_type"] == "policy_filtered"
+        and event["count"] == 2
+        for event in events
+    )
 
 
 def test_account_profile_lock_serializes_same_account(

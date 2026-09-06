@@ -212,6 +212,8 @@ class OperationSnapshot:
 
     @property
     def allowed_actions(self) -> tuple[str, ...]:
+        if self.kind == "subscription-delivery":
+            return ()
         if self.state in ACTIVE_OPERATION_STATES and self.cancel_requested_at is None:
             return ("cancel",)
         return ()
@@ -752,6 +754,8 @@ class OperationRepository:
         observed = self.session.get(Operation, normalized_id)
         if observed is None:
             raise NotFoundError("operation not found")
+        if observed.kind == "subscription-delivery":
+            raise OperationStateConflictError("subscription_delivery_cancel_unsupported", normalized_id)
         if observed.state in TERMINAL_OPERATION_STATES or observed.cancel_requested_at is not None:
             return self._snapshot(observed)
         if observed.revision != revision:

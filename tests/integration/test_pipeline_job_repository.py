@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from threading import Barrier, Event, current_thread
 from typing import Literal
+from uuid import uuid4
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import event, select
 
 from media_sync.infrastructure.db import (
     AccountRepository,
@@ -19,21 +22,357 @@ from media_sync.infrastructure.db import (
     SubscriptionRepository,
     SyncRunRepository,
 )
-from media_sync.infrastructure.db.models import Job
+from media_sync.infrastructure.db.models import Job, Subscription
 from media_sync.scheduler.pipeline import (
     PIPELINE_COORDINATOR_INVALID_ERROR_CODE,
     PIPELINE_COORDINATOR_STALE_ERROR_CODE,
     PIPELINE_MAX_ATTEMPTS,
     PIPELINE_PAYLOAD_SCHEMA_VERSION,
     PIPELINE_SUBSCRIPTION_JOB_TYPE,
+    PipelineExactConflictError,
     PipelineJobRepository,
     PipelineJobRepositoryError,
     pipeline_subscription_natural_key,
 )
 from media_sync.scheduler.policy import RetryPolicy
-from media_sync.scheduler.repository import SYNC_SUBSCRIPTION_JOB_TYPE, SchedulerRepository
+from media_sync.scheduler.repository import (
+    SYNC_SUBSCRIPTION_JOB_TYPE,
+    SchedulerExactConflictError,
+    SchedulerRepository,
+)
 
 NOW = datetime(2026, 8, 31, 1, 30, tzinfo=UTC)
+
+
+def test_exact_pipeline_resolves_and_claims_only_the_succeeded_source(database: Database) -> None:
+    other_source, other_job, other_subscription, _ = _succeeded_sync(database, remote_id="exact-other")
+    source, job_id, subscription, run_id = _succeeded_sync(
+        database, remote_id="exact-target", now=NOW + timedelta(seconds=10)
+    )
+    now = NOW + timedelta(seconds=12)
+    with database.session() as session:
+        other = session.get(Job, other_job)
+        assert other is not None
+        other.priority = 100
+        session.flush()
+        repository = PipelineJobRepository(session)
+        target = repository.get_for_succeeded_sync(source, run_id=run_id, expected_subscription_id=subscription)
+        assert target is not None and target.job_id == job_id
+        claim = repository.claim_exact(
+            job_id,
+            expected_subscription_id=subscription,
+            expected_sync_job_id=source,
+            expected_run_id=run_id,
+            worker_id="exact-pipeline",
+            now=now,
+        )
+        assert claim is not None and (claim.job_id, claim.sync_job_id, claim.run_id) == (job_id, source, run_id)
+        assert (other.status, other.attempts) == ("queued", 0)
+        assert other_source != source and other_subscription != subscription
+
+
+@pytest.mark.parametrize(
+    "mismatch", ["subscription", "source", "run", "foreign_type", "removed", "paused", "stale_source"]
+)
+def test_exact_pipeline_mismatch_never_consumes_a_job(database: Database, mismatch: str) -> None:
+
+    source, job_id, subscription, run_id = _succeeded_sync(database, remote_id="mismatch")
+    with database.session() as session:
+        repository = PipelineJobRepository(session)
+        observed = session.get(Job, job_id)
+        assert observed is not None
+        exact_job = job_id
+        exact_subscription, exact_source, exact_run = subscription, source, run_id
+        if mismatch == "subscription":
+            exact_subscription = str(uuid4())
+        elif mismatch == "source":
+            exact_source = str(uuid4())
+        elif mismatch == "run":
+            exact_run = str(uuid4())
+        elif mismatch == "foreign_type":
+            exact_job = source
+        elif mismatch in {"removed", "paused"}:
+            row = session.get(Subscription, subscription)
+            assert row is not None
+            if mismatch == "removed":
+                row.deleted_at = NOW
+            else:
+                row.enabled = False
+        else:
+            source_job = session.get(Job, source)
+            assert source_job is not None
+            source_job.run_id = None
+        session.flush()
+        with pytest.raises(PipelineJobRepositoryError):
+            repository.claim_exact(
+                exact_job,
+                expected_subscription_id=exact_subscription,
+                expected_sync_job_id=exact_source,
+                expected_run_id=exact_run,
+                worker_id="exact",
+                now=NOW + timedelta(seconds=2),
+            )
+        session.refresh(observed)
+        assert (observed.status, observed.attempts, observed.lease_token) == ("queued", 0, None)
+
+
+@pytest.mark.parametrize("state", ["retry_wait", "claimed", "succeeded"])
+def test_exact_pipeline_does_not_accelerate_retry_or_steal_lease(database: Database, state: str) -> None:
+    source, job_id, subscription, run_id = _succeeded_sync(database, remote_id="blocked")
+    now = NOW + timedelta(seconds=2)
+    with database.session() as session:
+        jobs = JobRepository(session)
+        observed = session.get(Job, job_id)
+        assert observed is not None
+        if state == "claimed":
+            assert jobs.claim(job_id, worker_id="supervisor", now=now)
+        else:
+            observed.status = state
+            observed.available_at = now + timedelta(hours=1)
+        session.flush()
+        attempts, token = observed.attempts, observed.lease_token
+        assert (
+            PipelineJobRepository(session).claim_exact(
+                job_id,
+                expected_subscription_id=subscription,
+                expected_sync_job_id=source,
+                expected_run_id=run_id,
+                worker_id="exact",
+                now=now,
+            )
+            is None
+        )
+        session.refresh(observed)
+        assert (observed.status, observed.attempts, observed.lease_token) == (state, attempts, token)
+
+
+def test_exact_pipeline_lookup_rejects_wrong_subscription(database: Database) -> None:
+    source, _job, _subscription, run = _succeeded_sync(database, remote_id="lookup")
+    with database.session() as session, pytest.raises(PipelineExactConflictError, match="subscription_delivery_stale"):
+        PipelineJobRepository(session).get_for_succeeded_sync(source, run_id=run, expected_subscription_id=str(uuid4()))
+
+
+def test_exact_pipeline_duplicate_claims_have_one_owner(database: Database) -> None:
+    source, job_id, subscription, run_id = _succeeded_sync(database, remote_id="pipeline-race")
+    barrier = Barrier(2)
+
+    def claim(worker: str) -> str | None:
+        barrier.wait(timeout=10)
+        with database.session() as session:
+            result = PipelineJobRepository(session).claim_exact(
+                job_id,
+                expected_subscription_id=subscription,
+                expected_sync_job_id=source,
+                expected_run_id=run_id,
+                worker_id=worker,
+                now=NOW + timedelta(seconds=2),
+            )
+            return result.job_id if result else None
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        assert sorted(pool.map(claim, ["pipeline-a", "pipeline-b"]), key=str) == sorted([job_id, None], key=str)
+    with database.session() as session:
+        row = session.get(Job, job_id)
+        assert row is not None and row.attempts == 1
+
+
+def test_pipeline_enqueue_serializes_exact_materialization_pipeline_fence(database: Database) -> None:
+    source, old_coordinator, subscription, run_id = _succeeded_sync(database, remote_id="enqueue-fence-race")
+    with database.session() as session:
+        coordinator = session.get(Job, old_coordinator)
+        assert coordinator is not None
+        session.delete(coordinator)
+
+    pipeline_at_subscription_lock = Event()
+    release_pipeline = Event()
+    materialize_writer_started = Event()
+
+    def observe_sql(
+        connection: object,
+        cursor: object,
+        statement: str,
+        parameters: object,
+        context: object,
+        executemany: bool,
+    ) -> None:
+        del connection, cursor, parameters, context, executemany
+        sql = statement.lstrip().upper()
+        if (
+            current_thread().name.startswith("pipeline-enqueue")
+            and sql.startswith("SELECT")
+            and "FROM SUBSCRIPTIONS" in sql
+        ):
+            pipeline_at_subscription_lock.set()
+            if not release_pipeline.wait(timeout=10):
+                raise AssertionError("timed out waiting to release pipeline enqueue")
+        if current_thread().name.startswith("exact-materialize") and sql.startswith("UPDATE JOBS"):
+            materialize_writer_started.set()
+
+    def enqueue_pipeline() -> str:
+        with database.session() as session:
+            return PipelineJobRepository(session).enqueue_succeeded_sync(source, run_id=run_id, now=NOW).job_id
+
+    def materialize_exact() -> str:
+        with database.session() as session:
+            try:
+                SchedulerRepository(session).materialize_one(
+                    subscription,
+                    expected_schedule_revision=1,
+                    now=NOW + timedelta(seconds=2),
+                )
+            except SchedulerExactConflictError as exc:
+                return exc.code
+            return "materialized"
+
+    event.listen(database.engine, "before_cursor_execute", observe_sql)
+    try:
+        with (
+            ThreadPoolExecutor(max_workers=1, thread_name_prefix="pipeline-enqueue") as pipeline_executor,
+            ThreadPoolExecutor(max_workers=1, thread_name_prefix="exact-materialize") as scheduler_executor,
+        ):
+            pipeline_future = pipeline_executor.submit(enqueue_pipeline)
+            assert pipeline_at_subscription_lock.wait(timeout=10)
+            scheduler_future = scheduler_executor.submit(materialize_exact)
+            assert materialize_writer_started.wait(timeout=10)
+            assert not scheduler_future.done()
+            release_pipeline.set()
+            coordinator_id = pipeline_future.result(timeout=10)
+            assert scheduler_future.result(timeout=10) == "subscription_delivery_busy"
+    finally:
+        release_pipeline.set()
+        event.remove(database.engine, "before_cursor_execute", observe_sql)
+
+    with database.session() as session:
+        pipelines = list(
+            session.scalars(
+                select(Job).where(
+                    Job.job_type == PIPELINE_SUBSCRIPTION_JOB_TYPE,
+                    Job.subscription_id == subscription,
+                )
+            )
+        )
+        sync_jobs = list(
+            session.scalars(
+                select(Job).where(
+                    Job.job_type == SYNC_SUBSCRIPTION_JOB_TYPE,
+                    Job.subscription_id == subscription,
+                )
+            )
+        )
+        assert len(pipelines) == 1 and pipelines[0].id == coordinator_id
+        assert len(sync_jobs) == 1 and sync_jobs[0].id == source and sync_jobs[0].status == "succeeded"
+
+
+def test_exact_materialization_serializes_pipeline_enqueue_supersession_fence(database: Database) -> None:
+    source, old_coordinator, subscription, run_id = _succeeded_sync(
+        database, remote_id="materialize-first-enqueue-fence"
+    )
+    with database.session() as session:
+        coordinator = session.get(Job, old_coordinator)
+        assert coordinator is not None
+        session.delete(coordinator)
+
+    exact_at_subscription_lock = Event()
+    release_exact = Event()
+    pipeline_writer_started = Event()
+
+    def observe_sql(
+        connection: object,
+        cursor: object,
+        statement: str,
+        parameters: object,
+        context: object,
+        executemany: bool,
+    ) -> None:
+        del connection, cursor, parameters, context, executemany
+        sql = statement.lstrip().upper()
+        if (
+            current_thread().name.startswith("exact-materialize-first")
+            and sql.startswith("SELECT")
+            and "FROM SUBSCRIPTIONS" in sql
+        ):
+            exact_at_subscription_lock.set()
+            if not release_exact.wait(timeout=10):
+                raise AssertionError("timed out waiting to release exact materialization")
+        if current_thread().name.startswith("pipeline-enqueue-second") and sql.startswith("UPDATE JOBS"):
+            pipeline_writer_started.set()
+
+    def materialize_exact() -> str:
+        with database.session() as session:
+            return (
+                SchedulerRepository(session)
+                .materialize_one(
+                    subscription,
+                    expected_schedule_revision=1,
+                    now=NOW + timedelta(seconds=2),
+                )
+                .job_id
+            )
+
+    def enqueue_pipeline() -> str:
+        with database.session() as session:
+            try:
+                PipelineJobRepository(session).enqueue_succeeded_sync(source, run_id=run_id, now=NOW)
+            except PipelineJobRepositoryError as exc:
+                return str(exc)
+            return "enqueued"
+
+    event.listen(database.engine, "before_cursor_execute", observe_sql)
+    try:
+        with (
+            ThreadPoolExecutor(max_workers=1, thread_name_prefix="exact-materialize-first") as scheduler_executor,
+            ThreadPoolExecutor(max_workers=1, thread_name_prefix="pipeline-enqueue-second") as pipeline_executor,
+        ):
+            scheduler_future = scheduler_executor.submit(materialize_exact)
+            assert exact_at_subscription_lock.wait(timeout=10)
+            pipeline_future = pipeline_executor.submit(enqueue_pipeline)
+            assert pipeline_writer_started.wait(timeout=10)
+            assert not pipeline_future.done()
+            release_exact.set()
+            new_sync_id = scheduler_future.result(timeout=10)
+            assert pipeline_future.result(timeout=10) == "pipeline source was superseded by an active sync"
+    finally:
+        release_exact.set()
+        event.remove(database.engine, "before_cursor_execute", observe_sql)
+
+    with database.session() as session:
+        pipelines = list(
+            session.scalars(
+                select(Job).where(
+                    Job.job_type == PIPELINE_SUBSCRIPTION_JOB_TYPE,
+                    Job.subscription_id == subscription,
+                )
+            )
+        )
+        sync_jobs = list(
+            session.scalars(
+                select(Job).where(
+                    Job.job_type == SYNC_SUBSCRIPTION_JOB_TYPE,
+                    Job.subscription_id == subscription,
+                )
+            )
+        )
+        assert pipelines == []
+        assert {(job.id, job.status) for job in sync_jobs} == {
+            (source, "succeeded"),
+            (new_sync_id, "queued"),
+        }
+
+
+def test_exact_pipeline_lookup_does_not_create_missing_coordinator(database: Database) -> None:
+    source, job_id, subscription, run_id = _succeeded_sync(database, remote_id="pipeline-missing")
+    with database.session() as session:
+        row = session.get(Job, job_id)
+        assert row is not None
+        session.delete(row)
+        session.flush()
+        assert (
+            PipelineJobRepository(session).get_for_succeeded_sync(
+                source, run_id=run_id, expected_subscription_id=subscription
+            )
+            is None
+        )
+        assert list(session.scalars(select(Job).where(Job.job_type == PIPELINE_SUBSCRIPTION_JOB_TYPE))) == []
 
 
 @pytest.fixture

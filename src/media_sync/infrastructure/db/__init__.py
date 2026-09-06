@@ -51,6 +51,7 @@ from .models import (
     RunEvent,
     SchedulerLane,
     Subscription,
+    SubscriptionScanProgress,
     SyncRun,
 )
 from .operation_repository import (
@@ -192,6 +193,7 @@ __all__ = [
     "Subscription",
     "SubscriptionRemovalError",
     "SubscriptionRepository",
+    "SubscriptionScanProgress",
     "SyncRun",
     "SyncRunRepository",
     "UTCDateTime",

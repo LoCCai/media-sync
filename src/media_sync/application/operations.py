@@ -36,8 +36,10 @@ from media_sync.infrastructure.db import (
     OperationStateConflictError,
     OperationSubjectInput,
     OperationSubjectSnapshot,
+    RepositoryError,
 )
 from media_sync.infrastructure.db.database import SQLITE_IMMEDIATE_OPTION
+from media_sync.infrastructure.db.models import ACTIVE_SYNC_JOB_STATUSES
 
 from .observability import EventSink, elapsed_ms, emit_event, event_context
 from .operation_payloads import (
@@ -66,6 +68,7 @@ _KIND_TARGET_TYPES: Mapping[str, str | None] = {
     "creator-profile": "account",
     "account-login": "account",
     "asset-download": "asset",
+    "subscription-delivery": "subscription",
     "scheduler-run": None,
     "pipeline-run": None,
     "emby-export": "author",
@@ -77,6 +80,7 @@ _KIND_EVENT_MODULES: Mapping[str, str] = {
     "creator-profile": "creator_profile",
     "account-login": "login",
     "asset-download": "download",
+    "subscription-delivery": "subscription_delivery",
     "scheduler-run": "scheduler",
     "pipeline-run": "pipeline",
     "emby-export": "exporter",
@@ -338,7 +342,7 @@ class OperationExecutionContext:
         return snapshot
 
     def commit_effect(self, action: Callable[[Session], _T]) -> _T:
-        """Commit a short database-only credential/profile effect under the live lease.
+        """Commit a short database-only effect under the live lease.
 
         Network, filesystem and subprocess work must finish before this call.
         The callback may be retried on a transaction conflict and must not
@@ -360,6 +364,10 @@ class _ReconciliationDecision:
     subject_type: Literal["login_session", "job"]
     subject_state: str
     summary: Mapping[str, object] = field(default_factory=dict, repr=False)
+
+
+class _OperationReconciliationDeferred(RuntimeError):
+    """An exact durable subject is still active and retains Operation ownership."""
 
 
 def operation_worker_id(operation_id: str) -> str:
@@ -670,6 +678,8 @@ class OperationCoordinator:
                     )
 
                 _snapshot, decision = self._run_write(reconcile)
+            except _OperationReconciliationDeferred:
+                continue
             except Exception:
                 counts["conflicted"] += 1
             else:
@@ -703,6 +713,8 @@ class OperationCoordinator:
                 ) -> OperationSnapshot:
                     repository = OperationRepository(session)
                     snapshot = repository.require_for_update(target_operation_id)
+                    if snapshot.kind == "subscription-delivery":
+                        return snapshot
                     if snapshot.state == "running" and snapshot.cancel_requested_at is None:
                         return repository.request_cancel(
                             target_operation_id,
@@ -711,7 +723,11 @@ class OperationCoordinator:
                         )
                     return snapshot
 
-                self._run_write(request_shutdown_cancel)
+                shutdown_snapshot = self._run_write(request_shutdown_cancel)
+                if shutdown_snapshot.kind == "subscription-delivery":
+                    # The durable chain may outlive this process. Do not turn
+                    # process shutdown into a false cancellation claim.
+                    continue
             except Exception:
                 pass
             self._observe_cancel(
@@ -757,7 +773,9 @@ class OperationCoordinator:
         context: OperationExecutionContext,
         handle: _OperationHandle,
     ) -> None:
-        if handle.cancellation.is_set():
+        if handle.cancellation.is_set() and execution.kind == "subscription-delivery":
+            intent = self._fixed_failure_intent("subscription_delivery_interrupted", retryable=True)
+        elif handle.cancellation.is_set():
             intent = self._terminal_intent(execution.kind, OperationOutcome.cancelled())
         else:
             try:
@@ -1140,7 +1158,7 @@ class OperationCoordinator:
                     update(Operation)
                     .where(
                         Operation.id == operation_id,
-                        Operation.kind.in_(("creator-profile", "account-cookie-login")),
+                        Operation.kind.in_(("creator-profile", "account-cookie-login", "subscription-delivery")),
                         Operation.state == "running",
                         Operation.lease_owner == handle.lease_owner,
                         Operation.lease_token == handle.lease_token,
@@ -1320,6 +1338,8 @@ class OperationCoordinator:
         candidate: OperationRecoveryCandidate,
         subjects: Sequence[OperationSubjectSnapshot],
     ) -> _ReconciliationDecision:
+        if candidate.kind == "subscription-delivery":
+            return self._reconcile_subscription_delivery(session, candidate, subjects)
         if candidate.kind == "media-server-scan" and candidate.target_type == "author":
             return self._reconcile_media_server_observation(session, candidate, subjects)
         if candidate.kind in {"media-server-probe", "media-server-scan"}:
@@ -1336,6 +1356,56 @@ class OperationCoordinator:
         if candidate.kind == "emby-export":
             return self._reconcile_emby(session, candidate, subjects)
         return self._interrupted("job", "incomplete")
+
+    def _reconcile_subscription_delivery(
+        self,
+        session: Session,
+        candidate: OperationRecoveryCandidate,
+        subjects: Sequence[OperationSubjectSnapshot],
+    ) -> _ReconciliationDecision:
+        from media_sync.application.subscription_delivery import build_subscription_delivery_result_in_session
+        from media_sync.scheduler.pipeline import PipelineJobRepository
+
+        if candidate.target_type != "subscription" or candidate.target_id is None:
+            return self._interrupted("job", "missing")
+        sync_jobs = [
+            job
+            for subject in subjects
+            if subject.subject_type == "job"
+            and subject.role == "execution"
+            and (job := session.get(Job, subject.subject_id)) is not None
+            and job.job_type == "sync.subscription"
+        ]
+        if len(sync_jobs) != 1:
+            return self._interrupted("job", "incomplete")
+        source = sync_jobs[0]
+        if source.status in ACTIVE_SYNC_JOB_STATUSES:
+            raise _OperationReconciliationDeferred
+        if source.status != "succeeded" or source.run_id is None:
+            return self._interrupted("job", "incomplete")
+        assert source.run_id is not None
+        try:
+            pipeline = PipelineJobRepository(session).get_for_succeeded_sync(
+                source.id, run_id=source.run_id, expected_subscription_id=candidate.target_id
+            )
+            if pipeline is not None and pipeline.status in ACTIVE_SYNC_JOB_STATUSES:
+                raise _OperationReconciliationDeferred
+            if pipeline is None or pipeline.status != "succeeded" or pipeline.receipt is None:
+                return self._interrupted("job", "incomplete")
+            result = build_subscription_delivery_result_in_session(
+                session,
+                subscription_id=candidate.target_id,
+                sync_job_id=source.id,
+                run_id=source.run_id,
+                pipeline_job_id=pipeline.job_id,
+            )
+            return _ReconciliationDecision(
+                "succeeded", None, "job", "succeeded", self._safe_result("subscription-delivery", result)
+            )
+        except _OperationReconciliationDeferred:
+            raise
+        except (RepositoryError, RuntimeError, ValueError, TypeError):
+            return self._interrupted("job", "incomplete")
 
     def _reconcile_media_server_observation(
         self,
@@ -1619,7 +1689,11 @@ class OperationCoordinator:
                             execution_options={SQLITE_IMMEDIATE_OPTION: True},  # type: ignore[misc]
                         )
                     return action(session)
-            except (OperationLeaseLostError, OperationStateConflictError):
+            except (
+                OperationLeaseLostError,
+                OperationStateConflictError,
+                _OperationReconciliationDeferred,
+            ):
                 raise
             except Exception:
                 if attempt + 1 >= _WRITE_ATTEMPTS:

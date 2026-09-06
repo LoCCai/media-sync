@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import type { Account, LoginPreflight, LoginStatus, Operation, PlatformCapability } from '$lib/types/api';
 import {
@@ -59,6 +60,39 @@ const operation = {
 } as Operation;
 
 describe('fixed login diagnostics', () => {
+  it('links the exact failed login operation to the retained log center', () => {
+    const source = readFileSync(new URL('../../routes/accounts/+page.svelte', import.meta.url), 'utf8');
+    expect(source).toContain('/logs?operation_id=');
+    expect(source).toContain('selectedLoginDiagnostic.operation_id');
+    expect(source).toContain('查看本次日志');
+  });
+
+  it('keeps the exact interrupted operation link without inventing a runner result', () => {
+    const interrupted = {
+      ...status,
+      auth_status: 'authenticating',
+      login_session_status: 'waiting_user',
+      diagnostic: {
+        operation_id: operationId,
+        operation_state: 'interrupted',
+        runner_status: null,
+        error_code: 'operation_interrupted'
+      }
+    } satisfies LoginStatus;
+
+    expect(safeLoginDiagnostic(interrupted, accountId)).toEqual(interrupted.diagnostic);
+    expect(accountLoginExplanation(interrupted, accountId)?.title).toBe('登录已中断');
+    expect(
+      safeLoginDiagnostic(
+        {
+          ...interrupted,
+          diagnostic: { ...interrupted.diagnostic, runner_status: 'failed' }
+        },
+        accountId
+      )
+    ).toBeNull();
+  });
+
   it('persists the exact latest-session explanation after JSON reload', () => {
     const restored = JSON.parse(JSON.stringify(status)) as LoginStatus;
     expect(safeLoginDiagnostic(restored, accountId)).toEqual(status.diagnostic);

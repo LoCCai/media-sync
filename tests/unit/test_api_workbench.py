@@ -384,6 +384,7 @@ def test_preview_create_and_detail_return_only_safe_subscription_summaries(tmp_p
         "watermarked_at",
         "watermark_count",
         "last_success_at",
+        "scan_progress",
     }
     for response in (listed, detail):
         assert reference not in response.text

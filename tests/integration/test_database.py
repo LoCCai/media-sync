@@ -9,7 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import Barrier
-from types import MappingProxyType
+from types import MappingProxyType, SimpleNamespace
 
 import pytest
 from alembic import command
@@ -74,10 +74,12 @@ DOMAIN_TABLES = {
     "accounts",
     "asset_refresh_sources",
     "assets",
+    "author_output_bindings",
     "authors",
     "contents",
     "export_records",
     "jobs",
+    "library_output_policy",
     "login_sessions",
     "operation_event_stream_state",
     "operation_events",
@@ -86,6 +88,7 @@ DOMAIN_TABLES = {
     "playback_evidence",
     "run_events",
     "scheduler_lanes",
+    "subscription_scan_progress",
     "subscriptions",
     "sync_runs",
 }
@@ -139,6 +142,7 @@ def test_alembic_upgrade_matches_metadata_and_downgrades(tmp_path: Path) -> None
         migrated.dispose()
     command.check(configuration)
 
+    configuration.cmd_opts = SimpleNamespace(x=["exclusive-maintenance=true"])
     command.downgrade(configuration, "base")
     downgraded = Database(database_url)
     try:

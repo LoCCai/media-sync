@@ -115,7 +115,7 @@ class MediaCrawlerLoginRunner(Protocol):
         self,
         request: MediaCrawlerLoginRequest,
         *,
-        on_account_locked: Callable[[], None] | None = None,
+        on_account_locked: Callable[[], str | None] | None = None,
         cancellation: threading.Event | None = None,
         diagnostic_hook: DiagnosticHook | None = None,
     ) -> MediaCrawlerLoginResult:

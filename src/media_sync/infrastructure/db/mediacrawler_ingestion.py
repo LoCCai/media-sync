@@ -19,6 +19,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from media_sync.domain import AssetSnapshot, AuthorSnapshot, ContentSnapshot, Platform, RunStatus, freeze_mapping
+from media_sync.integrations.mediacrawler.bilibili_multifeed import BiliMultiFeedCoverage
+from media_sync.integrations.mediacrawler.bilibili_scan import BiliScanCoverage
 from media_sync.integrations.mediacrawler.normalizers import NormalizedMediaRecord
 from media_sync.integrations.mediacrawler.subscription_policy import from_subscription_policy
 from media_sync.media.locator import AdapterRefreshLocator
@@ -40,6 +42,7 @@ from .repositories import (
     SubscriptionRepository,
     SyncRunRepository,
 )
+from .scan_progress_repository import ScanProgressRepository, validate_bili_progress_evidence
 
 DEFAULT_INGESTION_BATCH_SIZE = 100
 MAX_INGESTION_BATCH_SIZE = 1_000
@@ -369,6 +372,7 @@ class MediaCrawlerIngestionService:
         crawl_revision_before: int | None = None,
         ownership_guard: Callable[[Session], None] | None = None,
         bili_scope: str | _BiliScopeUnset | None = _BILI_SCOPE_UNSET,
+        coverage: BiliScanCoverage | BiliMultiFeedCoverage | None = None,
     ) -> MediaCrawlerIngestionResult:
         """Publish one validated upload-scan unit in exactly one transaction.
 
@@ -446,6 +450,18 @@ class MediaCrawlerIngestionService:
                     watermark_remote_ids=tuple(subscription.watermark_remote_ids),
                 )
 
+            progress = (
+                validate_bili_progress_evidence(
+                    subscription,
+                    run,
+                    coverage,
+                    input_cursor=input_cursor,
+                    next_cursor=next_cursor,
+                    records=unique_records,
+                )
+                if coverage is not None
+                else None
+            )
             if len(materialized) > subscription.max_items:
                 raise RepositoryError("bounded Bili ingestion exceeds the subscription item limit")
             dynamic_allowed = False
@@ -515,6 +531,8 @@ class MediaCrawlerIngestionService:
             run.cursor_after = after
             session.flush()
             runs.set_status(database_run_id, RunStatus.SUCCEEDED.value, expected_status=RunStatus.INGESTING.value)
+            if progress is not None:
+                ScanProgressRepository(session).publish(subscription, run, progress)
             if ownership_guard is not None:
                 ownership_guard(session)
             result = MediaCrawlerIngestionResult(

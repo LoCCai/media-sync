@@ -355,7 +355,7 @@ class MediaCrawlerQrLoginService:
                 scoped["login_session_id"] = committed_session_id
             deliver(diagnostic_hook, scoped)
 
-        def start_waiting_session() -> None:
+        def start_waiting_session() -> str:
             nonlocal observed, committed_session_id
             started_at = self._now()
             with self._database.session() as session:
@@ -375,6 +375,7 @@ class MediaCrawlerQrLoginService:
                 # best-effort terminalization simply finds no durable row.
                 observed = waiting
             committed_session_id = waiting.id
+            return waiting.id
 
         try:
             if diagnostic_hook is None:

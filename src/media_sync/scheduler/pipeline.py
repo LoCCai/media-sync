@@ -10,13 +10,14 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from typing import Literal
 from uuid import UUID
 
-from sqlalchemy import update
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from media_sync.infrastructure.db.base import utc_now
-from media_sync.infrastructure.db.models import PLATFORMS, Account, Job, Subscription, SyncRun
+from media_sync.infrastructure.db.models import ACTIVE_SYNC_JOB_STATUSES, PLATFORMS, Account, Job, Subscription, SyncRun
 from media_sync.infrastructure.db.repositories import (
     JobRepository,
     NotFoundError,
@@ -25,6 +26,7 @@ from media_sync.infrastructure.db.repositories import (
     SubscriptionRepository,
 )
 
+from .pipeline_receipt import PipelineDeliveryReceipt
 from .repository import validate_sync_subscription_job
 
 PIPELINE_SUBSCRIPTION_JOB_TYPE = "pipeline.subscription"
@@ -47,6 +49,17 @@ _STALE_COORDINATOR_MESSAGE = "pipeline coordinator no longer matches its succeed
 
 class PipelineJobRepositoryError(RepositoryError):
     """A pipeline coordinator row violated its durable closed contract."""
+
+
+class PipelineExactConflictError(PipelineJobRepositoryError):
+    """An exact pipeline target no longer matches the caller's durable source."""
+
+    def __init__(
+        self,
+        code: Literal["subscription_delivery_stale", "subscription_delivery_paused"] = "subscription_delivery_stale",
+    ) -> None:
+        self.code = code
+        super().__init__(self.code)
 
 
 def _aware_utc(value: datetime | None = None) -> datetime:
@@ -81,6 +94,7 @@ class PipelineSubscriptionPayload:
     sync_job_id: str
     subscription_id: str
     run_id: str
+    receipt: PipelineDeliveryReceipt | None = None
 
     def to_mapping(self) -> dict[str, object]:
         return {
@@ -88,6 +102,7 @@ class PipelineSubscriptionPayload:
             "sync_job_id": self.sync_job_id,
             "subscription_id": self.subscription_id,
             "run_id": self.run_id,
+            **({"result": self.receipt.to_mapping()} if self.receipt is not None else {}),
         }
 
 
@@ -107,6 +122,7 @@ class PipelineSubscriptionJob:
     available_at: datetime
     created_at: datetime
     updated_at: datetime
+    receipt: PipelineDeliveryReceipt | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -131,11 +147,27 @@ def parse_pipeline_subscription_payload(job: Job) -> PipelineSubscriptionPayload
     if job.job_type != PIPELINE_SUBSCRIPTION_JOB_TYPE:
         raise PipelineJobRepositoryError("pipeline projection rejected a foreign job type")
     payload = job.payload
-    if not isinstance(payload, Mapping) or set(payload) != _PAYLOAD_KEYS:
-        raise PipelineJobRepositoryError("pipeline.subscription payload is not closed schema v1")
+    if not isinstance(payload, Mapping):
+        raise PipelineJobRepositoryError("pipeline.subscription payload is not closed schema")
     schema_version = payload.get("schema_version")
-    if type(schema_version) is not int or schema_version != PIPELINE_PAYLOAD_SCHEMA_VERSION:
+    if type(schema_version) is not int or schema_version not in {1, 2}:
         raise PipelineJobRepositoryError("pipeline.subscription payload schema_version is unsupported")
+    if set(payload) != (_PAYLOAD_KEYS | {"result"} if schema_version == 2 else _PAYLOAD_KEYS):
+        raise PipelineJobRepositoryError("pipeline.subscription payload is not closed schema")
+    receipt = None
+    if schema_version == 2:
+        if job.status != "succeeded":
+            raise PipelineJobRepositoryError("pipeline receipt requires terminal success")
+        try:
+            receipt = PipelineDeliveryReceipt.from_mapping(payload["result"])
+        except (ValueError, TypeError):
+            raise PipelineJobRepositoryError("pipeline receipt is invalid") from None
+        if (receipt.subscription_id, receipt.account_id, receipt.platform) != (
+            job.subscription_id,
+            job.account_id,
+            job.platform,
+        ):
+            raise PipelineJobRepositoryError("pipeline receipt scope is invalid")
     try:
         sync_job_id = _uuid_text(payload.get("sync_job_id"), name="sync_job_id")
         subscription_id = _uuid_text(payload.get("subscription_id"), name="subscription_id")
@@ -151,6 +183,7 @@ def parse_pipeline_subscription_payload(job: Job) -> PipelineSubscriptionPayload
         sync_job_id=sync_job_id,
         subscription_id=subscription_id,
         run_id=run_id,
+        receipt=receipt,
     )
 
 
@@ -173,6 +206,7 @@ def _projection(job: Job) -> PipelineSubscriptionJob:
         available_at=job.available_at,
         created_at=job.created_at,
         updated_at=job.updated_at,
+        receipt=payload.receipt,
     )
 
 
@@ -182,8 +216,10 @@ class PipelineJobRepository:
     def __init__(self, session: Session) -> None:
         self.session = session
 
-    def _source_scope(self, sync_job_id: str, run_id: str) -> tuple[Job, SyncRun, Subscription, Account]:
-        source = self.session.get(Job, sync_job_id)
+    def _source_scope(
+        self, sync_job_id: str, run_id: str, *, refresh: bool = False
+    ) -> tuple[Job, SyncRun, Subscription, Account]:
+        source = self.session.get(Job, sync_job_id, populate_existing=refresh)
         if source is None:
             raise NotFoundError(f"source sync job not found: {sync_job_id}")
         if source.job_type != _SOURCE_SYNC_JOB_TYPE:
@@ -197,7 +233,7 @@ class PipelineJobRepository:
         if source.subscription_id is None or source.account_id is None or source.platform not in PLATFORMS:
             raise PipelineJobRepositoryError("pipeline source scope is incomplete")
 
-        run = self.session.get(SyncRun, run_id)
+        run = self.session.get(SyncRun, run_id, populate_existing=refresh)
         if run is None or run.status != "succeeded" or run.subscription_id != source.subscription_id:
             raise PipelineJobRepositoryError("pipeline run is not a succeeded run for the source subscription")
         try:
@@ -206,7 +242,7 @@ class PipelineJobRepository:
             raise PipelineJobRepositoryError("subscription_removed") from None
         if subscription is None or subscription.account_id != source.account_id:
             raise PipelineJobRepositoryError("pipeline source does not match the current subscription account")
-        account = self.session.get(Account, source.account_id)
+        account = self.session.get(Account, source.account_id, populate_existing=refresh)
         if account is None or account.platform != source.platform:
             raise PipelineJobRepositoryError("pipeline source does not match the current account platform")
         return source, run, subscription, account
@@ -223,16 +259,33 @@ class PipelineJobRepository:
         source_id = _uuid_text(str(sync_job_id), name="sync_job_id")
         normalized_run_id = _uuid_text(str(run_id), name="run_id")
         current = _aware_utc(now)
+        jobs = JobRepository(self.session)
+        # SQLite ignores FOR UPDATE, so reserve its writer slot before the
+        # subscription read. This matches exact scheduler materialization's
+        # writer-first/row-lock ordering and makes its pipeline fence atomic.
+        jobs._serialize_sqlite_writer()
         source, _run, _subscription, _account = self._source_scope(source_id, normalized_run_id)
         if source.subscription_id is None or source.account_id is None or source.platform is None:
             raise PipelineJobRepositoryError("pipeline source scope is incomplete")
+        superseding_sync = self.session.scalar(
+            select(Job.id)
+            .where(
+                Job.job_type == _SOURCE_SYNC_JOB_TYPE,
+                Job.subscription_id == source.subscription_id,
+                Job.id != source.id,
+                Job.status.in_(tuple(ACTIVE_SYNC_JOB_STATUSES)),
+            )
+            .limit(1)
+        )
+        if superseding_sync is not None:
+            raise PipelineJobRepositoryError("pipeline source was superseded by an active sync")
         payload = PipelineSubscriptionPayload(
             schema_version=PIPELINE_PAYLOAD_SCHEMA_VERSION,
             sync_job_id=source.id,
             subscription_id=source.subscription_id,
             run_id=normalized_run_id,
         )
-        job = JobRepository(self.session).enqueue(
+        job = jobs.enqueue(
             job_type=PIPELINE_SUBSCRIPTION_JOB_TYPE,
             natural_key=pipeline_subscription_natural_key(source.id),
             payload=payload.to_mapping(),
@@ -363,7 +416,119 @@ class PipelineJobRepository:
         job = self.session.get(Job, normalized_id)
         if job is None:
             raise NotFoundError(f"pipeline job not found: {normalized_id}")
-        return _projection(job)
+        result = _projection(job)
+        if result.receipt is not None:
+            self._validate_receipt_binding(job, result.receipt)
+        return result
+
+    def _validate_receipt_binding(self, job: Job, receipt: PipelineDeliveryReceipt) -> None:
+        payload = parse_pipeline_subscription_payload(job)
+        source, _run, subscription, account = self._source_scope(payload.sync_job_id, payload.run_id, refresh=True)
+        export = self.session.get(Job, receipt.export_job_id, populate_existing=True)
+        if (
+            job.subscription_id != source.subscription_id
+            or job.account_id != source.account_id
+            or job.platform != source.platform
+            or (receipt.subscription_id, receipt.account_id, receipt.author_id, receipt.platform)
+            != (subscription.id, account.id, subscription.author_id, account.platform)
+            or export is None
+            or export.job_type != "export.emby"
+            or export.status != "succeeded"
+            or not isinstance(export.payload, Mapping)
+            or export.payload.get("author_id") != receipt.author_id
+            or not isinstance(export.payload.get("result"), Mapping)
+            or type(export.payload["result"].get("managed_file_count")) is not int
+            or export.payload["result"]["managed_file_count"] != receipt.managed_file_count
+        ):
+            raise PipelineJobRepositoryError("pipeline receipt durable scope is invalid")
+
+    def completion_payload(self, job: Job, receipt: PipelineDeliveryReceipt) -> dict[str, object]:
+        """Validate the exact durable chain before the caller's success CAS."""
+        self._validate_receipt_binding(job, receipt)
+        current = parse_pipeline_subscription_payload(job)
+        return PipelineSubscriptionPayload(
+            2, current.sync_job_id, current.subscription_id, current.run_id, receipt
+        ).to_mapping()
+
+    def get_for_succeeded_sync(
+        self,
+        sync_job_id: str | UUID,
+        *,
+        run_id: str | UUID,
+        expected_subscription_id: str,
+    ) -> PipelineSubscriptionJob | None:
+        """Resolve only the uniquely derived coordinator; never enqueue one."""
+
+        source_id = _uuid_text(str(sync_job_id), name="sync_job_id")
+        normalized_run = _uuid_text(str(run_id), name="run_id")
+        subscription_id = _uuid_text(expected_subscription_id, name="expected_subscription_id")
+        source, _run, _subscription, _account = self._source_scope(source_id, normalized_run, refresh=True)
+        if source.subscription_id != subscription_id:
+            raise PipelineExactConflictError()
+        job = self.session.scalar(
+            select(Job)
+            .where(
+                Job.job_type == PIPELINE_SUBSCRIPTION_JOB_TYPE,
+                Job.natural_key == pipeline_subscription_natural_key(source_id),
+            )
+            .execution_options(populate_existing=True)
+        )
+        if job is None:
+            return None
+        result = _projection(job)
+        if not self._matches_source(result, source=source, run_id=normalized_run):
+            raise PipelineExactConflictError()
+        if result.receipt is not None:
+            self._validate_receipt_binding(job, result.receipt)
+        return result
+
+    def claim_exact(
+        self,
+        job_id: str | UUID,
+        *,
+        expected_subscription_id: str,
+        expected_sync_job_id: str,
+        expected_run_id: str,
+        worker_id: str,
+        lease_seconds: int = 60,
+        now: datetime | None = None,
+    ) -> PipelineSubscriptionClaim | None:
+        """Claim only the coordinator of the exact succeeded Job/Run pair."""
+
+        normalized_id = _uuid_text(str(job_id), name="job_id")
+        subscription_id = _uuid_text(expected_subscription_id, name="expected_subscription_id")
+        source_id = _uuid_text(expected_sync_job_id, name="expected_sync_job_id")
+        run_id = _uuid_text(expected_run_id, name="expected_run_id")
+        self._validate_claim_parameters(worker_id=worker_id, lease_seconds=lease_seconds, scan_limit=1)
+        current = _aware_utc(now)
+        jobs = JobRepository(self.session)
+        jobs._serialize_sqlite_writer()
+        observed = self.session.scalar(
+            select(Job).where(Job.id == normalized_id).with_for_update().execution_options(populate_existing=True)
+        )
+        if observed is None:
+            raise NotFoundError("pipeline job not found")
+        result = _projection(observed)
+        if (result.subscription_id, result.sync_job_id, result.run_id) != (subscription_id, source_id, run_id):
+            raise PipelineExactConflictError()
+        source, _run, subscription, _account = self._source_scope(source_id, run_id, refresh=True)
+        if not subscription.enabled:
+            raise PipelineExactConflictError("subscription_delivery_paused")
+        if not self._matches_source(result, source=source, run_id=run_id):
+            raise PipelineExactConflictError()
+        claimed = jobs.claim(normalized_id, worker_id=worker_id, lease_seconds=lease_seconds, now=current)
+        if claimed is None:
+            return None
+        return self._validate_claimed(claimed, jobs=jobs, worker_id=worker_id, now=current)
+
+    @staticmethod
+    def _validate_claim_parameters(*, worker_id: str, lease_seconds: int, scan_limit: int) -> None:
+        if not isinstance(worker_id, str) or not worker_id.strip() or len(worker_id) > 255:
+            raise ValueError("worker_id is invalid")
+        if type(lease_seconds) is not int or not 1 <= lease_seconds <= _MAX_LEASE_SECONDS:
+            raise ValueError("lease_seconds must be between 1 and 86400")
+        if type(scan_limit) is not int or not 1 <= scan_limit <= _MAX_CLAIM_SCAN_LIMIT:
+            raise ValueError("scan_limit must be between 1 and 1000")
 
     def claim_next(
         self,
@@ -375,12 +540,7 @@ class PipelineJobRepository:
     ) -> PipelineSubscriptionClaim | None:
         """Claim the next valid coordinator, terminalizing rejected queue rows."""
 
-        if not isinstance(worker_id, str) or not worker_id.strip() or len(worker_id) > 255:
-            raise ValueError("worker_id is invalid")
-        if type(lease_seconds) is not int or not 1 <= lease_seconds <= _MAX_LEASE_SECONDS:
-            raise ValueError("lease_seconds must be between 1 and 86400")
-        if type(scan_limit) is not int or not 1 <= scan_limit <= _MAX_CLAIM_SCAN_LIMIT:
-            raise ValueError("scan_limit must be between 1 and 1000")
+        self._validate_claim_parameters(worker_id=worker_id, lease_seconds=lease_seconds, scan_limit=scan_limit)
         current = _aware_utc(now)
         jobs = JobRepository(self.session)
         for _ in range(scan_limit):
@@ -392,65 +552,72 @@ class PipelineJobRepository:
             )
             if job is None:
                 return None
-            if job.lease_token is None or job.lease_expires_at is None:
-                raise PipelineJobRepositoryError("claimed pipeline.subscription lease is incomplete")
-
-            try:
-                result = _projection(job)
-            except PipelineJobRepositoryError:
-                jobs.fail(
-                    job.id,
-                    worker_id=worker_id,
-                    lease_token=job.lease_token,
-                    retryable=False,
-                    error_code=PIPELINE_COORDINATOR_INVALID_ERROR_CODE,
-                    error_message=_INVALID_COORDINATOR_MESSAGE,
-                    now=current,
-                )
-                continue
-
-            try:
-                source, _run, _subscription, _account = self._source_scope(result.sync_job_id, result.run_id)
-            except (NotFoundError, PipelineJobRepositoryError):
-                jobs.fail(
-                    job.id,
-                    worker_id=worker_id,
-                    lease_token=job.lease_token,
-                    retryable=False,
-                    error_code=PIPELINE_COORDINATOR_STALE_ERROR_CODE,
-                    error_message=_STALE_COORDINATOR_MESSAGE,
-                    now=current,
-                )
-                continue
-            if (
-                result.subscription_id != source.subscription_id
-                or result.account_id != source.account_id
-                or result.platform != source.platform
-            ):
-                jobs.fail(
-                    job.id,
-                    worker_id=worker_id,
-                    lease_token=job.lease_token,
-                    retryable=False,
-                    error_code=PIPELINE_COORDINATOR_STALE_ERROR_CODE,
-                    error_message=_STALE_COORDINATOR_MESSAGE,
-                    now=current,
-                )
-                continue
-
-            return PipelineSubscriptionClaim(
-                job_id=result.job_id,
-                sync_job_id=result.sync_job_id,
-                subscription_id=result.subscription_id,
-                account_id=result.account_id,
-                platform=result.platform,
-                run_id=result.run_id,
-                attempt=result.attempts,
-                max_attempts=result.max_attempts,
-                lease_token=job.lease_token,
-                lease_expires_at=job.lease_expires_at,
-            )
+            claim = self._validate_claimed(job, jobs=jobs, worker_id=worker_id, now=current)
+            if claim is not None:
+                return claim
         return None
+
+    def _validate_claimed(
+        self, job: Job, *, jobs: JobRepository, worker_id: str, now: datetime
+    ) -> PipelineSubscriptionClaim | None:
+        if job.lease_token is None or job.lease_expires_at is None:
+            raise PipelineJobRepositoryError("claimed pipeline.subscription lease is incomplete")
+
+        try:
+            result = _projection(job)
+        except PipelineJobRepositoryError:
+            jobs.fail(
+                job.id,
+                worker_id=worker_id,
+                lease_token=job.lease_token,
+                retryable=False,
+                error_code=PIPELINE_COORDINATOR_INVALID_ERROR_CODE,
+                error_message=_INVALID_COORDINATOR_MESSAGE,
+                now=now,
+            )
+            return None
+
+        try:
+            source, _run, _subscription, _account = self._source_scope(result.sync_job_id, result.run_id)
+        except (NotFoundError, PipelineJobRepositoryError):
+            jobs.fail(
+                job.id,
+                worker_id=worker_id,
+                lease_token=job.lease_token,
+                retryable=False,
+                error_code=PIPELINE_COORDINATOR_STALE_ERROR_CODE,
+                error_message=_STALE_COORDINATOR_MESSAGE,
+                now=now,
+            )
+            return None
+        if (
+            result.subscription_id != source.subscription_id
+            or result.account_id != source.account_id
+            or result.platform != source.platform
+        ):
+            jobs.fail(
+                job.id,
+                worker_id=worker_id,
+                lease_token=job.lease_token,
+                retryable=False,
+                error_code=PIPELINE_COORDINATOR_STALE_ERROR_CODE,
+                error_message=_STALE_COORDINATOR_MESSAGE,
+                now=now,
+            )
+            return None
+
+        return PipelineSubscriptionClaim(
+            job_id=result.job_id,
+            sync_job_id=result.sync_job_id,
+            subscription_id=result.subscription_id,
+            account_id=result.account_id,
+            platform=result.platform,
+            run_id=result.run_id,
+            attempt=result.attempts,
+            max_attempts=result.max_attempts,
+            lease_token=job.lease_token,
+            lease_expires_at=job.lease_expires_at,
+        )
 
 
 __all__ = [
@@ -459,6 +626,7 @@ __all__ = [
     "PIPELINE_MAX_ATTEMPTS",
     "PIPELINE_PAYLOAD_SCHEMA_VERSION",
     "PIPELINE_SUBSCRIPTION_JOB_TYPE",
+    "PipelineExactConflictError",
     "PipelineJobRepository",
     "PipelineJobRepositoryError",
     "PipelineSubscriptionClaim",

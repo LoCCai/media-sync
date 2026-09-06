@@ -118,6 +118,21 @@ class DurableSchedulerService:
         with self.database.session() as session:
             return self._repository(session).pause_subscription(subscription_id, now=self.clock())
 
+    def materialize_one(
+        self,
+        subscription_id: str,
+        *,
+        expected_schedule_revision: int,
+        retry_policy: RetryPolicy | None = None,
+    ) -> MaterializedCycle:
+        with self.database.session() as session:
+            return self._repository(session).materialize_one(
+                subscription_id,
+                expected_schedule_revision=expected_schedule_revision,
+                retry_policy=retry_policy,
+                now=self.clock(),
+            )
+
     def resume_subscription(self, subscription_id: str) -> SubscriptionSchedule:
         with self.database.session() as session:
             return self._repository(session).resume_subscription(subscription_id, now=self.clock())
@@ -655,6 +670,51 @@ class SubscriptionWorker:
                 subject_hook(session, DurableSubjectRef("job", claim.job_id))
         if claim is None:
             return SchedulerWorkerResult.idle()
+
+        return await self._observe_claimed(
+            claim, worker_id=worker_id, lease_seconds=lease_seconds, heartbeat_interval=heartbeat_interval
+        )
+
+    async def run_exact(
+        self,
+        job_id: str,
+        *,
+        expected_subscription_id: str,
+        worker_id: str,
+        global_capacity: int = 1,
+        lease_seconds: int = 60,
+        heartbeat_interval_seconds: float | None = None,
+        subject_hook: DurableSubjectHook | None = None,
+    ) -> SchedulerWorkerResult:
+        """Run this exact eligible Job or return idle; never consume another."""
+
+        heartbeat_interval = self._heartbeat_interval(heartbeat_interval_seconds, lease_seconds=lease_seconds)
+        with self.database.session() as session:
+            claim = self._repository(session).claim_exact(
+                job_id,
+                expected_subscription_id=expected_subscription_id,
+                worker_id=worker_id,
+                global_capacity=global_capacity,
+                lease_seconds=lease_seconds,
+                adapter_allowlist=self.claim_adapter_allowlist,
+                now=self.clock(),
+            )
+            if claim is not None and subject_hook is not None:
+                subject_hook(session, DurableSubjectRef("job", claim.job_id))
+        if claim is None:
+            return SchedulerWorkerResult.idle()
+        return await self._observe_claimed(
+            claim, worker_id=worker_id, lease_seconds=lease_seconds, heartbeat_interval=heartbeat_interval
+        )
+
+    async def _observe_claimed(
+        self,
+        claim: SchedulerClaim,
+        *,
+        worker_id: str,
+        lease_seconds: int,
+        heartbeat_interval: float,
+    ) -> SchedulerWorkerResult:
 
         started_at = time.monotonic()
         with event_context(

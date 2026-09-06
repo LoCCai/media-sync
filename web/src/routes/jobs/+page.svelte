@@ -687,6 +687,7 @@
             <option value="asset-download">资产下载</option>
             <option value="scheduler-run">订阅同步</option>
             <option value="pipeline-run">下载与目录写入</option>
+            <option value="subscription-delivery">订阅采集与目录交付</option>
             <option value="emby-export">兼容目录写入</option>
             <option value="media-server-probe">媒体服务器探测</option>
             <option value="media-server-scan">媒体库定向刷新</option>

@@ -4,7 +4,7 @@ import type { Subscription, SubscriptionLifecycleResult } from '$lib/types/api';
 export const LOCAL_CREATOR_PREVIEW_NOTICE =
   '本地格式与订阅策略校验不会访问平台。远端昵称与头像来自独立的资料查询，本地备注仍由你填写；资料查询成功不代表内容已采集。';
 export const SUBSCRIPTION_REMOVAL_NOTICE =
-  '删除后停止此订阅的后续调度，并取消符合条件的未开始采集和流水线任务。作者、内容、媒体文件、导出目录、任务历史和检查点全部保留，不会清理磁盘文件。';
+  '删除后停止此订阅的后续调度，并取消符合条件的未开始采集和流水线任务。作者、内容、媒体文件、兼容目录、任务历史和检查点全部保留，不会清理磁盘文件。';
 export const SUBSCRIPTION_RESTORE_NOTICE =
   '恢复原订阅 ID、配置和检查点，恢复后先暂停；不会恢复已取消任务或自动开始采集。需要继续时，请另行启用订阅。';
 export const SUBSCRIPTION_REQUEST_UNAVAILABLE =

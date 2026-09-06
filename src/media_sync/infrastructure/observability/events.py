@@ -1,10 +1,14 @@
-"""Closed event vocabulary: no log messages, exception text or remote data."""
+"""Closed event vocabulary with bounded, policy-checked process diagnostics."""
 
 from __future__ import annotations
 
+import json
+import re
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from uuid import UUID
+
+from media_sync.security.redaction import redact_text
 
 EVENT_SCHEMA_VERSION = 1
 MAX_EVENT_BYTES = 4096
@@ -12,6 +16,9 @@ MAX_NUMBER = 9_007_199_254_740_991
 EVENT_CODES = frozenset(
     {
         "application_log_redacted",
+        "process_output",
+        "process_output_summary",
+        "process_output_dropped",
         "request_finished",
         "command_started",
         "command_finished",
@@ -42,6 +49,7 @@ MODULES = frozenset(
         "download",
         "scheduler",
         "pipeline",
+        "subscription_delivery",
         "exporter",
         "library",
         "media_server",
@@ -126,6 +134,7 @@ ACTIONS = frozenset(
         "creator-profile",
         "account-login",
         "asset-download",
+        "subscription-delivery",
         "scheduler-run",
         "pipeline-run",
         "emby-export",
@@ -170,6 +179,11 @@ ERROR_TYPES = frozenset(
         "configuration",
         "confirmation_rejected",
         "browser_launch_failed",
+        "invalid_encoding",
+        "line_too_large",
+        "capture_budget_exhausted",
+        "log_sink_rejected",
+        "policy_filtered",
         "unknown",
     }
 )
@@ -188,6 +202,9 @@ UUID_FIELDS = frozenset(
     }
 )
 NUMBER_FIELDS = frozenset({"duration_ms", "attempt", "count", "bytes", "http_status"})
+STREAMS = frozenset({"stdout_protocol", "upstream"})
+TEXT_FIELDS = frozenset({"message"})
+MAX_MESSAGE_BYTES = 2048
 SOURCE_FRAMES = frozenset(
     {
         "parent",
@@ -216,10 +233,72 @@ ENUM_FIELDS = {
     "error_type": ERROR_TYPES,
     "platform": PLATFORMS,
     "source_frame": SOURCE_FRAMES,
+    "stream": STREAMS,
 }
 _REQUIRED = frozenset({"event_code", "module", "level"})
-_INPUT_FIELDS = frozenset(ENUM_FIELDS) | UUID_FIELDS | NUMBER_FIELDS
+_INPUT_FIELDS = frozenset(ENUM_FIELDS) | UUID_FIELDS | NUMBER_FIELDS | TEXT_FIELDS
 _MINTED_FIELDS = frozenset({"schema_version", "timestamp", "writer_id", "sequence"})
+_SENSITIVE_MESSAGE = re.compile(
+    r"(?ix)(?:data:image/(?:png|jpeg|webp);base64,|"
+    r"\b(?:qr|qr[_-]?code|qrcode)\b\s*[:=]\s*(?!\[REDACTED\])\S+|"
+    r"\bset-cookie\s*:|"
+    r"\bauthorization\s*(?:(?::|=)\s*|\s+bearer\s+)(?!\[REDACTED\])|"
+    r"\bstorage[_-]?state\b|"
+    r"\bcookies?\s*[:=]\s*(?!\[REDACTED\])(?:\[|\{|\()|"
+    r"['\"]name['\"]\s*:\s*['\"](?:sessdata|bili_jct|sid|session|token)|"
+    r"\b(?:ac_time_value|a1|bili_jct|csrf|ms_?token|sessdata|sid|webid|xsec_?token)\b"
+    r"\s*[:=]\s*(?!\[REDACTED\])|"
+    r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b|"
+    r"https?://[^\s<>\"']*[?#][^\s<>\"']*|"
+    r"(?:^|[\s\"'=])(?:[a-z]:[\\/]|\\\\[^\\/\s]+[\\/]|/(?!/)(?:[^/\s]+/)+)[^\s\"']*"
+    r")"
+)
+_MEDIACRAWLER_LOG_PREFIX = re.compile(
+    r"^(?P<timestamp>[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}) "
+    r"MediaCrawler (?P<level>DEBUG|INFO|WARNING|ERROR|CRITICAL) "
+    r"\((?P<filename>[A-Za-z0-9_.-]{1,251}\.py):(?P<lineno>[1-9][0-9]{0,6})\) - "
+)
+_PROCESS_OUTPUT_SHAPE = re.compile(
+    r"(?ix)^\s*(?:"
+    r"\[(?:trace|debug|info|notice|warn(?:ing)?|error|critical|fatal)\]\s*|"
+    r"(?:\d{4}[-/]\d{2}[-/]\d{2}[T\s][0-9:.+Z-]+\s+)?"
+    r"(?:\[[^\]\r\n]{1,80}\]\s*){0,2}"
+    r"(?:trace|debug|info|notice|warn(?:ing)?|error|critical|fatal)\b(?:\s*[:|>-]\s*|\s+)|"
+    r"traceback\b|caused\s+by\s*:|unhandled\s+(?:error|exception|rejection)\b|"
+    r"playwright(?:\s+[a-z_][\w.-]*){0,4}\s+(?:error|exception)\b|"
+    r"(?:[a-z_][\w.]*\.)*[a-z_][\w]*(?:error|exception|failure)\s*:|"
+    r"(?:timeout|cancelled|canceled)\s*:|at\s+\S+|file\s+['\"]"
+    r")"
+)
+_FORBIDDEN_PROCESS_CONTENT = re.compile(
+    r"(?is)(?:"
+    r"<!doctype\s+html|<html\b|<(?:body|button|div|form|iframe|img|input|script|span|svg)\b[^>]*>|"
+    r"[{[]\s*['\"]?[A-Za-z0-9_-]+['\"]?\s*:|"
+    r"(?:^|\W)(?:aweme|body|caption|content|creator[_-]?content|desc(?:ription)?|note|post|title)\s*[:=]"
+    r")"
+)
+
+
+def normalize_process_output_message(value: str) -> str:
+    """Remove only the exact pinned MediaCrawler formatter prefix."""
+
+    matched = _MEDIACRAWLER_LOG_PREFIX.match(value)
+    if matched is None:
+        return value
+    payload = value[matched.end() :].lstrip()
+    return f"{matched.group('level')} {payload}".rstrip()
+
+
+def process_output_message_has_explicit_shape(value: str) -> bool:
+    return _PROCESS_OUTPUT_SHAPE.search(normalize_process_output_message(value)) is not None
+
+
+def process_output_message_has_forbidden_content(value: str) -> bool:
+    normalized = normalize_process_output_message(value)
+    payload = _PROCESS_OUTPUT_SHAPE.sub("", normalized, count=1).lstrip()
+    return _FORBIDDEN_PROCESS_CONTENT.search(payload) is not None or (
+        payload[:1] in {"{", "["} and payload[-1:] in {"}", "]"}
+    )
 
 
 class EventValidationError(ValueError):
@@ -275,10 +354,65 @@ def validate_event(event: Mapping[str, object]) -> dict[str, object]:
                 raise EventValidationError
             if key == "http_status" and not 100 <= value <= 599:
                 raise EventValidationError
+        elif key in TEXT_FIELDS and (
+            type(value) is not str
+            or not value
+            or "\x00" in value
+            or any(character in value for character in ("\r", "\n"))
+            or len(json.dumps(value, ensure_ascii=True).encode("ascii")) > MAX_MESSAGE_BYTES
+            or redact_text(value, max_length=MAX_MESSAGE_BYTES) != value
+            or _SENSITIVE_MESSAGE.search(value) is not None
+        ):
+            raise EventValidationError
         result[key] = value
     if (
         result["event_code"] in {"login_stage", "login_terminal"}
         and not {"phase", "action", "outcome", "error_type", "duration_ms"} <= result.keys()
+    ):
+        raise EventValidationError
+    if result["event_code"] == "process_output" and not {"stream", "message"} <= result.keys():
+        raise EventValidationError
+    if result["event_code"] == "process_output":
+        message = result["message"]
+        if not isinstance(message, str) or (
+            message != "[REDACTED]"
+            and (
+                normalize_process_output_message(message) != message
+                or not process_output_message_has_explicit_shape(message)
+                or process_output_message_has_forbidden_content(message)
+            )
+        ):
+            raise EventValidationError
+    if "message" in result and result["event_code"] != "process_output":
+        raise EventValidationError
+    if "stream" in result and result["event_code"] not in {
+        "process_output",
+        "process_output_summary",
+        "process_output_dropped",
+    }:
+        raise EventValidationError
+    if (
+        result["event_code"] == "process_output_summary"
+        and not {
+            "stream",
+            "action",
+            "outcome",
+            "count",
+            "bytes",
+        }
+        <= result.keys()
+    ):
+        raise EventValidationError
+    if (
+        result["event_code"] == "process_output_dropped"
+        and not {
+            "stream",
+            "action",
+            "outcome",
+            "error_type",
+            "count",
+        }
+        <= result.keys()
     ):
         raise EventValidationError
     return result
@@ -308,6 +442,7 @@ __all__ = [
     "EVENT_SCHEMA_VERSION",
     "LEVELS",
     "MAX_EVENT_BYTES",
+    "MAX_MESSAGE_BYTES",
     "MAX_NUMBER",
     "MODULES",
     "NUMBER_FIELDS",
@@ -315,11 +450,16 @@ __all__ = [
     "PHASES",
     "PLATFORMS",
     "SOURCE_FRAMES",
+    "STREAMS",
+    "TEXT_FIELDS",
     "UUID_FIELDS",
     "EventValidationError",
     "canonical_time",
     "canonical_uuid",
     "format_time",
+    "normalize_process_output_message",
+    "process_output_message_has_explicit_shape",
+    "process_output_message_has_forbidden_content",
     "validate_event",
     "validate_record",
 ]

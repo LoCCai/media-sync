@@ -158,6 +158,35 @@ def test_active_session_never_borrows_previous_diagnostic(database: Database, st
         assert latest_session_login_diagnostic(session, account_id, replace(latest, status=state)) is None
 
 
+def test_interrupted_attempt_retains_only_its_exact_operation_identity(
+    database: Database,
+    settings: Settings,
+) -> None:
+    account_id, latest, operation_id = _seed(database)
+    with database.session() as session:
+        login = session.get(LoginSession, latest.id)
+        operation = session.get(Operation, operation_id)
+        assert login is not None and operation is not None
+        login.status = "waiting_user"
+        login.completed_at = None
+        operation.state = "interrupted"
+        operation.error_code = "operation_interrupted"
+        operation.result_summary = {}
+    with database.session() as session:
+        waiting = LoginSessionRepository(session).list_for_account(account_id)[0]
+        diagnostic = latest_session_login_diagnostic(session, account_id, waiting)
+
+    assert diagnostic == {
+        "operation_id": operation_id,
+        "operation_state": "interrupted",
+        "runner_status": None,
+        "error_code": "operation_interrupted",
+    }
+    response = authenticated_test_client(settings).get(f"/api/v1/accounts/{account_id}/login-status")
+    assert response.status_code == 200
+    assert response.json()["diagnostic"] == diagnostic
+
+
 @pytest.mark.parametrize(
     "corruption",
     [

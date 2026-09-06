@@ -20,14 +20,18 @@ from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Callable, Iterator, Mapping
 
     from .bridge import MediaCrawlerRunSpec, RunnerManifest
     from .policies import OutputStats, RunPaths
 
+    _OutputEventSink = Callable[[Mapping[str, object]], object]
+
 _PRIVATE_INPUT_ENV = "MEDIA_SYNC_MEDIACRAWLER_PRIVATE_INPUT"
 _CONTROL_ENV = "MEDIA_SYNC_MEDIACRAWLER_CONTROL"
 _CONTROL_VERSION = "stdin-v1"
+_OUTPUT_CAPTURE_ENV = "MEDIA_SYNC_MEDIACRAWLER_OUTPUT_CAPTURE"
+_OUTPUT_CAPTURE_VERSION = "combined-stderr-v1"
 _CONTROL_START = b"media-sync-start-v1\n"
 _CONTROL_CANCEL = b"media-sync-cancel-v1\n"
 _MAX_CONTROL_BYTES = 64
@@ -528,6 +532,8 @@ def _spawn_supervised_child(
     spec: MediaCrawlerRunSpec,
     child_environment: dict[str, str],
     lock_descriptor: int,
+    *,
+    capture_output: bool = False,
 ) -> subprocess.Popen[bytes]:
     """Spawn with the account-lock handle inherited until this child exits."""
 
@@ -538,8 +544,8 @@ def _spawn_supervised_child(
             env=child_environment,
             shell=False,
             stdin=subprocess.PIPE,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stdout=subprocess.PIPE if capture_output else subprocess.DEVNULL,
+            stderr=subprocess.PIPE if capture_output else subprocess.DEVNULL,
             start_new_session=True,
             close_fds=True,
             pass_fds=(lock_descriptor,),
@@ -561,8 +567,8 @@ def _spawn_supervised_child(
             env=child_environment,
             shell=False,
             stdin=subprocess.PIPE,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stdout=subprocess.PIPE if capture_output else subprocess.DEVNULL,
+            stderr=subprocess.PIPE if capture_output else subprocess.DEVNULL,
             creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
             close_fds=True,
             startupinfo=startup_info,
@@ -990,6 +996,9 @@ def cleanup_attempt_root(paths: RunPaths) -> AttemptCleanupStatus:
 class MediaCrawlerProcessRunner:
     """Launch a prepared child without a shell and enforce parent watchdogs."""
 
+    def __init__(self, *, output_event_sink: _OutputEventSink | None = None) -> None:
+        self.output_event_sink = output_event_sink
+
     def run(
         self,
         spec: MediaCrawlerRunSpec,
@@ -1036,6 +1045,12 @@ class MediaCrawlerProcessRunner:
         cancellation: threading.Event | None,
         lock_descriptor: int,
     ) -> MediaCrawlerProcessResult:
+        from media_sync.application.observability import event_identities
+        from media_sync.infrastructure.observability.output_capture import (
+            ProcessOutputCapture,
+            mediacrawler_output_context,
+        )
+
         from .bridge import RUNNER_SCRIPT
         from .policies import PRIVATE_INPUT_ENV, OutputInspectionError, inspect_output
         from .receipt import (
@@ -1082,23 +1097,44 @@ class MediaCrawlerProcessRunner:
                 stats=initial_stats,
             )
 
+        parent_output_context = {
+            key: value for key, value in event_identities().items() if key in {"operation_id", "correlation_id"}
+        }
+        output_capture = ProcessOutputCapture(
+            context={**parent_output_context, **mediacrawler_output_context(spec.manifest)},
+            known_secrets=spec.known_secrets,
+            event_sink=self.output_event_sink,
+        )
         child_environment = dict(spec.environment)
         child_environment[_CONTROL_ENV] = _CONTROL_VERSION
+        if output_capture.enabled:
+            child_environment[_OUTPUT_CAPTURE_ENV] = _OUTPUT_CAPTURE_VERSION
         if cancellation is not None and cancellation.is_set():
             child_environment.pop(PRIVATE_INPUT_ENV, None)
             child_environment.pop(_CONTROL_ENV, None)
+            child_environment.pop(_OUTPUT_CAPTURE_ENV, None)
+            output_capture.close()
             return _parent_result(spec, MediaCrawlerProcessStatus.CANCELLED)
         try:
             process = _spawn_supervised_child(
                 spec,
                 child_environment,
                 lock_descriptor,
+                capture_output=output_capture.enabled,
             )
         except OSError:
+            output_capture.close()
             return _parent_result(spec, MediaCrawlerProcessStatus.START_FAILED)
         finally:
             child_environment.pop(PRIVATE_INPUT_ENV, None)
             child_environment.pop(_CONTROL_ENV, None)
+            child_environment.pop(_OUTPUT_CAPTURE_ENV, None)
+
+        if output_capture.enabled and not output_capture.attach(process):
+            _close_process_tree(process, None)
+            _close_control(process)
+            output_capture.close()
+            return _parent_result(spec, MediaCrawlerProcessStatus.START_FAILED)
 
         windows_job = _WindowsJob.attach(process)
         if os.name == "nt" and windows_job is None:
@@ -1106,9 +1142,11 @@ class MediaCrawlerProcessRunner:
             with contextlib.suppress(OSError, subprocess.TimeoutExpired):
                 process.wait(timeout=2)
             _close_control(process)
+            output_capture.close()
             return _parent_result(spec, MediaCrawlerProcessStatus.START_FAILED)
         if cancellation is not None and cancellation.is_set():
             returncode = _stop_child(process, windows_job)
+            output_capture.close()
             return _parent_result(
                 spec,
                 MediaCrawlerProcessStatus.CANCELLED,
@@ -1116,6 +1154,7 @@ class MediaCrawlerProcessRunner:
             )
         if not _write_control(process, _CONTROL_START):
             returncode = _stop_child(process, windows_job)
+            output_capture.close()
             return _parent_result(
                 spec,
                 MediaCrawlerProcessStatus.START_FAILED,
@@ -1187,6 +1226,7 @@ class MediaCrawlerProcessRunner:
                     continue
         finally:
             _close_process_tree(process, windows_job)
+            output_capture.close()
 
         # The direct child may exit before a descendant. Seal output only after
         # the entire process tree has been stopped and one final inspection has
@@ -1291,8 +1331,14 @@ def _returncode_for_output_kind(kind: Any) -> int:
 
 
 @contextlib.contextmanager
-def _silenced_upstream() -> Iterator[None]:
-    """Suppress Python and file-descriptor writes until fixed child status emission."""
+def _silenced_upstream(capture_output: bool = False) -> Iterator[None]:
+    """Fence protocol stdout while optionally relaying upstream output to stderr.
+
+    The trusted fixed result always retains fd1 after this context exits. When
+    capture is authorized by the supervising parent, both upstream fd1/fd2 are
+    combined onto fd2, whose parent-side reader applies redaction and budgets.
+    Direct child invocation keeps the historical fully-muted behavior.
+    """
 
     stdout_copy = os.dup(1)
     stderr_copy = os.dup(2)
@@ -1300,12 +1346,19 @@ def _silenced_upstream() -> Iterator[None]:
         try:
             sys.stdout.flush()
             sys.stderr.flush()
-            os.dup2(sink.fileno(), 1)
-            os.dup2(sink.fileno(), 2)
-            with contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink):
-                yield
+            if capture_output:
+                os.dup2(2, 1)
+                with contextlib.redirect_stdout(sys.stderr):
+                    yield
+            else:
+                os.dup2(sink.fileno(), 1)
+                os.dup2(sink.fileno(), 2)
+                with contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink):
+                    yield
         finally:
             with contextlib.suppress(OSError):
+                sys.stdout.flush()
+                sys.stderr.flush()
                 sink.flush()
             os.dup2(stdout_copy, 1)
             os.dup2(stderr_copy, 2)
@@ -1751,6 +1804,7 @@ def _watch_parent_control(
 def _child_entry(
     private_payload: str | None,
     cancellation: threading.Event | None = None,
+    capture_output: bool = False,
 ) -> int:
     """Load media-sync only after the private environment envelope was popped."""
 
@@ -1769,7 +1823,7 @@ def _child_entry(
             creator_reference = private_inputs.creator_reference
             cookie = private_inputs.cookie
             del private_inputs
-            with _silenced_upstream():
+            with _silenced_upstream(capture_output):
                 returncode = asyncio.run(
                     _execute_child(
                         manifest,
@@ -1791,6 +1845,7 @@ def _start_child() -> int:
     # input disappears before argv/manifest parsing or any media-sync/upstream import.
     private_input = os.environ.pop(_PRIVATE_INPUT_ENV, None)
     control_version = os.environ.pop(_CONTROL_ENV, None)
+    output_capture_version = os.environ.pop(_OUTPUT_CAPTURE_ENV, None)
     cancellation: threading.Event | None = None
     parent_lost: threading.Event | None = None
     control_thread: threading.Thread | None = None
@@ -1827,7 +1882,8 @@ def _start_child() -> int:
                 daemon=True,
             )
             control_thread.start()
-        return _child_entry(private_input, cancellation)
+        capture_output = control_version == _CONTROL_VERSION and output_capture_version == _OUTPUT_CAPTURE_VERSION
+        return _child_entry(private_input, cancellation, capture_output)
     finally:
         private_input = None
         if parent_lost is not None and parent_lost.is_set() and control_thread is not None:

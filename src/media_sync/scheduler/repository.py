@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session
 
 from media_sync.infrastructure.db.base import new_uuid, utc_now
 from media_sync.infrastructure.db.models import (
+    ACTIVE_OPERATION_STATES,
     ACTIVE_SYNC_JOB_STATUSES,
     JOB_STATUSES,
     PLATFORMS,
@@ -27,6 +28,7 @@ from media_sync.infrastructure.db.models import (
     TERMINAL_RUN_STATUSES,
     Account,
     Job,
+    Operation,
     SchedulerLane,
     Subscription,
     SyncRun,
@@ -46,6 +48,10 @@ from .policy import FailureDisposition, RetryPolicy, classify_failure
 SYNC_SUBSCRIPTION_JOB_TYPE = "sync.subscription"
 SCHEDULE_PAYLOAD_SCHEMA_VERSION = 1
 
+_PIPELINE_SUBSCRIPTION_JOB_TYPE = "pipeline.subscription"
+_SUBSCRIPTION_DELIVERY_OPERATION_KIND = "subscription-delivery"
+_SUBSCRIPTION_OPERATION_TARGET_TYPE = "subscription"
+_ACTIVE_JOB_STATUSES = tuple(sorted(JOB_STATUSES - TERMINAL_JOB_STATUSES))
 _ACTIVE_WORK_STATUSES = ("claimed", "running")
 _REQUEUE_STATUSES = ("retry_wait", "failed_retryable")
 _WAITING_STATUSES = ("waiting_auth", "waiting_user")
@@ -69,11 +75,32 @@ class SchedulerLeaseLostError(LeaseLostError):
     """A subscription worker no longer owns the exact scheduler lease."""
 
 
+class SchedulerExactConflictError(SchedulerRepositoryError):
+    """A fixed, redaction-safe reason an exact execution cannot own its target."""
+
+    def __init__(
+        self, code: Literal["subscription_delivery_busy", "subscription_delivery_stale", "subscription_delivery_paused"]
+    ) -> None:
+        self.code = code
+        super().__init__(code)
+
+
 def _aware_utc(value: datetime | None = None) -> datetime:
     result = value or utc_now()
     if result.tzinfo is None or result.utcoffset() is None:
         raise ValueError("timestamps must be timezone-aware")
     return result.astimezone(UTC)
+
+
+def _active_subscription_delivery_operation(subscription_id: Any) -> Any:
+    return exists(
+        select(Operation.id).where(
+            Operation.kind == _SUBSCRIPTION_DELIVERY_OPERATION_KIND,
+            Operation.target_type == _SUBSCRIPTION_OPERATION_TARGET_TYPE,
+            Operation.target_id == subscription_id,
+            Operation.state.in_(tuple(ACTIVE_OPERATION_STATES)),
+        )
+    )
 
 
 def _bounded_int(value: int, *, name: str, minimum: int, maximum: int) -> int:
@@ -661,6 +688,7 @@ class SchedulerRepository:
                 Job.status.in_(tuple(ACTIVE_SYNC_JOB_STATUSES)),
             )
         )
+        active_delivery = _active_subscription_delivery_operation(Subscription.id)
         due = or_(Subscription.next_run_at.is_(None), Subscription.next_run_at <= current)
         candidates = self.session.execute(
             select(
@@ -671,7 +699,13 @@ class SchedulerRepository:
                 Account.platform,
             )
             .join(Account, Account.id == Subscription.account_id)
-            .where(Subscription.enabled.is_(True), Subscription.deleted_at.is_(None), due, ~active_cycle)
+            .where(
+                Subscription.enabled.is_(True),
+                Subscription.deleted_at.is_(None),
+                due,
+                ~active_cycle,
+                ~active_delivery,
+            )
             .order_by(
                 case((Subscription.next_run_at.is_(None), 0), else_=1),
                 Subscription.next_run_at,
@@ -683,62 +717,188 @@ class SchedulerRepository:
 
         materialized: list[MaterializedCycle] = []
         for subscription_id, account_id, schedule_revision, next_run_at, platform in candidates:
-            fenced_active_cycle = exists(
-                select(Job.id).where(
-                    Job.job_type == SYNC_SUBSCRIPTION_JOB_TYPE,
-                    Job.subscription_id == subscription_id,
-                    Job.status.in_(tuple(ACTIVE_SYNC_JOB_STATUSES)),
-                )
-            )
-            claimed_revision = self.session.scalar(
-                update(Subscription)
-                .where(
-                    Subscription.id == subscription_id,
-                    Subscription.enabled.is_(True),
-                    Subscription.deleted_at.is_(None),
-                    Subscription.schedule_revision == schedule_revision,
-                    or_(Subscription.next_run_at.is_(None), Subscription.next_run_at <= current),
-                    ~fenced_active_cycle,
-                )
-                .values(
-                    schedule_revision=Subscription.schedule_revision + 1,
-                    updated_at=current,
-                )
-                .returning(Subscription.schedule_revision)
-                .execution_options(synchronize_session=False)
-            )
-            if claimed_revision != schedule_revision + 1:
-                continue
-
-            scheduled_for = current if next_run_at is None else _aware_utc(next_run_at)
-            job = Job(
-                id=new_uuid(),
+            cycle = self._materialize_cycle(
                 subscription_id=subscription_id,
                 account_id=account_id,
                 platform=platform,
-                job_type=SYNC_SUBSCRIPTION_JOB_TYPE,
-                natural_key=f"subscription:{subscription_id}:schedule:{schedule_revision}",
-                payload=_schedule_payload(subscription_id, schedule_revision, frozen_retry),
-                status="queued",
-                priority=0,
-                attempts=0,
-                max_attempts=frozen_retry.max_attempts,
-                available_at=current,
-                scheduled_for=scheduled_for,
-                created_at=current,
-                updated_at=current,
+                schedule_revision=schedule_revision,
+                scheduled_for=current if next_run_at is None else _aware_utc(next_run_at),
+                now=current,
+                retry_policy=frozen_retry,
+                due_only=True,
             )
-            self.session.add(job)
-            self.session.flush()
-            materialized.append(
-                MaterializedCycle(
-                    job_id=job.id,
-                    subscription_id=subscription_id,
-                    schedule_revision=schedule_revision,
-                    scheduled_for=scheduled_for,
-                )
-            )
+            if cycle is not None:
+                materialized.append(cycle)
         return materialized
+
+    def _materialize_cycle(
+        self,
+        *,
+        subscription_id: str,
+        account_id: str,
+        platform: str,
+        schedule_revision: int,
+        scheduled_for: datetime,
+        now: datetime,
+        retry_policy: RetryPolicy,
+        due_only: bool,
+    ) -> MaterializedCycle | None:
+        """Shared revision/active-cycle fence for scheduled and exact creation."""
+
+        fenced_active_cycle = exists(
+            select(Job.id).where(
+                Job.job_type == SYNC_SUBSCRIPTION_JOB_TYPE,
+                Job.subscription_id == subscription_id,
+                Job.status.in_(tuple(ACTIVE_SYNC_JOB_STATUSES)),
+            )
+        )
+        due_conditions = (
+            (
+                or_(Subscription.next_run_at.is_(None), Subscription.next_run_at <= now),
+                ~_active_subscription_delivery_operation(subscription_id),
+            )
+            if due_only
+            else ()
+        )
+        claimed_revision = self.session.scalar(
+            update(Subscription)
+            .where(
+                Subscription.id == subscription_id,
+                Subscription.enabled.is_(True),
+                Subscription.deleted_at.is_(None),
+                Subscription.account_id == account_id,
+                Subscription.schedule_revision == schedule_revision,
+                *due_conditions,
+                ~fenced_active_cycle,
+            )
+            .values(
+                schedule_revision=Subscription.schedule_revision + 1,
+                updated_at=now,
+            )
+            .returning(Subscription.schedule_revision)
+            .execution_options(synchronize_session=False)
+        )
+        if claimed_revision != schedule_revision + 1:
+            return None
+        job = Job(
+            id=new_uuid(),
+            subscription_id=subscription_id,
+            account_id=account_id,
+            platform=platform,
+            job_type=SYNC_SUBSCRIPTION_JOB_TYPE,
+            natural_key=f"subscription:{subscription_id}:schedule:{schedule_revision}",
+            payload=_schedule_payload(subscription_id, schedule_revision, retry_policy),
+            status="queued",
+            priority=0,
+            attempts=0,
+            max_attempts=retry_policy.max_attempts,
+            available_at=now,
+            scheduled_for=scheduled_for,
+            created_at=now,
+            updated_at=now,
+        )
+        self.session.add(job)
+        self.session.flush()
+        return MaterializedCycle(
+            job_id=job.id,
+            subscription_id=subscription_id,
+            schedule_revision=schedule_revision,
+            scheduled_for=scheduled_for,
+        )
+
+    def materialize_one(
+        self,
+        subscription_id: str,
+        *,
+        expected_schedule_revision: int,
+        now: datetime | None = None,
+        retry_policy: RetryPolicy | None = None,
+    ) -> MaterializedCycle:
+        """Create or return only the current cycle of an enabled subscription.
+
+        An explicit execution can precede ``next_run_at``, but never resumes a
+        paused subscription or rewrites its interval/next-run fields. Existing
+        cycles retain their retry/lease state; claiming is a separate gate.
+        """
+
+        normalized_id = _required_text(subscription_id, name="subscription_id", maximum=36)
+        revision = _bounded_int(
+            expected_schedule_revision, name="expected_schedule_revision", minimum=0, maximum=2_147_483_647
+        )
+        current = _aware_utc(now)
+        self._serialize_sqlite_writer()
+        subscription = SubscriptionRepository(self.session).require_active(normalized_id, lock=True)
+        if not subscription.enabled:
+            raise SchedulerExactConflictError("subscription_delivery_paused")
+        if subscription.schedule_revision != revision:
+            raise SchedulerExactConflictError("subscription_delivery_stale")
+        active_pipeline = self.session.scalar(
+            select(Job.id)
+            .where(
+                Job.job_type == _PIPELINE_SUBSCRIPTION_JOB_TYPE,
+                Job.subscription_id == normalized_id,
+                Job.status.in_(_ACTIVE_JOB_STATUSES),
+            )
+            .limit(1)
+        )
+        if active_pipeline is not None:
+            raise SchedulerExactConflictError("subscription_delivery_busy")
+        account = self.session.get(Account, subscription.account_id)
+        if account is None:
+            raise SchedulerExactConflictError("subscription_delivery_stale")
+        active = self.session.scalars(
+            select(Job)
+            .where(
+                Job.job_type == SYNC_SUBSCRIPTION_JOB_TYPE,
+                Job.subscription_id == normalized_id,
+                Job.status.in_(tuple(ACTIVE_SYNC_JOB_STATUSES)),
+            )
+            .limit(2)
+            .execution_options(populate_existing=True)
+        ).all()
+        if active:
+            if len(active) != 1:
+                raise SchedulerExactConflictError("subscription_delivery_busy")
+            job = active[0]
+            try:
+                payload = _parse_payload(job)
+            except ValueError:
+                raise SchedulerExactConflictError("subscription_delivery_stale") from None
+            if (
+                payload.schedule_revision + 1 != revision
+                or job.account_id != subscription.account_id
+                or job.platform != account.platform
+                or job.scheduled_for is None
+            ):
+                raise SchedulerExactConflictError("subscription_delivery_stale")
+            return MaterializedCycle(job.id, normalized_id, payload.schedule_revision, _aware_utc(job.scheduled_for))
+        cycle = self._materialize_cycle(
+            subscription_id=normalized_id,
+            account_id=account.id,
+            platform=account.platform,
+            schedule_revision=revision,
+            scheduled_for=current,
+            now=current,
+            retry_policy=retry_policy or RetryPolicy(),
+            due_only=False,
+        )
+        if cycle is None:
+            raise SchedulerExactConflictError("subscription_delivery_stale")
+        return cycle
+
+    def materialize_exact(
+        self,
+        subscription_id: str,
+        *,
+        expected_schedule_revision: int,
+        now: datetime | None = None,
+        retry_policy: RetryPolicy | None = None,
+    ) -> MaterializedCycle:
+        """Explicitly named alias for the exact subscription materializer."""
+
+        return self.materialize_one(
+            subscription_id, expected_schedule_revision=expected_schedule_revision, now=now, retry_policy=retry_policy
+        )
 
     def list_jobs(
         self,
@@ -979,7 +1139,7 @@ class SchedulerRepository:
             now=now,
         )
 
-    def _reclaim_expired_sync(self, *, now: datetime) -> None:
+    def _reclaim_expired_sync(self, *, now: datetime, job_id: str | None = None) -> None:
         expired_jobs = self.session.scalars(
             select(Job)
             .where(
@@ -987,6 +1147,7 @@ class SchedulerRepository:
                 Job.status.in_(_ACTIVE_WORK_STATUSES),
                 Job.lease_expires_at.is_not(None),
                 Job.lease_expires_at <= now,
+                *((Job.id == job_id,) if job_id is not None else ()),
             )
             .order_by(Job.lease_expires_at, Job.created_at, Job.id)
             .limit(_MAX_BATCH)
@@ -1037,7 +1198,7 @@ class SchedulerRepository:
             if is_terminal:
                 self._finalize_subscription(reclaimed, now=now, outcome="failure")
 
-    def _requeue_due_sync(self, *, now: datetime) -> None:
+    def _requeue_due_sync(self, *, now: datetime, job_id: str | None = None) -> None:
         # Old interrupted finalizers may already have put the Job in retry_wait.
         # Recover these before the bulk requeue; the exclusion also fences any
         # remaining rows beyond the bounded recovery batch.
@@ -1047,6 +1208,7 @@ class SchedulerRepository:
                 Job.job_type == SYNC_SUBSCRIPTION_JOB_TYPE,
                 Job.status.in_(_REQUEUE_STATUSES),
                 self._has_ownership_conflict_attachment(),
+                *((Job.id == job_id,) if job_id is not None else ()),
             )
             .order_by(Job.available_at, Job.id)
             .limit(_MAX_BATCH)
@@ -1063,6 +1225,7 @@ class SchedulerRepository:
                 Job.available_at <= now,
                 Job.attempts < Job.max_attempts,
                 ~self._has_ownership_conflict_attachment(),
+                *((Job.id == job_id,) if job_id is not None else ()),
             )
             .values(status="queued", updated_at=now)
             .execution_options(synchronize_session=False)
@@ -1181,6 +1344,59 @@ class SchedulerRepository:
     ) -> SchedulerClaim | None:
         """Claim one lane-eligible job while scanning past blocked queue heads."""
 
+        return self._claim_eligible(
+            worker_id=worker_id,
+            global_capacity=global_capacity,
+            lease_seconds=lease_seconds,
+            scan_limit=scan_limit,
+            adapter_allowlist=adapter_allowlist,
+            now=now,
+        )
+
+    def claim_exact(
+        self,
+        job_id: str,
+        *,
+        expected_subscription_id: str,
+        worker_id: str,
+        global_capacity: int,
+        lease_seconds: int = 60,
+        adapter_allowlist: Collection[str] | None = None,
+        now: datetime | None = None,
+    ) -> SchedulerClaim | None:
+        """Claim only this Job under the ordinary scheduler eligibility gates.
+
+        No fallback, rescheduling, retry acceleration or lease stealing occurs.
+        Recovery is restricted to this Job; unrelated expired owners can still
+        conservatively occupy capacity until normal scheduler reconciliation.
+        """
+
+        return self._claim_eligible(
+            worker_id=worker_id,
+            global_capacity=global_capacity,
+            lease_seconds=lease_seconds,
+            scan_limit=1,
+            adapter_allowlist=adapter_allowlist,
+            now=now,
+            exact_job_id=_required_text(job_id, name="job_id", maximum=36),
+            expected_subscription_id=_required_text(
+                expected_subscription_id, name="expected_subscription_id", maximum=36
+            ),
+        )
+
+    def _claim_eligible(
+        self,
+        *,
+        worker_id: str,
+        global_capacity: int,
+        lease_seconds: int,
+        scan_limit: int,
+        adapter_allowlist: Collection[str] | None,
+        now: datetime | None,
+        exact_job_id: str | None = None,
+        expected_subscription_id: str | None = None,
+    ) -> SchedulerClaim | None:
+
         owner = _required_text(worker_id, name="worker_id", maximum=255)
         capacity = _bounded_int(
             global_capacity,
@@ -1203,8 +1419,28 @@ class SchedulerRepository:
         allowed_adapters = _adapter_allowlist(adapter_allowlist)
         current = _aware_utc(now)
         self._serialize_sqlite_writer()
-        self._reclaim_expired_sync(now=current)
-        self._requeue_due_sync(now=current)
+        if exact_job_id is not None:
+            assert expected_subscription_id is not None
+            observed = self._current_sync_job(exact_job_id)
+            if observed.subscription_id != expected_subscription_id:
+                raise SchedulerExactConflictError("subscription_delivery_stale")
+            subscription = SubscriptionRepository(self.session).require_active(expected_subscription_id, lock=True)
+            if not subscription.enabled:
+                raise SchedulerExactConflictError("subscription_delivery_paused")
+            try:
+                payload = _parse_payload(observed)
+            except ValueError:
+                raise SchedulerExactConflictError("subscription_delivery_stale") from None
+            account = self.session.get(Account, subscription.account_id)
+            if (
+                account is None
+                or observed.account_id != subscription.account_id
+                or observed.platform != account.platform
+                or payload.schedule_revision + 1 != subscription.schedule_revision
+            ):
+                raise SchedulerExactConflictError("subscription_delivery_stale")
+        self._reclaim_expired_sync(now=current, job_id=exact_job_id)
+        self._requeue_due_sync(now=current, job_id=exact_job_id)
         self.session.expire_all()
 
         active_count = int(
@@ -1220,6 +1456,10 @@ class SchedulerRepository:
             return None
 
         candidate_statement = select(Job)
+        if exact_job_id is not None:
+            candidate_statement = candidate_statement.where(
+                Job.id == exact_job_id, Job.subscription_id == expected_subscription_id
+            )
         if allowed_adapters is not None:
             if not allowed_adapters:
                 return None
@@ -2124,6 +2364,7 @@ __all__ = [
     "LaneSnapshot",
     "MaterializedCycle",
     "SchedulerClaim",
+    "SchedulerExactConflictError",
     "SchedulerJobSummary",
     "SchedulerLeaseLostError",
     "SchedulerRepository",

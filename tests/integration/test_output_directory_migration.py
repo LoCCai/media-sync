@@ -39,7 +39,7 @@ def test_upgrade_is_additive_and_empty_policy_downgrade_preserves_history(tmp_pa
             account_id = account.id
         with database.engine.connect() as connection:
             before = connection.execute(text("SELECT * FROM accounts")).all()
-        upgrade_database(database.url)
+        upgrade_database(database.url, HEAD)
         with database.engine.connect() as connection:
             assert connection.scalar(text("SELECT version_num FROM alembic_version")) == HEAD
             assert connection.scalar(text("SELECT count(*) FROM library_output_policy")) == 0
@@ -62,7 +62,7 @@ def test_policy_constraints_match_metadata_and_migration(tmp_path: Path, metadat
         if metadata:
             database.create_schema()
         else:
-            upgrade_database(database.url)
+            upgrade_database(database.url, HEAD)
         columns = {column["name"] for column in inspect(database.engine).get_columns("library_output_policy")}
         assert columns == {
             "id",
@@ -103,7 +103,7 @@ def test_policy_constraints_match_metadata_and_migration(tmp_path: Path, metadat
 def test_downgrade_refuses_even_initialized_policy_without_files(tmp_path: Path) -> None:
     database = Database(f"sqlite:///{(tmp_path / 'history.sqlite3').as_posix()}")
     try:
-        upgrade_database(database.url)
+        upgrade_database(database.url, HEAD)
         with database.engine.begin() as connection:
             connection.execute(
                 text("INSERT INTO library_output_policy (id,shared_root,layout) VALUES (1,'/media','legacy_flat')")

@@ -15,7 +15,7 @@ from media_sync.infrastructure.db.database import Database
 from media_sync.infrastructure.db.migration import upgrade_database
 from media_sync.infrastructure.db.models import Account, Author, Operation
 
-EXPECTED_REVISION = "0012_library_output_policy"
+EXPECTED_REVISION = "0013_exact_subscription_delivery"
 PRIVATE_TIME = datetime(2037, 1, 2, 3, 4, 5, tzinfo=UTC)
 
 

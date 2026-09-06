@@ -36,6 +36,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.orm import Session
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.types import Receive, Scope, Send
 
@@ -46,6 +47,7 @@ from media_sync.application import (
     ArchivePreviewError,
     ArchivePreviewService,
     ArchivePreviewSource,
+    DurableSubjectRef,
     MediaCrawlerLoginSessionReconciler,
     OperationCoordinator,
     OperationCoordinatorError,
@@ -91,6 +93,10 @@ from media_sync.application.playback_evidence_query import (
     validate_evidence_query,
 )
 from media_sync.application.qualifications import QualificationError, QualificationService
+from media_sync.application.subscription_delivery import (
+    SubscriptionDeliveryEvidenceError,
+    build_subscription_delivery_result,
+)
 from media_sync.application.subscription_removal import SubscriptionRemovalError, SubscriptionRemovalService
 from media_sync.application.support_bundle import SupportBundleError, SupportBundleService
 from media_sync.config import Settings, get_settings
@@ -123,6 +129,7 @@ from media_sync.infrastructure.db.creator_profile_repository import (
     CreatorProfileRepository,
     ProfileSnapshot,
 )
+from media_sync.infrastructure.db.models import ACTIVE_SYNC_JOB_STATUSES
 from media_sync.infrastructure.observability.store import LogStoreError
 from media_sync.integrations.mediacrawler import platform_capabilities_payload
 from media_sync.integrations.mediacrawler.checkout import load_mediacrawler_lock
@@ -155,7 +162,17 @@ from media_sync.interfaces.cli import (
     collect_deep_readiness_report,
 )
 from media_sync.interfaces.cookie_request import CookieRequestError, read_cookie_login_body
-from media_sync.scheduler import DurableSchedulerService, SchedulerRepository, StaleLaneError
+from media_sync.scheduler import (
+    DurableSchedulerService,
+    MaterializedCycle,
+    PipelineExactConflictError,
+    PipelineJobRepository,
+    PipelineWorkerResult,
+    SchedulerExactConflictError,
+    SchedulerRepository,
+    SchedulerWorkerResult,
+    StaleLaneError,
+)
 from media_sync.scheduler.bili_scan_continuation import BiliScanContinuationPolicy
 from media_sync.security import (
     OPERATOR_SESSION_COOKIE_NAME,
@@ -184,6 +201,7 @@ _OPERATION_STREAM_KEEPALIVE_SECONDS = 10.0
 _OPERATION_STREAM_MAX_SECONDS = 30.0
 _OPERATION_RECONCILE_MIN_INTERVAL_SECONDS = 1.0
 _OPERATION_RECONCILE_SHUTDOWN_SECONDS = 1.0
+_SUBSCRIPTION_DELIVERY_OBSERVE_SECONDS = 0.5
 _MAX_OPERATOR_LOGIN_BODY_BYTES = 8 * 1024
 _MAX_PLAYBACK_EVIDENCE_BODY_BYTES = 1_024
 _LAST_EVENT_ID = re.compile(r"(?:0|[1-9][0-9]{0,18})\Z")
@@ -615,6 +633,19 @@ class BiliScopeUpdate(BaseModel):
     expected_schedule_revision: int = Field(ge=0, strict=True)
 
 
+class SubscriptionDeliveryStart(BaseModel):
+    """Closed controls for one exact subscription-to-directory execution."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    expected_schedule_revision: int = Field(ge=0, strict=True)
+    global_capacity: int = Field(default=1, ge=1, le=1_000, strict=True)
+    lease_seconds: int = Field(default=3_600, ge=1, le=86_400, strict=True)
+    retry_delay_seconds: int = Field(default=30, ge=1, le=86_400, strict=True)
+    enable_mediacrawler: bool = Field(default=False, strict=True)
+    accept_mediacrawler_license: bool = Field(default=False, strict=True)
+
+
 def _subscription_policy_summary_payload(subscription: Subscription) -> dict[str, object]:
     """Project durable policy controls without returning an opaque reference."""
 
@@ -720,6 +751,13 @@ def _subscription_checkpoint_summary_payload(
     bili_scan = _bili_scan_summary_payload(subscription, lock_path)
     if bili_scan is not None:
         payload["bili_scan"] = bili_scan
+    from media_sync.infrastructure.db.scan_progress_repository import scan_progress_payload
+
+    try:
+        progress_sha = load_mediacrawler_lock(lock_path).commit if subscription.account.platform == "bili" else None
+    except (OSError, ValueError):
+        progress_sha = None
+    payload["scan_progress"] = scan_progress_payload(subscription, upstream_sha=progress_sha)
     return payload
 
 
@@ -3021,6 +3059,304 @@ def create_api_app(
     def run_subscription_now(subscription_id: UUID) -> dict[str, object]:
         return _subscription_schedule_action(subscription_id, "run-now")
 
+    @app.post("/api/v1/subscriptions/{subscription_id}/execute", status_code=202)
+    def execute_subscription_delivery(
+        subscription_id: UUID,
+        body: SubscriptionDeliveryStart,
+        request: Request,
+    ) -> dict[str, object]:
+        """Run discovery, downloads and local directory publication for exactly one subscription."""
+
+        if body.accept_mediacrawler_license and not body.enable_mediacrawler:
+            raise _bad_request("license_requires_enable_mediacrawler")
+        target_id = str(subscription_id)
+        parameters = {
+            "expected_schedule_revision": body.expected_schedule_revision,
+            "global_capacity": body.global_capacity,
+            "lease_seconds": body.lease_seconds,
+            "retry_delay_seconds": body.retry_delay_seconds,
+            "enable_mediacrawler": body.enable_mediacrawler,
+            "accept_mediacrawler_license": body.accept_mediacrawler_license,
+        }
+        request_fingerprint, key_hash = _operation_identity(
+            request,
+            "subscription-delivery",
+            target_id=target_id,
+            parameters=parameters,
+        )
+        replay = _idempotent_replay(
+            "subscription-delivery",
+            key_hash=key_hash,
+            request_fingerprint=request_fingerprint,
+        )
+        if replay is not None:
+            return _operation_start_payload(replay)
+
+        def run_delivery(context: OperationExecutionContext) -> OperationOutcome:
+            worker_database: Database | None = None
+
+            def link(
+                subject_type: Literal["job", "sync_run"],
+                subject_id: str,
+                *,
+                role: Literal["execution", "result"],
+            ) -> None:
+                assert worker_database is not None
+                with worker_database.session() as session:
+                    context.subject_hook(
+                        session,
+                        DurableSubjectRef(subject_type, subject_id, role=role),
+                    )
+
+            try:
+                phase = context.phase("materializing_sync")
+                if phase.cancel_requested_at is not None or context.cancel_requested:
+                    return OperationOutcome.failed("subscription_delivery_interrupted", retryable=True)
+                worker_database = Database(resolved.resolved_database_url)
+
+                def materialize(session: Session) -> MaterializedCycle:
+                    subscription = SubscriptionRepository(session).require_active(target_id, lock=True)
+                    if subscription.account.adapter == "mediacrawler":
+                        if not body.enable_mediacrawler:
+                            raise SubscriptionDeliveryEvidenceError("subscription_delivery_mediacrawler_not_enabled")
+                        if not body.accept_mediacrawler_license:
+                            raise SubscriptionDeliveryEvidenceError("subscription_delivery_license_required")
+                    cycle = SchedulerRepository(session).materialize_one(
+                        target_id, expected_schedule_revision=body.expected_schedule_revision
+                    )
+                    context.subject_hook(session, DurableSubjectRef("job", cycle.job_id, role="execution"))
+                    return cycle
+
+                cycle = context.commit_effect(materialize)
+
+                phase = context.phase("discovering_content")
+                if phase.cancel_requested_at is not None or context.cancel_requested:
+                    return OperationOutcome.failed("subscription_delivery_interrupted", retryable=True)
+                discovery_worker = _build_subscription_worker(
+                    worker_database,
+                    resolved,
+                    event_sink=emit_log,
+                    enable_mediacrawler=body.enable_mediacrawler,
+                    accept_mediacrawler_license=body.accept_mediacrawler_license,
+                )
+
+                def run_discovery_exact() -> SchedulerWorkerResult:
+                    return asyncio.run(
+                        discovery_worker.run_exact(
+                            cycle.job_id,
+                            expected_subscription_id=target_id,
+                            worker_id=context.worker_id,
+                            global_capacity=body.global_capacity,
+                            lease_seconds=body.lease_seconds,
+                            subject_hook=context.subject_hook,
+                        )
+                    )
+
+                discovery = run_discovery_exact()
+                discovery_job_id = discovery.job_id
+                discovery_subscription_id = discovery.subscription_id
+                discovery_status = discovery.status
+                discovery_run_id = discovery.run_id
+                if discovery_status in {"idle", "fenced"}:
+                    with worker_database.session() as session:
+                        observed_sync = SchedulerRepository(session).get_job(cycle.job_id)
+                    discovery_job_id = observed_sync.job_id
+                    discovery_subscription_id = observed_sync.subscription_id
+                    discovery_status = observed_sync.status
+                    discovery_run_id = observed_sync.run_id
+                if discovery_job_id != cycle.job_id or discovery_subscription_id != target_id:
+                    return OperationOutcome.failed("subscription_delivery_stale", retryable=False)
+                while discovery_status in ACTIVE_SYNC_JOB_STATUSES:
+                    if context.cancel_requested:
+                        return OperationOutcome.failed("subscription_delivery_interrupted", retryable=True)
+                    time.sleep(_SUBSCRIPTION_DELIVERY_OBSERVE_SECONDS)
+                    discovery = run_discovery_exact()
+                    if discovery.status not in {"idle", "fenced"}:
+                        discovery_job_id = discovery.job_id
+                        discovery_subscription_id = discovery.subscription_id
+                        discovery_status = discovery.status
+                        discovery_run_id = discovery.run_id
+                        if discovery_job_id != cycle.job_id or discovery_subscription_id != target_id:
+                            return OperationOutcome.failed("subscription_delivery_stale", retryable=False)
+                        continue
+                    with worker_database.session() as session:
+                        observed_sync = SchedulerRepository(session).get_job(cycle.job_id)
+                    discovery_job_id = observed_sync.job_id
+                    discovery_subscription_id = observed_sync.subscription_id
+                    discovery_status = observed_sync.status
+                    discovery_run_id = observed_sync.run_id
+                    if discovery_job_id != cycle.job_id or discovery_subscription_id != target_id:
+                        return OperationOutcome.failed("subscription_delivery_stale", retryable=False)
+                if discovery_status != "succeeded" or discovery_run_id is None:
+                    if discovery_job_id != cycle.job_id or discovery_subscription_id != target_id:
+                        return OperationOutcome.failed("subscription_delivery_stale", retryable=False)
+                    retryable = discovery_status in {
+                        "queued",
+                        "claimed",
+                        "running",
+                        "fenced",
+                        "retry_wait",
+                        "failed_retryable",
+                    }
+                    code = (
+                        "subscription_delivery_busy"
+                        if discovery_status in {"queued", "claimed", "running", "fenced"}
+                        else "subscription_delivery_discovery_failed"
+                    )
+                    return OperationOutcome.failed(code, retryable=retryable)
+                if discovery_job_id != cycle.job_id or discovery_subscription_id != target_id:
+                    return OperationOutcome.failed("subscription_delivery_stale", retryable=False)
+                sync_job_id = discovery_job_id
+                run_id = discovery_run_id
+                link("sync_run", run_id, role="result")
+                context.progress(phase="content_discovered", current=1, total=3, unit="steps")
+
+                phase = context.phase("resolving_pipeline")
+                if phase.cancel_requested_at is not None or context.cancel_requested:
+                    return OperationOutcome.failed("subscription_delivery_interrupted", retryable=True)
+                with worker_database.session() as session:
+                    pipeline_job = PipelineJobRepository(session).get_for_succeeded_sync(
+                        sync_job_id,
+                        run_id=run_id,
+                        expected_subscription_id=target_id,
+                    )
+                if pipeline_job is None:
+                    return OperationOutcome.failed(
+                        "subscription_delivery_pipeline_missing",
+                        retryable=True,
+                    )
+                link("job", pipeline_job.job_id, role="execution")
+
+                phase = context.phase("delivering_assets")
+                if phase.cancel_requested_at is not None or context.cancel_requested:
+                    return OperationOutcome.failed("subscription_delivery_interrupted", retryable=True)
+                pipeline_worker = _build_pipeline_worker(
+                    worker_database,
+                    resolved,
+                    event_sink=emit_log,
+                    worker_id=context.worker_id,
+                    retry_delay_seconds=body.retry_delay_seconds,
+                    enable_mediacrawler=body.enable_mediacrawler,
+                    accept_mediacrawler_license=body.accept_mediacrawler_license,
+                    xhs_detail_reference_ref=None,
+                )
+
+                def run_pipeline_exact() -> PipelineWorkerResult:
+                    return asyncio.run(
+                        pipeline_worker.run_exact(
+                            pipeline_job.job_id,
+                            expected_subscription_id=target_id,
+                            expected_sync_job_id=sync_job_id,
+                            expected_run_id=run_id,
+                            worker_id=context.worker_id,
+                            lease_seconds=body.lease_seconds,
+                            subject_hook=context.subject_hook,
+                        )
+                    )
+
+                delivery = run_pipeline_exact()
+                delivery_job_id = delivery.job_id
+                delivery_subscription_id = delivery.subscription_id
+                delivery_status = delivery.status
+                delivery_receipt = delivery.receipt
+                if delivery_status in {"idle", "fenced"}:
+                    with worker_database.session() as session:
+                        observed_pipeline = PipelineJobRepository(session).get(pipeline_job.job_id)
+                    delivery_job_id = observed_pipeline.job_id
+                    delivery_subscription_id = observed_pipeline.subscription_id
+                    delivery_status = observed_pipeline.status
+                    delivery_receipt = observed_pipeline.receipt
+                if delivery_job_id != pipeline_job.job_id or delivery_subscription_id != target_id:
+                    return OperationOutcome.failed("subscription_delivery_stale", retryable=False)
+                while delivery_status in ACTIVE_SYNC_JOB_STATUSES:
+                    if context.cancel_requested:
+                        return OperationOutcome.failed("subscription_delivery_interrupted", retryable=True)
+                    time.sleep(_SUBSCRIPTION_DELIVERY_OBSERVE_SECONDS)
+                    delivery = run_pipeline_exact()
+                    if delivery.status not in {"idle", "fenced"}:
+                        delivery_job_id = delivery.job_id
+                        delivery_subscription_id = delivery.subscription_id
+                        delivery_status = delivery.status
+                        delivery_receipt = delivery.receipt
+                        if delivery_job_id != pipeline_job.job_id or delivery_subscription_id != target_id:
+                            return OperationOutcome.failed("subscription_delivery_stale", retryable=False)
+                        continue
+                    with worker_database.session() as session:
+                        observed_pipeline = PipelineJobRepository(session).get(pipeline_job.job_id)
+                    delivery_job_id = observed_pipeline.job_id
+                    delivery_subscription_id = observed_pipeline.subscription_id
+                    delivery_status = observed_pipeline.status
+                    delivery_receipt = observed_pipeline.receipt
+                    if delivery_job_id != pipeline_job.job_id or delivery_subscription_id != target_id:
+                        return OperationOutcome.failed("subscription_delivery_stale", retryable=False)
+                if delivery_status != "succeeded":
+                    if delivery_job_id != pipeline_job.job_id or delivery_subscription_id != target_id:
+                        return OperationOutcome.failed("subscription_delivery_stale", retryable=False)
+                    retryable = delivery_status in {
+                        "queued",
+                        "claimed",
+                        "running",
+                        "fenced",
+                        "retry_wait",
+                        "failed_retryable",
+                    }
+                    code = (
+                        "subscription_delivery_busy"
+                        if delivery_status in {"queued", "claimed", "running", "fenced"}
+                        else "subscription_delivery_pipeline_failed"
+                    )
+                    return OperationOutcome.failed(code, retryable=retryable)
+                if delivery_job_id != pipeline_job.job_id or delivery_subscription_id != target_id:
+                    return OperationOutcome.failed("subscription_delivery_stale", retryable=False)
+                if delivery_receipt is None:
+                    return OperationOutcome.failed(
+                        "subscription_delivery_evidence_invalid",
+                        retryable=True,
+                    )
+                link("job", delivery_receipt.export_job_id, role="result")
+                context.progress(phase="assets_delivered", current=2, total=3, unit="steps")
+                context.phase("verifying_directory")
+                result = build_subscription_delivery_result(
+                    worker_database,
+                    subscription_id=target_id,
+                    sync_job_id=sync_job_id,
+                    run_id=run_id,
+                    pipeline_job_id=pipeline_job.job_id,
+                    pipeline_receipt=delivery_receipt,
+                )
+                context.progress(phase="directory_verified", current=3, total=3, unit="steps")
+                return OperationOutcome.success(result)
+            except (SchedulerExactConflictError, PipelineExactConflictError) as error:
+                return OperationOutcome.failed(error.code, retryable=error.code == "subscription_delivery_busy")
+            except SubscriptionDeliveryEvidenceError as error:
+                return OperationOutcome.failed(error.code, retryable=error.retryable)
+            except NotFoundError:
+                return OperationOutcome.failed("subscription_delivery_stale", retryable=False)
+            except SQLAlchemyError:
+                return OperationOutcome.failed("subscription_delivery_storage_unavailable", retryable=True)
+            except (TypeError, ValueError):
+                return OperationOutcome.failed("subscription_delivery_evidence_invalid", retryable=False)
+            except Exception:
+                return OperationOutcome.failed("subscription_delivery_unexpected", retryable=True)
+            finally:
+                if worker_database is not None:
+                    worker_database.dispose()
+
+        submission = _submit_operation(
+            OperationExecution(
+                kind="subscription-delivery",
+                request_fingerprint=request_fingerprint,
+                idempotency_key_hash=key_hash,
+                exclusive_key=f"subscription-delivery:{target_id}",
+                target_type="subscription",
+                target_id=target_id,
+                phase="preparing",
+                subjects=(OperationSubjectInput("subscription", target_id, "target"),),
+                execute=run_delivery,
+            )
+        )
+        return _operation_start_payload(submission)
+
     # ------------------------------------------------------------ scheduler
 
     @app.post("/api/v1/scheduler/tick")
@@ -3691,13 +4027,17 @@ def create_api_app(
             operation = operations.request_cancel(canonical_id)
         except NotFoundError:
             raise HTTPException(status_code=404, detail="operation_not_found") from None
-        except OperationStateConflictError:
+        except OperationStateConflictError as error:
+            if error.code == "subscription_delivery_cancel_unsupported":
+                raise HTTPException(status_code=409, detail=error.code) from None
             try:
                 observed = operations.get(canonical_id)
                 operation = (
                     operations.request_cancel(canonical_id) if observed.state in {"queued", "running"} else observed
                 )
-            except OperationStateConflictError:
+            except OperationStateConflictError as error:
+                if error.code == "subscription_delivery_cancel_unsupported":
+                    raise HTTPException(status_code=409, detail=error.code) from None
                 raise HTTPException(status_code=409, detail="operation_state_conflict") from None
             except NotFoundError:
                 raise HTTPException(status_code=404, detail="operation_not_found") from None

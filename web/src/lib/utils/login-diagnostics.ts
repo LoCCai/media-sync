@@ -42,20 +42,35 @@ function object(value: unknown): Record<string, unknown> | null {
 
 export function safeLoginDiagnostic(status: LoginStatus, accountId: string): LoginDiagnostic | null {
   const source = object(status.diagnostic);
+  const sessionState = status.login_session_status ?? '';
   if (
     status.account_id !== accountId ||
     !isLoginId(accountId) ||
     !isLoginId(status.login_session_id) ||
-    !['succeeded', 'expired', 'failed', 'cancelled'].includes(status.login_session_status ?? '') ||
+    !['pending', 'waiting_user', 'succeeded', 'expired', 'failed', 'cancelled'].includes(sessionState) ||
     !source ||
     !isLoginId(source.operation_id) ||
     typeof source.operation_state !== 'string' ||
     !operationIsTerminal(source.operation_state as OperationState) ||
-    typeof source.runner_status !== 'string' ||
-    !LOGIN_RUNNER_STATUSES.has(source.runner_status) ||
     (source.error_code !== null &&
       (typeof source.error_code !== 'string' || !ERROR_CODES.has(source.error_code))) ||
     ['succeeded', 'cancelled'].includes(source.operation_state) !== (source.error_code === null)
+  ) {
+    return null;
+  }
+  if (source.operation_state === 'interrupted') {
+    if (source.runner_status !== null || source.error_code !== 'operation_interrupted') return null;
+    return {
+      operation_id: source.operation_id,
+      operation_state: 'interrupted',
+      runner_status: null,
+      error_code: 'operation_interrupted'
+    };
+  }
+  if (
+    !['succeeded', 'expired', 'failed', 'cancelled'].includes(sessionState) ||
+    typeof source.runner_status !== 'string' ||
+    !LOGIN_RUNNER_STATUSES.has(source.runner_status)
   ) {
     return null;
   }
@@ -80,7 +95,7 @@ export function safeLoginDiagnostic(status: LoginStatus, accountId: string): Log
           : 'operation_login_failed';
   if (
     source.operation_state !== expectedOperationState ||
-    status.login_session_status !== expectedSessionState ||
+    sessionState !== expectedSessionState ||
     source.error_code !== expectedError
   ) {
     return null;

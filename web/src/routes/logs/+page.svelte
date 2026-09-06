@@ -12,6 +12,8 @@
     logFailure,
     logPhase,
     logAction,
+    logStream,
+    logErrorType,
     logSummary,
     logDiagnosticArtifact,
     logIdentityLink,
@@ -236,13 +238,19 @@
               class:failed={event.level === 'error' || event.level === 'warning'}>{event.level}</span
             >
           </div>
-          <strong>{logPhase(event.phase)} · {logAction(event.action)} · {event.outcome ?? '记录'}</strong>
+          <strong
+            >{logPhase(event.phase)} · {logAction(event.action)} · {event.outcome ?? '记录'}{event.stream
+              ? ` · ${logStream(event.stream)}`
+              : ''}</strong
+          >
           <p>{logSummary(event)}</p>
           <p class="muted">
             {event.error_type && event.error_type !== 'none'
-              ? `异常类别：${event.error_type} · `
+              ? `异常类别：${logErrorType(event.error_type)}（${event.error_type}） · `
               : ''}{event.duration_ms !== undefined ? `${event.duration_ms} ms` : ''}
             {event.source_frame ? `· 代码位置：${event.source_frame}` : ''}
+            {event.count !== undefined ? ` · 行数：${event.count}` : ''}
+            {event.bytes !== undefined ? ` · 字节：${event.bytes}` : ''}
           </p>
           <details>
             <summary>关联标识及固定代码</summary>

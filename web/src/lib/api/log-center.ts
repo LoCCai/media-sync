@@ -11,6 +11,7 @@ export const LOG_MODULES = [
   'archive',
   'scheduler',
   'pipeline',
+  'subscription_delivery',
   'exporter',
   'library',
   'media_server',
@@ -35,7 +36,13 @@ export interface LogEvent {
   outcome?: string;
   error_type?: string;
   source_frame?: string;
+  stream?: string;
+  message?: string;
   duration_ms?: number;
+  attempt?: number;
+  count?: number;
+  bytes?: number;
+  http_status?: number;
   operation_id?: string;
   asset_id?: string;
   account_id?: string;
@@ -280,6 +287,7 @@ const actions: Record<string, string> = {
   'creator-profile': '作者资料查询',
   'account-login': '平台登录',
   'asset-download': '资源下载',
+  'subscription-delivery': '订阅采集与目录交付',
   'scheduler-run': '订阅同步批次',
   'pipeline-run': '下载与导出批次',
   'emby-export': 'Emby 兼容导出',
@@ -292,7 +300,59 @@ export function logPhase(value?: string): string {
 export function logAction(value?: string): string {
   return value ? (Object.hasOwn(actions, value) ? actions[value] : '其它受控动作') : '—';
 }
+const streams: Record<string, string> = {
+  upstream: '上游进程输出',
+  stdout_protocol: '结果协议输出'
+};
+export function logStream(value?: string): string {
+  return value ? (Object.hasOwn(streams, value) ? streams[value] : '其它受控输出') : '未记录输出来源';
+}
+const errorTypes: Record<string, string> = {
+  none: '无',
+  playwright_timeout: 'Playwright 超时',
+  timeout: '超时',
+  os_error: '操作系统错误',
+  cancelled: '已取消',
+  system_exit: '上游提前退出',
+  configuration: '配置错误',
+  confirmation_rejected: '登录确认未通过',
+  browser_launch_failed: '浏览器启动失败',
+  invalid_encoding: '无法安全解码',
+  line_too_large: '单行超过上限',
+  capture_budget_exhausted: '本次采集预算已用完',
+  log_sink_rejected: '日志存储拒绝',
+  policy_filtered: '安全策略过滤',
+  unknown: '未知固定类别'
+};
+export function logErrorType(value?: string): string {
+  return value
+    ? Object.hasOwn(errorTypes, value)
+      ? errorTypes[value]
+      : '其它受控异常类别'
+    : '未记录异常类别';
+}
 export function logSummary(event: LogEvent): string {
+  if (event.event_code === 'process_output')
+    return event.message === '[REDACTED]'
+      ? '上游诊断行包含无法安全局部脱敏的凭据、二维码或私有路径，整行已隐藏。'
+      : `上游诊断：${event.message ?? '安全消息未保留'}`;
+  if (event.event_code === 'process_output_summary')
+    return event.stream === 'stdout_protocol'
+      ? `结果协议共读取 ${event.count ?? 0} 行、${event.bytes ?? 0} 字节；为避免协议或内容泄漏，只保存统计，不保存原文。`
+      : `本轮上游输出共读取 ${event.count ?? 0} 行、${event.bytes ?? 0} 字节；只有符合安全诊断策略的行会另行显示。`;
+  if (event.event_code === 'process_output_dropped') {
+    const count = event.count ?? 0;
+    const reasons: Record<string, string> = {
+      invalid_encoding: `${count} 行无法按 UTF-8 安全解码，未保存原文。`,
+      line_too_large: `${count} 行超过单行上限，未保存原文。`,
+      capture_budget_exhausted: `${count} 行超出本轮采集预算，未保存原文。`,
+      log_sink_rejected: `${count} 行未被日志存储接受，请检查日志健康、磁盘与队列。`,
+      policy_filtered: `${count} 行因可能是 Cookie、二维码、页面/作品正文或缺少明确日志形状而被安全过滤。`
+    };
+    return event.error_type && Object.hasOwn(reasons, event.error_type)
+      ? reasons[event.error_type]
+      : `${count} 行输出按固定安全策略丢弃。`;
+  }
   if (event.event_code === 'login_terminal')
     return '本次登录结束；下方保留终止动作证据，以账户认证终态为准。';
   if (event.event_code === 'login_stage')
@@ -328,6 +388,7 @@ const operationKinds = [
   'creator-profile',
   'account-login',
   'asset-download',
+  'subscription-delivery',
   'scheduler-run',
   'pipeline-run',
   'emby-export',
@@ -345,6 +406,9 @@ const operationStates = [
 ];
 const eventCodes = [
   'application_log_redacted',
+  'process_output',
+  'process_output_summary',
+  'process_output_dropped',
   'request_finished',
   'service_started',
   'service_stopped',
@@ -444,6 +508,47 @@ const controlCodes = [
   'operation_succeeded'
 ];
 const eventIds = [...ids, 'correlation_id', 'author_id', 'asset_id'];
+const processOutputShape =
+  /^(?:\s*\[(?:trace|debug|info|notice|warn(?:ing)?|error|critical|fatal)\]\s*|\s*(?:\d{4}[-/]\d{2}[-/]\d{2}[T\s][0-9:.+Z-]+\s+)?(?:\[[^\]\r\n]{1,80}\]\s*){0,2}(?:trace|debug|info|notice|warn(?:ing)?|error|critical|fatal)\b(?:\s*[:|>-]\s*|\s+)|\s*traceback\b|\s*caused\s+by\s*:|\s*unhandled\s+(?:error|exception|rejection)\b|\s*playwright(?:\s+[a-z_][\w.-]*){0,4}\s+(?:error|exception)\b|\s*(?:[a-z_][\w.]*\.)*[a-z_][\w]*(?:error|exception|failure)\s*:|\s*(?:timeout|cancelled|canceled)\s*:|\s*at\s+\S+|\s*file\s+['"])/i;
+const forbiddenProcessMessage = [
+  /data:image\/(?:png|jpeg|webp);base64,/i,
+  /\b(?:qr|qr[_-]?code|qrcode)\b\s*[:=]\s*(?!\[REDACTED\])\S+/i,
+  /\bset-cookie\s*:/i,
+  /\bauthorization\s*(?:(?::|=)\s*|\s+bearer\s+)(?!\[REDACTED\])/i,
+  /\bstorage[_-]?state\b/i,
+  /\bcookies?\s*[:=]\s*(?!\[REDACTED\])(?:\[|\{|\()/i,
+  /['"]name['"]\s*:\s*['"](?:sessdata|bili_jct|sid|session|token)/i,
+  /\b(?:ac_time_value|a1|bili_jct|csrf|ms_?token|sessdata|sid|webid|xsec_?token)\b\s*[:=]\s*(?!\[REDACTED\])/i,
+  /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/,
+  /https?:\/\/[^\s<>"']*[?#][^\s<>"']*/i,
+  /(?:^|[\s"'=])(?:[a-z]:[\\/]|\\\\[^\\/\s]+[\\/]|\/(?!\/)(?:[^/\s]+\/)+)[^\s"']*/i
+];
+const forbiddenProcessContent = [
+  /<!doctype\s+html|<html\b|<(?:body|button|div|form|iframe|img|input|script|span|svg)\b[^>]*>/i,
+  /[{[]\s*['"]?[A-Za-z0-9_-]+['"]?\s*:/,
+  /(?:^|\W)(?:aweme|body|caption|content|creator[_-]?content|desc(?:ription)?|note|post|title)\s*[:=]/i
+];
+function processMessage(value: unknown): string | null {
+  if (
+    typeof value !== 'string' ||
+    !value ||
+    value.includes('\0') ||
+    value.includes('\r') ||
+    value.includes('\n') ||
+    new TextEncoder().encode(JSON.stringify(value)).byteLength > 2048
+  )
+    return null;
+  if (value === '[REDACTED]') return value;
+  if (!processOutputShape.test(value) || forbiddenProcessMessage.some((pattern) => pattern.test(value)))
+    return null;
+  const payload = value.replace(processOutputShape, '').trimStart();
+  if (
+    forbiddenProcessContent.some((pattern) => pattern.test(payload)) ||
+    ((payload.startsWith('{') || payload.startsWith('[')) && (payload.endsWith('}') || payload.endsWith(']')))
+  )
+    return null;
+  return value;
+}
 function object(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('log_response_invalid');
   return value as Record<string, unknown>;
@@ -505,6 +610,11 @@ function parseLogEvent(value: unknown): LogEvent {
       'configuration',
       'confirmation_rejected',
       'browser_launch_failed',
+      'invalid_encoding',
+      'line_too_large',
+      'capture_budget_exhausted',
+      'log_sink_rejected',
+      'policy_filtered',
       'unknown'
     ],
     platform: LOG_PLATFORMS,
@@ -521,6 +631,22 @@ function parseLogEvent(value: unknown): LogEvent {
   for (const key of ['duration_ms', 'attempt', 'count', 'bytes', 'http_status']) {
     const safe = count(row[key]);
     if (safe !== null) result[key] = safe;
+  }
+  if (code === 'process_output') {
+    const stream = choice(row.stream, Object.keys(streams));
+    const message = processMessage(row.message);
+    if (!stream || !message) throw new Error('log_response_invalid');
+    result.stream = stream;
+    result.message = message;
+  } else if (code === 'process_output_summary') {
+    const stream = choice(row.stream, Object.keys(streams));
+    if (!stream || count(row.count) === null || count(row.bytes) === null)
+      throw new Error('log_response_invalid');
+    result.stream = stream;
+  } else if (code === 'process_output_dropped') {
+    const stream = choice(row.stream, Object.keys(streams));
+    if (!stream || count(row.count) === null || !result.error_type) throw new Error('log_response_invalid');
+    result.stream = stream;
   }
   return result as unknown as LogEvent;
 }

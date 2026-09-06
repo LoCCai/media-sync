@@ -35,6 +35,8 @@ from media_sync.infrastructure.db import (
     SyncRunRepository,
 )
 from media_sync.infrastructure.db.models import TERMINAL_RUN_STATUSES, Subscription, SyncRun
+from media_sync.integrations.mediacrawler.bilibili_multifeed import BiliMultiFeedCoverage
+from media_sync.integrations.mediacrawler.bilibili_scan import BiliScanCoverage
 from media_sync.integrations.mediacrawler.bridge import (
     MANIFEST_SCHEMA_VERSION,
     BridgeConfigurationError,
@@ -189,6 +191,7 @@ class _IngestionService(Protocol):
         crawl_revision_before: int | None = None,
         ownership_guard: Callable[[Session], None] | None = None,
         bili_scope: str | None = None,
+        coverage: BiliScanCoverage | BiliMultiFeedCoverage | None = None,
     ) -> MediaCrawlerIngestionResult: ...
 
     def ingest(
@@ -1003,6 +1006,7 @@ class MediaCrawlerScheduledHandler:
                 input_cursor=manifest.bili_scan_input_cursor,
                 next_cursor=output.bili_coverage.next_state.to_cursor(),
                 bili_scope=getattr(manifest.bili_scan, "scope", None),
+                coverage=output.bili_coverage,
                 ownership_guard=guarded,
             )
         else:

@@ -11,7 +11,9 @@ from typing import cast
 
 import pytest
 from sqlalchemy import func, select
+from sqlalchemy.orm import Session
 
+from media_sync.application.operations import DurableSubjectRef
 from media_sync.infrastructure.db import (
     AccountRepository,
     AuthorRepository,
@@ -610,6 +612,95 @@ async def test_handler_exception_is_redacted_to_fixed_retryable_code(database: D
         assert job.last_error_message == "pipeline handler failed unexpectedly"
         assert SECRET not in repr(job.payload)
         assert SECRET not in (job.last_error_message or "")
+
+
+@pytest.mark.asyncio
+async def test_exact_pipeline_worker_runs_target_and_links_same_claim(database: Database) -> None:
+    other_id, _other_source, _other_subscription, _, _ = _seed_pipeline(database, remote_id="exact-other")
+    job_id, source, subscription, _, run = _seed_pipeline(database, remote_id="exact-target")
+    with database.session() as session:
+        row = session.get(Job, other_id)
+        assert row is not None
+        row.priority = 100
+    subjects: list[str] = []
+
+    def bind(session: Session, subject: DurableSubjectRef) -> None:
+        assert subject.subject_id == job_id
+        row = session.get(Job, job_id)
+        assert row is not None and row.status == "claimed"
+        subjects.append(subject.subject_id)
+
+    def handler(claim: PipelineSubscriptionClaim) -> PipelineHandlerResult:
+        assert (claim.job_id, claim.sync_job_id, claim.subscription_id, claim.run_id) == (
+            job_id,
+            source,
+            subscription,
+            run,
+        )
+        assert subjects == [job_id]
+        return PipelineHandlerResult.success()
+
+    result = await PipelineSubscriptionWorker(database, handler, clock=_Clock()).run_exact(
+        job_id,
+        expected_subscription_id=subscription,
+        expected_sync_job_id=source,
+        expected_run_id=run,
+        worker_id="exact-worker",
+        subject_hook=bind,
+    )
+    assert (result.status, result.job_id, result.subscription_id) == ("succeeded", job_id, subscription)
+    with database.session() as session:
+        other = session.get(Job, other_id)
+        assert other is not None and (other.status, other.attempts) == ("queued", 0)
+
+
+@pytest.mark.asyncio
+async def test_exact_pipeline_worker_subject_hook_failure_releases_no_work(database: Database) -> None:
+    job_id, source, subscription, _, run = _seed_pipeline(database, remote_id="exact-hook-rollback")
+
+    def reject(_session: Session, _subject: DurableSubjectRef) -> None:
+        raise RuntimeError("subject_bind_failed")
+
+    def handler(_claim: PipelineSubscriptionClaim) -> PipelineHandlerResult:
+        pytest.fail("handler must not run after claim transaction rolls back")
+
+    worker = PipelineSubscriptionWorker(database, handler, clock=_Clock())
+    with pytest.raises(RuntimeError, match="subject_bind_failed"):
+        await worker.run_exact(
+            job_id,
+            expected_subscription_id=subscription,
+            expected_sync_job_id=source,
+            expected_run_id=run,
+            worker_id="exact-worker",
+            subject_hook=reject,
+        )
+    with database.session() as session:
+        row = session.get(Job, job_id)
+        assert row is not None and (row.status, row.attempts, row.lease_token) == ("queued", 0, None)
+
+
+@pytest.mark.asyncio
+async def test_exact_pipeline_worker_does_not_fallback_from_busy_target(database: Database) -> None:
+    other_id, _, _, _, _ = _seed_pipeline(database, remote_id="exact-ready")
+    job_id, source, subscription, _, run = _seed_pipeline(database, remote_id="exact-busy")
+    with database.session() as session:
+        assert JobRepository(session).claim(job_id, worker_id="supervisor", now=NOW)
+
+    def handler(_claim: PipelineSubscriptionClaim) -> PipelineHandlerResult:
+        pytest.fail("handler must not run for busy exact target")
+
+    worker = PipelineSubscriptionWorker(database, handler, clock=_Clock())
+    result = await worker.run_exact(
+        job_id,
+        expected_subscription_id=subscription,
+        expected_sync_job_id=source,
+        expected_run_id=run,
+        worker_id="exact-worker",
+    )
+    assert result.status == "idle" and result.job_id is None
+    with database.session() as session:
+        other = session.get(Job, other_id)
+        assert other is not None and (other.status, other.attempts) == ("queued", 0)
 
 
 @pytest.mark.asyncio

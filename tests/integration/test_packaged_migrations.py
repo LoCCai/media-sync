@@ -14,6 +14,7 @@ from datetime import UTC, datetime, timedelta
 from importlib.resources import as_file, files
 from io import StringIO
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import UUID, uuid4
 from zipfile import ZipFile
 
@@ -52,7 +53,7 @@ from media_sync.infrastructure.db.migration import MIGRATIONS_PACKAGE, upgrade_d
 from media_sync.media import AdapterRefreshLocator, SafeHttpClient, SecureMediaDownloader, ValidatedTarget
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
-HEAD_REVISION = "0012_library_output_policy"
+HEAD_REVISION = "0013_exact_subscription_delivery"
 
 
 class _PublicResolver:
@@ -84,6 +85,7 @@ def _downgrade_packaged_database(database_url: str, revision: str) -> None:
         configuration = Config()
         configuration.set_main_option("script_location", str(migration_path))
         configuration.set_main_option("sqlalchemy.url", database_url.replace("%", "%%"))
+        configuration.cmd_opts = SimpleNamespace(x=["exclusive-maintenance=true"])
         command.downgrade(configuration, revision)
 
 
@@ -197,6 +199,7 @@ def test_built_wheel_contains_and_runs_packaged_migrations(tmp_path: Path) -> No
             "media_sync/infrastructure/db/migrations/versions/0010_creator_profiles.py",
             "media_sync/infrastructure/db/migrations/versions/0011_cookie_login.py",
             "media_sync/infrastructure/db/migrations/versions/0012_library_output_policy.py",
+            "media_sync/infrastructure/db/migrations/versions/0013_exact_subscription_delivery.py",
         }
         assert required_resources <= wheel_names
         wheel.extractall(installed_root)
@@ -222,7 +225,7 @@ try:
     if "accounts" not in inspect(engine).get_table_names():
         raise AssertionError("packaged migration did not create accounts")
     with engine.connect() as connection:
-        if connection.scalar(text("SELECT version_num FROM alembic_version")) != "0012_library_output_policy":
+        if connection.scalar(text("SELECT version_num FROM alembic_version")) != "0013_exact_subscription_delivery":
             raise AssertionError("unexpected migration revision")
 finally:
     engine.dispose()

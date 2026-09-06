@@ -7,9 +7,11 @@ import {
   logAction,
   logDiagnosticArtifact,
   logFailure,
+  logErrorType,
   logIdentityLink,
   logPhase,
   logQuery,
+  logStream,
   logSummary,
   type LogEvent,
   type LogFilters
@@ -33,6 +35,18 @@ function event(sequence = 1, operation_id = OP): LogEvent {
     action: 'wait_selector',
     outcome: 'started',
     operation_id
+  };
+}
+function outputEvent(message = 'ERROR Playwright browser navigation failed', sequence = 10): LogEvent {
+  return {
+    ...event(sequence),
+    event_code: 'process_output',
+    module: 'crawler',
+    phase: 'upstream_execution',
+    action: 'execute',
+    outcome: 'running',
+    stream: 'upstream',
+    message
   };
 }
 function page(events = [event()], next_cursor: string | null = null) {
@@ -231,6 +245,40 @@ describe('log filter query boundary', () => {
 });
 
 describe('log controller lifecycle and retained pages', () => {
+  it('retains validated process messages, stream summaries and explicit drop reasons', async () => {
+    const { controller, request } = setup();
+    const output = outputEvent();
+    const summary: LogEvent = {
+      ...event(11),
+      event_code: 'process_output_summary',
+      module: 'crawler',
+      stream: 'stdout_protocol',
+      action: 'finish',
+      outcome: 'completed',
+      count: 3,
+      bytes: 120
+    };
+    const dropped: LogEvent = {
+      ...event(12),
+      event_code: 'process_output_dropped',
+      module: 'crawler',
+      stream: 'upstream',
+      action: 'drop',
+      outcome: 'skipped',
+      error_type: 'policy_filtered',
+      count: 2
+    };
+    responds(request, [output, summary, dropped]);
+
+    await controller.load();
+
+    expect(controller.view.events).toEqual([output, summary, dropped]);
+    expect(logSummary(controller.view.events[0])).toContain('Playwright browser navigation failed');
+    expect(logSummary(controller.view.events[1])).toContain('只保存统计');
+    expect(logSummary(controller.view.events[2])).toContain('页面/作品正文');
+    expect(logStream('upstream')).toBe('上游进程输出');
+    expect(logErrorType('policy_filtered')).toBe('安全策略过滤');
+  });
   it('loads safe rows and exact trace, including omission and writer health fields', async () => {
     const { controller, request } = setup();
     responds(request, [event()], 'next', OP);
@@ -370,6 +418,35 @@ describe('log controller lifecycle and retained pages', () => {
 });
 
 describe('diagnostic artifact and UI safety', () => {
+  it('accepts fixed whole-line redaction but rejects unsafe process-output messages and streams', () => {
+    const safe = diagnostic();
+    safe.trace.logs.events = [outputEvent('[REDACTED]')];
+    expect(JSON.parse(logDiagnosticArtifact(safe, OP).text).trace.logs.events[0].message).toBe('[REDACTED]');
+
+    for (const message of [
+      "ERROR cookies: [{'name':'SESSDATA','value':'sentinel'}]",
+      'ERROR Set-Cookie: sid=sentinel',
+      'ERROR Authorization: Bearer sentinel',
+      'ERROR storage_state={"cookies":[]}',
+      'ERROR data:image/png;base64,c2VudGluZWw=',
+      'ERROR qrcode=c2VudGluZWw=',
+      'ERROR https://cdn.invalid/video?token=sentinel#private',
+      String.raw`ERROR C:\Users\private\profile`,
+      'ERROR /home/private/profile/state.json',
+      'ERROR {"title":"a work says login error"}',
+      'ERROR ["a work says login error"]',
+      'ERROR <div>a work says login error</div>',
+      'ERROR content=a work says login error',
+      'the creator caption says login error'
+    ]) {
+      const value = diagnostic();
+      value.trace.logs.events = [outputEvent(message)];
+      expect(() => logDiagnosticArtifact(value, OP)).toThrow('log_response_invalid');
+    }
+    const wrongStream = diagnostic();
+    wrongStream.trace.logs.events = [{ ...outputEvent(), stream: 'stderr' }];
+    expect(() => logDiagnosticArtifact(wrongStream, OP)).toThrow('log_response_invalid');
+  });
   it('downloads only an exact-operation bounded projection', () => {
     const artifact = logDiagnosticArtifact(diagnostic(), OP);
     expect(artifact.filename).toBe(`media-sync-diagnostic-${OP}.json`);
@@ -458,6 +535,10 @@ describe('diagnostic artifact and UI safety', () => {
     expect(source).toContain('URL.revokeObjectURL(downloadUrl)');
     expect(source).toContain('$page.url.search !== routeQuery');
     expect(source).toContain('logIdentityLink(key, event[key as keyof typeof event])');
+    expect(source).toContain('logStream(event.stream)');
+    expect(source).toContain('logErrorType(event.error_type)');
+    expect(source).toContain('event.count');
+    expect(source).toContain('event.bytes');
     expect(source).toContain('bind:value={filters.subscription_id}');
     expect(source).toContain('omitted_segment_tails');
     expect(source).toContain('shutdown_complete');

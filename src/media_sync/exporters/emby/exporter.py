@@ -238,6 +238,9 @@ def _open_windows_directory_handle(path: Path) -> int:
         ctypes.c_void_p,
     )
     create_file.restype = ctypes.c_void_p
+    # Metadata-only access (0 or FILE_READ_ATTRIBUTES) does not enforce
+    # delete-sharing exclusion. Request directory read-data access, not writes.
+    file_list_directory = 0x00000001
     file_share_read = 0x00000001
     file_share_write = 0x00000002
     open_existing = 3
@@ -245,7 +248,7 @@ def _open_windows_directory_handle(path: Path) -> int:
     file_flag_backup_semantics = 0x02000000
     raw_handle = create_file(
         str(path),
-        0,
+        file_list_directory,
         file_share_read | file_share_write,
         None,
         open_existing,

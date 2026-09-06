@@ -27,6 +27,7 @@ OperationKind: TypeAlias = Literal[
     "creator-profile",
     "account-login",
     "asset-download",
+    "subscription-delivery",
     "scheduler-run",
     "pipeline-run",
     "emby-export",
@@ -66,6 +67,7 @@ OPERATION_KINDS: Final = frozenset(
         "creator-profile",
         "account-login",
         "asset-download",
+        "subscription-delivery",
         "scheduler-run",
         "pipeline-run",
         "emby-export",
@@ -96,6 +98,7 @@ _KIND_TARGET_TYPES: Final = MappingProxyType(
         "creator-profile": "account",
         "account-login": "account",
         "asset-download": "asset",
+        "subscription-delivery": "subscription",
         "scheduler-run": None,
         "pipeline-run": None,
         "emby-export": "author",
@@ -109,6 +112,7 @@ _KIND_ROUTES: Final = MappingProxyType(
         "creator-profile": "/api/v1/accounts/{account_id}/creator-lookups",
         "account-login": "/api/v1/accounts/{account_id}/login",
         "asset-download": "/api/v1/assets/{asset_id}/download",
+        "subscription-delivery": "/api/v1/subscriptions/{subscription_id}/execute",
         "scheduler-run": "/api/v1/scheduler/run",
         "pipeline-run": "/api/v1/pipeline/run",
         "emby-export": "/api/v1/emby/export",
@@ -150,6 +154,9 @@ _ASSET_SUMMARY_STATUSES: Final = frozenset(
     }
 )
 _ASSET_DISPOSITIONS: Final = frozenset({"not_started", "downloaded", "already_verified"})
+_PLATFORMS: Final = frozenset({"bili", "dy", "ks", "tieba", "wb", "xhs", "zhihu"})
+_DELIVERY_DISCOVERY_SEMANTICS: Final = frozenset({"created_rows", "processed_items"})
+_DELIVERY_PUBLICATION_DISPOSITIONS: Final = frozenset({"published", "already_exported"})
 _MEDIA_SERVER_PROVIDERS: Final = frozenset({"emby", "jellyfin"})
 _MEDIA_SERVER_SCAN_STATES: Final = frozenset({"accepted"})
 _MEDIA_SERVER_OBSERVATION_MODES: Final = frozenset({"post_refresh_item_observation"})
@@ -212,6 +219,16 @@ _REQUEST_PARAMETER_FIELDS: Final = MappingProxyType(
                 "enable_mediacrawler",
                 "accept_mediacrawler_license",
                 "xhs_detail_reference_digest",
+            }
+        ),
+        "subscription-delivery": frozenset(
+            {
+                "expected_schedule_revision",
+                "global_capacity",
+                "lease_seconds",
+                "retry_delay_seconds",
+                "enable_mediacrawler",
+                "accept_mediacrawler_license",
             }
         ),
         "scheduler-run": frozenset(
@@ -558,6 +575,74 @@ def _emby_export_summary(payload: Mapping[str, object]) -> dict[str, object]:
     }
 
 
+def _subscription_delivery_summary(payload: Mapping[str, object]) -> dict[str, object]:
+    """Validate the exact successful receipt for one subscription delivery."""
+
+    error_code = "operation_result_invalid"
+    _exact_fields(
+        payload,
+        {
+            "subscription_id",
+            "account_id",
+            "author_id",
+            "platform",
+            "sync_job_id",
+            "run_id",
+            "pipeline_job_id",
+            "export_job_id",
+            "discovery_count",
+            "asset_identity_count",
+            "updated_count",
+            "discovery_count_semantics",
+            "selection_scope",
+            "selected_asset_count",
+            "verified_asset_count",
+            "downloaded_count",
+            "already_verified_count",
+            "publication_disposition",
+            "managed_file_count",
+            "directory_verified",
+        },
+        error_code=error_code,
+    )
+    selected = _count(payload["selected_asset_count"], error_code=error_code)
+    verified = _count(payload["verified_asset_count"], error_code=error_code)
+    downloaded = _count(payload["downloaded_count"], error_code=error_code)
+    reused = _count(payload["already_verified_count"], error_code=error_code)
+    if verified != selected or downloaded + reused != verified:
+        raise _fail(error_code)
+    if payload["selection_scope"] != "author_active_snapshot" or payload["directory_verified"] is not True:
+        raise _fail(error_code)
+    return {
+        "subscription_id": _uuid(payload["subscription_id"], error_code=error_code),
+        "account_id": _uuid(payload["account_id"], error_code=error_code),
+        "author_id": _uuid(payload["author_id"], error_code=error_code),
+        "platform": _stable_code(payload["platform"], error_code=error_code, allowed=_PLATFORMS),
+        "sync_job_id": _uuid(payload["sync_job_id"], error_code=error_code),
+        "run_id": _uuid(payload["run_id"], error_code=error_code),
+        "pipeline_job_id": _uuid(payload["pipeline_job_id"], error_code=error_code),
+        "export_job_id": _uuid(payload["export_job_id"], error_code=error_code),
+        "discovery_count": _count(payload["discovery_count"], error_code=error_code),
+        "asset_identity_count": _count(payload["asset_identity_count"], error_code=error_code),
+        "updated_count": _optional_count(payload["updated_count"], error_code=error_code),
+        "discovery_count_semantics": _stable_code(
+            payload["discovery_count_semantics"], error_code=error_code, allowed=_DELIVERY_DISCOVERY_SEMANTICS
+        ),
+        "selection_scope": "author_active_snapshot",
+        "selected_asset_count": selected,
+        "verified_asset_count": verified,
+        "downloaded_count": downloaded,
+        "already_verified_count": reused,
+        "publication_disposition": _stable_code(
+            payload["publication_disposition"],
+            error_code=error_code,
+            allowed=_DELIVERY_PUBLICATION_DISPOSITIONS,
+        ),
+        "managed_file_count": _count(payload["managed_file_count"], error_code=error_code),
+        "directory_verified": True,
+    }
+
+
 def _media_server_summary(
     kind: Literal["media-server-probe", "media-server-scan"],
     payload: Mapping[str, object],
@@ -708,6 +793,8 @@ def operation_result_summary(kind: object, payload: object) -> dict[str, object]
         result = _account_login_summary(normalized_payload)
     elif normalized_kind == "asset-download":
         result = _asset_download_summary(normalized_payload)
+    elif normalized_kind == "subscription-delivery":
+        result = _subscription_delivery_summary(normalized_payload)
     elif normalized_kind in {"scheduler-run", "pipeline-run"}:
         result = _batch_summary(normalized_payload)
     elif normalized_kind == "emby-export":
@@ -873,6 +960,17 @@ def _request_parameters(kind: OperationKind, parameters: object) -> dict[str, ob
             "xhs_detail_reference_digest": _optional_sha256(
                 payload["xhs_detail_reference_digest"], error_code=error_code
             ),
+        }
+    if kind == "subscription-delivery":
+        return {
+            "expected_schedule_revision": _count(payload["expected_schedule_revision"], error_code=error_code),
+            "global_capacity": _count(payload["global_capacity"], error_code=error_code, minimum=1, maximum=1_000),
+            "lease_seconds": _count(payload["lease_seconds"], error_code=error_code, minimum=1, maximum=86_400),
+            "retry_delay_seconds": _count(
+                payload["retry_delay_seconds"], error_code=error_code, minimum=1, maximum=86_400
+            ),
+            "enable_mediacrawler": _bool(payload["enable_mediacrawler"], error_code=error_code),
+            "accept_mediacrawler_license": _bool(payload["accept_mediacrawler_license"], error_code=error_code),
         }
     if kind == "scheduler-run":
         return {

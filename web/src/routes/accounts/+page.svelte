@@ -529,6 +529,11 @@
             ><a class="text-link" href="/jobs">查看任务记录</a> ·
             <a class="text-link" href="/diagnostics">检查运行环境</a>
             {#if selectedLoginDiagnostic}
+              · <a
+                class="text-link"
+                href={`/logs?operation_id=${encodeURIComponent(selectedLoginDiagnostic.operation_id)}`}
+                >查看本次日志</a
+              >
               · 操作 <code>{shortId(selectedLoginDiagnostic.operation_id)}</code>{/if}
           </span>
         </section>

@@ -55,6 +55,12 @@ def event_context(*, clear: bool = False, **identities: object) -> Iterator[None
         _CONTEXT.reset(token)
 
 
+def event_identities() -> dict[str, str]:
+    """Snapshot the already-validated task-local UUID context for child wiring."""
+
+    return {key: value for key, value in _CONTEXT.get().items() if key in UUID_FIELDS and type(value) is str}
+
+
 def emit_event(sink: EventSink | None, *, event_code: str, module: str, **fields: object) -> None:
     """Emit only the closed vocabulary; telemetry can never fail a domain action."""
 
@@ -147,4 +153,11 @@ class SafeEventLoggingHandler(logging.Handler):
             return
 
 
-__all__ = ["EventSink", "SafeEventLoggingHandler", "elapsed_ms", "emit_event", "event_context"]
+__all__ = [
+    "EventSink",
+    "SafeEventLoggingHandler",
+    "elapsed_ms",
+    "emit_event",
+    "event_context",
+    "event_identities",
+]

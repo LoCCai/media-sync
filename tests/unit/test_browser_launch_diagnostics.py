@@ -151,8 +151,8 @@ def test_policy_mode_rejects_non_boolean_values(mode: Any) -> None:
     [
         (BrowserLaunchFailure(), MediaCrawlerLoginStatus.BROWSER_LAUNCH_FAILED),
         (RuntimeError(_PRIVATE), MediaCrawlerLoginStatus.FAILED),
-        (SystemExit(0), MediaCrawlerLoginStatus.FAILED),
-        (SystemExit(1), MediaCrawlerLoginStatus.FAILED),
+        (SystemExit(0), MediaCrawlerLoginStatus.UPSTREAM_LOGIN_EXITED),
+        (SystemExit(1), MediaCrawlerLoginStatus.UPSTREAM_LOGIN_EXITED),
         (asyncio.CancelledError(), MediaCrawlerLoginStatus.FAILED),
         (login_runner._ChildConfigurationError(), MediaCrawlerLoginStatus.CONFIGURATION_INVALID),
     ],
@@ -198,7 +198,12 @@ def test_parent_fences_take_priority_over_complete_browser_failure_frame(
     monkeypatch: pytest.MonkeyPatch, disposition: str, tree_closed: bool, expected: MediaCrawlerLoginStatus
 ) -> None:
     frame = b'{"schema_version":1,"status":"browser_launch_failed"}'
-    process = SimpleNamespace(stdin=io.BytesIO(), stdout=io.BytesIO(len(frame).to_bytes(4, "big") + frame), pid=0)
+    process = SimpleNamespace(
+        stdin=io.BytesIO(),
+        stdout=io.BytesIO(len(frame).to_bytes(4, "big") + frame),
+        stderr=io.BytesIO(),
+        pid=0,
+    )
     cancellation = threading.Event()
 
     class Reader:

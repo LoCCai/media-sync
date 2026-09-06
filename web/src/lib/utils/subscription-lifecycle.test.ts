@@ -255,7 +255,7 @@ describe('honest subscription confirmation and local preview copy', () => {
     expect(source).not.toContain('{subscriptions.filter((item) => item.enabled).length} 个运行中');
   });
   it('names retained media/history/checkpoints and only eligible unstarted cancellation', () => {
-    for (const text of ['未开始', '媒体文件', '导出目录', '任务历史', '检查点', '不会清理磁盘文件'])
+    for (const text of ['未开始', '媒体文件', '兼容目录', '任务历史', '检查点', '不会清理磁盘文件'])
       expect(SUBSCRIPTION_REMOVAL_NOTICE).toContain(text);
   });
   it('restore retains identity but is paused and does not restart cancelled Jobs', () => {

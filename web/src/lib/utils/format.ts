@@ -186,6 +186,7 @@ export function operationLabel(kind: string): string {
       'creator-profile': '作者资料查询',
       'account-cookie-login': 'Cookie 校验与保存',
       'asset-download': '资产下载',
+      'subscription-delivery': '订阅采集与目录交付',
       'emby-export': '兼容目录写入',
       'media-server-probe': '媒体服务器探测',
       'media-server-scan': '媒体库定向刷新',

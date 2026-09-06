@@ -576,7 +576,9 @@ async def test_scheduled_offline_pipeline_survives_restart_without_duplicate_ide
         )
         _assert_database_secret_safe(restarted, local_roots=local_roots)
         with restarted.engine.connect() as connection:
-            assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0012_library_output_policy"
+            assert (
+                connection.scalar(text("SELECT version_num FROM alembic_version")) == "0013_exact_subscription_delivery"
+            )
             assert connection.execute(text("PRAGMA foreign_key_check")).all() == []
     finally:
         restarted.dispose()

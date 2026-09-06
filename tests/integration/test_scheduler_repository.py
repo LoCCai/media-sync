@@ -12,6 +12,7 @@ from uuid import uuid4
 
 import pytest
 from sqlalchemy import event, select
+from sqlalchemy.orm import Session
 
 from media_sync.infrastructure.db import (
     AccountRepository,
@@ -20,15 +21,18 @@ from media_sync.infrastructure.db import (
     Database,
     JobRepository,
     LeaseLostError,
+    OperationRepository,
     SubscriptionRepository,
     SyncRunRepository,
 )
-from media_sync.infrastructure.db.models import Job, SchedulerLane, Subscription
+from media_sync.infrastructure.db.models import JOB_STATUSES, TERMINAL_JOB_STATUSES, Job, SchedulerLane, Subscription
+from media_sync.infrastructure.db.repositories import SubscriptionRemovalError
 from media_sync.scheduler.policy import RetryPolicy
 from media_sync.scheduler.repository import (
     SCHEDULE_PAYLOAD_SCHEMA_VERSION,
     SYNC_SUBSCRIPTION_JOB_TYPE,
     LanePolicy,
+    SchedulerExactConflictError,
     SchedulerJobSummary,
     SchedulerRepository,
     SchedulerRepositoryError,
@@ -173,6 +177,33 @@ def _job_execution_state(job: Job) -> dict[str, object]:
         "last_error_code": job.last_error_code,
         "last_error_message": job.last_error_message,
     }
+
+
+def _create_active_delivery_operation(
+    session: Session,
+    *,
+    subscription_id: str,
+    state: Literal["queued", "running"],
+    now: datetime,
+) -> str:
+    repository = OperationRepository(session)
+    started = repository.create_or_replay(
+        kind="subscription-delivery",
+        request_fingerprint="a" * 64,
+        exclusive_key=f"subscription-delivery:{subscription_id}",
+        target_type="subscription",
+        target_id=subscription_id,
+        at=now,
+    )
+    if state == "running":
+        repository.claim(
+            started.operation_id,
+            expected_revision=started.revision,
+            lease_owner="exact-delivery-test",
+            lease_seconds=60,
+            at=now,
+        )
+    return started.operation_id
 
 
 def _attach_succeeded_run(
@@ -1809,3 +1840,337 @@ def test_scheduler_rejects_foreign_jobs_and_raw_error_vocabulary(database: Datab
         assert persisted_foreign is not None
         assert persisted_foreign.status == "queued"
         assert persisted_foreign.payload == {"prepared_result": "sentinel-secret-value"}
+
+
+def test_exact_materialization_preserves_schedule_and_reuses_only_current_cycle(database: Database) -> None:
+    now = datetime(2026, 9, 6, tzinfo=UTC)
+    _, other = _seed_subscription(database, platform="bili", remote_id="exact-other", now=now)
+    future = now + timedelta(days=1)
+    _, target = _seed_subscription(database, platform="bili", remote_id="exact-target", now=now, next_run_at=future)
+    with database.session() as session:
+        repository = SchedulerRepository(session)
+        cycle = repository.materialize_one(target, expected_schedule_revision=0, now=now)
+        again = repository.materialize_exact(target, expected_schedule_revision=1, now=now)
+        assert cycle == again
+        assert cycle.subscription_id == target and cycle.scheduled_for == now
+        target_row = session.get(Subscription, target)
+        other_row = session.get(Subscription, other)
+        assert target_row is not None and other_row is not None
+        assert (target_row.enabled, target_row.interval_seconds, target_row.next_run_at) == (True, 60, future)
+        assert other_row.schedule_revision == 0
+        assert len(session.scalars(select(Job)).all()) == 1
+        with pytest.raises(SchedulerExactConflictError, match="subscription_delivery_stale"):
+            repository.materialize_one(target, expected_schedule_revision=0, now=now)
+
+
+@pytest.mark.parametrize("status", sorted(JOB_STATUSES))
+def test_exact_materialization_rejects_only_active_pipeline_jobs(database: Database, status: str) -> None:
+    now = datetime(2026, 9, 6, tzinfo=UTC)
+    account_id, target = _seed_subscription(database, platform="bili", remote_id=f"pipeline-{status}", now=now)
+    with database.session() as session:
+        pipeline = JobRepository(session).enqueue(
+            job_type="pipeline.subscription",
+            natural_key=f"pipeline-fence:{status}",
+            payload={},
+            subscription_id=target,
+            account_id=account_id,
+            platform="bili",
+            available_at=now,
+        )
+        pipeline.status = status
+        session.flush()
+        repository = SchedulerRepository(session)
+        if status not in TERMINAL_JOB_STATUSES:
+            with pytest.raises(SchedulerExactConflictError, match="subscription_delivery_busy"):
+                repository.materialize_one(target, expected_schedule_revision=0, now=now)
+        else:
+            cycle = repository.materialize_one(target, expected_schedule_revision=0, now=now)
+            assert cycle.subscription_id == target
+        subscription = session.get(Subscription, target)
+        assert subscription is not None
+        assert subscription.schedule_revision == (1 if status in TERMINAL_JOB_STATUSES else 0)
+
+
+@pytest.mark.parametrize("state", ["queued", "running"])
+def test_materialize_due_skips_active_exact_delivery_and_scans_past_it(
+    database: Database, state: Literal["queued", "running"]
+) -> None:
+    now = datetime(2026, 9, 6, tzinfo=UTC)
+    _, blocked = _seed_subscription(
+        database,
+        platform="bili",
+        remote_id=f"operation-{state}-blocked",
+        now=now - timedelta(minutes=2),
+    )
+    _, eligible = _seed_subscription(
+        database,
+        platform="xhs",
+        remote_id=f"operation-{state}-eligible",
+        now=now - timedelta(minutes=1),
+    )
+    with database.session() as session:
+        _create_active_delivery_operation(session, subscription_id=blocked, state=state, now=now)
+
+    with database.session() as session:
+        cycles = SchedulerRepository(session).materialize_due(limit=1, now=now)
+        assert [cycle.subscription_id for cycle in cycles] == [eligible]
+        blocked_subscription = session.get(Subscription, blocked)
+        assert blocked_subscription is not None and blocked_subscription.schedule_revision == 0
+        assert (
+            session.scalar(
+                select(Job.id).where(
+                    Job.job_type == SYNC_SUBSCRIPTION_JOB_TYPE,
+                    Job.subscription_id == blocked,
+                )
+            )
+            is None
+        )
+
+
+def test_due_cas_rechecks_active_exact_delivery_but_exact_materialization_ignores_its_own_operation(
+    database: Database,
+) -> None:
+    now = datetime(2026, 9, 6, tzinfo=UTC)
+    account_id, target = _seed_subscription(database, platform="bili", remote_id="operation-cas", now=now)
+    with database.session() as session:
+        _create_active_delivery_operation(session, subscription_id=target, state="queued", now=now)
+        repository = SchedulerRepository(session)
+        assert (
+            repository._materialize_cycle(
+                subscription_id=target,
+                account_id=account_id,
+                platform="bili",
+                schedule_revision=0,
+                scheduled_for=now,
+                now=now,
+                retry_policy=RetryPolicy(),
+                due_only=True,
+            )
+            is None
+        )
+        exact = repository.materialize_one(target, expected_schedule_revision=0, now=now)
+        assert exact.subscription_id == target
+
+
+@pytest.mark.parametrize("state", ["paused", "deleted"])
+def test_exact_materialization_does_not_revive_unavailable_subscription(database: Database, state: str) -> None:
+    now = datetime(2026, 9, 6, tzinfo=UTC)
+    _, target = _seed_subscription(database, platform="bili", remote_id=state, now=now)
+    with database.session() as session:
+        row = session.get(Subscription, target)
+        assert row is not None
+        if state == "paused":
+            row.enabled = False
+        else:
+            row.deleted_at = now
+        session.flush()
+        with pytest.raises(
+            (SchedulerExactConflictError, SubscriptionRemovalError),
+            match=r"subscription_delivery_paused|subscription_removed",
+        ):
+            SchedulerRepository(session).materialize_one(target, expected_schedule_revision=0, now=now)
+        assert list(session.scalars(select(Job))) == []
+        assert row.schedule_revision == 0
+
+
+def test_exact_claim_never_consumes_higher_priority_or_wrong_scope(database: Database) -> None:
+    now = datetime(2026, 9, 6, tzinfo=UTC)
+    _, other = _seed_subscription(database, platform="bili", remote_id="claim-other", now=now)
+    _, target = _seed_subscription(database, platform="bili", remote_id="claim-target", now=now)
+    with database.session() as session:
+        repository = SchedulerRepository(session)
+        cycles = {cycle.subscription_id: cycle for cycle in repository.materialize_due(limit=10, now=now)}
+        other_job = session.get(Job, cycles[other].job_id)
+        assert other_job is not None
+        other_job.priority = 100
+        session.flush()
+        with pytest.raises(SchedulerExactConflictError, match="subscription_delivery_stale"):
+            repository.claim_exact(
+                cycles[other].job_id, expected_subscription_id=target, worker_id="exact", global_capacity=10, now=now
+            )
+        assert (
+            repository.claim_exact(
+                cycles[target].job_id,
+                expected_subscription_id=target,
+                worker_id="exact",
+                global_capacity=10,
+                adapter_allowlist=(),
+                now=now,
+            )
+            is None
+        )
+        claim = repository.claim_exact(
+            cycles[target].job_id, expected_subscription_id=target, worker_id="exact", global_capacity=10, now=now
+        )
+        assert claim is not None and claim.job_id == cycles[target].job_id
+        session.refresh(other_job)
+        assert (other_job.status, other_job.attempts, other_job.lease_token) == ("queued", 0, None)
+
+
+@pytest.mark.parametrize(
+    "gate", ["capacity", "lane_capacity", "lane_interval", "circuit", "retry", "leased", "paused", "revision"]
+)
+def test_exact_claim_retains_scheduler_gates(database: Database, gate: str) -> None:
+    now = datetime(2026, 9, 6, tzinfo=UTC)
+    _, target = _seed_subscription(database, platform="bili", remote_id="gated-target", now=now)
+    _, other = _seed_subscription(
+        database, platform="bili" if gate == "lane_capacity" else "xhs", remote_id="gated-other", now=now
+    )
+    with database.session() as session:
+        repository = SchedulerRepository(session)
+        cycles = {cycle.subscription_id: cycle for cycle in repository.materialize_due(limit=10, now=now)}
+        target_job = session.get(Job, cycles[target].job_id)
+        subscription = session.get(Subscription, target)
+        assert target_job is not None and subscription is not None
+        if gate in {"capacity", "lane_capacity"}:
+            assert repository.claim_exact(
+                cycles[other].job_id,
+                expected_subscription_id=other,
+                worker_id="supervisor",
+                global_capacity=10,
+                now=now,
+            )
+        elif gate == "leased":
+            assert repository.claim_exact(
+                target_job.id, expected_subscription_id=target, worker_id="supervisor", global_capacity=10, now=now
+            )
+        elif gate in {"lane_interval", "circuit"}:
+            repository.update_lane(LanePolicy(scope_type="platform", platform="bili"), now=now)
+            lane = session.scalar(
+                select(SchedulerLane).where(SchedulerLane.scope_type == "platform", SchedulerLane.platform == "bili")
+            )
+            assert lane is not None
+            if gate == "lane_interval":
+                lane.next_start_at = now + timedelta(minutes=1)
+            else:
+                lane.circuit_state = "open"
+                lane.circuit_open_until = now + timedelta(minutes=1)
+        elif gate == "retry":
+            target_job.status = "retry_wait"
+            target_job.available_at = now + timedelta(minutes=1)
+        elif gate == "paused":
+            subscription.enabled = False
+        elif gate == "revision":
+            subscription.schedule_revision += 1
+        session.flush()
+        before = _job_execution_state(target_job)
+        if gate in {"paused", "revision"}:
+            with pytest.raises(SchedulerExactConflictError):
+                repository.claim_exact(
+                    target_job.id, expected_subscription_id=target, worker_id="exact", global_capacity=10, now=now
+                )
+        else:
+            assert (
+                repository.claim_exact(
+                    target_job.id,
+                    expected_subscription_id=target,
+                    worker_id="exact",
+                    global_capacity=1 if gate == "capacity" else 10,
+                    now=now,
+                )
+                is None
+            )
+        session.refresh(target_job)
+        assert _job_execution_state(target_job) == before
+
+
+def test_exact_duplicate_claims_have_one_owner(database: Database) -> None:
+    now = datetime(2026, 9, 6, tzinfo=UTC)
+    _, target = _seed_subscription(database, platform="bili", remote_id="claim-race", now=now)
+    with database.session() as session:
+        job_id = SchedulerRepository(session).materialize_one(target, expected_schedule_revision=0, now=now).job_id
+    barrier = Barrier(2)
+
+    def claim(worker: str) -> str | None:
+        barrier.wait(timeout=10)
+        with database.session() as session:
+            result = SchedulerRepository(session).claim_exact(
+                job_id, expected_subscription_id=target, worker_id=worker, global_capacity=10, now=now
+            )
+            return result.job_id if result else None
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        assert sorted(pool.map(claim, ["exact-a", "exact-b"]), key=str) == sorted([job_id, None], key=str)
+    with database.session() as session:
+        job = session.get(Job, job_id)
+        assert job is not None and job.attempts == 1
+
+
+def test_exact_materialization_races_global_tick_without_duplicate(database: Database) -> None:
+    now = datetime(2026, 9, 6, tzinfo=UTC)
+    _, target = _seed_subscription(database, platform="bili", remote_id="materialize-race", now=now)
+    barrier = Barrier(2)
+
+    def materialize(mode: str) -> None:
+        barrier.wait(timeout=10)
+        with database.session() as session:
+            repository = SchedulerRepository(session)
+            if mode == "global":
+                repository.materialize_due(limit=1, now=now)
+            else:
+                try:
+                    repository.materialize_one(target, expected_schedule_revision=0, now=now)
+                except SchedulerExactConflictError as exc:
+                    assert exc.code == "subscription_delivery_stale"
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        list(pool.map(materialize, ["global", "exact"]))
+    with database.session() as session:
+        jobs = list(session.scalars(select(Job)))
+        assert len(jobs) == 1 and jobs[0].subscription_id == target
+        row = session.get(Subscription, target)
+        assert row is not None and row.schedule_revision == 1
+
+
+@pytest.mark.parametrize("authoritative_success", [False, True])
+def test_exact_claim_reconciles_only_its_expired_lease(database: Database, authoritative_success: bool) -> None:
+    now = datetime(2026, 9, 6, tzinfo=UTC)
+    _, target = _seed_subscription(database, platform="bili", remote_id="reclaim-target", now=now)
+    with database.session() as session:
+        job_id = SchedulerRepository(session).materialize_one(target, expected_schedule_revision=0, now=now).job_id
+        first = SchedulerRepository(session).claim_exact(
+            job_id, expected_subscription_id=target, worker_id="first", global_capacity=10, lease_seconds=1, now=now
+        )
+        assert first is not None
+        SchedulerRepository(session).start(job_id, worker_id="first", lease_token=first.lease_token, now=now)
+    if authoritative_success:
+        _attach_succeeded_run(
+            database, subscription_id=target, job_id=job_id, worker_id="first", lease_token=first.lease_token, now=now
+        )
+    _, other = _seed_subscription(database, platform="xhs", remote_id="reclaim-other", now=now)
+    with database.session() as session:
+        repository = SchedulerRepository(session)
+        other_job = repository.materialize_one(other, expected_schedule_revision=0, now=now).job_id
+        assert repository.claim_exact(
+            other_job,
+            expected_subscription_id=other,
+            worker_id="other-owner",
+            global_capacity=10,
+            lease_seconds=1,
+            now=now,
+        )
+    with database.session() as session:
+        repository = SchedulerRepository(session)
+        result = repository.claim_exact(
+            job_id,
+            expected_subscription_id=target,
+            worker_id="exact-replacement",
+            global_capacity=10,
+            now=now + timedelta(seconds=6),
+        )
+        job = session.get(Job, job_id)
+        assert job is not None
+        if authoritative_success:
+            assert result is None and job.status == "succeeded" and job.attempts == 1
+            assert (
+                session.scalar(select(Job).where(Job.job_type == "pipeline.subscription", Job.run_id == job.run_id))
+                is not None
+            )
+        else:
+            assert result is not None and result.attempt == 2 and result.lease_token != first.lease_token
+        untouched = session.get(Job, other_job)
+        assert untouched is not None and (untouched.status, untouched.attempts, untouched.lease_owner) == (
+            "claimed",
+            1,
+            "other-owner",
+        )

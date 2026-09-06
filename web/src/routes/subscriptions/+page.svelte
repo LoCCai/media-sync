@@ -72,6 +72,17 @@
     type SubscriptionFailure,
     type SubscriptionLifecycleAction
   } from '$lib/utils/subscription-lifecycle';
+  import {
+    EXACT_DELIVERY_NOTICE,
+    initialSubscriptionDeliveryView,
+    safeScanProgressCards,
+    SCAN_PROGRESS_NOTICE,
+    subscriptionDeliveryPhaseLabel,
+    subscriptionDeliveryRequest,
+    subscriptionDeliveryResultRows,
+    subscriptionDeliveryUpstreamNotice,
+    SubscriptionDeliveryController
+  } from '$lib/utils/subscription-delivery';
 
   let subscriptions: Subscription[] = [];
   let accounts: Account[] = [];
@@ -94,12 +105,21 @@
   let confirmOpen = false;
   let confirmTarget: Subscription | null = null;
   let confirmAction: SubscriptionLifecycleAction = 'delete';
+  let deliveryOpen = false;
+  let deliveryLoading = false;
+  let deliveryTarget: Subscription | null = null;
+  let deliveryDetail: SubscriptionDetail | null = null;
+  let deliveryError = '';
+  let deliveryAcknowledged = false;
+  let deliveryView = initialSubscriptionDeliveryView();
+  let lastDeliveryTerminalId = '';
   let destroyed = false;
   const listRequests = new SubscriptionRequestGate();
   const detailRequests = new SubscriptionRequestGate();
   const previewRequests = new SubscriptionRequestGate();
   const createRequests = new SubscriptionRequestGate();
   const actionRequests = new SubscriptionRequestGate();
+  const deliveryDetailRequests = new SubscriptionRequestGate();
   let wizardStep: 1 | 2 | 3 = 1;
 
   let accountId = '';
@@ -138,9 +158,37 @@
       if (changedReceipt) invalidatePreview();
     }
   );
+  const deliveryController = new SubscriptionDeliveryController(
+    {
+      licenseConfirmed: () => $onboardingAccepted,
+      start: (scope, idempotencyKey, signal) =>
+        api(`/api/v1/subscriptions/${scope.subscription_id}/execute`, {
+          method: 'POST',
+          headers: { 'Idempotency-Key': idempotencyKey },
+          body: JSON.stringify(subscriptionDeliveryRequest(scope, mediaCrawlerGate())),
+          signal
+        }),
+      read: (operationId, signal) => api(`/api/v1/operations/${operationId}`, { signal })
+    },
+    (next) => {
+      deliveryView = next;
+      if (
+        next.operation_id &&
+        next.operation_id !== lastDeliveryTerminalId &&
+        ['succeeded', 'failed'].includes(next.phase)
+      ) {
+        lastDeliveryTerminalId = next.operation_id;
+        if (next.phase === 'succeeded')
+          toast('此订阅的采集、下载、归档和兼容目录生成证据均已验证。', 'success');
+        void load();
+      }
+    }
+  );
 
   $: enabledCount = subscriptions.filter((item) => item.enabled).length;
+  $: deliveryActive = deliveryView.phase === 'submitting' || deliveryView.phase === 'waiting';
   $: if (!detailOpen) detailRequests.cancel();
+  $: if (!deliveryOpen) deliveryDetailRequests.cancel();
   $: if (!addOpen) {
     previewRequests.cancel();
     createRequests.cancel();
@@ -433,7 +481,8 @@
     subscription: Subscription,
     action: 'pause' | 'resume' | 'run-now'
   ): Promise<void> {
-    if (acting || !isSubscriptionId(subscription.id) || isRemovedSubscription(subscription)) return;
+    if (acting || deliveryActive || !isSubscriptionId(subscription.id) || isRemovedSubscription(subscription))
+      return;
     actionFailure = null;
     acting = `${subscription.id}:${action}`;
     const requestedAction = acting;
@@ -454,12 +503,66 @@
     }
     toast(
       action === 'run-now'
-        ? '已安排同步任务；完成状态请到任务页面核对。'
+        ? '仅已将此订阅的下次调度时间提前；尚未创建或执行采集、下载与目录任务。'
         : action === 'pause'
           ? '订阅已暂停。'
           : '订阅已启用，可继续调度。'
     );
     await load();
+  }
+
+  async function openDelivery(subscription: Subscription): Promise<void> {
+    if (acting || deliveryActive || !isSubscriptionId(subscription.id) || isRemovedSubscription(subscription))
+      return;
+    const requestedId = subscription.id;
+    deliveryTarget = subscription;
+    deliveryDetail = null;
+    deliveryError = '';
+    deliveryAcknowledged = false;
+    deliveryLoading = true;
+    deliveryOpen = true;
+    const result = await deliveryDetailRequests.run(
+      (signal) => api<SubscriptionDetail>(`/api/v1/subscriptions/${requestedId}`, { signal }),
+      (value) =>
+        !!value &&
+        value.id === requestedId &&
+        value.account_id === subscription.account_id &&
+        value.platform === subscription.platform &&
+        value.schedule.subscription_id === requestedId &&
+        Number.isSafeInteger(value.schedule.schedule_revision) &&
+        value.schedule.schedule_revision >= 0 &&
+        !isRemovedSubscription(value)
+    );
+    if (destroyed || !deliveryOpen || deliveryTarget?.id !== requestedId || result.kind === 'superseded')
+      return;
+    deliveryLoading = false;
+    if (result.kind === 'failed') {
+      deliveryError = result.failure.message;
+      return;
+    }
+    deliveryDetail = result.value;
+    deliveryController.setScope(null);
+    deliveryController.setScope({
+      subscription_id: result.value.id,
+      platform: result.value.platform,
+      expected_schedule_revision: result.value.schedule.schedule_revision,
+      session_epoch: $operatorAuth.epoch
+    });
+  }
+
+  function executeDelivery(): void {
+    if (
+      deliveryLoading ||
+      deliveryActive ||
+      !deliveryOpen ||
+      !deliveryAcknowledged ||
+      !deliveryDetail?.enabled ||
+      deliveryView.scope?.subscription_id !== deliveryDetail.id ||
+      deliveryView.scope.expected_schedule_revision !== deliveryDetail.schedule.schedule_revision ||
+      deliveryView.scope.session_epoch !== $operatorAuth.epoch
+    )
+      return;
+    void deliveryController.start();
   }
 
   async function showDetail(subscription: Subscription): Promise<void> {
@@ -488,7 +591,7 @@
   }
 
   async function switchView(deleted: boolean): Promise<void> {
-    if (acting) return;
+    if (acting || deliveryActive) return;
     showRemoved = deleted;
     subscriptions = [];
     actionFailure = null;
@@ -558,7 +661,15 @@
   onDestroy(() => {
     destroyed = true;
     lookupController.dispose();
-    for (const requests of [listRequests, detailRequests, previewRequests, createRequests, actionRequests])
+    deliveryController.dispose();
+    for (const requests of [
+      listRequests,
+      detailRequests,
+      previewRequests,
+      createRequests,
+      actionRequests,
+      deliveryDetailRequests
+    ])
       requests.cancel();
   });
 </script>
@@ -573,7 +684,7 @@
         class="button"
         type="button"
         on:click={openWizard}
-        disabled={accounts.length === 0 || capabilities.length === 0 || !!acting}
+        disabled={accounts.length === 0 || capabilities.length === 0 || !!acting || deliveryActive}
       >
         <Plus size={16} />添加订阅
       </button>
@@ -586,7 +697,7 @@
       class:selected-view={!showRemoved}
       type="button"
       aria-pressed={!showRemoved}
-      disabled={!!acting}
+      disabled={!!acting || deliveryActive}
       on:click={() => switchView(false)}>当前订阅</button
     >
     <button
@@ -594,7 +705,7 @@
       class:selected-view={showRemoved}
       type="button"
       aria-pressed={showRemoved}
-      disabled={!!acting}
+      disabled={!!acting || deliveryActive}
       on:click={() => switchView(true)}>已删除</button
     >
     <a class="text-link" href="/jobs">查看任务与执行结果</a>
@@ -610,9 +721,9 @@
   {#if !showRemoved}
     <div class="notice">
       <div>
-        正常流程：添加并启用订阅 → 常驻调度查询作品 → 自动下载并写入媒体目录 → 按周期检查更新。
-        不需要另点导出或连接 Emby / Jellyfin。请确保部署中的 supervisor 已运行；
-        可在订阅详情查看已提供的扫描范围和检查点；单次上限或检查点不代表全部历史已完成。
+        正常流程：添加并启用订阅 → 多轮扫描并下载历史作品 → 归档并生成兼容目录 → 按周期检查增量。
+        兼容目录由流水线自动生成，无需连接 Emby / Jellyfin；媒体服务器连接只是可选联动。请确保部署中的
+        supervisor 已运行； 可在订阅详情查看已提供的扫描范围和检查点；单次上限或检查点不代表全部历史已完成。
       </div>
     </div>
   {/if}
@@ -627,6 +738,39 @@
             >查看已删除</button
           >
         {/if}
+      </div>
+    </div>
+  {/if}
+  {#if deliveryView.operation_id}
+    <div
+      class="notice delivery-tracker"
+      class:success={deliveryView.phase === 'succeeded'}
+      class:danger={deliveryView.phase === 'failed'}
+      class:warning={deliveryView.phase === 'wait_ended'}
+      role="status"
+    >
+      {#if deliveryActive}
+        <RefreshCw class="spin" size={17} />
+      {:else if deliveryView.phase === 'succeeded'}
+        <CheckCircle2 size={17} />
+      {:else}
+        <ShieldAlert size={17} />
+      {/if}
+      <div>
+        <strong class="notice-title"
+          >采集→下载→归档→兼容目录 · {subscriptionDeliveryPhaseLabel(deliveryView)}</strong
+        >
+        <span class="mono">操作 {shortId(deliveryView.operation_id)}</span>
+        {#if deliveryView.message}<span>{deliveryView.message}</span>{/if}
+        <span class="delivery-links">
+          <button class="button ghost small" type="button" on:click={() => (deliveryOpen = true)}
+            >查看当前状态</button
+          >
+          <a class="text-link" href="/jobs">任务</a>
+          <a class="text-link" href={`/logs?operation_id=${encodeURIComponent(deliveryView.operation_id)}`}
+            >此操作日志</a
+          >
+        </span>
       </div>
     </div>
   {/if}
@@ -784,23 +928,35 @@
                         class="button ghost small"
                         type="button"
                         on:click={() => subscriptionAction(subscription, 'run-now')}
-                        disabled={!!acting}
+                        disabled={!!acting || deliveryActive}
+                        title="仅将下次调度时间提前，不创建或执行采集任务"
                       >
-                        <RotateCw size={14} />立即
+                        <RotateCw size={14} />仅推进调度
+                      </button>
+                      <button
+                        class="button small"
+                        type="button"
+                        on:click={() => openDelivery(subscription)}
+                        disabled={!!acting || deliveryActive || !subscription.enabled}
+                        title={subscription.enabled
+                          ? '精确执行此订阅的采集、下载、归档和兼容目录生成'
+                          : '请先启用订阅'}
+                      >
+                        <Play size={14} />采集→下载→归档→生成兼容目录
                       </button>
                       <button
                         class="button secondary small"
                         type="button"
                         on:click={() =>
                           subscriptionAction(subscription, subscription.enabled ? 'pause' : 'resume')}
-                        disabled={!!acting}
+                        disabled={!!acting || deliveryActive}
                       >
                         {#if subscription.enabled}<Pause size={14} />暂停{:else}<Play size={14} />启用{/if}
                       </button>
                       <button
                         class="button ghost small danger-text"
                         type="button"
-                        disabled={!!acting}
+                        disabled={!!acting || deliveryActive}
                         on:click={() => confirmLifecycle(subscription, 'delete')}
                         ><Trash2 size={14} />删除</button
                       >
@@ -1331,6 +1487,33 @@
         </section>
       {/if}
     </div>
+    {#if detail.checkpoint_summary?.scan_progress}
+      <section class="scan-progress" aria-label="历史扫描证据">
+        <div class="scan-progress-heading">
+          <div>
+            <h3>历史扫描证据</h3>
+            <p>{SCAN_PROGRESS_NOTICE}</p>
+          </div>
+          <StatusBadge status="partial" label="未证明完整" />
+        </div>
+        <div class="scan-progress-grid">
+          {#each safeScanProgressCards(detail.checkpoint_summary.scan_progress) as card}
+            <section class="safe-summary">
+              <h3>{card.feed}</h3>
+              <p class="field-help">{card.state}</p>
+              <dl>
+                {#each card.rows as row}
+                  <div>
+                    <dt>{row.label}</dt>
+                    <dd>{row.value}</dd>
+                  </div>
+                {/each}
+              </dl>
+            </section>
+          {/each}
+        </div>
+      </section>
+    {/if}
     {#if detail.platform === 'bili' && detail.checkpoint_summary?.bili_scan}
       <section class="safe-summary" aria-label="B站有界采集覆盖">
         <h3>B站有界采集覆盖</h3>
@@ -1374,6 +1557,177 @@
   <svelte:fragment slot="footer">
     <a class="button secondary" href="/jobs">查看任务与执行结果</a>
     <button class="button secondary" type="button" on:click={() => (detailOpen = false)}>关闭</button>
+  </svelte:fragment>
+</Modal>
+
+<Modal
+  bind:open={deliveryOpen}
+  title="采集→下载→归档→生成兼容目录"
+  description={deliveryTarget
+    ? `${subscriptionCreatorLabel(deliveryTarget)} · 精确订阅 ${shortId(deliveryTarget.id)}`
+    : '重新读取当前调度修订后再确认'}
+  dismissible={deliveryView.phase !== 'submitting'}
+  wide
+>
+  {#if deliveryLoading}
+    <div class="detail-loading"><RefreshCw class="spin" size={20} />重新读取订阅与调度修订…</div>
+  {:else if deliveryError}
+    <div class="notice danger" role="alert">{deliveryError}</div>
+  {:else if deliveryDetail}
+    <div class="delivery-identity">
+      <PlatformMark platform={deliveryDetail.platform} />
+      <div>
+        <strong>{subscriptionCreatorLabel(deliveryDetail)}</strong>
+        <span>
+          {PLATFORM_META[deliveryDetail.platform].name} · 调度修订 {deliveryDetail.schedule.schedule_revision}
+          ·
+          {deliveryDetail.enabled ? '已启用' : '已暂停'}
+        </span>
+      </div>
+    </div>
+
+    {#if deliveryView.phase === 'idle' || deliveryView.phase === 'not_started'}
+      <div class="delivery-confirmation">
+        <div class="notice warning">
+          <ShieldAlert size={17} />
+          <div>
+            <strong class="notice-title">这是真正执行，不只是推进调度时间</strong>{EXACT_DELIVERY_NOTICE}
+          </div>
+        </div>
+        <div class="notice">
+          <div>
+            <strong class="notice-title">上游扫描范围</strong>
+            {subscriptionDeliveryUpstreamNotice(deliveryDetail)}
+          </div>
+        </div>
+        {#if !deliveryDetail.enabled}
+          <div class="notice danger" role="alert">
+            订阅当前已暂停。请先关闭窗口并启用订阅，本次不会发起执行。
+          </div>
+        {/if}
+        {#if deliveryView.message}<div class="notice danger" role="alert">{deliveryView.message}</div>{/if}
+        <label class="checkbox-row delivery-acknowledgement">
+          <input type="checkbox" bind:checked={deliveryAcknowledged} disabled={!deliveryDetail.enabled} />
+          <span>
+            <strong>我确认执行当前精确订阅</strong>
+            <span>
+              我理解上游可能扫描作者历史，随后会下载或复用 author_active_snapshot
+              中的全部有效资产；首次历史可能需要多轮，之后由定时调度检查增量。这不是仅处理本轮新增，也不代表历史已经完整。
+            </span>
+          </span>
+        </label>
+      </div>
+    {:else}
+      <section class="delivery-status" aria-live="polite">
+        <div class="delivery-status-heading">
+          <div>
+            <span class="eyebrow">采集→下载→归档→兼容目录</span>
+            <h3>{subscriptionDeliveryPhaseLabel(deliveryView)}</h3>
+          </div>
+          {#if deliveryView.operation}
+            <StatusBadge status={deliveryView.operation.state} />
+          {:else}
+            <StatusBadge status="queued" label="正在提交" />
+          {/if}
+        </div>
+        {#if deliveryView.operation_id}
+          <dl class="key-value-list compact-delivery-facts">
+            <div class="key-value-row">
+              <dt>精确 Operation ID</dt>
+              <dd class="mono">{deliveryView.operation_id}</dd>
+            </div>
+            <div class="key-value-row">
+              <dt>目标订阅</dt>
+              <dd class="mono">{deliveryDetail.id}</dd>
+            </div>
+            {#if deliveryView.operation?.progress}
+              <div class="key-value-row">
+                <dt>阶段进度</dt>
+                <dd>
+                  {deliveryView.operation.progress.current ?? '—'} / {deliveryView.operation.progress.total ??
+                    '—'}
+                  步
+                </dd>
+              </div>
+            {/if}
+          </dl>
+        {:else}
+          <div class="notice warning">尚未取得 Operation ID；关闭窗口不会把未知请求结果当作已停止。</div>
+        {/if}
+
+        {#if deliveryActive}
+          <div class="notice">
+            <RefreshCw class="spin" size={17} />正在读取此 Operation 的受控阶段，不会自动启动其他订阅。
+          </div>
+        {/if}
+        {#if deliveryView.message}
+          <div
+            class="notice"
+            class:warning={deliveryView.phase === 'wait_ended'}
+            class:danger={deliveryView.phase !== 'wait_ended'}
+            role="alert"
+          >
+            {deliveryView.message}
+          </div>
+        {/if}
+        {#if deliveryView.phase === 'succeeded' && deliveryView.operation?.result}
+          <div class="notice success">
+            <CheckCircle2 size={17} />
+            <div>
+              <strong class="notice-title">兼容目录证据已验证</strong>
+              成功表示选中资产已全部验证并归档，且兼容目录已重新核对；不表示作者全历史已经完整，也不要求连接媒体服务器。
+            </div>
+          </div>
+          <section class="safe-summary delivery-result">
+            <h3>本次安全结果</h3>
+            <dl>
+              {#each subscriptionDeliveryResultRows(deliveryView.operation.result) as row}
+                <div>
+                  <dt>{row.label}</dt>
+                  <dd>{row.value}</dd>
+                </div>
+              {/each}
+            </dl>
+          </section>
+        {/if}
+      </section>
+    {/if}
+  {/if}
+  <svelte:fragment slot="footer">
+    {#if deliveryView.operation_id}
+      <a class="button secondary" href="/jobs">查看任务</a>
+      <a class="button secondary" href={`/logs?operation_id=${encodeURIComponent(deliveryView.operation_id)}`}
+        >查看此操作日志</a
+      >
+    {/if}
+    {#if deliveryDetail && (deliveryView.phase === 'idle' || deliveryView.phase === 'not_started')}
+      <button class="button secondary" type="button" on:click={() => (deliveryOpen = false)}>取消</button>
+      <button
+        class="button"
+        type="button"
+        data-modal-initial-focus
+        on:click={executeDelivery}
+        disabled={!deliveryAcknowledged || !deliveryDetail.enabled || deliveryActive}
+      >
+        确认执行采集→下载→归档→生成兼容目录
+      </button>
+    {:else}
+      {#if deliveryTarget && !deliveryActive && (deliveryError || (deliveryView.phase === 'failed' && deliveryView.operation))}
+        <button
+          class="button secondary"
+          type="button"
+          on:click={() => deliveryTarget && openDelivery(deliveryTarget)}
+        >
+          重新读取后准备新执行
+        </button>
+      {/if}
+      <button
+        class="button secondary"
+        type="button"
+        disabled={deliveryView.phase === 'submitting'}
+        on:click={() => (deliveryOpen = false)}>关闭</button
+      >
+    {/if}
   </svelte:fragment>
 </Modal>
 
@@ -1460,6 +1814,75 @@
     display: flex;
     justify-content: flex-end;
     gap: 3px;
+    flex-wrap: wrap;
+  }
+
+  .delivery-tracker > div,
+  .delivery-identity > div {
+    display: grid;
+    min-width: 0;
+    gap: 3px;
+  }
+
+  .delivery-links,
+  .delivery-identity,
+  .delivery-status-heading,
+  .scan-progress-heading {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .delivery-links {
+    margin-top: 4px;
+    flex-wrap: wrap;
+  }
+
+  .delivery-identity {
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 13px;
+  }
+
+  .delivery-identity strong {
+    color: var(--text);
+    font-size: 13px;
+  }
+
+  .delivery-identity span {
+    color: var(--text-muted);
+    font-size: 11px;
+  }
+
+  .delivery-confirmation,
+  .delivery-status {
+    display: grid;
+    gap: 12px;
+    margin-top: 14px;
+  }
+
+  .delivery-acknowledgement {
+    border-color: #f3ddb0;
+    background: var(--warning-soft);
+  }
+
+  .delivery-status-heading,
+  .scan-progress-heading {
+    justify-content: space-between;
+  }
+
+  .delivery-status-heading h3,
+  .scan-progress-heading h3 {
+    margin: 2px 0 0;
+    color: var(--text);
+    font-size: 15px;
+  }
+
+  .compact-delivery-facts {
+    margin-top: 0;
+  }
+
+  .delivery-result {
+    margin-top: 0;
   }
 
   .loading-rows {
@@ -1699,6 +2122,24 @@
     margin-top: 18px;
   }
 
+  .scan-progress {
+    margin-top: 18px;
+  }
+
+  .scan-progress-heading p {
+    max-width: 720px;
+    margin: 3px 0 0;
+    color: var(--text-muted);
+    font-size: 10.5px;
+  }
+
+  .scan-progress-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+    margin-top: 9px;
+  }
+
   .safe-summary {
     min-width: 0;
     border: 1px solid var(--border);
@@ -1785,7 +2226,8 @@
 
     .selection-facts,
     .preview-facts,
-    .safe-summary-grid {
+    .safe-summary-grid,
+    .scan-progress-grid {
       grid-template-columns: 1fr;
     }
 

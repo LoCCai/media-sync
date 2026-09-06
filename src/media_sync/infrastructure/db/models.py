@@ -88,6 +88,7 @@ OPERATION_KINDS = frozenset(
         "media-server-scan",
         "pipeline-run",
         "scheduler-run",
+        "subscription-delivery",
     }
 )
 OPERATION_STATES = frozenset(
@@ -135,6 +136,11 @@ OPERATION_SUBJECT_TYPES = frozenset(
     }
 )
 OPERATION_SUBJECT_ROLES = frozenset({"target", "execution", "result", "related"})
+SCAN_PROGRESS_FEEDS = frozenset({"uploads", "dynamics", "notes", "posts", "threads", "answers"})
+SCAN_PROGRESS_STATES = frozenset({"unproven", "scanning", "source_end_observed"})
+SCAN_PROGRESS_STOP_REASONS = frozenset(
+    {"item_limit", "list_limit", "head_boundary", "source_end", "restarted", "snapshot_saved", "page_end"}
+)
 
 
 def _quoted_values(values: frozenset[str]) -> str:
@@ -326,6 +332,9 @@ class Subscription(TimestampMixin, Base):
 
     account: Mapped[Account] = relationship(back_populates="subscriptions")
     author: Mapped[Author] = relationship(back_populates="subscriptions")
+    scan_progress: Mapped[list[SubscriptionScanProgress]] = relationship(
+        back_populates="subscription", cascade="all, delete-orphan", passive_deletes=True
+    )
     sync_runs: Mapped[list[SyncRun]] = relationship(
         back_populates="subscription",
         cascade="all, delete-orphan",
@@ -822,6 +831,59 @@ class PlaybackEvidence(Base):
     confirmed_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
 
 
+class SubscriptionScanProgress(TimestampMixin, Base):
+    """Committed per-feed observations, never a claim of complete history."""
+
+    __tablename__ = "subscription_scan_progress"
+    __table_args__ = (
+        CheckConstraint(f"feed IN ({_quoted_values(SCAN_PROGRESS_FEEDS)})", name="feed"),
+        CheckConstraint(f"state IN ({_quoted_values(SCAN_PROGRESS_STATES)})", name="state"),
+        CheckConstraint("contract_version IN (1, 2)", name="contract_version"),
+        CheckConstraint(f"length(upstream_sha) = 40 AND {_lower_hex_only('upstream_sha')}", name="upstream_sha"),
+        CheckConstraint(_canonical_uuid_check("generation_id"), name="generation_id"),
+        CheckConstraint("last_lane IN ('head', 'history')", name="last_lane"),
+        CheckConstraint(f"last_stop_reason IN ({_quoted_values(SCAN_PROGRESS_STOP_REASONS)})", name="stop_reason"),
+        *(
+            CheckConstraint(f"{column} >= 0 AND {column} <= 9007199254740991", name=f"{column}_range")
+            for column in (
+                "checkpoint_revision",
+                "unit_count",
+                "item_count",
+                "history_unit_count",
+                "history_item_count",
+            )
+        ),
+        CheckConstraint("history_unit_count <= unit_count AND history_item_count <= item_count", name="history_counts"),
+        CheckConstraint(
+            "(source_end_observed_at IS NULL AND source_end_run_id IS NULL) OR "
+            "(source_end_observed_at IS NOT NULL AND source_end_run_id IS NOT NULL)",
+            name="source_end_pair",
+        ),
+        CheckConstraint("state != 'source_end_observed' OR source_end_run_id IS NOT NULL", name="source_end_state"),
+    )
+
+    subscription_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("subscriptions.id", ondelete="CASCADE"), primary_key=True
+    )
+    feed: Mapped[str] = mapped_column(String(16), primary_key=True)
+    state: Mapped[str] = mapped_column(String(32), nullable=False)
+    contract_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    upstream_sha: Mapped[str] = mapped_column(String(40), nullable=False)
+    generation_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    checkpoint_revision: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    unit_count: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0, server_default="0")
+    item_count: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0, server_default="0")
+    history_unit_count: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0, server_default="0")
+    history_item_count: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0, server_default="0")
+    last_lane: Mapped[str] = mapped_column(String(16), nullable=False)
+    last_stop_reason: Mapped[str] = mapped_column(String(32), nullable=False)
+    started_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    last_progress_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    source_end_observed_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    source_end_run_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("sync_runs.id", ondelete="RESTRICT"))
+    subscription: Mapped[Subscription] = relationship(back_populates="scan_progress")
+
+
 class OperationEventStreamState(Base):
     """Singleton transactional clock used by the resumable operation stream."""
 
@@ -1201,6 +1263,9 @@ __all__ = [
     "OPERATION_SUBJECT_TYPES",
     "PLATFORMS",
     "RUN_STATUSES",
+    "SCAN_PROGRESS_FEEDS",
+    "SCAN_PROGRESS_STATES",
+    "SCAN_PROGRESS_STOP_REASONS",
     "SCHEDULER_LANE_SCOPE_TYPES",
     "TERMINAL_JOB_STATUSES",
     "TERMINAL_OPERATION_STATES",
@@ -1223,5 +1288,6 @@ __all__ = [
     "RunEvent",
     "SchedulerLane",
     "Subscription",
+    "SubscriptionScanProgress",
     "SyncRun",
 ]

@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from media_sync.application.operation_payloads import OperationPayloadError, operation_result_summary
 from media_sync.infrastructure.db import LoginSessionState, Operation, OperationSubject
 
+_LOGIN_SESSION_STATES = frozenset({"pending", "waiting_user", "succeeded", "expired", "failed", "cancelled"})
 _TERMINAL_SESSION_STATES = frozenset({"succeeded", "expired", "failed", "cancelled"})
 _TERMINAL_OPERATION_STATES = frozenset({"succeeded", "failed_retryable", "failed_terminal", "cancelled", "interrupted"})
 _LOGIN_DIAGNOSTIC_ERROR_CODES = frozenset(
@@ -35,7 +36,7 @@ class LoginDiagnostic(TypedDict):
 
     operation_id: str
     operation_state: str
-    runner_status: str
+    runner_status: str | None
     error_code: str | None
 
 
@@ -72,7 +73,7 @@ def latest_session_login_diagnostic(
 
     if (
         latest is None
-        or latest.status not in _TERMINAL_SESSION_STATES
+        or latest.status not in _LOGIN_SESSION_STATES
         or latest.account_id != account_id
         or not _canonical_uuid(account_id)
         or not _canonical_uuid(latest.id)
@@ -128,6 +129,17 @@ def latest_session_login_diagnostic(
     if error_code is not None and (type(error_code) is not str or error_code not in _LOGIN_DIAGNOSTIC_ERROR_CODES):
         return None
     if (operation.state in {"succeeded", "cancelled"}) != (error_code is None):
+        return None
+    if operation.state == "interrupted":
+        if error_code != "operation_interrupted":
+            return None
+        return {
+            "operation_id": operation.id,
+            "operation_state": operation.state,
+            "runner_status": None,
+            "error_code": error_code,
+        }
+    if latest.status not in _TERMINAL_SESSION_STATES:
         return None
     try:
         summary = operation_result_summary("account-login", operation.result_summary)

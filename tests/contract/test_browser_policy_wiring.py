@@ -171,6 +171,16 @@ def _runtime(
             },
         )
     _compile(pinned_nodes[0], upstream.__dict__)
+    login_modules: dict[str, ModuleType] = {}
+    for module_name, class_name in login_runner._LOGIN_CLASSES.values():
+        module = ModuleType(module_name)
+
+        async def begin(_self: Any) -> None:
+            return None
+
+        module.__dict__[class_name] = type(class_name, (), {"begin": begin})
+        login_modules[module_name] = module
+    tools_utils = ModuleType("tools.utils")
     original_import = importlib.import_module
 
     def fake_import(name: str, package: str | None = None) -> Any:
@@ -178,6 +188,10 @@ def _runtime(
             return config
         if name == "main":
             return upstream
+        if name == "tools.utils":
+            return tools_utils
+        if name in login_modules:
+            return login_modules[name]
         return original_import(name, package)
 
     monkeypatch.setattr(importlib, "import_module", fake_import)

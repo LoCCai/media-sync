@@ -22,6 +22,7 @@ export type OperationKind =
   | 'account-cookie-login'
   | 'creator-profile'
   | 'asset-download'
+  | 'subscription-delivery'
   | 'scheduler-run'
   | 'pipeline-run'
   | 'emby-export'
@@ -54,7 +55,7 @@ export type LoginRunnerStatus =
 export interface LoginDiagnostic {
   operation_id: string;
   operation_state: OperationState;
-  runner_status: LoginRunnerStatus;
+  runner_status: LoginRunnerStatus | null;
   error_code: string | null;
 }
 
@@ -182,6 +183,38 @@ export interface SubscriptionLifecycleResult {
   media_preserved: true;
 }
 
+export interface SubscriptionDeliveryStart {
+  expected_schedule_revision: number;
+  global_capacity: number;
+  lease_seconds: number;
+  retry_delay_seconds: number;
+  enable_mediacrawler: boolean;
+  accept_mediacrawler_license: boolean;
+}
+
+export interface SubscriptionDeliveryResult {
+  subscription_id: string;
+  account_id: string;
+  author_id: string;
+  platform: Platform;
+  sync_job_id: string;
+  run_id: string;
+  pipeline_job_id: string;
+  export_job_id: string;
+  discovery_count: number;
+  asset_identity_count: number;
+  updated_count: number | null;
+  discovery_count_semantics: 'created_rows' | 'processed_items';
+  selection_scope: 'author_active_snapshot';
+  selected_asset_count: number;
+  verified_asset_count: number;
+  downloaded_count: number;
+  already_verified_count: number;
+  publication_disposition: 'published' | 'already_exported';
+  managed_file_count: number;
+  directory_verified: true;
+}
+
 export interface SubscriptionDetail extends Subscription {
   schedule: {
     subscription_id: string;
@@ -219,6 +252,7 @@ export interface SubscriptionPolicySummary extends Record<string, unknown> {
 
 export interface SubscriptionCheckpointSummary extends Record<string, unknown> {
   bili_scan?: unknown;
+  scan_progress?: SubscriptionScanProgress;
   has_checkpoint: boolean;
   has_forward_cursor: boolean;
   has_backfill_cursor: boolean;
@@ -227,6 +261,29 @@ export interface SubscriptionCheckpointSummary extends Record<string, unknown> {
   watermarked_at: string | null;
   watermark_count: number;
   last_success_at: string | null;
+}
+
+export interface SubscriptionScanProgress {
+  schema_version: 1;
+  history_complete: false;
+  feeds: Array<{
+    feed: string;
+    state: 'unproven' | 'scanning' | 'source_end_observed';
+    contract_version: number | null;
+    upstream_sha: string | null;
+    generation_id: string | null;
+    checkpoint_revision: number | null;
+    unit_count: number;
+    item_count: number;
+    history_unit_count: number;
+    history_item_count: number;
+    last_lane: string | null;
+    last_stop_reason: string | null;
+    started_at: string | null;
+    last_progress_at: string | null;
+    source_end_observed_at: string | null;
+    source_end_run_id: string | null;
+  }>;
 }
 
 export interface SubscriptionPreview {

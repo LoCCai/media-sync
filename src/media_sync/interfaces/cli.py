@@ -71,6 +71,7 @@ from media_sync.application.mediacrawler_download import LazyMediaCrawlerLocator
 from media_sync.application.observability import SafeEventLoggingHandler, elapsed_ms, emit_event, event_context
 from media_sync.application.operations import DurableSubjectHook
 from media_sync.application.output_directories import OutputDirectoryError, OutputDirectoryService
+from media_sync.application.subscription_delivery import pipeline_delivery_receipt
 from media_sync.application.subscription_removal import SubscriptionRemovalError, SubscriptionRemovalService
 from media_sync.config import Settings, get_settings
 from media_sync.domain import AccountRef, AssetStatus, Cursor, DomainError, JobStatus, LoginMethod, Platform, RunStatus
@@ -202,7 +203,7 @@ app.add_typer(asset_app, name="asset")
 app.add_typer(emby_app, name="emby")
 app.add_typer(pipeline_app, name="pipeline")
 
-_EXPECTED_DATABASE_REVISION = "0012_library_output_policy"
+_EXPECTED_DATABASE_REVISION = "0013_exact_subscription_delivery"
 _REQUIRED_DATABASE_TABLES = frozenset(str(name) for name in Base.metadata.tables)
 
 
@@ -1093,7 +1094,7 @@ def _build_pipeline_worker(
             )
         except (TypeError, ValueError):
             return PipelineHandlerResult.failure("pipeline_handler_invalid")
-        return PipelineHandlerResult.success()
+        return PipelineHandlerResult.success(pipeline_delivery_receipt(outcome))
 
     return PipelineSubscriptionWorker(
         database,

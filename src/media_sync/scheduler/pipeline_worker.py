@@ -13,6 +13,8 @@ from threading import Event
 from types import MappingProxyType
 from typing import Literal, Protocol, cast
 
+from sqlalchemy.orm import Session
+
 from media_sync.application.observability import EventSink, elapsed_ms, emit_event, event_context
 from media_sync.application.operations import DurableSubjectHook, DurableSubjectRef
 from media_sync.infrastructure.db import Database, JobRepository, LeaseLostError
@@ -22,8 +24,8 @@ from .pipeline import (
     PIPELINE_SUBSCRIPTION_JOB_TYPE,
     PipelineJobRepository,
     PipelineSubscriptionClaim,
-    parse_pipeline_subscription_payload,
 )
+from .pipeline_receipt import PipelineDeliveryReceipt
 
 PIPELINE_RETRY_DELAY_SECONDS = 30
 _MAX_JOBS = 1_000
@@ -206,6 +208,7 @@ class PipelineHandlerResult:
 
     succeeded: bool
     error_code: str | None = None
+    receipt: PipelineDeliveryReceipt | None = None
 
     def __post_init__(self) -> None:
         if type(self.succeeded) is not bool:
@@ -213,14 +216,18 @@ class PipelineHandlerResult:
         if self.succeeded:
             if self.error_code is not None:
                 raise ValueError("successful pipeline results cannot carry an error code")
+            if self.receipt is not None and not isinstance(self.receipt, PipelineDeliveryReceipt):
+                raise ValueError("successful pipeline receipt is invalid")
             return
         if self.error_code is None:
             raise ValueError("failed pipeline results require an error code")
+        if self.receipt is not None:
+            raise ValueError("failed pipeline results cannot carry a receipt")
         classify_pipeline_failure(self.error_code)
 
     @classmethod
-    def success(cls) -> PipelineHandlerResult:
-        return cls(succeeded=True)
+    def success(cls, receipt: PipelineDeliveryReceipt | None = None) -> PipelineHandlerResult:
+        return cls(succeeded=True, receipt=receipt)
 
     @classmethod
     def failure(cls, error_code: str) -> PipelineHandlerResult:
@@ -245,6 +252,7 @@ class PipelineWorkerResult:
     status: str
     attempt: int | None = None
     error_code: str | None = None
+    receipt: PipelineDeliveryReceipt | None = None
 
     @classmethod
     def idle(cls) -> PipelineWorkerResult:
@@ -293,14 +301,15 @@ class PipelineSubscriptionWorker:
         return float(value)
 
     @staticmethod
-    def _result(job: Job) -> PipelineWorkerResult:
-        payload = parse_pipeline_subscription_payload(job)
+    def _result(job: Job, *, session: Session) -> PipelineWorkerResult:
+        payload = PipelineJobRepository(session).get(job.id)
         return PipelineWorkerResult(
             job_id=job.id,
             subscription_id=payload.subscription_id,
             status=job.status,
             attempt=job.attempts,
             error_code=job.last_error_code,
+            receipt=payload.receipt,
         )
 
     @staticmethod
@@ -328,7 +337,7 @@ class PipelineSubscriptionWorker:
                 job = session.get(Job, claim.job_id)
                 if job is None or job.job_type != PIPELINE_SUBSCRIPTION_JOB_TYPE:
                     return self._fenced(claim, error_code=error_code)
-                observed = self._result(job)
+                observed = self._result(job, session=session)
         except Exception:
             return self._fenced(claim, error_code=error_code)
         if observed.status in {"queued", "claimed", "running"}:
@@ -350,7 +359,11 @@ class PipelineSubscriptionWorker:
         if not isinstance(raw, PipelineHandlerResult):
             return PipelineHandlerResult.failure("pipeline_handler_invalid")
         try:
-            return PipelineHandlerResult(succeeded=raw.succeeded, error_code=raw.error_code)
+            return PipelineHandlerResult(
+                succeeded=raw.succeeded,
+                error_code=raw.error_code,
+                receipt=raw.receipt,
+            )
         except (TypeError, ValueError):
             return PipelineHandlerResult.failure("pipeline_handler_invalid")
 
@@ -464,10 +477,23 @@ class PipelineSubscriptionWorker:
         with self.database.session() as session:
             jobs = JobRepository(session)
             if result.succeeded:
+                observed = session.get(Job, claim.job_id)
+                if observed is None:
+                    raise LeaseLostError("pipeline job disappeared before success")
+                replacement = (
+                    PipelineJobRepository(session).completion_payload(observed, result.receipt)
+                    if result.receipt is not None
+                    else None
+                )
+                if replacement is not None:
+                    # Exact-chain validation may wait on another transaction;
+                    # never borrow its earlier timestamp to pass a stale lease.
+                    current = self.clock()
                 job = jobs.complete(
                     claim.job_id,
                     worker_id=worker_id,
                     lease_token=claim.lease_token,
+                    replacement_payload=replacement,
                     now=current,
                 )
             else:
@@ -485,7 +511,7 @@ class PipelineSubscriptionWorker:
                 )
             if job.job_type != PIPELINE_SUBSCRIPTION_JOB_TYPE:
                 raise LeaseLostError("pipeline worker observed a foreign job type")
-            return self._result(job)
+            return self._result(job, session=session)
 
     def _fail_closed(
         self,
@@ -531,6 +557,62 @@ class PipelineSubscriptionWorker:
                 subject_hook(session, DurableSubjectRef("job", claim.job_id))
         if claim is None:
             return PipelineWorkerResult.idle()
+
+        return await self._observe_claimed(
+            claim, worker_id=worker_id, lease_seconds=lease_seconds, heartbeat_interval=heartbeat_interval
+        )
+
+    async def run_exact(
+        self,
+        job_id: str,
+        *,
+        expected_subscription_id: str,
+        expected_sync_job_id: str,
+        expected_run_id: str,
+        worker_id: str,
+        lease_seconds: int = 300,
+        heartbeat_interval_seconds: float | None = None,
+        subject_hook: DurableSubjectHook | None = None,
+    ) -> PipelineWorkerResult:
+        """Run only the exact coordinator of this succeeded sync Job/Run."""
+
+        heartbeat_interval = self._heartbeat_interval(heartbeat_interval_seconds, lease_seconds=lease_seconds)
+        with self.database.session() as session:
+            claim = PipelineJobRepository(session).claim_exact(
+                job_id,
+                expected_subscription_id=expected_subscription_id,
+                expected_sync_job_id=expected_sync_job_id,
+                expected_run_id=expected_run_id,
+                worker_id=worker_id,
+                lease_seconds=lease_seconds,
+                now=self.clock(),
+            )
+            if claim is not None and subject_hook is not None:
+                subject_hook(session, DurableSubjectRef("job", claim.job_id))
+        if claim is None:
+            with self.database.session() as session:
+                observed = PipelineJobRepository(session).get(job_id)
+                if observed.status == "succeeded":
+                    return PipelineWorkerResult(
+                        observed.job_id,
+                        observed.subscription_id,
+                        observed.status,
+                        observed.attempts,
+                        receipt=observed.receipt,
+                    )
+            return PipelineWorkerResult.idle()
+        return await self._observe_claimed(
+            claim, worker_id=worker_id, lease_seconds=lease_seconds, heartbeat_interval=heartbeat_interval
+        )
+
+    async def _observe_claimed(
+        self,
+        claim: PipelineSubscriptionClaim,
+        *,
+        worker_id: str,
+        lease_seconds: int,
+        heartbeat_interval: float,
+    ) -> PipelineWorkerResult:
 
         started_at = time.monotonic()
         with event_context(
@@ -674,6 +756,7 @@ class PipelineSubscriptionWorker:
 
 __all__ = [
     "PIPELINE_RETRY_DELAY_SECONDS",
+    "PipelineDeliveryReceipt",
     "PipelineFailureClassification",
     "PipelineHandler",
     "PipelineHandlerResult",
