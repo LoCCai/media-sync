@@ -49,3 +49,9 @@ $task0065Tests = @(rg --files tests | Where-Object { $_ -match '(cookie|creator_
 Final full Ruff check/format, mypy137 modules, compileall, Web701/check/build/format, docs662/links,2 locked checkouts, uv lock62 packages and diff checks passed at their stated frozen snapshots. Raw JUnit stays locally under docs/artifacts and remains Git-ignored by existing policy; this document versions exact commands/results/failures. No environment skip was hidden as passed; real-platform/OS gates above remain NOT_RUN.
 
 Fresh fetch before commit had plan ahead1/behind0; source and test changes are task-owned, no runtime/credential/upstream changes. GitHub publication will be recorded after the actual normal push and fresh-fetch comparison.
+
+## GitHub publication
+
+Frozen bilingual plan3ecab22 and implementation e149f5059a3a695eebaf5f8ddc12d91084d9550e were normally pushed to origin/main at https://github.com/LoCCai/media-sync without force. Fresh fetch confirmed HEAD=origin/main at that full implementation SHA, divergence0 0 and clean worktree. Only41 task source/test/Web/bilingual-doc files were staged for implementation; no credentials, runtime data, raw JUnit, temporary public checkouts or packages were committed.
+
+This publication record is a separate bilingual documentation-only commit, followed by another normal push/fetch comparison. Application/test sources remain frozen. No install/deployment, real platform request, Bili canary retry or supervisor recovery. Remaining XHS profile, avatar/media breadth and real-environment acceptance stay part of the active original goal.

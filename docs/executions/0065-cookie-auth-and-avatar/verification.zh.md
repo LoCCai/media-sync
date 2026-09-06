@@ -49,3 +49,9 @@ $task0065Tests = @(rg --files tests | Where-Object { $_ -match '(cookie|creator_
 最终完整Ruff检查/格式、mypy137模块、compileall、Web701/check/build/format、docs662链接、2个锁定checkout、uv lock62包及diff检查在上述冻结快照通过。原始JUnit保存在本地docs/artifacts，按既有规则Git忽略；本文版本化命令/准确结果/失败。未将任何环境跳过藏成通过，上述真实平台/OS门仍NOT_RUN。
 
 提交前fresh fetch仅计划领先1/落后0，源码/测试修改均本任务所有，无运行数据/凭据/上游变更。GitHub发布将在实际正常push/fresh-fetch比较后另记。
+
+## GitHub发布
+
+双语冻结计划3ecab22与实现e149f5059a3a695eebaf5f8ddc12d91084d9550e已正常推送至https://github.com/LoCCai/media-sync的origin/main，未强推。fresh fetch确认HEAD=origin/main同一完整实现SHA，分歧0 0且工作区干净。实现仅暂存41个本任务源码/测试/Web/双语文档文件；未提交凭据、运行数据、原始JUnit、临时公开checkout或包。
+
+本发布记录另作双语纯文档提交，再正常push/fetch核对，应用/测试保持冻结。未安装/部署、请求真实平台、重试B站canary或恢复supervisor。小红书资料、更广头像/媒体与真实环境验收仍是活动原目标的一部分。
