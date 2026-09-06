@@ -23,7 +23,7 @@
 
 ### media-sync 0.x 对外能力
 
-0058/0063为**B站、小红书、微博、知乎、贴吧**提供粘贴Cookie远程验证/不可变私密保存；抖音本地标记及快手关系列表仍不能证明本人身份，这两平台校验器未开放。上表上游Cookie列不等于七平台UI验收。[0064](executions/0064-douyin-tieba-profiles/progress.zh.md)将准确作者昵称扩至**B站、微博、快手、知乎、抖音、贴吧**，B站/微博/贴吧具有可选有界同源头像。抖音/快手/贴吧的目标资料观察不认证当前本人。小红书返回资料身份、抖音/快手/知乎头像形状、剩余媒体与真人门禁仍待完成，不放宽通配CDN或猜测身份兜底。
+[0065](executions/0065-cookie-auth-and-avatar/progress.zh.md)接通七平台粘贴Cookie本人校验/不可变私密保存；抖音使用创作者中心self GET，快手单次无目标用户GraphQL且要求候选含kuaishou.web.cp.api_ph。严格成功子集见执行来源，不能把本地标志或公开资料当认证。准确昵称覆盖B站/微博/快手/知乎/抖音/贴吧；B站/微博/贴吧及有限知乎头像经有界同源PNG。小红书稳定返回资料身份、抖音/快手头像及更广知乎CDN、剩余媒体与真人门仍开放。上游Cookie列和离线实现不等于七平台真人资格。
 
 执行 0012 当前工作树已为七个平台标识开放针对一个合格初始 MediaCrawler QR 账户或精确 `saved_session/expired` 账户的显式阻塞登录命令。在读取设置、数据库或启动 child 前，必须同时提供 `--enable-mediacrawler` 与 `--accept-mediacrawler-license`。隔离的仅登录 child 强制有头浏览器并保存状态；重认证启动时原子变为 `qr/authenticating`，持久成功交接会把账户切换为派生的逐账户 `saved_session/authenticated`，非成功则留在可重试 QR 状态。Child 会一直处于 START/CANCEL/EOF 父进程控制及结果 guardian 下，直到完整树关停。Cookie 继续走非交互密钥引用，显式重认证之外的 saved session 只允许后台无头使用，且**不开放手机号登录**。这一点有意区别于上游过宽的枚举声明。
 

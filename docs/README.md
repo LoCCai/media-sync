@@ -2,7 +2,7 @@
 
 # media-sync project journal
 
-Current work: [0064 DY/Tieba creator profiles](executions/0064-douyin-tieba-profiles/progress.md) adds exact nicknames and a source-backed optional Tieba avatar through signed isolated workers and real subscription receipts. Six nickname platforms and five pasted-Cookie validators are wired; XHS profiles, DY/KS pasted self validators, DY/KS/Zhihu avatars and real capture/archive/playback qualification remain required. Local output needs no media-server connection. Exact tests/publication are in [0064 verification](executions/0064-douyin-tieba-profiles/verification.md); the seven-platform goal is not complete.
+Current work: [0065 DY/KS Cookie self checks and optional Zhihu avatar](executions/0065-cookie-auth-and-avatar/progress.md) connects one self request to private save and actual account/subscription workflows. Seven pasted validators are implemented; KS requires the cp.api_ph Cookie subset. Six nickname platforms, limited source-backed Zhihu avatar. XHS profiles, remaining avatars/media and live capture/archive/playback still required. Local output needs no server connection. Exact tests/publication: [0065 verification](executions/0065-cookie-auth-and-avatar/verification.md); the original goal is not complete.
 
 Production remains unresolved: [scheduler failure diagnostics](executions/0055-operator-auth-playback-evidence/scheduler-diagnostics/progress.md) after the [failed real Bili canary](executions/0055-operator-auth-playback-evidence/bili-success-followup/verification.md). Login success and Worker completion do not prove capture success. [Unified status](status.md) separates implemented and pending work; offline bounded-path checks do not replace live qualification and the seven-platform goal is unchanged.
 

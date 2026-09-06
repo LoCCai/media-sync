@@ -1,4 +1,4 @@
-"""Exact nickname-only Zhihu observation; no crawler, content or avatar access."""
+"""Exact Zhihu nickname and optional avatar URL; no crawler or content access."""
 
 from __future__ import annotations
 
@@ -15,6 +15,7 @@ from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, cast
 
+from media_sync.application.creator_avatar import validate_creator_avatar_url
 from media_sync.domain import Platform
 from media_sync.security.secrets import SecretValue
 
@@ -124,9 +125,11 @@ def parse_zhihu_profile_html(html: str, token: str) -> MediaCrawlerCreatorProfil
         row = data.get(token)
         if type(row) is not dict or type(row.get("urlToken")) is not str or row["urlToken"] != token:
             raise _invalid()
-        # avatarUrl is a protocol field, not evidence for a safe CDN shape.
-        # Never turn it or incidental page entities into output/storage.
-        return MediaCrawlerCreatorProfile(token, _text(row.get("name"), 512), None)
+        nickname = _text(row.get("name"), 512)
+        avatar = None
+        with contextlib.suppress(ValueError):
+            avatar = validate_creator_avatar_url(row.get("avatarUrl"), platform="zhihu")
+        return MediaCrawlerCreatorProfile(token, nickname, avatar)
     except (ValueError, TypeError, RecursionError, UnicodeError) as error:
         raise _invalid() from error
 

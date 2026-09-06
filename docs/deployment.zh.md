@@ -4,6 +4,12 @@
 
 本指南使用内含锁定 MediaCrawler 运行时的自托管容器部署 media-sync，要求 Linux 主机与 Docker Compose v2。当前 0055 安全控制台与启动预检已实现，本地离线与合成浏览器门禁已通过；准确状态见[验证](executions/0055-operator-auth-playback-evidence/secure-console/verification.zh.md)。后端鉴权、Web session／内存 CSRF、退出／过期与二维码／SSE 已接线，`/legacy` 仅提供受保护迁移提示；无 v2 构建时根页仅提示构建／CLI。当前 Linux 镜像、运行用户权限与平台／媒体服务器真人流程仍为 NOT_RUN，不能用旧 0050 镜像 PASS 或公开 health 成功替代。
 
+## 抖音/快手粘贴Cookie与知乎可选头像（0065）
+
+另行更新/重建后，在账户页粘贴完整请求Cookie头值。抖音仅查询一次创作者中心当前用户；快手仅发一次无目标用户的userInfo GraphQL，当前Cookie必须含kuaishou.web.cp.api_ph（通常来自创作者中心登录会话），普通网页Cookie未必符合。不提供或验证失败不会替换旧认证；不把Cookie存在或公开资料成功当登录成功。不要把Cookie粘贴到聊天/日志。
+
+七平台粘贴校验已有实现但不代表真人通过；六平台昵称不变，小红书资料仍待实现。知乎仅接入返回行原始HTTPS pic2.zhimg.com/{32hex}_l.jpg头像；未知当前CDN形式安全保留昵称/旧头像，不改URL或导出名。无需新环境变量或媒体服务器连接。[0065验证](executions/0065-cookie-auth-and-avatar/verification.zh.md)区分离线与未跑环境；本次未部署、采集重试或恢复supervisor。以下旧检查点中的“未开放”均描述当时边界，以此段为最新能力。
+
 ## 抖音/贴吧作者资料与贴吧头像（0064）
 
 另行更新/重建后，已有合格保存会话或Cookie账户可在订阅页输入抖音sec_user_id（ASCII字母/数字/下划线/连字符，最多255），或贴吧裸现代portrait（tb.1.后28–31字符，禁连续点/末尾点）。这里不接收整段主页URL、数字UID替代或时间戳；贴吧返回身份可含唯一?t=10位数字，服务只在去掉这一有证据后缀后精确匹配。原始昵称来自平台响应，不手填冒充。查询仅一次资料请求、不采集、不扫码、不自动重试，无需全历史确认；采集仍有自身门禁。

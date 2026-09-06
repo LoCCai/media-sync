@@ -25,7 +25,7 @@ from media_sync.security.secrets import SecretValue
 from tests.contract.test_cookie_login_upstream import checkout as checkout
 from tests.contract.test_cookie_login_upstream import load
 from tests.contract.test_cookie_login_upstream import offline as offline
-from tests.unit.test_zhihu_creator_profile import COOKIE, TOKEN, _headers, _html
+from tests.unit.test_zhihu_creator_profile import AVATAR, COOKIE, TOKEN, _headers, _html
 
 
 @pytest.fixture
@@ -79,7 +79,17 @@ def locked(checkout: Path, offline: dict[str, Any], monkeypatch: pytest.MonkeyPa
 @pytest.mark.parametrize("cookie_mode", [False, True], ids=["saved", "candidate"])
 @pytest.mark.parametrize(
     "outcome",
-    ["success", "auth_error", "public_as_self", "wrong_token", "missing_token", "redirect", "oversize", "missing_dc0"],
+    [
+        "success",
+        "avatar",
+        "auth_error",
+        "public_as_self",
+        "wrong_token",
+        "missing_token",
+        "redirect",
+        "oversize",
+        "missing_dc0",
+    ],
 )
 async def test_locked_two_signed_requests_and_browser_network_denied(
     checkout: Path,
@@ -124,6 +134,8 @@ async def test_locked_two_signed_requests_and_browser_network_denied(
         if outcome == "redirect":
             return httpx.Response(302, headers={"location": "http://127.0.0.1/private"})
         row: dict[str, Any] = {"urlToken": TOKEN, "name": "Unmasked raw nickname"}
+        if outcome == "avatar":
+            row["avatarUrl"] = AVATAR
         if outcome == "wrong_token":
             row["urlToken"] = "someone-else"
         elif outcome == "missing_token":
@@ -209,7 +221,7 @@ async def test_locked_two_signed_requests_and_browser_network_denied(
     monkeypatch.delitem(sys.modules, "config")
     monkeypatch.delitem(sys.modules, "media_platform.zhihu.client")
     monkeypatch.setattr(module.importlib, "import_module", importing)
-    if outcome == "success":
+    if outcome in {"success", "avatar"}:
         result = await module.lookup_zhihu(
             checkout,
             tmp_path / "profile",
@@ -218,7 +230,9 @@ async def test_locked_two_signed_requests_and_browser_network_denied(
             cookie=SecretValue(candidate) if cookie_mode else None,
         )
         assert (
-            result.remote_id == TOKEN and result.display_name == "Unmasked raw nickname" and result.avatar_url is None
+            result.remote_id == TOKEN
+            and result.display_name == "Unmasked raw nickname"
+            and result.avatar_url == (AVATAR if outcome == "avatar" else None)
         )
     else:
         expected_status = (

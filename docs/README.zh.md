@@ -2,7 +2,7 @@
 
 # 项目工作日志
 
-当前推进：[0064抖音/贴吧资料](executions/0064-douyin-tieba-profiles/progress.zh.md)接入准确昵称和有来源的贴吧可选头像，贯通真实签名隔离worker及订阅凭单。现有六平台昵称、五平台粘贴Cookie校验；小红书资料、抖音/快手粘贴本人校验、抖音/快手/知乎头像及真实采集/归档/播放验收仍须完成。本地输出无需连接媒体服务器。精确测试/发布见[0064验证](executions/0064-douyin-tieba-profiles/verification.zh.md)，原定七平台目标未完成。
+当前工作：[0065抖音/快手Cookie本人校验与知乎可选头像](executions/0065-cookie-auth-and-avatar/progress.zh.md)将单次本人请求接入私密保存及账户/订阅流程。七平台粘贴校验均有实现，快手限含cp.api_ph的Cookie；六平台昵称，知乎头像仅来源支持子集。小红书资料、剩余头像/媒体及真人采集/归档/播放仍须完成。本地输出无需媒体服务器连接。准确验证与发布见[0065验证](executions/0065-cookie-auth-and-avatar/verification.zh.md)，原七平台目标未完成。
 
 生产未决：[首次真实B站采集失败](executions/0055-operator-auth-playback-evidence/bili-success-followup/verification.zh.md)及其[调度失败诊断](executions/0055-operator-auth-playback-evidence/scheduler-diagnostics/progress.zh.md)。登录成功和Worker完成不等于采集成功；[统一状态](status.zh.md)区分已实现与待实现。新有界能力的离线通过不替代生产验收，七平台目标不变。
 

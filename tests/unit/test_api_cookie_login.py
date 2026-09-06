@@ -346,11 +346,19 @@ def test_gates_do_not_call_runner(environment: Any, change: dict[str, object], c
 def test_capabilities_distinguish_supported_remote_proofs(environment: Any) -> None:
     client, _, _, _, _ = environment
     rows = client.get("/api/v1/platform-capabilities").json()["platforms"]
-    assert {row["platform"] for row in rows if row["pasted_cookie_login"]} == {"bili", "xhs", "wb", "zhihu", "tieba"}
+    assert {row["platform"] for row in rows if row["pasted_cookie_login"]} == {
+        "bili",
+        "xhs",
+        "wb",
+        "zhihu",
+        "tieba",
+        "dy",
+        "ks",
+    }
     assert len(rows) == 7
 
 
-@pytest.mark.parametrize("platform", ["bili", "wb", "zhihu", "tieba"])
+@pytest.mark.parametrize("platform", ["bili", "wb", "zhihu", "tieba", "dy", "ks"])
 def test_saved_cookie_feeds_profile_receipt_and_subscription(environment: Any, platform: str) -> None:
     client, database, account_id, _, _ = environment
     creator = "tb.1." + "a" * 28 if platform == "tieba" else "123"
@@ -404,14 +412,17 @@ def test_saved_cookie_feeds_profile_receipt_and_subscription(environment: Any, p
 
 
 @pytest.mark.parametrize("failure", ["rejected", "result_invalid", "verification_unavailable", "cancelled"])
-def test_tieba_saved_cookie_is_private_and_failed_replacement_retains_exact_auth(
-    environment: Any, failure: str
+@pytest.mark.parametrize("platform", ["tieba", "dy", "ks"])
+def test_new_platform_saved_cookie_is_private_and_failed_replacement_retains_exact_auth(
+    environment: Any, failure: str, platform: str
 ) -> None:
     client, database, account_id, runner, settings = environment
-    candidate = "BDUSS=" + "S" * 192 + "; STOKEN=synthetic=="
+    candidate = (
+        "BDUSS=" + "S" * 192 + "; STOKEN=synthetic==; kuaishou.web.cp.api_ph=KS_PRIVATE==; sessionid=DY_PRIVATE=="
+    )
     with database.session() as session:
-        session.get(Account, account_id).platform = "tieba"
-    first = submit(environment, body(platform="tieba", cookie=candidate))
+        session.get(Account, account_id).platform = platform
+    first = submit(environment, body(platform=platform, cookie=candidate))
     assert first["state"] == "succeeded", first
     before = original(database, account_id)
     reference = before[2]
@@ -421,7 +432,7 @@ def test_tieba_saved_cookie_is_private_and_failed_replacement_retains_exact_auth
     )
     assert resolver.resolve(reference).reveal() == candidate
     runner.status = failure
-    second = submit(environment, body(platform="tieba", cookie="BDUSS=" + "F" * 192, expected_auth_revision=1))
+    second = submit(environment, body(platform=platform, cookie="BDUSS=" + "F" * 192, expected_auth_revision=1))
     assert second["state"] in {"failed_terminal", "cancelled"}, second
     assert original(database, account_id) == before
     assert resolver.resolve(reference).reveal() == candidate

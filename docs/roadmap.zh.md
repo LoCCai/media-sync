@@ -8,7 +8,7 @@
 
 ## 阶段
 
-当前检查点（0056–0064）：本地目录输出仍独立于可选服务器连接；可恢复移除、安全Job报告和有界B站投稿/动态已离线实现。[0064](executions/0064-douyin-tieba-profiles/progress.zh.md)补抖音/贴吧准确昵称及贴吧可选头像，将独立昵称查询扩至六平台，但不开放抖音/快手粘贴本人认证。小红书资料、这两平台校验器、抖音/快手/知乎头像、剩余媒体和当前Linux/真实验收仍必需。历史B站canary失败未解决，不代表部署或恢复supervisor。以[状态](status.zh.md)和[0064验证](executions/0064-douyin-tieba-profiles/verification.zh.md)为准，不沿用下文历史数。
+当前检查点（0056–0065）：本地目录输出、可恢复删除、安全Job报告、有界B站投稿/动态及六平台昵称已有离线实现。[0065](executions/0065-cookie-auth-and-avatar/progress.zh.md)补抖音/快手Cookie本人验证、保存与订阅复用及知乎有限可选头像。快手限cp.api_ph子集。小红书资料、剩余头像/媒体和当前Linux/真人验收仍必需；历史B站canary未解决。无部署或supervisor恢复。以[状态](status.zh.md)和[0065验证](executions/0065-cookie-auth-and-avatar/verification.zh.md)为准，不继承下文历史测试数。
 
 ### 阶段 0 — 基线与许可证边界
 

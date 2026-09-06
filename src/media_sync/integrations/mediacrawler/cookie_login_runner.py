@@ -21,6 +21,8 @@ from uuid import UUID
 
 if __name__ == "__main__" and not __package__:
     sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+    # Platform adapters must share the script worker's typed failure class.
+    sys.modules["media_sync.integrations.mediacrawler.cookie_login_runner"] = sys.modules[__name__]
 
 from media_sync.domain import Platform
 from media_sync.integrations.mediacrawler.browser_environment import browser_child_environment
@@ -580,6 +582,16 @@ def _origin(module: Any, expected: Path) -> None:
 
 
 async def _verify_remote(checkout: Path, request: CookieLoginRequest, deadline: float) -> None:
+    if request.platform is Platform.DY:
+        from media_sync.integrations.mediacrawler.douyin_cookie_login import verify_douyin_cookie
+
+        await verify_douyin_cookie(request.cookie, deadline)
+        return
+    if request.platform is Platform.KS:
+        from media_sync.integrations.mediacrawler.kuaishou_cookie_login import verify_kuaishou_cookie
+
+        await verify_kuaishou_cookie(checkout, request, deadline)
+        return
     module_name, class_name, _host, uri = _SELF_ENDPOINTS[request.platform]
     expected_url = _self_url(request.platform)
     candidate_pairs = cookie_pairs(request.cookie.reveal())

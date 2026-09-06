@@ -21,12 +21,50 @@ URL = "https://i1.hdslb.com/bfs/face/" + "a" * 40 + ".jpg"
 WB_URL = "https://tvax1.sinaimg.cn/crop.0.0.512.512.1024/avatar_Test-123.jpg"
 TB_PORTRAIT = "tb.1." + "a" * 28
 TB_URL = "https://gss0.bdstatic.com/6LZ1dD3d1sgCo2Kml5_Y_D3/sys/portrait/item/" + TB_PORTRAIT
+ZH_URL = "https://pic2.zhimg.com/" + "a" * 32 + "_l.jpg"
 AVATAR_URLS = [
     pytest.param(URL, id="bili"),
     pytest.param(WB_URL, id="wb"),
     pytest.param(TB_URL, id="tieba"),
     pytest.param(TB_URL + "?t=1234567890", id="tieba-timestamp"),
+    pytest.param(ZH_URL, id="zhihu-historical-subset"),
 ]
+
+
+def test_zhihu_optional_avatar_policy_does_not_allow_cross_platform_use() -> None:
+    assert avatar.validate_creator_avatar_url(ZH_URL, platform="zhihu") == ZH_URL
+    for platform, url in [("bili", ZH_URL), ("wb", ZH_URL), ("tieba", ZH_URL), ("dy", ZH_URL), ("zhihu", URL)]:
+        with pytest.raises(ValueError, match="creator_avatar_url_invalid"):
+            avatar.validate_creator_avatar_url(url, platform=platform)
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        ZH_URL + "?token=PRIVATE",
+        ZH_URL + "#fragment",
+        ZH_URL + "\n",
+        ZH_URL.replace("https:", "http:"),
+        ZH_URL.replace("pic2.", "picx."),
+        ZH_URL.replace("pic2.", "pic1."),
+        ZH_URL.replace(".com/", ".com:443/"),
+        ZH_URL.replace("pic2.zhimg.com", "pic2.zhimg.com.evil.test"),
+        ZH_URL.replace("pic2.zhimg.com", "127.0.0.1"),
+        ZH_URL.replace("pic2.", "user@pic2."),
+        ZH_URL.replace("_l.jpg", "_xl.jpg"),
+        ZH_URL.replace("_l.jpg", "_l.png"),
+        ZH_URL.replace("/aaaa", "/v2-aaaa"),
+        ZH_URL.replace("/aaaa", "/AAAA"),
+        ZH_URL.replace("/aaaa", "/%61aaa"),
+        ZH_URL.replace("/aaaa", "/../aaaa"),
+        ZH_URL.replace("/aaaa", "//aaaa"),
+        ZH_URL.replace("a" * 32, "a" * 31),
+        ZH_URL.replace("a" * 32, "a" * 33),
+    ],
+)
+def test_zhihu_unknown_shape_is_not_rewritten_or_fetched(url: str) -> None:
+    with pytest.raises(ValueError, match="creator_avatar_url_invalid"):
+        avatar.validate_creator_avatar_url(url)
 
 
 @pytest.mark.parametrize("suffix", ["", "?t=1234567890"])

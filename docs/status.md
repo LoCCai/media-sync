@@ -2,7 +2,13 @@
 
 # Unified project status (single source of truth)
 
-## Latest: DY/Tieba creator profiles and Tieba avatars (0064, offline verified)
+## Latest: DY/KS Cookie self checks and limited Zhihu avatar (0065)
+
+[Execution0065](executions/0065-cookie-auth-and-avatar/progress.md) wires two single-request self checks, private Cookie save, account capability and subscription reuse; all seven platforms now have pasted self-validator implementations. KS requires kuaishou.web.cp.api_ph; DY uses creator center. Public target profiles/local flags never authenticate. Zhihu gains a limited source-backed optional avatar; failure preserves nickname/old image.
+
+Exact affected regression, Web/static/package results and actual failures are in [verification](executions/0065-cookie-auth-and-avatar/verification.md), not inherited0064 full-suite PASS. XHS profiles, remaining avatars/media, Linux and live platform/archive/playback remain required. Failed historical Bili canary unresolved; no deployment/production retry/supervisor restart, original goal active.
+
+## Previous checkpoint: DY/Tieba creator profiles and Tieba avatars (0064, offline verified)
 
 [Execution0064](executions/0064-douyin-tieba-profiles/progress.md) wires the real single signed DY profile and Tieba PC profile paths, requiring exact returned identities/raw nicknames. Optional Tieba avatars use a source-backed fixed path, same-creator portrait, one timestamp suffix and the existing isolated downloader/same-origin PNG boundary. Failure retains nickname/previous avatar. Six nickname platforms are wired; pasted-Cookie self validation stays at five, with no account authentication mutation from target-profile success.
 

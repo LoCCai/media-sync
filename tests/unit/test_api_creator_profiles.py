@@ -596,3 +596,67 @@ def test_tieba_avatar_is_exact_creator_scoped_and_optional_failure_retains_bytes
     assert client.get(local_url).content == png
     with database.session() as session:
         assert session.get(Account, account_id).auth_status == "authenticated"
+
+
+@pytest.mark.parametrize("failure", ["missing", "unsafe", "cross_platform", "download"])
+def test_zhihu_parsed_avatar_flows_to_subscription_and_retains_old_bytes(environment: Any, failure: str) -> None:
+    from tests.unit.test_zhihu_creator_profile import AVATAR, TOKEN, _html
+
+    from media_sync.integrations.mediacrawler.zhihu_creator_profile import parse_zhihu_profile_html
+
+    client, database, account_id, runner = environment
+    with database.session() as session:
+        session.get(Account, account_id).platform = "zhihu"
+    row: dict[str, Any] = {"urlToken": TOKEN, "name": "Original name", "avatarUrl": AVATAR}
+
+    def parse(_request: Any, _cancel: Any) -> None:
+        value = parse_zhihu_profile_html(_html(row), TOKEN)
+        runner.name, runner.avatar = value.display_name, value.avatar_url
+
+    runner.hook = parse
+    output = io.BytesIO()
+    Image.new("RGB", (2, 2), "blue").save(output, format="PNG")
+    png = output.getvalue()
+    downloads: list[str] = []
+
+    def fetch(url: str | None) -> bytes | None:
+        if url is None:
+            return None
+        downloads.append(url)
+        return png if len(downloads) == 1 else None
+
+    client.app.state.creator_profile_service.avatar_fetcher = fetch
+    first = _lookup(client, account_id, platform="zhihu", creator_remote_id=TOKEN)
+    assert first["state"] == "succeeded" and first["profile"]["avatar_state"] == "current"
+    local_url = first["profile"]["avatar_url"]
+    assert local_url.startswith("/api/v1/creator-profiles/") and client.get(local_url).content == png
+    assert downloads == [AVATAR]
+    created = client.post(
+        "/api/v1/subscriptions",
+        json={
+            "account_id": account_id,
+            "platform": "zhihu",
+            "creator_remote_id": TOKEN,
+            "profile_lookup_id": first["operation_id"],
+        },
+    )
+    assert created.status_code == 201, created.text
+    row.update(
+        name="New name",
+        avatarUrl={
+            "missing": None,
+            "unsafe": AVATAR + "?token=PRIVATE",
+            "cross_platform": "https://i1.hdslb.com/bfs/face/" + "a" * 40 + ".jpg",
+            "download": AVATAR,
+        }[failure],
+    )
+    second = _lookup(client, account_id, platform="zhihu", creator_remote_id=TOKEN)
+    assert second["state"] == "succeeded" and second["profile"]["avatar_state"] == "retained"
+    assert second["profile"]["avatar_url"] == local_url and client.get(local_url).content == png
+    assert downloads == [AVATAR] * (2 if failure == "download" else 1)
+    subscription = client.get("/api/v1/subscriptions").json()[0]
+    assert subscription["creator_profile"]["nickname"] == "New name"
+    with database.session() as session:
+        assert session.scalar(select(Author)).display_name == "Original name"
+        account = session.get(Account, account_id)
+        assert account.auth_status == "authenticated" and account.auth_revision == 0

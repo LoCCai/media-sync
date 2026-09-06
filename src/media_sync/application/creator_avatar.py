@@ -30,6 +30,9 @@ _TIEBA_AVATAR = re.compile(
     r"(?P<portrait>(?![A-Za-z0-9._-]*\.\.)tb\.1\.[A-Za-z0-9._-]{27,30}[A-Za-z0-9_-])"
     r"(?:\?t=[0-9]{10})?\Z"
 )
+# Source-backed historical head-image subset; unknown current CDN shapes are
+# optional misses. Never rewrite a host, size suffix or signed query to fit.
+_ZHIHU_AVATAR = re.compile(r"https://pic2\.zhimg\.com/[0-9a-f]{32}_l\.jpg\Z")
 
 
 def validate_bili_avatar_url(value: object) -> str:
@@ -43,7 +46,7 @@ def validate_creator_avatar_url(
 ) -> str:
     if type(value) is not str or len(value) > 256:
         raise ValueError("creator_avatar_url_invalid")
-    rules = {"bili": _BILI_AVATAR, "wb": _WEIBO_AVATAR, "tieba": _TIEBA_AVATAR}
+    rules = {"bili": _BILI_AVATAR, "wb": _WEIBO_AVATAR, "tieba": _TIEBA_AVATAR, "zhihu": _ZHIHU_AVATAR}
     if platform is not None and platform not in rules:
         raise ValueError("creator_avatar_url_invalid")
     allowed = tuple(rules.values()) if platform is None else (rules[platform],)

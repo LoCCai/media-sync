@@ -6,15 +6,15 @@
 
 ## Current status
 
-Current implementation and verification are tracked in [`docs/status.md`](docs/status.md); the latest increment is [0064 creator profiles](docs/executions/0064-douyin-tieba-profiles/progress.md). Source support is not live platform qualification.
+Current implementation and verification are tracked in [`docs/status.md`](docs/status.md); the latest increment is [0065 Cookie self checks and optional avatar](docs/executions/0065-cookie-auth-and-avatar/progress.md). Source support is not live platform qualification.
 
 | Area | Current scope |
 | --- | --- |
 | Local media library | Archive and Emby/Jellyfin-compatible directories work independently of optional server connections; text/gallery sidecars are not a claim of native video playback |
-| Accounts and creators | Five pasted-Cookie validators; six-platform exact nickname lookup. Bili/Weibo/Tieba have optional avatars. Seven-platform QR entry points remain subject to real-environment qualification |
+| Accounts and creators | Seven pasted-Cookie self validators (KS requires the cp.api_ph subset); six exact nickname platforms. Bili/WB/Tieba plus limited Zhihu optional avatars. QR and Cookie flows still need live qualification |
 | Subscriptions and operations | Reversible subscription removal preserves media/history; platform profiles, local aliases, safe Job reports and user-oriented status/next actions are implemented |
-| Verification | Exact current test/build/package results, failures and environment skips are in [0064 verification](docs/executions/0064-douyin-tieba-profiles/verification.md), not inherited historical counts |
-| Remaining | XHS profiles; DY/KS pasted self validators; DY/KS/Zhihu avatars; remaining media shapes and current Linux/platform/archive/playback qualification. The failed historical Bili canary remains unresolved |
+| Verification | Exact current tests/build/packages, failures and unrun environments are in [0065 verification](docs/executions/0065-cookie-auth-and-avatar/verification.md), not inherited historical counts |
+| Remaining implementation/qualification | XHS exact profiles, DY/KS avatars and broader Zhihu avatar forms, remaining media and current Linux/platform/archive/playback; historical failed Bili canary remains unresolved |
 
 Per-execution detail, evidence and exact commands live in [`docs/executions/`](docs/README.md) — this README intentionally does not stack execution narratives.
 

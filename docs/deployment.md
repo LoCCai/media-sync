@@ -4,6 +4,12 @@
 
 This guide deploys media-sync with the pinned MediaCrawler runtime on a Linux host with Docker Compose v2. The current 0055 secure console and startup preflight are implemented and locally verified, including synthetic-browser checks; exact status is in [verification](executions/0055-operator-auth-playback-evidence/secure-console/verification.md). Backend authentication, Web session/memory-only CSRF, logout/expiry and QR/SSE are wired; `/legacy` is a protected migration notice, while root without a v2 build offers only a build/CLI notice. The current Linux image, runtime-user permissions and live platform/media-server workflows remain NOT_RUN; neither historical 0050 image PASS nor public health success substitutes for them.
 
+## DY/KS pasted Cookie and optional Zhihu avatar (0065)
+
+After a separate update/rebuild, paste the full request Cookie header in Accounts. DY makes one creator-center current-user request; KS makes one untargeted userInfo GraphQL request and currently requires kuaishou.web.cp.api_ph (typically from a creator-center session); an ordinary web Cookie may not qualify. Missing prerequisites or failed verification preserve old authentication. Cookie presence/public-profile access never grants success. Do not put Cookies in chat/logs.
+
+Seven pasted validators are implemented, not live-qualified. Six nickname platforms remain; XHS profiles still pending. Zhihu only accepts the returned row's unchanged HTTPS pic2.zhimg.com/{32hex}_l.jpg avatar; unknown current CDN forms preserve nickname/old image without URL rewriting or export rename. No new environment variable or media-server connection. [0065 verification](executions/0065-cookie-auth-and-avatar/verification.md) separates offline/unrun checks. No deployment/canary retry/supervisor restart; unavailable claims in older checkpoints below describe their historical boundary.
+
 ## DY/Tieba creator profiles and Tieba avatars (0064)
 
 After a separate update/rebuild, an eligible existing saved-session or Cookie account can use the subscription page with a DY sec_user_id (ASCII letters/digits/underscore/hyphen, maximum255) or bare modern Tieba portrait (tb.1. plus28–31 characters, no repeated/trailing dots). No whole homepage URL, numeric-UID substitution or input timestamp. Tieba's returned identity may carry one ?t=10 digits; only that evidenced suffix is removed before exact matching. Nicknames come from raw platform responses, not a manual substitute. One profile request, no crawling/QR/automatic retry/full-history acknowledgement; capture retains its own gates.

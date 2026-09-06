@@ -146,15 +146,20 @@ describe('explicit bounded Cookie submission', () => {
     await controller.submit('a=synthetic');
     expect(controller.snapshot.phase).toBe('saved');
   });
-  it.each(['bili', 'xhs', 'wb', 'zhihu', 'tieba'] as Platform[])(
+  it.each(['bili', 'xhs', 'wb', 'zhihu', 'tieba', 'dy', 'ks'] as Platform[])(
     'allows capability-enabled %s accounts and replacements',
     (platform) => {
       const current = { ...account, platform, login_method: 'cookie' as const, auth_status: 'authenticated' };
       expect(cookieLoginEligibility(current, { ...capability, platform })).toBe('');
     }
   );
-  it.each(['dy', 'ks'] as Platform[])('does not pretend %s has a pasted validator', (platform) => {
-    expect(cookieLoginEligibility({ ...account, platform }, { ...capability, platform })).not.toBe('');
+  it.each(['dy', 'ks'] as Platform[])('does not bypass disabled %s server capability', (platform) => {
+    expect(
+      cookieLoginEligibility(
+        { ...account, platform },
+        { ...capability, platform, pasted_cookie_login: false }
+      )
+    ).not.toBe('');
   });
   it.each([
     [null, capability],
@@ -401,5 +406,8 @@ describe('UI integration and truthful status', () => {
     expect(source).not.toMatch(/on:(?:blur|paste)|apiMessage|localStorage|sessionStorage|console\.|\{@html/);
     expect(source).not.toMatch(/api\([^\n]*(?:\/login[`,]|\/contents|\/qr)/);
     expect(COOKIE_LOGIN_FOLLOW_UP).toContain('真实平台端到端验收尚未运行');
+    expect(COOKIE_LOGIN_FOLLOW_UP).toContain('七平台已接入粘贴 Cookie 本人校验');
+    expect(COOKIE_LOGIN_FOLLOW_UP).toContain('kuaishou.web.cp.api_ph');
+    expect(COOKIE_LOGIN_FOLLOW_UP).toContain('小红书资料仍待实现');
   });
 });

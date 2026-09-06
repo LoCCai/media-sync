@@ -56,7 +56,7 @@ const STATES = new Set<OperationState>([
   'interrupted'
 ]);
 export const CREATOR_LOOKUP_NOTICE =
-  '输入完成后自动查询一次 B 站、微博、快手、知乎、抖音或贴吧作者资料；仅使用现有已认证保存会话或 Cookie，不扫码、不采集内容，无需确认全历史采集。B 站/微博/贴吧支持可选头像；快手/知乎/抖音目前只接入准确昵称，头像尚待接入。小红书资料仍待实现。资料成功不代表登录校验、内容抓取或播放成功。';
+  '输入完成后自动查询一次 B 站、微博、快手、知乎、抖音或贴吧作者资料；仅使用现有已认证保存会话或 Cookie，不扫码、不采集内容，无需确认全历史采集。B 站/微博/贴吧支持可选头像；知乎支持有限形状的可选头像，未知形状保留昵称和旧头像。快手/抖音目前仅昵称。小红书资料仍待实现。资料成功不代表登录校验、内容抓取或播放成功。';
 export const CREATOR_LOOKUP_UNAVAILABLE = '暂时无法确认本次作者资料查询结果；未自动重试。';
 export const CREATOR_LOOKUP_LICENSE_REQUIRED = '请先完成首次使用与许可证确认，本次未发起查询。';
 export const CREATOR_LOOKUP_WAIT_ENDED =

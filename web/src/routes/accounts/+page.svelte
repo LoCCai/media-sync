@@ -508,7 +508,7 @@
           >
           {#if isCreatorLookupPlatform(selectedAccount.platform)}<span
               >B 站、微博、快手、知乎、抖音和贴吧 Cookie
-              作者昵称查询已接入；快手/知乎/抖音目前仅昵称，头像尚未接入。
+              作者昵称查询已接入；知乎支持有限可选头像，快手/抖音目前仅昵称。
               请到订阅页面单独查询；不代表内容已抓取、可播放或真实平台端到端验收完成。</span
             >{/if}
         </div>

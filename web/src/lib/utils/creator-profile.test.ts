@@ -700,7 +700,8 @@ describe('creation, image and operation presentation integration', () => {
     expect(CREATOR_LOOKUP_NOTICE).toContain('不扫码、不采集内容');
     expect(CREATOR_LOOKUP_NOTICE).toContain('B 站、微博、快手、知乎、抖音或贴吧');
     expect(CREATOR_LOOKUP_NOTICE).toContain('小红书资料仍待实现');
-    expect(CREATOR_LOOKUP_NOTICE).toContain('头像尚待接入');
+    expect(CREATOR_LOOKUP_NOTICE).toContain('知乎支持有限形状的可选头像');
+    expect(CREATOR_LOOKUP_NOTICE).toContain('快手/抖音目前仅昵称');
     expect(CREATOR_LOOKUP_NOTICE).toContain('无需确认全历史采集');
     const completedInput = source.slice(
       source.indexOf('function completeCreatorInput('),
@@ -715,7 +716,7 @@ describe('creation, image and operation presentation integration', () => {
     expect(accounts.replace(/\s+/g, ' ')).toContain(
       'B 站、微博、快手、知乎、抖音和贴吧 Cookie 作者昵称查询已接入'
     );
-    expect(accounts).toContain('快手/知乎/抖音目前仅昵称，头像尚未接入');
+    expect(accounts).toContain('知乎支持有限可选头像，快手/抖音目前仅昵称');
   });
 
   it('allows WB profile lookup without the independently required full-history capture acknowledgement', async () => {

@@ -95,7 +95,7 @@ def test_request_budget_is_closed(timeout: object) -> None:
 
 
 @pytest.mark.parametrize("platform", [Platform.DY, Platform.KS])
-def test_unqualified_platform_never_spawns_or_writes(tmp_path: Path, platform: Platform) -> None:
+def test_new_cookie_platform_still_requires_held_account_lock(tmp_path: Path, platform: Platform) -> None:
     runner = module.CookieLoginProcessRunner(
         lock_path=tmp_path / "missing",
         integration_root=tmp_path / "missing-runtime",
@@ -103,7 +103,7 @@ def test_unqualified_platform_never_spawns_or_writes(tmp_path: Path, platform: P
         enabled=True,
         license_acknowledged=True,
     )
-    assert runner.run(request(platform)).status == "verification_unavailable"
+    assert runner.run(request(platform)).status == "configuration_invalid"
     assert list(tmp_path.iterdir()) == []
 
 
@@ -183,7 +183,7 @@ def test_authenticated_result_requires_sha_and_supported_platform() -> None:
     with pytest.raises(ValueError):
         CookieLoginResult("authenticated", incoming.account_id, incoming.platform, incoming.operation_id)
     with pytest.raises(ValueError):
-        CookieLoginResult("authenticated", incoming.account_id, Platform.DY, incoming.operation_id, "a" * 40)
+        CookieLoginResult("authenticated", incoming.account_id, "unknown", incoming.operation_id, "a" * 40)
     with pytest.raises(ValueError):
         module._json(b'{"status":"rejected","status":"authenticated"}', 100)
 

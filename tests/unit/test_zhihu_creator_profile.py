@@ -14,6 +14,7 @@ from media_sync.integrations.mediacrawler.creator_profile_runner import _LookupF
 
 TOKEN = "synthetic-creator.name_01"
 COOKIE = 'z_c0=PRIVATE_TEST_COOKIE==; d_c0=PRIVATE_SIGN==; marker="quoted=="'
+AVATAR = "https://pic2.zhimg.com/" + "a" * 32 + "_l.jpg"
 
 
 def _html(row: object | None = None) -> str:
@@ -62,6 +63,23 @@ def test_exact_response_token_and_raw_name_only() -> None:
     result = module.parse_zhihu_profile_html(_html(), TOKEN)
     assert result.remote_id == TOKEN and result.display_name == "原始平台昵称" and result.avatar_url is None
     assert "unknown.example" not in repr(result) and "not-retained" not in repr(result)
+
+
+@pytest.mark.parametrize(
+    "avatar", [AVATAR, None, "", True, {}, [], AVATAR + "?token=PRIVATE", "https://evil.test/image"]
+)
+def test_same_row_avatar_is_optional_and_unknown_values_preserve_name(avatar: Any) -> None:
+    result = module.parse_zhihu_profile_html(_html({"urlToken": TOKEN, "name": "Name", "avatarUrl": avatar}), TOKEN)
+    assert result.display_name == "Name"
+    assert result.avatar_url == (AVATAR if avatar == AVATAR else None)
+
+
+def test_another_entity_avatar_never_fills_missing_exact_creator_avatar() -> None:
+    html = _html({"urlToken": TOKEN, "name": "Name"})
+    html = html.replace('"users": {', '"users": {"another": ' + json.dumps({"avatarUrl": AVATAR}) + ",")
+    assert module.parse_zhihu_profile_html(html, TOKEN).avatar_url is None
+    with pytest.raises(_LookupFailure, match="result_invalid"):
+        module.parse_zhihu_profile_html(_html({"urlToken": "another", "name": "Name", "avatarUrl": AVATAR}), TOKEN)
 
 
 @pytest.mark.parametrize("escaped", [r"\ud800", r"\udfff", r"valid\ud800name"])

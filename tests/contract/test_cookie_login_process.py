@@ -286,7 +286,10 @@ runner.run(CookieLoginRequest(uuid4(), Platform.BILI, uuid4(), parse_cookie_head
         parent.kill()
         parent.wait(timeout=5)
         until(lambda: not alive(report["pid"]) and not alive(report["child"]))
-        assert competing_lock.acquire()
+        # Process exit observation does not prove that every inherited file
+        # handle is already reaped. Require actual ownership within a bounded
+        # deadline, as in the QR hard-parent-death contract; never waive it.
+        until(competing_lock.acquire, seconds=5)
         competing_lock.release()
     finally:
         with contextlib.suppress(OSError):
