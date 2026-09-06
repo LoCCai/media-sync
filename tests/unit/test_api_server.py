@@ -41,6 +41,7 @@ def test_health_ready_settings_and_console(tmp_path: Path, monkeypatch: pytest.M
     assert client.get("/api/v1/ready").json()["status"] == "ready"
     settings = client.get("/api/v1/settings").json()
     assert settings["api_bind"] == "127.0.0.1:8632"
+    assert settings["bili_scan_continuation_delay_seconds"] == 300
     console = client.get("/")
     assert console.status_code == 200
     assert "media-sync" in console.text

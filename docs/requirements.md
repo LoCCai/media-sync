@@ -12,6 +12,14 @@
 
 ## 2. Functional requirements
 
+### Subscription-driven local delivery (operator clarification, 0066)
+
+- **AUTO-001** — The normal flow is creator subscription, paced resumable historical discovery, automatic download and compatible directory writes, then periodic incremental updates. Manual export is maintenance, not a required step; no media-server connection is required.
+- **AUTO-002** — Persist per-feed backfill/incremental state and completion evidence; interrupted batches resume without duplicates. A bounded batch or empty result alone does not prove complete history. These full semantics are required, not claimed implemented on every platform.
+- **OUTPUT-001** — Offer an editable shared media root plus platform subdirectories and optional per-platform roots. Resolve container paths, not host paths; API and supervisor must use the same persisted revision and mounts. Show effective paths before saving.
+- **OUTPUT-002** — Directory changes must not silently move/delete files, strand managed library records or cause an in-flight job to switch roots. Retain output provenance and require explicit migration policy for already-published media.
+- **AUTO-003** — Respect bounded requests, pacing/backoff and authenticated access. Positively identified risk-control or verification must produce an actionable pause; do not bypass challenges or promise guaranteed avoidance. Do not label generic failures as risk-control without evidence.
+
 ### Accounts and authentication
 
 - **AUTH-001** — Represent separate accounts for `xhs`, `dy`, `ks`, `bili`, `wb`, `tieba` and `zhihu`.

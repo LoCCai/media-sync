@@ -2,6 +2,10 @@
 
 # 项目工作日志
 
+当前优先：[0066 登录诊断与订阅自动落盘](executions/0066-login-failure-and-workflow/progress.zh.md)，随后[可编辑目录与订阅到文件闭环](executions/0066-login-failure-and-workflow/next-delivery.zh.md)。最新测试和发布见[0066 验证](executions/0066-login-failure-and-workflow/verification.zh.md)。下方历史功能检查点不代表真人验收已完成。
+
+## 上阶段功能检查点
+
 当前工作：[0065抖音/快手Cookie本人校验与知乎可选头像](executions/0065-cookie-auth-and-avatar/progress.zh.md)将单次本人请求接入私密保存及账户/订阅流程。七平台粘贴校验均有实现，快手限含cp.api_ph的Cookie；六平台昵称，知乎头像仅来源支持子集。小红书资料、剩余头像/媒体及真人采集/归档/播放仍须完成。本地输出无需媒体服务器连接。准确验证与发布见[0065验证](executions/0065-cookie-auth-and-avatar/verification.zh.md)，原七平台目标未完成。
 
 生产未决：[首次真实B站采集失败](executions/0055-operator-auth-playback-evidence/bili-success-followup/verification.zh.md)及其[调度失败诊断](executions/0055-operator-auth-playback-evidence/scheduler-diagnostics/progress.zh.md)。登录成功和Worker完成不等于采集成功；[统一状态](status.zh.md)区分已实现与待实现。新有界能力的离线通过不替代生产验收，七平台目标不变。

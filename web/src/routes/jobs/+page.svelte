@@ -660,7 +660,7 @@
           class="button secondary small"
           type="button"
           on:click={() => runAction('pipeline')}
-          disabled={!!action}><Play size={14} />运行下载 / 导出</button
+          disabled={!!action}><Play size={14} />维护：补跑下载与目录写入</button
         >
       {/if}
     </svelte:fragment>
@@ -686,8 +686,8 @@
             <option value="account-cookie-login">Cookie 校验与保存</option>
             <option value="asset-download">资产下载</option>
             <option value="scheduler-run">订阅同步</option>
-            <option value="pipeline-run">下载 / 导出</option>
-            <option value="emby-export">媒体库导出</option>
+            <option value="pipeline-run">下载与目录写入</option>
+            <option value="emby-export">兼容目录写入</option>
             <option value="media-server-probe">媒体服务器探测</option>
             <option value="media-server-scan">媒体库定向刷新</option>
           </select>

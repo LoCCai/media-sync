@@ -46,6 +46,9 @@ export type LoginRunnerStatus =
   | 'configuration_invalid'
   | 'start_failed'
   | 'result_invalid'
+  | 'upstream_login_exited'
+  | 'upstream_browser_timeout'
+  | 'login_confirmation_failed'
   | 'browser_launch_failed';
 
 export interface LoginDiagnostic {
@@ -119,6 +122,7 @@ export interface Settings {
   export_dir: string;
   job_dir: string;
   api_bind: string;
+  bili_scan_continuation_delay_seconds?: number;
   mediacrawler_python_executable: string | null;
   media_server: MediaServerConfiguration;
 }

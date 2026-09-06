@@ -178,6 +178,31 @@ function explanation(
       next: '检查当前镜像的浏览器依赖、缓存目录和 Xvfb；重新预检通过后再手动启动。'
     };
   }
+  if (runner === 'upstream_browser_timeout') {
+    return {
+      tone: 'danger',
+      title: '平台登录操作等待超时',
+      detail: '上游浏览器操作等待超时；不是本次登录总期限耗尽，也不能据此认定网络故障或凭据错误。',
+      next: '保留本次操作编号，核对平台页面流程与适配版本；预检通过不能排除此问题，先不要反复扫码。'
+    };
+  }
+  if (runner === 'upstream_login_exited') {
+    return {
+      tone: 'danger',
+      title: '平台登录流程提前结束',
+      detail:
+        '上游登录程序主动退出，未确认认证成功；二维码未取得和等待未完成等情况均可能走此分支，现有证据不能再细分。',
+      next: '保留本次操作编号供排查；不要把退出码或预检通过当作登录成功，也不要反复生成二维码。'
+    };
+  }
+  if (runner === 'login_confirmation_failed') {
+    return {
+      tone: 'danger',
+      title: '扫码后认证确认未通过',
+      detail: '扫码流程更新会话后，远端认证检查明确返回未认证；本次未记为登录成功。',
+      next: '确认平台 App 的授权结果并保留操作编号；需要重试时再由你手动启动。'
+    };
+  }
   if (
     runner === 'timed_out' ||
     runner === 'expired' ||
@@ -226,8 +251,11 @@ function explanation(
   return {
     tone: 'danger',
     title: '最近登录失败',
-    detail: '未保存更细诊断，不能判断为浏览器、网络或平台凭据问题。',
-    next: '查看任务记录及当前运行环境，重新预检后由你手动重试；不会自动发起登录。'
+    detail:
+      runner === 'failed'
+        ? '已保存本次操作及通用失败结果，但没有足够的细分类；不能判断为浏览器、网络或平台凭据问题。'
+        : '未保存更细诊断，不能判断为浏览器、网络或平台凭据问题。',
+    next: '保留操作编号并查看任务记录中的开发者详情，核对服务版本；不要仅因预检通过而反复登录。'
   };
 }
 

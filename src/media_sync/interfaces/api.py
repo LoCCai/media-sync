@@ -151,6 +151,7 @@ from media_sync.interfaces.cli import (
 )
 from media_sync.interfaces.cookie_request import CookieRequestError, read_cookie_login_body
 from media_sync.scheduler import DurableSchedulerService, SchedulerRepository, StaleLaneError
+from media_sync.scheduler.bili_scan_continuation import BiliScanContinuationPolicy
 from media_sync.security import (
     OPERATOR_SESSION_COOKIE_NAME,
     OperatorAuthConfigurationError,
@@ -1492,6 +1493,7 @@ def create_api_app(
             "export_dir": str(resolved.export_dir),
             "job_dir": str(resolved.job_dir),
             "api_bind": f"{resolved.api_host}:{resolved.api_port}",
+            "bili_scan_continuation_delay_seconds": resolved.bili_scan_continuation_delay_seconds,
             "mediacrawler_python_executable": (
                 str(resolved.mediacrawler_python_executable)
                 if resolved.mediacrawler_python_executable is not None
@@ -2528,7 +2530,12 @@ def create_api_app(
     def _subscription_schedule_action(subscription_id: UUID, action: str) -> dict[str, object]:
         database = _database()
         try:
-            service = DurableSchedulerService(database)
+            service = DurableSchedulerService(
+                database,
+                bili_scan_continuation=BiliScanContinuationPolicy.from_lock(
+                    resolved.mediacrawler_lock_path, delay_seconds=resolved.bili_scan_continuation_delay_seconds
+                ),
+            )
             schedule = {
                 "pause": service.pause_subscription,
                 "resume": service.resume_subscription,
@@ -2587,7 +2594,12 @@ def create_api_app(
                 ]
             payload["recent_jobs"] = [
                 _scheduler_job_payload(job)
-                for job in DurableSchedulerService(database).list_jobs(subscription_id=str(subscription_id), limit=5)
+                for job in DurableSchedulerService(
+                    database,
+                    bili_scan_continuation=BiliScanContinuationPolicy.from_lock(
+                        resolved.mediacrawler_lock_path, delay_seconds=resolved.bili_scan_continuation_delay_seconds
+                    ),
+                ).list_jobs(subscription_id=str(subscription_id), limit=5)
             ]
             return payload
         except HTTPException:
@@ -2785,7 +2797,12 @@ def create_api_app(
     def scheduler_tick(body: SchedulerTick) -> dict[str, object]:
         database = _database()
         try:
-            result = DurableSchedulerService(database).tick(limit=body.limit)
+            result = DurableSchedulerService(
+                database,
+                bili_scan_continuation=BiliScanContinuationPolicy.from_lock(
+                    resolved.mediacrawler_lock_path, delay_seconds=resolved.bili_scan_continuation_delay_seconds
+                ),
+            ).tick(limit=body.limit)
             return {
                 "materialized_count": result.materialized_count,
                 "cycles": [_scheduler_cycle_payload(cycle) for cycle in result.cycles],
@@ -2953,7 +2970,12 @@ def create_api_app(
     ) -> list[dict[str, object]]:
         database = _database()
         try:
-            jobs = DurableSchedulerService(database).list_jobs(
+            jobs = DurableSchedulerService(
+                database,
+                bili_scan_continuation=BiliScanContinuationPolicy.from_lock(
+                    resolved.mediacrawler_lock_path, delay_seconds=resolved.bili_scan_continuation_delay_seconds
+                ),
+            ).list_jobs(
                 status=status.value if status is not None else None,
                 subscription_id=str(subscription_id) if subscription_id is not None else None,
                 limit=max(1, min(limit, 1_000)),

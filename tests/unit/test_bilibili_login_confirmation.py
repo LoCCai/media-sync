@@ -122,7 +122,7 @@ async def test_guard_preserves_existing_exception_and_cancellation_control(
     ("result", "expected"),
     [
         (True, MediaCrawlerLoginStatus.AUTHENTICATED),
-        (False, MediaCrawlerLoginStatus.FAILED),
+        (False, MediaCrawlerLoginStatus.LOGIN_CONFIRMATION_FAILED),
         (1, MediaCrawlerLoginStatus.CONFIGURATION_INVALID),
         (RuntimeError(_PRIVATE), MediaCrawlerLoginStatus.FAILED),
         (TimeoutError(_PRIVATE), MediaCrawlerLoginStatus.FAILED),

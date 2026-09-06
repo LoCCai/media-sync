@@ -109,6 +109,9 @@ describe('fixed login diagnostics', () => {
     ['start_failed', 'failed', 'operation_login_failed', '登录进程未能启动'],
     ['result_invalid', 'failed', 'operation_login_failed', '登录结果无法确认'],
     ['account_busy', 'failed', 'operation_login_failed', '账户登录存在冲突'],
+    ['upstream_login_exited', 'failed', 'operation_login_failed', '平台登录流程提前结束'],
+    ['upstream_browser_timeout', 'failed', 'operation_login_failed', '平台登录操作等待超时'],
+    ['login_confirmation_failed', 'failed', 'operation_login_failed', '扫码后认证确认未通过'],
     ['failed', 'failed', 'operation_login_failed', '最近登录失败']
   ])(
     'explains the closed %s disposition without inventing a cause',
@@ -121,8 +124,31 @@ describe('fixed login diagnostics', () => {
       } as LoginStatus;
       expect(safeLoginDiagnostic(incoming, accountId)).toEqual(incoming.diagnostic);
       expect(accountLoginExplanation(incoming, accountId)?.title).toBe(title);
+      const savedOperation = {
+        ...operation,
+        error_code,
+        result: {
+          ...operation.result,
+          runner_status,
+          login_session_status,
+          auth_status: incoming.auth_status
+        }
+      } as Operation;
+      expect(safeOperationResult(savedOperation)?.runner_status).toBe(runner_status);
+      expect(operationLoginExplanation(savedOperation)).toEqual(accountLoginExplanation(incoming, accountId));
     }
   );
+
+  it('distinguishes a persisted generic failure from missing diagnostics without guessing the cause', () => {
+    const incoming = {
+      ...status,
+      diagnostic: { ...status.diagnostic, runner_status: 'failed', error_code: 'operation_login_failed' }
+    } as LoginStatus;
+    const result = accountLoginExplanation(incoming, accountId);
+    expect(result?.detail).toContain('已保存本次操作');
+    expect(result?.detail).toContain('不能判断');
+    expect(result?.next).toContain('不要仅因预检通过而反复登录');
+  });
 
   it.each([
     ['authenticated', 'succeeded', 'authenticated', '登录成功'],

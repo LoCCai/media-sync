@@ -119,6 +119,9 @@ _CHILD_STATUSES = frozenset(
         MediaCrawlerLoginStatus.EXPIRED,
         MediaCrawlerLoginStatus.FAILED,
         MediaCrawlerLoginStatus.BROWSER_LAUNCH_FAILED,
+        MediaCrawlerLoginStatus.UPSTREAM_LOGIN_EXITED,
+        MediaCrawlerLoginStatus.UPSTREAM_BROWSER_TIMEOUT,
+        MediaCrawlerLoginStatus.LOGIN_CONFIRMATION_FAILED,
         MediaCrawlerLoginStatus.CONFIGURATION_INVALID,
     }
 )
@@ -872,6 +875,22 @@ async def _execute_child(request: _ChildRequest) -> MediaCrawlerLoginStatus:
     return await _execute_controlled_child(request, None)
 
 
+def _is_playwright_timeout(error: Exception) -> bool:
+    """Classify only the actual child runtime's public Playwright timeout type.
+
+    Playwright belongs to the external runtime, not the application process.
+    No exception text, class-name heuristic or wrapped cause is consulted.
+    Missing/broken optional imports preserve the unknown failure disposition.
+    """
+
+    try:
+        playwright_api = importlib.import_module("playwright.async_api")
+        timeout_type = getattr(playwright_api, "TimeoutError", None)
+    except Exception:
+        return False
+    return isinstance(timeout_type, type) and issubclass(timeout_type, Exception) and isinstance(error, timeout_type)
+
+
 async def _execute_controlled_child(
     request: _ChildRequest,
     cancellation: threading.Event | None,
@@ -885,7 +904,7 @@ async def _execute_controlled_child(
             # Several pinned login implementations use ``sys.exit()`` (code
             # zero included) for a failed QR challenge. Keep it inside the
             # task so asyncio cannot promote it to process success.
-            return MediaCrawlerLoginStatus.FAILED
+            return MediaCrawlerLoginStatus.UPSTREAM_LOGIN_EXITED
 
     try:
         if cancellation is not None and cancellation.is_set():
@@ -907,6 +926,12 @@ async def _execute_controlled_child(
         return MediaCrawlerLoginStatus.CONFIGURATION_INVALID
     except BrowserLaunchFailure:
         return MediaCrawlerLoginStatus.BROWSER_LAUNCH_FAILED
+    except _LoginConfirmationFailed:
+        return MediaCrawlerLoginStatus.LOGIN_CONFIRMATION_FAILED
+    except Exception as error:
+        if _is_playwright_timeout(error):
+            return MediaCrawlerLoginStatus.UPSTREAM_BROWSER_TIMEOUT
+        return MediaCrawlerLoginStatus.FAILED
     except BaseException:
         return MediaCrawlerLoginStatus.FAILED
     finally:

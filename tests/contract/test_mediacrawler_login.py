@@ -86,7 +86,10 @@ class CrawlerFactory:
 
 async def async_cleanup():
     root = Path(__file__).parent
-    if (root / "mode.txt").read_text(encoding="utf-8").strip() == "browser_failure":
+    if (root / "mode.txt").read_text(encoding="utf-8").strip() in {
+        "browser_failure", "browser_timeout", "builtin_timeout", "lookalike_timeout",
+        "unknown_error", "system_exit_private", "post_update_false",
+    }:
         (root / "cleanup-called").write_text("cleaned", encoding="utf-8")
     return None
 """
@@ -94,6 +97,11 @@ async def async_cleanup():
 _UTILS = """
 def show_qrcode(value):
     raise RuntimeError("QR bytes escaped the headed browser")
+"""
+
+_PLAYWRIGHT_API = """
+class TimeoutError(Exception):
+    pass
 """
 
 _CORE_TEMPLATE = r"""
@@ -157,6 +165,18 @@ class {login_class}:
         selected = mode()
         if selected == "system_exit":
             raise SystemExit(0)
+        if selected == "system_exit_private":
+            raise SystemExit("PRIVATE-UPSTREAM-DIAGNOSTIC Cookie=secret https://private.invalid")
+        if selected == "browser_timeout":
+            from playwright.async_api import TimeoutError as BrowserTimeoutError
+            raise BrowserTimeoutError("PRIVATE-UPSTREAM-DIAGNOSTIC Cookie=secret https://private.invalid")
+        if selected == "builtin_timeout":
+            raise TimeoutError("PRIVATE-UPSTREAM-DIAGNOSTIC Cookie=secret https://private.invalid")
+        if selected == "lookalike_timeout":
+            same_name_error = type("TimeoutError", (Exception,), {{}})
+            raise same_name_error("PRIVATE-UPSTREAM-DIAGNOSTIC Cookie=secret https://private.invalid")
+        if selected == "unknown_error":
+            raise RuntimeError("PRIVATE-UPSTREAM-DIAGNOSTIC TimeoutError Cookie=secret https://private.invalid")
         if selected in {{"hang", "cancel"}}:
             grandchild = subprocess.Popen(
                 [sys.executable, "-I", "-c", "import time; time.sleep(60)"],
@@ -216,6 +236,10 @@ def _write_fake_checkout(root: Path) -> Path:
     tools.mkdir()
     (tools / "__init__.py").write_text("", encoding="utf-8")
     (tools / "utils.py").write_text(textwrap.dedent(_UTILS), encoding="utf-8")
+    playwright = root / "playwright"
+    playwright.mkdir()
+    (playwright / "__init__.py").write_text("", encoding="utf-8")
+    (playwright / "async_api.py").write_text(textwrap.dedent(_PLAYWRIGHT_API), encoding="utf-8")
     media_platform = root / "media_platform"
     media_platform.mkdir()
     (media_platform / "__init__.py").write_text("", encoding="utf-8")
@@ -510,7 +534,7 @@ def test_seven_platform_login_contract_has_no_content_or_qr_export(tmp_path: Pat
 @pytest.mark.parametrize(
     ("mode", "expected"),
     [
-        ("post_update_false", MediaCrawlerLoginStatus.FAILED),
+        ("post_update_false", MediaCrawlerLoginStatus.LOGIN_CONFIRMATION_FAILED),
         ("post_update_nonboolean", MediaCrawlerLoginStatus.CONFIGURATION_INVALID),
         ("post_update_error", MediaCrawlerLoginStatus.FAILED),
     ],
@@ -559,7 +583,44 @@ def test_system_exit_zero_cannot_authenticate(tmp_path: Path) -> None:
 
     result = _runner(checkout, tmp_path / "runtime").run(_request(Platform.XHS, MediaCrawlerLoginMode.INTERACTIVE_QR))
 
-    assert result.status is MediaCrawlerLoginStatus.FAILED
+    assert result.status is MediaCrawlerLoginStatus.UPSTREAM_LOGIN_EXITED
+
+
+@pytest.mark.parametrize(
+    ("mode", "expected"),
+    [
+        ("system_exit_private", MediaCrawlerLoginStatus.UPSTREAM_LOGIN_EXITED),
+        ("browser_timeout", MediaCrawlerLoginStatus.UPSTREAM_BROWSER_TIMEOUT),
+        ("builtin_timeout", MediaCrawlerLoginStatus.FAILED),
+        ("lookalike_timeout", MediaCrawlerLoginStatus.FAILED),
+        ("unknown_error", MediaCrawlerLoginStatus.FAILED),
+        ("post_update_false", MediaCrawlerLoginStatus.LOGIN_CONFIRMATION_FAILED),
+    ],
+)
+def test_child_diagnostic_type_survives_process_frame_without_sensitive_text_or_ownership_leak(
+    tmp_path: Path,
+    capfd: pytest.CaptureFixture[str],
+    mode: str,
+    expected: MediaCrawlerLoginStatus,
+) -> None:
+    checkout = _write_fake_checkout(tmp_path / "upstream")
+    (checkout / "mode.txt").write_text(mode, encoding="utf-8")
+    integration_root = tmp_path / "runtime"
+    platform = Platform.BILI if mode == "post_update_false" else Platform.DY
+    result = _runner(checkout, integration_root).run(_request(platform, MediaCrawlerLoginMode.INTERACTIVE_QR))
+
+    assert result.status is expected
+    assert not result.authenticated
+    assert (checkout / "cleanup-called").read_text(encoding="utf-8") == "cleaned"
+    assert not (checkout / "content-side-effect").exists()
+    assert list((integration_root / "jobs").iterdir()) == []
+    account_root = build_run_paths(integration_root, platform, ACCOUNT_ID, ACCOUNT_ID).account_root
+    assert not (account_root / runner_module.LOGIN_QR_IMAGE_NAME).exists()
+    account_lock = _AccountFileLock(account_root)
+    assert account_lock.acquire()
+    account_lock.release()
+    captured = capfd.readouterr()
+    assert "PRIVATE-UPSTREAM-DIAGNOSTIC" not in captured.out + captured.err + repr(result)
 
 
 def test_hook_runs_once_with_lock_held_and_exception_prevents_spawn(
@@ -1056,6 +1117,23 @@ def test_timeout_and_cancellation_join_the_complete_process_tree(
     [
         (b'{"schema_version":1,"status":"failed"}', 0, MediaCrawlerLoginStatus.FAILED),
         (b'{"schema_version":1,"status":"browser_launch_failed"}', 20, MediaCrawlerLoginStatus.BROWSER_LAUNCH_FAILED),
+        (b'{"schema_version":1,"status":"upstream_login_exited"}', 0, MediaCrawlerLoginStatus.UPSTREAM_LOGIN_EXITED),
+        (
+            b'{"schema_version":1,"status":"upstream_browser_timeout"}',
+            0,
+            MediaCrawlerLoginStatus.UPSTREAM_BROWSER_TIMEOUT,
+        ),
+        (
+            b'{"schema_version":1,"status":"login_confirmation_failed"}',
+            0,
+            MediaCrawlerLoginStatus.LOGIN_CONFIRMATION_FAILED,
+        ),
+        (b'{"schema_version":1,"status":"unknown_timeout"}', 0, MediaCrawlerLoginStatus.RESULT_INVALID),
+        (
+            b'{"schema_version":1,"status":"upstream_browser_timeout","detail":"PRIVATE"}',
+            0,
+            MediaCrawlerLoginStatus.RESULT_INVALID,
+        ),
         (b'{"schema_version":1,"status":"authenticated"}', 20, MediaCrawlerLoginStatus.AUTHENTICATED),
         (
             b'{"schema_version":1,"status":"failed"}{"schema_version":1,"status":"authenticated"}',

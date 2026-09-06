@@ -607,6 +607,15 @@
         : '删除订阅默认保留所有已抓取内容、媒体文件和历史，可从“已删除”视图恢复。'}
     </div>
   </div>
+  {#if !showRemoved}
+    <div class="notice">
+      <div>
+        正常流程：添加并启用订阅 → 常驻调度查询作品 → 自动下载并写入媒体目录 → 按周期检查更新。
+        不需要另点导出或连接 Emby / Jellyfin。请确保部署中的 supervisor 已运行；
+        可在订阅详情查看已提供的扫描范围和检查点；单次上限或检查点不代表全部历史已完成。
+      </div>
+    </div>
+  {/if}
   {#if actionFailure && !confirmOpen}
     <div class="notice danger" role="alert">
       <div>

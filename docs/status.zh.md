@@ -2,7 +2,13 @@
 
 # 项目统一状态（单一事实来源）
 
-## 最新：抖音/快手Cookie本人校验与知乎有限头像（0065）
+## 最新：失败登录诊断与订阅自动落盘（0066）
+
+[0066 执行](executions/0066-login-failure-and-workflow/progress.zh.md)新增三类固定扫码失败状态，将控制台明确为订阅、自动下载、兼容目录写入流程。限速续跑只作用于严格绑定、确有待续上下文的 B 站扫描，不是永久历史完成。当前测试与发布事实见[验证](executions/0066-login-failure-and-workflow/verification.zh.md)。
+
+紧接着实现[可编辑总目录/平台覆盖、精确订阅执行、历史转增量持久语义和真实下载验收](executions/0066-login-failure-and-workflow/next-delivery.zh.md)。本阶段目录配置仍只读。旧抖音失败不能从通用状态还原，未宣称线上登录已修复。未触发新生产登录、下载或恢复 supervisor，原目标继续。
+
+## 上阶段：抖音/快手Cookie本人校验与知乎有限头像（0065）
 
 [执行0065](executions/0065-cookie-auth-and-avatar/progress.zh.md)已接通两个独立单次本人请求、私密Cookie保存、账户能力与订阅复用，粘贴本人验证现有七平台实现。快手要求Cookie含kuaishou.web.cp.api_ph；抖音使用创作者中心接口；不以目标作者资料或本地标志授予认证。知乎追加有限来源形状头像，失败保留昵称/旧图片。
 

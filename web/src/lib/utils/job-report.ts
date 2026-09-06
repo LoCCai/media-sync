@@ -332,6 +332,7 @@ export function jobBusinessSummary(job: Job): { title: string; detail: string; n
 export function jobOperationPhase(value: unknown): string {
   const labels: Record<string, string> = {
     preparing: '准备中',
+    authenticating: '登录验证',
     running: '执行中',
     syncing: '采集中',
     ingesting: '正在入库',

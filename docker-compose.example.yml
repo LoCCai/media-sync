@@ -39,6 +39,9 @@ services:
       MEDIA_SYNC_OPERATOR_SESSION_TTL_SECONDS: 28800
       MEDIA_SYNC_LIBRARY_INSPECTION_MAX_BYTES: 1073741824
       MEDIA_SYNC_LIBRARY_INSPECTION_DEADLINE_SECONDS: 10
+      # Pace proven pending bounded Bili scans; 0 disables, otherwise >=60.
+      # This is not a claim of complete history. Use the same value below.
+      MEDIA_SYNC_BILI_SCAN_CONTINUATION_DELAY_SECONDS: 300
       # Optional automation uses a distinct Bearer secret reference. Add a
       # second Compose secret and never reuse the browser credential.
       # MEDIA_SYNC_OPERATOR_API_TOKEN_SECRET_REF: file:operator_api_token
@@ -91,6 +94,7 @@ services:
       MEDIA_SYNC_STATE_DIR: /data/state
       MEDIA_SYNC_ARCHIVE_DIR: /data/archive
       MEDIA_SYNC_EXPORT_DIR: /data/library
+      MEDIA_SYNC_BILI_SCAN_CONTINUATION_DELAY_SECONDS: 300
       MEDIA_SYNC_JOB_DIR: /data/jobs
       MEDIA_SYNC_MEDIACRAWLER_PYTHON_EXECUTABLE: /opt/mediacrawler-venv/bin/python
       MEDIA_SYNC_MEDIACRAWLER_RUNTIME_DIR: /data/mediacrawler

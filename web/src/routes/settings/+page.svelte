@@ -113,7 +113,7 @@
             <dd class="mono">{settings.archive_dir}</dd>
           </div>
           <div class="key-value-row">
-            <dt>本地导出目录</dt>
+            <dt>媒体输出总目录</dt>
             <dd class="mono">{settings.export_dir}</dd>
           </div>
           <div class="key-value-row">
@@ -121,10 +121,25 @@
             <dd class="mono">{settings.job_dir}</dd>
           </div>
           <div class="key-value-row">
+            <dt>B 站未完成扫描续跑</dt>
+            <dd>
+              {settings.bili_scan_continuation_delay_seconds === undefined
+                ? '当前服务未提供'
+                : settings.bili_scan_continuation_delay_seconds === 0
+                  ? '已关闭，按普通周期调度'
+                  : `${settings.bili_scan_continuation_delay_seconds} 秒（不长于订阅周期）`}
+            </dd>
+          </div>
+          <div class="key-value-row">
             <dt>MediaCrawler Python</dt>
             <dd class="mono">{settings.mediacrawler_python_executable ?? '未配置'}</dd>
           </div>
         </dl>
+        <p class="muted">
+          续跑只适用于有明确待续检查点的成功 B 站批次，不代表历史已补齐。 当前通过
+          MEDIA_SYNC_BILI_SCAN_CONTINUATION_DELAY_SECONDS 配置，0 为关闭； API 与 supervisor
+          需配置相同值。目录编辑及逐平台覆盖仍待实现。
+        </p>
       {/if}
     </Panel>
 
@@ -135,8 +150,8 @@
       <div class="notice" style="margin-bottom:14px">
         <FolderCog size={17} />
         <div>
-          无需连接 API：把本地导出目录挂载给 Emby /
-          Jellyfin，添加剧集库并在媒体服务器中扫描。定时扫描须由媒体服务器自行配置；本后台不会因完成导出而自动请求刷新。
+          订阅自动落盘不需要连接媒体服务器 API，也不需要另点导出。把媒体输出目录挂载给 Emby /
+          Jellyfin，添加剧集库并配置扫描周期即可。本后台不会因目录写入完成而自动请求服务器刷新。
         </div>
       </div>
       {#if settingsLoading && !settings}

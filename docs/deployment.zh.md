@@ -6,6 +6,10 @@
 
 ## 抖音/快手粘贴Cookie与知乎可选头像（0065）
 
+更新的扫码分类和 B 站限量扫描续跑见[0066 检查点](executions/0066-login-failure-and-workflow/verification.zh.md)。API 与 supervisor 需设置相同的 `MEDIA_SYNC_BILI_SCAN_CONTINUATION_DELAY_SECONDS`：默认 `300`，`0` 关闭，启用时为 `60..604800` 的整数，实际续跑间隔不长于订阅周期。仅当前成功、已认证、来源绑定且确有待续扫描上下文时适用；空、未知或已清空上下文保持普通周期，失败仍按原退避处理。这不代表历史覆盖完整。
+
+启用常驻调度后，正常流程在订阅发现成功后自动下载并写入兼容目录，不需要手动导出或媒体服务器 API。设置页目前仅展示路径，可编辑总目录/平台覆盖是[下一阶段](executions/0066-login-failure-and-workflow/next-delivery.zh.md)。两个容器保持相同挂载。源码更新不等于已部署，重建和重建容器需另行协调；不要为了查看新界面就恢复刻意停止的 supervisor。
+
 另行更新/重建后，在账户页粘贴完整请求Cookie头值。抖音仅查询一次创作者中心当前用户；快手仅发一次无目标用户的userInfo GraphQL，当前Cookie必须含kuaishou.web.cp.api_ph（通常来自创作者中心登录会话），普通网页Cookie未必符合。不提供或验证失败不会替换旧认证；不把Cookie存在或公开资料成功当登录成功。不要把Cookie粘贴到聊天/日志。
 
 七平台粘贴校验已有实现但不代表真人通过；六平台昵称不变，小红书资料仍待实现。知乎仅接入返回行原始HTTPS pic2.zhimg.com/{32hex}_l.jpg头像；未知当前CDN形式安全保留昵称/旧头像，不改URL或导出名。无需新环境变量或媒体服务器连接。[0065验证](executions/0065-cookie-auth-and-avatar/verification.zh.md)区分离线与未跑环境；本次未部署、采集重试或恢复supervisor。以下旧检查点中的“未开放”均描述当时边界，以此段为最新能力。

@@ -427,6 +427,7 @@ class Settings(BaseSettings):
     operator_allowed_origins: Annotated[tuple[str, ...] | None, NoDecode] = None
     operator_session_ttl_seconds: int = Field(default=28_800, ge=60, le=28_800)
     default_sync_interval_seconds: int = Field(default=21_600, ge=60)
+    bili_scan_continuation_delay_seconds: int = Field(default=300, ge=0, le=604_800)
     default_max_items: int = Field(default=30, ge=1, le=1_000)
     max_crawl_seconds: int = Field(default=1_800, ge=30, le=86_400)
     media_server_provider: MediaServerProvider | None = None
@@ -440,6 +441,17 @@ class Settings(BaseSettings):
     media_server_operations_enabled: bool = False
     library_inspection_max_bytes: int = Field(default=1_073_741_824, ge=1, le=1_099_511_627_776)
     library_inspection_deadline_seconds: float = Field(default=10.0, ge=0.01, le=300.0, allow_inf_nan=False)
+
+    @field_validator("bili_scan_continuation_delay_seconds", mode="before")
+    @classmethod
+    def normalize_bili_scan_continuation_delay(cls, value: object) -> int:
+        # Environment variables are strings; reject booleans/floats and avoid
+        # Pydantic's permissive coercion for this request-pacing control.
+        if type(value) is str and re.fullmatch(r"0|[1-9][0-9]{0,5}", value) is not None:
+            value = int(value)
+        if type(value) is not int or (value != 0 and not 60 <= value <= 604_800):
+            raise ValueError("bili_scan_continuation_delay_seconds must be 0 or an integer between 60 and 604800")
+        return value
 
     @field_validator("log_level")
     @classmethod

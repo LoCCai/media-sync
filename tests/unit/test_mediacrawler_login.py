@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import UUID
 
 import pytest
@@ -76,9 +77,14 @@ def test_child_frame_is_exact_and_rejects_duplicate_or_trailing_frames() -> None
         runner_module._parse_child_frame(b"x" * (runner_module.MAX_LOGIN_RESULT_BYTES + 1))
 
 
-def test_system_exit_zero_is_an_explicit_failed_child_result(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("exit_code", [0, 1, "PRIVATE-UPSTREAM-EXIT"])
+def test_system_exit_is_an_explicit_non_success_child_result(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    exit_code: object,
+) -> None:
     async def exit_zero(_request: object) -> MediaCrawlerLoginStatus:
-        raise SystemExit(0)
+        raise SystemExit(exit_code)
 
     monkeypatch.setattr(runner_module, "_run_upstream", exit_zero)
     request = runner_module._ChildRequest(
@@ -88,7 +94,114 @@ def test_system_exit_zero_is_an_explicit_failed_child_result(monkeypatch: pytest
         mode=MediaCrawlerLoginMode.INTERACTIVE_QR,
     )
 
-    assert asyncio.run(runner_module._execute_child(request)) is MediaCrawlerLoginStatus.FAILED
+    result = asyncio.run(runner_module._execute_child(request))
+    assert result is MediaCrawlerLoginStatus.UPSTREAM_LOGIN_EXITED
+    captured = capsys.readouterr()
+    assert "PRIVATE-UPSTREAM-EXIT" not in captured.out + captured.err + repr(result)
+
+
+@pytest.mark.parametrize(
+    "status",
+    [
+        MediaCrawlerLoginStatus.UPSTREAM_LOGIN_EXITED,
+        MediaCrawlerLoginStatus.UPSTREAM_BROWSER_TIMEOUT,
+        MediaCrawlerLoginStatus.LOGIN_CONFIRMATION_FAILED,
+    ],
+)
+def test_new_child_diagnostics_round_trip_only_as_closed_status(status: MediaCrawlerLoginStatus) -> None:
+    frame = json.dumps({"schema_version": 1, "status": status.value}).encode("ascii")
+    assert runner_module._parse_child_frame(frame) is status
+    assert not MediaCrawlerLoginResult(status, UPSTREAM_SHA).authenticated
+
+
+@pytest.mark.parametrize("value", ["unknown_timeout", "TimeoutError: PRIVATE-UPSTREAM-ERROR", "network_failure"])
+def test_child_frame_rejects_unknown_or_exception_like_status(value: str) -> None:
+    frame = json.dumps({"schema_version": 1, "status": value}).encode("ascii")
+    with pytest.raises(ValueError):
+        runner_module._parse_child_frame(frame)
+    with pytest.raises(ValueError):
+        MediaCrawlerLoginResult(value)  # type: ignore[arg-type]
+
+
+class _PlaywrightTimeoutError(Exception):
+    pass
+
+
+class _PlaywrightTimeoutSubclass(_PlaywrightTimeoutError):
+    pass
+
+
+_PRIVATE_ERROR = "PRIVATE-UPSTREAM-ERROR https://private.invalid Cookie=secret TimeoutError"
+_SameNameTimeoutError = type("TimeoutError", (Exception,), {})
+
+
+@pytest.mark.parametrize(
+    ("error", "expected", "loads_playwright"),
+    [
+        (_PlaywrightTimeoutError(_PRIVATE_ERROR), MediaCrawlerLoginStatus.UPSTREAM_BROWSER_TIMEOUT, True),
+        (_PlaywrightTimeoutSubclass(_PRIVATE_ERROR), MediaCrawlerLoginStatus.UPSTREAM_BROWSER_TIMEOUT, True),
+        (TimeoutError(_PRIVATE_ERROR), MediaCrawlerLoginStatus.FAILED, True),
+        (_SameNameTimeoutError(_PRIVATE_ERROR), MediaCrawlerLoginStatus.FAILED, True),
+        (RuntimeError(_PRIVATE_ERROR), MediaCrawlerLoginStatus.FAILED, True),
+        (runner_module._LoginConfirmationFailed(), MediaCrawlerLoginStatus.LOGIN_CONFIRMATION_FAILED, False),
+        (runner_module.BrowserLaunchFailure(), MediaCrawlerLoginStatus.BROWSER_LAUNCH_FAILED, False),
+        (runner_module._ChildConfigurationError(), MediaCrawlerLoginStatus.CONFIGURATION_INVALID, False),
+        (asyncio.CancelledError(_PRIVATE_ERROR), MediaCrawlerLoginStatus.FAILED, False),
+    ],
+)
+def test_child_classifies_by_runtime_type_without_text_or_dependency_on_main_process(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    error: BaseException,
+    expected: MediaCrawlerLoginStatus,
+    loads_playwright: bool,
+) -> None:
+    imported: list[str] = []
+
+    def import_module(name: str) -> SimpleNamespace:
+        assert name == "playwright.async_api"
+        imported.append(name)
+        return SimpleNamespace(TimeoutError=_PlaywrightTimeoutError)
+
+    async def upstream(_request: object) -> MediaCrawlerLoginStatus:
+        raise error
+
+    monkeypatch.setattr(runner_module.importlib, "import_module", import_module)
+    monkeypatch.setattr(runner_module, "_run_upstream", upstream)
+    request = runner_module._ChildRequest(
+        checkout_root=Path.cwd(),
+        paths=runner_module.build_run_paths(Path.cwd() / ".test-login", Platform.DY, ACCOUNT_ID, ACCOUNT_ID),
+        platform=Platform.DY,
+        mode=MediaCrawlerLoginMode.INTERACTIVE_QR,
+    )
+    result = asyncio.run(runner_module._execute_child(request))
+    assert result is expected
+    assert imported == (["playwright.async_api"] if loads_playwright else [])
+    captured = capsys.readouterr()
+    assert _PRIVATE_ERROR not in captured.out + captured.err + repr(result)
+
+
+@pytest.mark.parametrize("error_type", [ImportError, RuntimeError])
+def test_unavailable_timeout_type_preserves_unknown_failure(
+    monkeypatch: pytest.MonkeyPatch, error_type: type[Exception]
+) -> None:
+    def import_module(_name: str) -> None:
+        raise error_type(_PRIVATE_ERROR)
+
+    monkeypatch.setattr(runner_module.importlib, "import_module", import_module)
+    assert not runner_module._is_playwright_timeout(TimeoutError(_PRIVATE_ERROR))
+
+
+@pytest.mark.parametrize("exported_type", [None, "TimeoutError", BaseException, object, 1])
+def test_invalid_timeout_export_does_not_reclassify_unknown_error(
+    monkeypatch: pytest.MonkeyPatch, exported_type: object
+) -> None:
+    monkeypatch.setattr(
+        runner_module.importlib,
+        "import_module",
+        lambda _name: SimpleNamespace(TimeoutError=exported_type),
+    )
+    assert not runner_module._is_playwright_timeout(TimeoutError(_PRIVATE_ERROR))
 
 
 @pytest.mark.parametrize("platform", list(Platform))

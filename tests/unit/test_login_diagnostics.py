@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import json
+import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -36,7 +37,11 @@ from media_sync.infrastructure.db import (
     OperationSubjectInput,
     upgrade_database,
 )
-from media_sync.integrations.mediacrawler.login import MediaCrawlerLoginStatus
+from media_sync.integrations.mediacrawler.login import (
+    MediaCrawlerLoginRequest,
+    MediaCrawlerLoginResult,
+    MediaCrawlerLoginStatus,
+)
 
 _NOW = datetime(2026, 9, 5, 8, tzinfo=UTC)
 _PRIVATE = "raw-private-browser-url-cookie-sentinel"
@@ -277,7 +282,18 @@ def test_newer_session_without_operation_has_no_old_failure(database: Database) 
         assert latest_session_login_diagnostic(session, account_id, latest) is None
 
 
-@pytest.mark.parametrize("status", ["failed", "configuration_invalid", "start_failed", "result_invalid"])
+@pytest.mark.parametrize(
+    "status",
+    [
+        "failed",
+        "configuration_invalid",
+        "start_failed",
+        "result_invalid",
+        "upstream_login_exited",
+        "upstream_browser_timeout",
+        "login_confirmation_failed",
+    ],
+)
 def test_old_runner_statuses_remain_generic(database: Database, status: str) -> None:
     account_id, latest, _operation_id = _seed(database, runner_status=status)
     with database.session() as session:
@@ -392,8 +408,12 @@ def test_restart_recovery_cannot_reconstruct_browser_launch_reason(database: Dat
         coordinator.shutdown()
 
 
-def test_api_maps_launch_failure_without_changing_result_fields(
-    database: Database, settings: Settings, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    "runner_status",
+    ["browser_launch_failed", "upstream_login_exited", "upstream_browser_timeout", "login_confirmation_failed"],
+)
+def test_api_maps_failure_without_changing_result_fields(
+    database: Database, settings: Settings, monkeypatch: pytest.MonkeyPatch, runner_status: str
 ) -> None:
     account_id, latest, _old_operation_id = _seed(database)
 
@@ -406,7 +426,7 @@ def test_api_maps_launch_failure_without_changing_result_fields(
                 account_id=UUID(account_id),
                 login_session_id=UUID(latest.id),
                 platform=Platform.BILI,
-                runner_status=MediaCrawlerLoginStatus("browser_launch_failed"),
+                runner_status=MediaCrawlerLoginStatus(runner_status),
                 session_status="failed",
                 auth_status=AuthStatus.FAILED,
                 expires_at=latest.expires_at,
@@ -431,8 +451,76 @@ def test_api_maps_launch_failure_without_changing_result_fields(
             if terminal["state"] not in {"queued", "running"}:
                 break
             time.sleep(0.01)
-        assert terminal["error_code"] == "operation_login_browser_launch_failed"
+        assert terminal["error_code"] == login_operation_error_code(runner_status)
         assert terminal["state"] == "failed_terminal"
         result = terminal["result"]
-        assert isinstance(result, dict) and result["runner_status"] == "browser_launch_failed"
+        assert isinstance(result, dict) and result["runner_status"] == runner_status
         assert operation_result_summary("account-login", result) == result
+
+
+@pytest.mark.parametrize(
+    "runner_status", ["upstream_login_exited", "upstream_browser_timeout", "login_confirmation_failed"]
+)
+def test_runner_failure_flows_through_real_session_service_and_exact_api_diagnostic(
+    database: Database, settings: Settings, monkeypatch: pytest.MonkeyPatch, runner_status: str
+) -> None:
+    account_id, old_login, _old_operation = _seed(database)
+    with database.session() as session:
+        other_id = (
+            AccountRepository(session)
+            .create(
+                platform="xhs",
+                adapter="mediacrawler",
+                display_name="already authenticated",
+                login_method="saved_session",
+                auth_status="authenticated",
+            )
+            .id
+        )
+
+    class FixedRunner:
+        def run(
+            self,
+            request: MediaCrawlerLoginRequest,
+            *,
+            on_account_locked: Callable[[], None] | None = None,
+            cancellation: threading.Event | None = None,
+        ) -> MediaCrawlerLoginResult:
+            assert str(request.account_id) == account_id
+            assert on_account_locked is not None
+            on_account_locked()
+            return MediaCrawlerLoginResult(MediaCrawlerLoginStatus(runner_status))
+
+    monkeypatch.setattr(api_module, "_UnavailableMediaCrawlerLoginRunner", FixedRunner)
+    monkeypatch.setattr(api_module, "collect_account_login_preflight", lambda *args, **kwargs: SimpleNamespace(ok=True))
+    with authenticated_test_client(settings) as client:
+        started = client.post(
+            f"/api/v1/accounts/{account_id}/login",
+            json={"enable_mediacrawler": True, "accept_mediacrawler_license": True},
+        )
+        assert started.status_code == 202
+        operation_id = started.json()["operation_id"]
+        deadline = time.monotonic() + 5
+        terminal: dict[str, object] = {}
+        while time.monotonic() < deadline:
+            terminal = client.get(f"/api/v1/operations/{operation_id}").json()
+            if terminal["state"] not in {"queued", "running"}:
+                break
+            time.sleep(0.01)
+        assert terminal["state"] == "failed_terminal"
+        result = terminal["result"]
+        assert isinstance(result, dict) and result["runner_status"] == runner_status
+        latest = client.get(f"/api/v1/accounts/{account_id}/login-status").json()
+        assert latest["login_session_id"] != old_login.id
+        assert latest["login_session_id"] == result["login_session_id"]
+        assert latest["diagnostic"] == {
+            "operation_id": operation_id,
+            "operation_state": "failed_terminal",
+            "runner_status": runner_status,
+            "error_code": "operation_login_failed",
+        }
+        assert latest["auth_status"] == "failed"
+        assert _PRIVATE not in json.dumps(latest)
+        untouched = client.get(f"/api/v1/accounts/{other_id}/login-status").json()
+        assert untouched["auth_status"] == "authenticated"
+        assert untouched["login_session_id"] is None

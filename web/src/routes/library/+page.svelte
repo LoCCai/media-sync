@@ -310,7 +310,10 @@
 </script>
 
 <div class="page">
-  <PageHeader title="本地媒体库" description="按作者导出 Emby / Jellyfin 兼容目录；无需配置媒体服务器连接。">
+  <PageHeader
+    title="本地媒体库"
+    description="查看订阅自动写入的 Emby / Jellyfin 兼容目录；无需连接媒体服务器。"
+  >
     <svelte:fragment slot="actions">
       <button class="button secondary" type="button" on:click={refreshAll} disabled={loading}>
         <RefreshCw class={loading ? 'spin' : ''} size={15} />刷新
@@ -335,7 +338,7 @@
       <span class="summary-hint">共 {totalAssets} 个资产</span>
     </div>
     <div class="summary-item">
-      <span class="summary-label">导出记录<FolderCheck size={16} /></span>
+      <span class="summary-label">目录写入记录<FolderCheck size={16} /></span>
       <strong class="summary-value">{exportedContent}</strong>
       <span class="summary-hint">成功发布的内容</span>
     </div>
@@ -344,8 +347,9 @@
   <div class="notice">
     <FolderCheck size={17} />
     <div>
-      本地导出保留归档校验与文件保护，不要求服务器连接或播放确认。将导出目录挂载给 Emby /
-      Jellyfin，添加为剧集库后在媒体服务器中扫描即可；是否定时扫描由媒体服务器自身设置决定。
+      常驻调度运行时，订阅采集成功会自动进入下载、校验和兼容目录写入，无需再点“导出”。 将媒体目录挂载给 Emby /
+      Jellyfin 并添加为剧集库即可，扫描周期由媒体服务器设置。
+      下方手动更新仅用于维护和补跑；采集成功不等于所有文件已完成写入。
     </div>
   </div>
 
@@ -687,7 +691,7 @@
     {/if}
     {#if selectedAuthor && inspectionView && libraryAllows(inspectionView.inspection, 'export_author')}
       <button class="button" type="button" on:click={() => exportAuthor(selectedAuthor!)} disabled={!!acting}
-        ><Send size={14} />{acting === selectedAuthor.author_id ? '启动中…' : '导出 / 更新'}</button
+        ><Send size={14} />{acting === selectedAuthor.author_id ? '启动中…' : '维护：重新写入目录'}</button
       >
     {/if}
     {#if inspectionView?.inspection.page.next_cursor}

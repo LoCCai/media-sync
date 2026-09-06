@@ -157,6 +157,7 @@ from media_sync.scheduler import (
     SubscriptionSchedule,
     SubscriptionWorker,
 )
+from media_sync.scheduler.bili_scan_continuation import BiliScanContinuationPolicy
 from media_sync.scheduler.policy import classify_failure
 from media_sync.security import (
     InvalidSecretReferenceError,
@@ -945,8 +946,17 @@ def _scheduler_runtime() -> Iterator[tuple[Database, DurableSchedulerService]]:
 
     database: Database | None = None
     try:
-        database = Database(get_settings().resolved_database_url)
-        yield database, DurableSchedulerService(database)
+        settings = get_settings()
+        database = Database(settings.resolved_database_url)
+        yield (
+            database,
+            DurableSchedulerService(
+                database,
+                bili_scan_continuation=BiliScanContinuationPolicy.from_lock(
+                    settings.mediacrawler_lock_path, delay_seconds=settings.bili_scan_continuation_delay_seconds
+                ),
+            ),
+        )
     except StaleLaneError:
         raise typer.BadParameter("scheduler lane revision conflict; list lanes and retry") from None
     except SubscriptionRemovalError as error:
@@ -998,6 +1008,9 @@ def _build_subscription_worker(
         database,
         SubscriptionHandlerRegistry(handlers),
         claim_registered_only=True,
+        bili_scan_continuation=BiliScanContinuationPolicy.from_lock(
+            settings.mediacrawler_lock_path, delay_seconds=settings.bili_scan_continuation_delay_seconds
+        ),
     )
 
 
@@ -1974,7 +1987,12 @@ def scheduler_supervise(
         )
         supervisor = ResidentSchedulerSupervisor(
             stale_login_sweep=reconciler.sweep,
-            scheduler=DurableSchedulerService(database),
+            scheduler=DurableSchedulerService(
+                database,
+                bili_scan_continuation=BiliScanContinuationPolicy.from_lock(
+                    settings.mediacrawler_lock_path, delay_seconds=settings.bili_scan_continuation_delay_seconds
+                ),
+            ),
             subscription_worker=subscription_worker,
             pipeline_worker=pipeline_worker,
             subscription_worker_id=subscription_worker_id,

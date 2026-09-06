@@ -22,6 +22,7 @@ from media_sync.domain import AccountRef, Cursor, DomainError, LoginMethod, Plat
 from media_sync.infrastructure.db import Database
 from media_sync.infrastructure.db.models import Job, Subscription, SyncRun
 
+from .bili_scan_continuation import BiliScanContinuationPolicy
 from .handlers import (
     SubscriptionHandlerRegistry,
     SubscriptionHandlerResult,
@@ -88,13 +89,23 @@ class SchedulerWorkerResult:
 class DurableSchedulerService:
     """Open one transaction per control-plane operation."""
 
-    def __init__(self, database: Database, *, clock: Callable[[], datetime] = _utc_now) -> None:
+    def __init__(
+        self,
+        database: Database,
+        *,
+        clock: Callable[[], datetime] = _utc_now,
+        bili_scan_continuation: BiliScanContinuationPolicy | None = None,
+    ) -> None:
         self.database = database
         self.clock = clock
+        self.bili_scan_continuation = bili_scan_continuation
+
+    def _repository(self, session: Session) -> SchedulerRepository:
+        return SchedulerRepository(session, bili_scan_continuation=self.bili_scan_continuation)
 
     def tick(self, *, limit: int = 100, retry_policy: RetryPolicy | None = None) -> SchedulerTickResult:
         with self.database.session() as session:
-            cycles = SchedulerRepository(session).materialize_due(
+            cycles = self._repository(session).materialize_due(
                 limit=limit,
                 now=self.clock(),
                 retry_policy=retry_policy,
@@ -103,15 +114,15 @@ class DurableSchedulerService:
 
     def pause_subscription(self, subscription_id: str) -> SubscriptionSchedule:
         with self.database.session() as session:
-            return SchedulerRepository(session).pause_subscription(subscription_id, now=self.clock())
+            return self._repository(session).pause_subscription(subscription_id, now=self.clock())
 
     def resume_subscription(self, subscription_id: str) -> SubscriptionSchedule:
         with self.database.session() as session:
-            return SchedulerRepository(session).resume_subscription(subscription_id, now=self.clock())
+            return self._repository(session).resume_subscription(subscription_id, now=self.clock())
 
     def run_now(self, subscription_id: str) -> SubscriptionSchedule:
         with self.database.session() as session:
-            return SchedulerRepository(session).run_now(subscription_id, now=self.clock())
+            return self._repository(session).run_now(subscription_id, now=self.clock())
 
     def list_jobs(
         self,
@@ -121,7 +132,7 @@ class DurableSchedulerService:
         limit: int = 100,
     ) -> list[SchedulerJobSummary]:
         with self.database.session() as session:
-            return SchedulerRepository(session).list_jobs(
+            return self._repository(session).list_jobs(
                 status=status,
                 subscription_id=subscription_id,
                 limit=limit,
@@ -129,19 +140,19 @@ class DurableSchedulerService:
 
     def resume_job(self, job_id: str) -> SchedulerJobSummary:
         with self.database.session() as session:
-            return SchedulerRepository(session).resume(job_id, now=self.clock())
+            return self._repository(session).resume(job_id, now=self.clock())
 
     def cancel_job(self, job_id: str) -> SchedulerJobSummary:
         with self.database.session() as session:
-            return SchedulerRepository(session).cancel(job_id, now=self.clock())
+            return self._repository(session).cancel(job_id, now=self.clock())
 
     def list_lanes(self) -> list[LaneSnapshot]:
         with self.database.session() as session:
-            return SchedulerRepository(session).list_lanes()
+            return self._repository(session).list_lanes()
 
     def update_lane(self, policy: LanePolicy, *, expected_revision: int | None = None) -> LaneSnapshot:
         with self.database.session() as session:
-            return SchedulerRepository(session).update_lane(
+            return self._repository(session).update_lane(
                 policy,
                 expected_revision=expected_revision,
                 now=self.clock(),
@@ -158,7 +169,7 @@ class DurableSchedulerService:
         if scope_type not in {"platform", "account"}:
             raise ValueError("scope_type must be platform or account")
         with self.database.session() as session:
-            return SchedulerRepository(session).reset_lane_circuit(
+            return self._repository(session).reset_lane_circuit(
                 scope_type=scope_type,
                 platform=platform,
                 account_id=account_id,
@@ -178,6 +189,7 @@ class SubscriptionWorker:
         clock: Callable[[], datetime] = _utc_now,
         random_fraction: Callable[[], float] = random.random,
         claim_registered_only: bool = False,
+        bili_scan_continuation: BiliScanContinuationPolicy | None = None,
     ) -> None:
         if type(claim_registered_only) is not bool:
             raise ValueError("claim_registered_only must be boolean")
@@ -186,6 +198,10 @@ class SubscriptionWorker:
         self.clock = clock
         self.random_fraction = random_fraction
         self.claim_adapter_allowlist = handlers.keys if claim_registered_only else None
+        self.bili_scan_continuation = bili_scan_continuation
+
+    def _repository(self, session: Session) -> SchedulerRepository:
+        return SchedulerRepository(session, bili_scan_continuation=self.bili_scan_continuation)
 
     @staticmethod
     def _heartbeat_interval(value: float | None, *, lease_seconds: int) -> float:
@@ -233,7 +249,7 @@ class SubscriptionWorker:
     ) -> SchedulerWorkerResult:
         try:
             with self.database.session() as session:
-                summary = SchedulerRepository(session).get_job(claim.job_id)
+                summary = self._repository(session).get_job(claim.job_id)
         except Exception:
             return self._fenced_result(claim, error_code=error_code)
         if summary.status in {"queued", "claimed", "running"}:
@@ -250,7 +266,7 @@ class SubscriptionWorker:
         handler_key: str | None = None
 
         def ownership_guard(handler_session: Session) -> None:
-            SchedulerRepository(handler_session).assert_owned(
+            self._repository(handler_session).assert_owned(
                 claim.job_id,
                 worker_id=worker_id,
                 lease_token=claim.lease_token,
@@ -262,7 +278,7 @@ class SubscriptionWorker:
             run_id: UUID,
             expected_current_run_id: UUID | None,
         ) -> None:
-            SchedulerRepository(handler_session).attach_run(
+            self._repository(handler_session).attach_run(
                 claim.job_id,
                 worker_id=worker_id,
                 lease_token=claim.lease_token,
@@ -361,7 +377,7 @@ class SubscriptionWorker:
         lease_seconds: int,
     ) -> None:
         with self.database.session() as session:
-            SchedulerRepository(session).heartbeat(
+            self._repository(session).heartbeat(
                 claim.job_id,
                 worker_id=worker_id,
                 lease_token=claim.lease_token,
@@ -508,7 +524,7 @@ class SubscriptionWorker:
     ) -> SchedulerJobSummary:
         completed_at = self.clock() if finished_at is None else finished_at
         with self.database.session() as session:
-            repository = SchedulerRepository(session)
+            repository = self._repository(session)
             if result.succeeded:
                 return repository.succeed(
                     claim.job_id,
@@ -623,7 +639,7 @@ class SubscriptionWorker:
             lease_seconds=lease_seconds,
         )
         with self.database.session() as session:
-            claim = SchedulerRepository(session).claim_next(
+            claim = self._repository(session).claim_next(
                 worker_id=worker_id,
                 global_capacity=global_capacity,
                 lease_seconds=lease_seconds,
@@ -639,7 +655,7 @@ class SubscriptionWorker:
         result: SubscriptionHandlerResult | None = None
         try:
             with self.database.session() as session:
-                started = SchedulerRepository(session).start(
+                started = self._repository(session).start(
                     claim.job_id,
                     worker_id=worker_id,
                     lease_token=claim.lease_token,

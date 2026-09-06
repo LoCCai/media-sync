@@ -17,5 +17,7 @@ describe('console formatters', () => {
     expect(formatBytes(1_048_576)).toBe('1.00 MB');
     expect(operationLabel('media-server-probe')).toBe('媒体服务器探测');
     expect(operationLabel('media-server-scan')).toBe('媒体库定向刷新');
+    expect(operationLabel('emby-export')).toBe('兼容目录写入');
+    expect(operationLabel('pipeline-run')).toBe('下载与目录写入 Worker');
   });
 });

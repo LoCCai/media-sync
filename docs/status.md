@@ -2,7 +2,13 @@
 
 # Unified project status (single source of truth)
 
-## Latest: DY/KS Cookie self checks and limited Zhihu avatar (0065)
+## Latest: failed-login diagnostics and subscription-driven files (0066)
+
+[Execution0066](executions/0066-login-failure-and-workflow/progress.md) adds three fixed QR failure classifications and aligns the console with subscription → automatic download → compatible-directory delivery. Paced continuation applies only to strictly bound pending Bili scan context, not permanent history completion. Current test and publication facts: [verification](executions/0066-login-failure-and-workflow/verification.md).
+
+Required next: [editable shared/per-platform directories, exact-subscription execution, durable history-to-incremental semantics and real download acceptance](executions/0066-login-failure-and-workflow/next-delivery.md). Output settings are still read-only. The old DY failure cannot be reconstructed from its generic status; live login fixes are not claimed. No new production login, download or supervisor restart. The original goal remains active.
+
+## Previous: DY/KS Cookie self checks and limited Zhihu avatar (0065)
 
 [Execution0065](executions/0065-cookie-auth-and-avatar/progress.md) wires two single-request self checks, private Cookie save, account capability and subscription reuse; all seven platforms now have pasted self-validator implementations. KS requires kuaishou.web.cp.api_ph; DY uses creator center. Public target profiles/local flags never authenticate. Zhihu gains a limited source-backed optional avatar; failure preserves nickname/old image.
 

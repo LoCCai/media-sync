@@ -48,6 +48,9 @@ export const LOGIN_RUNNER_STATUSES = new Set([
   'configuration_invalid',
   'start_failed',
   'result_invalid',
+  'upstream_login_exited',
+  'upstream_browser_timeout',
+  'login_confirmation_failed',
   'browser_launch_failed'
 ]);
 const LOGIN_SESSION_STATUSES = new Set([

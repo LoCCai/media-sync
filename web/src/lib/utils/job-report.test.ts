@@ -246,6 +246,7 @@ describe('closed exact-Job report projection', () => {
       expect(report.operations[0].error.code).toBe('scheduler_run_failed');
       expect(jobOperationPhase('jobs_processed')).toBe('任务批次已处理');
       expect(jobOperationPhase(SECRET)).toBe('阶段待确认');
+      expect(jobOperationPhase('authenticating')).toBe('登录验证');
     }
   );
 });

@@ -2,6 +2,10 @@
 
 # media-sync project journal
 
+Current priority: [0066 login diagnostics and subscription-driven local delivery](executions/0066-login-failure-and-workflow/progress.md), followed by [editable directories and the subscription-to-files loop](executions/0066-login-failure-and-workflow/next-delivery.md). See [0066 verification](executions/0066-login-failure-and-workflow/verification.md) for current tests/publication. Historical feature checkpoints below do not mean live qualification is complete.
+
+## Previous feature checkpoint
+
 Current work: [0065 DY/KS Cookie self checks and optional Zhihu avatar](executions/0065-cookie-auth-and-avatar/progress.md) connects one self request to private save and actual account/subscription workflows. Seven pasted validators are implemented; KS requires the cp.api_ph Cookie subset. Six nickname platforms, limited source-backed Zhihu avatar. XHS profiles, remaining avatars/media and live capture/archive/playback still required. Local output needs no server connection. Exact tests/publication: [0065 verification](executions/0065-cookie-auth-and-avatar/verification.md); the original goal is not complete.
 
 Production remains unresolved: [scheduler failure diagnostics](executions/0055-operator-auth-playback-evidence/scheduler-diagnostics/progress.md) after the [failed real Bili canary](executions/0055-operator-auth-playback-evidence/bili-success-followup/verification.md). Login success and Worker completion do not prove capture success. [Unified status](status.md) separates implemented and pending work; offline bounded-path checks do not replace live qualification and the seven-platform goal is unchanged.

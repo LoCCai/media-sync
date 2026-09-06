@@ -40,6 +40,7 @@ from media_sync.infrastructure.db.repositories import (
     SyncRunRepository,
 )
 
+from .bili_scan_continuation import BiliScanContinuationPolicy
 from .policy import FailureDisposition, RetryPolicy, classify_failure
 
 SYNC_SUBSCRIPTION_JOB_TYPE = "sync.subscription"
@@ -379,8 +380,9 @@ def _lane_snapshot(lane: SchedulerLane) -> LaneSnapshot:
 class SchedulerRepository:
     """Transactional repository for the one closed subscription Job type."""
 
-    def __init__(self, session: Session) -> None:
+    def __init__(self, session: Session, *, bili_scan_continuation: BiliScanContinuationPolicy | None = None) -> None:
         self.session = session
+        self.bili_scan_continuation = bili_scan_continuation or BiliScanContinuationPolicy()
 
     def _serialize_sqlite_writer(self) -> None:
         """Acquire SQLite's writer slot before making a read/decide/CAS choice."""
@@ -1646,6 +1648,14 @@ class SchedulerRepository:
                 minimum=60,
                 maximum=2_147_483_647,
             )
+            if outcome == "success" and payload is not None:
+                interval = self.bili_scan_continuation.delay_after_success(
+                    job=job,
+                    run=self.session.get(SyncRun, job.run_id) if job.run_id is not None else None,
+                    subscription=subscription,
+                    schedule_revision=payload.schedule_revision,
+                    ordinary_interval=interval,
+                )
             next_run_at = now + timedelta(seconds=interval)
         except (OverflowError, ValueError) as exc:
             if require_payload:
