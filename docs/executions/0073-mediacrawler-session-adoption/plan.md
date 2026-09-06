@@ -30,8 +30,8 @@
 
 - Invoke the existing pinned MediaCrawler saved-session probe against the staged Account-shaped snapshot, fixed checkout and dedicated interpreter. Force non-interactive/headless saved-session behavior and retain the existing fence that forbids QR fallback.
 - Apply the existing deadlines, controlled child process tree, safe output parsing and secret redaction. Accept only the exact authenticated terminal result for the requested platform; expired, login-required, timed-out, cancelled, ambiguous and malformed outcomes fail closed.
-- After a successful probe, re-check operation ownership, Account revision/platform and destination identity in the publication transaction. Reuse repository invariants to set `login_method=saved_session`, `auth_status=authenticated`, advance the auth revision and clear incompatible credential/profile-path fields.
-- Return a bounded outcome only after Account-profile replacement and database publication agree. If database publication conflicts, restore the prior Account profile and do not surface success. Make restart reconciliation conservative: uncertain installation is not an authenticated Account and requires an explicit retry/recovery path.
+- After a successful probe and while holding the Account profile lock, re-check Account revision/platform and destination identity in the publication transaction. Reuse repository invariants to set `login_method=saved_session`, `auth_status=authenticated`, advance the auth revision and clear incompatible credential/profile-path fields.
+- Return a bounded outcome only after Account-profile replacement and database publication agree. If database publication conflicts, restore the prior Account profile and do not surface success. This synchronous mutation does not add a durable adoption Operation or restart reconciler; abrupt termination during copy/replacement remains an unverified residual risk.
 
 ## 5. Change the Accounts UI to the native-login flow
 

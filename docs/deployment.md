@@ -1,10 +1,20 @@
 **English** | [中文](deployment.zh.md)
 
-# Docker deployment and secure-console checkpoint
+# Docker deployment and native-session workflow
 
-This guide deploys media-sync with the pinned MediaCrawler runtime on a Linux host with Docker Compose v2. The current 0055 secure console and startup preflight are implemented and locally verified, including synthetic-browser checks; exact status is in [verification](executions/0055-operator-auth-playback-evidence/secure-console/verification.md). Backend authentication, Web session/memory-only CSRF, logout/expiry and QR/SSE are wired; `/legacy` is a protected migration notice, while root without a v2 build offers only a build/CLI notice. The current Linux image, runtime-user permissions and live platform/media-server workflows remain NOT_RUN; neither historical 0050 image PASS nor public health success substitutes for them.
+This guide deploys media-sync with the pinned MediaCrawler runtime on a Linux host with Docker Compose v2. The current 0073 implementation uses the authenticated native `/crawler/` for QR/Cookie login, then explicitly adopts its saved profile into a matching Account for the existing Subscription scheduler; exact offline evidence is in [0073 verification](executions/0073-mediacrawler-session-adoption/verification.md). The current 0073 Linux image, post-configuration crawler page, live profile adoption and platform/media-server workflows remain `NOT_RUN`; neither historical image passes nor public health/license-gate responses substitute for them.
 
-## DY/KS pasted Cookie and optional Zhihu avatar (0065)
+## Current 0073 operator workflow
+
+1. Pull the current revision, fetch the locked upstream and rebuild the `media-sync` image.
+2. Keep a local Account for the same platform. Set `MEDIA_SYNC_MEDIACRAWLER_LICENSE_ACKNOWLEDGED: "true"` under the API service environment after reviewing the pinned license.
+3. Open authenticated `/crawler/`, complete the platform's native QR or Cookie login, then stop the crawler or wait until it is idle.
+4. Return to **Accounts** and explicitly adopt the saved crawler session into that Account. Adoption validates and snapshots the profile; the scheduler never reads the active WebUI profile directly.
+5. Add a bounded creator Subscription, then start or restore the optional supervisor only when the live crawl/download scope is authorized.
+
+The sections below retain older compatibility and diagnostic checkpoints as historical detail; they are not alternate login instructions for the current Accounts page.
+
+## Historical: DY/KS pasted Cookie and optional Zhihu avatar (0065)
 
 See the newer [0066 checkpoint](executions/0066-login-failure-and-workflow/verification.md) for QR failure classification and bounded Bili scan continuation. Set `MEDIA_SYNC_BILI_SCAN_CONTINUATION_DELAY_SECONDS` identically on the API and supervisor: default `300`, `0` disables, otherwise an integer `60..604800`; an effective continuation is never longer than the subscription interval. Only a current successful, authenticated, provenance-bound run with pending scan context qualifies. Empty/unknown/finished context keeps the ordinary interval, and failures retain existing backoff. This does not mean complete historical coverage.
 
@@ -138,6 +148,22 @@ export MEDIA_SYNC_MEDIACRAWLER_LICENSE_ACKNOWLEDGED=true
 docker compose up -d --no-deps --force-recreate media-sync
 ```
 
+The tracked example interpolates that shell variable. If an existing private
+`docker-compose.yml` was copied before this setting was added, put the literal
+value under `services.media-sync.environment` instead:
+
+```yaml
+MEDIA_SYNC_MEDIACRAWLER_LICENSE_ACKNOWLEDGED: "true"
+```
+
+Then force-recreate the API service; a plain restart does not replace its
+environment. Verify without printing any credential:
+
+```bash
+docker compose exec -T media-sync /bin/sh -c \
+  'test "$MEDIA_SYNC_MEDIACRAWLER_LICENSE_ACKNOWLEDGED" = true && echo LICENSE_ACK_OK'
+```
+
 When the variable is omitted or `false`, media-sync itself still starts, but
 every authenticated `/crawler` HTTP route—including the upstream start API—
 returns the fixed no-store `503 license_acknowledgement_required` response and
@@ -145,12 +171,28 @@ the upstream application is not imported. This setting does not change the
 license or imply platform qualification. The optional supervisor retains its
 independent `--accept-mediacrawler-license` command gate.
 
+The supported native-login workflow is now:
+
+1. Open authenticated `/crawler/`, choose the platform and complete its native
+   QR or Cookie login.
+2. Stop the crawler or wait until it is idle, then return to **Accounts** and
+   adopt the saved crawler session into the matching platform Account.
+3. Add a creator Subscription. The resident scheduler uses the verified,
+   Account-specific profile for history and later incremental Jobs; it does not
+   import the shared `/data/mediacrawler/webui-output` directory.
+
+Keep `/data` persistent. `/data/mediacrawler/webui-profiles` is the native
+console login source, while the adopted Account snapshot used by scheduling is
+managed separately. Connecting an Emby/Jellyfin server remains optional; the
+pipeline can write its compatible platform/creator directory tree and NFO files
+to `/data/library` for another container or server to scan.
+
 - Public root login entry: <http://127.0.0.1:8632/> (host loopback only). Login success must be followed by session/CSRF bootstrap before private pages mount; allowlisted SPA HTML deep links redirect unauthenticated navigation here with 303.
 - `/legacy` is a protected migration notice, and `/api/docs` remains protected; neither reopens anonymous business access.
 - `GET`/`HEAD /api/v1/health` and `/api/v1/ready` remain intentionally public for container probes; deep readiness and every business route require authentication.
 - SQLite state, archive, Emby tree and MediaCrawler runtime live in the `media-sync-data` volume under `/data`.
 
-After pulling an 0050-or-later revision, rebuild the image before restarting; `git pull` alone cannot replace the static bundle inside an existing image:
+After pulling the current 0073-or-later revision, rebuild the image before restarting; `git pull` alone cannot replace the static bundles or Python code inside an existing image:
 
 ```bash
 git pull --ff-only
@@ -203,9 +245,9 @@ MediaCrawler-enabled workers disabled.
 
 `runtime_invalid / runtime_imports_missing` on the first `4c6d0bf` image was caused by dereferencing the normal venv launcher symlink to the base Python. Pull the launcher repair and rebuild without cache. Keep `MEDIA_SYNC_MEDIACRAWLER_PYTHON_EXECUTABLE=/opt/mediacrawler-venv/bin/python`; do not replace it with the resolved base interpreter path.
 
-### 2.2 Match the real QR browser launch
+### 2.2 Historical custom-login browser qualification
 
-The login-runtime repair makes login, creator and detail children share the approved browser environment, including `PLAYWRIGHT_BROWSERS_PATH`. All seven standard upstream browser launches explicitly use the installed Playwright Chromium; five upstream `channel="chrome"` selectors are adapted in memory, not by changing the locked checkout. A system Google Chrome installation is not required by this policy. Platform-specific network and anti-abuse behavior still needs live qualification.
+This subsection records the older custom-login runtime qualification and remains useful for image diagnostics. The current Accounts page uses the native `/crawler/` login surface and explicit profile adoption. The login-runtime repair makes login, creator and detail children share the approved browser environment, including `PLAYWRIGHT_BROWSERS_PATH`. All seven standard upstream browser launches explicitly use the installed Playwright Chromium; five upstream `channel="chrome"` selectors are adapted in memory, not by changing the locked checkout. A system Google Chrome installation is not required by this policy. Platform-specific network and anti-abuse behavior still needs live qualification.
 
 The image now includes `xdpyinfo` and waits for a live Xvfb connection before database initialization. `xvfb_probe_unavailable`, `xvfb_start_failed` or `xvfb_ready_timeout` stop startup with a nonzero exit before migration. Preserve the operator configuration preflight and restricted secrets; changing Origin or copying browsers into a user's home is not the fix.
 
@@ -225,17 +267,17 @@ The upstream entry point imports helpers that call PyExecJS before any browser l
 
 The QR relay now accepts upstream base64 strings and permitted PNG/JPEG/WebP base64 data URIs, normalizes them to bounded PNG, and never fetches a URL or opens an image viewer. Unsupported/malformed/oversized input is rejected silently. Legacy byte input remains bounded and unchanged. Normal relay failures remove the private temporary file; a hard-killed child may leave a QR temporary file in its private account directory, so this is not a complete hard-kill cleanup guarantee.
 
-Accounts show the latest uniquely linked login result separately from readiness. An observed terminal Operation stops QR waiting even if image delivery fails or hangs. `operation_login_browser_launch_failed` identifies the actual launch boundary; legacy `operation_login_failed` remains unknown, not a diagnosis of network/cookies. Malformed, ambiguous or contradictory stored diagnostics are omitted. See [current verification](executions/0055-operator-auth-playback-evidence/login-diagnostics/verification.md) and [runtime follow-up](executions/0055-operator-auth-playback-evidence/login-runtime-followup/verification.md). Pasted-Cookie validation/save UI is requested follow-up and is not available in this checkpoint; do not paste Cookie values into chat.
+Historically, Accounts showed the latest uniquely linked custom-login result separately from readiness. An observed terminal Operation stopped QR waiting even if image delivery failed or hung. `operation_login_browser_launch_failed` identified the launch boundary; legacy `operation_login_failed` remained unknown. Those 0055 diagnostics are retained in [verification](executions/0055-operator-auth-playback-evidence/login-diagnostics/verification.md) and [runtime follow-up](executions/0055-operator-auth-playback-evidence/login-runtime-followup/verification.md), but 0073 no longer presents that custom QR/Cookie workbench as the normal Accounts flow. Never paste Cookie values into chat.
 
-## 3. Web and QR-login status at this checkpoint
+## 3. Web and native-login status at the current checkpoint
 
 The backend now exposes strict operator login/session/logout contracts, an HttpOnly `SameSite=Strict` process-local cookie, and CSRF enforcement for cookie-authenticated unsafe requests. A successful login rotates the sole session; restart, logout, expiry, or credential change invalidates it. An optional, separately resolved Bearer credential may be configured for non-browser automation, but it cannot replace the browser-only confirmation authority planned later in 0055.
 
-Console v2 now implements serialized login/session/logout, memory-only CSRF, private-page gating, expiry/401 reset and QR/SSE session wiring; these have a passing [local synthetic-browser verification](executions/0055-operator-auth-playback-evidence/secure-console/verification.md) result, with video loading/decoding only (no play click), not live platform/media-server qualification. Login 200 alone does not grant private access: session bootstrap must succeed. Late old responses cannot restore old sessions, and writes are not automatically replayed. Onboarding supports “later” browsing without accepting the MediaCrawler license or starting a crawler. CLI/resident-supervisor workflows remain available; authorized live canaries do not require the P1 playback-confirmation UI.
+The operator login/session/logout, memory-only CSRF, private-page gating and expiry/401 reset remain in force. Platform login now occurs inside the same-origin authenticated upstream `/crawler/`; after login, an explicit Account adoption request validates an idle saved profile and atomically installs an Account-specific snapshot. Login UI state or profile-file presence alone never authenticates the Account. Local synthetic and offline tests do not qualify a real platform login.
 
 ## 4. Subscribe and download
 
-Subscription, scheduler, download, archive and Emby/Jellyfin publication backends remain available. Web administration-session wiring is implemented with a passing [local synthetic-browser verification](executions/0055-operator-auth-playback-evidence/secure-console/verification.md) result; the CLI remains available for authorized workflows. An already configured unattended chain can use `docker compose --profile supervisor up -d`; that resident supervisor does not run serve or receive operator credentials. The resulting library remains at `/data/library`.
+Subscription, scheduler, download, archive and Emby/Jellyfin-compatible publication remain available. After adoption, the scheduler uses the Account-specific saved-session snapshot, not the active WebUI profile or shared `/data/mediacrawler/webui-output`. A configured unattended chain can use `docker compose --profile supervisor up -d`; that resident supervisor does not run serve or receive operator credentials. The resulting library defaults to `/data/library`, and no Emby/Jellyfin API connection is required for directory/NFO generation.
 
 ## 5. Point Emby/Jellyfin at the library
 

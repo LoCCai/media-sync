@@ -6,23 +6,23 @@
 
 ## 当前状态
 
-当前实现和验证以 [`docs/status.zh.md`](docs/status.zh.md) 为准；最新增量为[0072 MediaCrawler WebUI 薄集成](docs/executions/0072-mediacrawler-webui-integration/progress.zh.md)。源码接入不等于真实平台验收通过。
+当前实现和验证以 [`docs/status.zh.md`](docs/status.zh.md) 为准；最新增量为[0073 原生会话订阅桥接](docs/executions/0073-mediacrawler-session-adoption/progress.zh.md)，实现提交为 `165516a`。源码接入不等于真实平台验收通过。
 
 | 方面 | 当前范围 |
 | --- | --- |
 | 本地媒体库 | 归档和Emby/Jellyfin兼容目录独立于可选服务器连接；图文/图集sidecar不等于原生视频播放 |
-| 账户与作者 | 七平台粘贴Cookie本人校验（快手要求cp.api_ph子集）；六平台准确昵称；B站/微博/贴吧及有限知乎可选头像。扫码和Cookie均需真人验收 |
-| 订阅与任务 | 可恢复移除订阅保留媒体/历史；平台资料、本地备注、安全Job报告和面向用户的状态/下一步说明已实现 |
-| 验证 | 当前精确测试/构建/打包、实际失败与未跑环境见[0065验证](docs/executions/0065-cookie-auth-and-avatar/verification.zh.md)，不继承旧测试数 |
-| 待实现/验收 | 小红书精确资料、抖音/快手头像及更广知乎头像、剩余媒体与当前Linux/平台/归档/播放；历史B站采集失败仍未解决 |
+| 账户与作者 | MediaCrawler 原生 QR/Cookie 登录现在可显式认领给 Account，形成已验证、隔离的 saved-session profile；作者身份补全与所有真人平台结果仍待验收 |
+| 订阅与任务 | 已认领 Account profile 会进入既有历史/增量 scheduler 与 Job 级摄取；可恢复移除订阅、安全 Job 报告和面向用户的状态/下一步说明继续可用 |
+| 验证 | 当前精确测试/构建/打包、已修正失败与未跑环境见[0073 验证](docs/executions/0073-mediacrawler-session-adoption/verification.zh.md)，不继承旧测试数 |
+| 待实现/验收 | 重建并验收 Linux 部署、原生登录/profile 认领、作者采集、CDN 下载、历史完整性、后续增量及最终目录/NFO；历史 B 站采集失败仍未解决 |
 
 逐执行细节、证据与准确命令都在 [`docs/executions/`](docs/README.zh.md)——本 README 有意不堆叠执行叙事。
 
 ## 爬虫控制台
 
-Docker 构建现在直接编译锁定版本的 MediaCrawler WebUI。阅读锁定版本的非商业学习许可证并设置 `MEDIA_SYNC_MEDIACRAWLER_LICENSE_ACKNOWLEDGED=true` 后，登录 media-sync，从侧栏进入“爬虫控制台”，或访问 `/crawler/`，即可使用上游已有的平台选择、二维码/Cookie 登录、creator/detail/search、启动/停止、实时日志和数据查看。media-sync 只补同域鉴权、CSRF、受认证 WebSocket、浏览器二维码中继、固定上游 Python、持久 profile，以及固定输出目录；没有重写平台爬虫。
+Docker 构建直接编译锁定版本的 MediaCrawler WebUI。阅读锁定版本的非商业学习许可证后，必须在 **API 服务环境**设置 `MEDIA_SYNC_MEDIACRAWLER_LICENSE_ACKNOWLEDGED=true`；supervisor 独立的 `--accept-mediacrawler-license` 参数不能开启 `/crawler/`。随后登录 media-sync，从侧栏进入“爬虫控制台”，或访问 `/crawler/`，即可使用上游已有的平台选择、二维码/Cookie 登录、creator/detail/search、启动/停止、实时日志和数据查看。media-sync 只补同域鉴权、CSRF、受认证 WebSocket、浏览器二维码中继、固定上游 Python、持久 profile，以及固定输出目录；没有重写平台爬虫。
 
-上游产物写入 `/data/mediacrawler/webui-output`，登录 profile 写入 `/data/mediacrawler/webui-profiles`。部署时可把整个 `/data` bind mount 到宿主机。Emby/Jellyfin 连接不是生成兼容目录与 NFO 的前提；当前批次尚未把控制台产物自动接入 Subscription → 历史采集 → 定时增量 → NFO 流水线，真人七平台结果也仍需部署后逐项验证。
+先在原生控制台登录并等待进程空闲，再回到“账户”页，把该平台保存的会话显式认领给对应 Account。scheduler 随后使用这个经过验证的 Account 独立快照执行 Subscription 历史与后续增量。共享 `/data/mediacrawler/webui-output` 仍是交互控制台产物区，不会被导入无关 Job。部署时可把整个 `/data` bind mount 到宿主机；生成兼容目录与 NFO 不要求连接 Emby/Jellyfin 服务器。真人七平台登录、采集和下载结果仍需部署后逐项验证。
 
 ## 离线快速开始（Fake 适配器，无网络）
 

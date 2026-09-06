@@ -6,23 +6,23 @@
 
 ## Current status
 
-Current implementation and verification are tracked in [`docs/status.md`](docs/status.md); the latest increment is the [0072 thin MediaCrawler WebUI integration](docs/executions/0072-mediacrawler-webui-integration/progress.md). Source support is not live platform qualification.
+Current implementation and verification are tracked in [`docs/status.md`](docs/status.md); the latest increment is the [0073 native-session subscription bridge](docs/executions/0073-mediacrawler-session-adoption/progress.md), implemented in `165516a`. Source support is not live platform qualification.
 
 | Area | Current scope |
 | --- | --- |
 | Local media library | Archive and Emby/Jellyfin-compatible directories work independently of optional server connections; text/gallery sidecars are not a claim of native video playback |
-| Accounts and creators | Seven pasted-Cookie self validators (KS requires the cp.api_ph subset); six exact nickname platforms. Bili/WB/Tieba plus limited Zhihu optional avatars. QR and Cookie flows still need live qualification |
-| Subscriptions and operations | Reversible subscription removal preserves media/history; platform profiles, local aliases, safe Job reports and user-oriented status/next actions are implemented |
-| Verification | Exact current tests/build/packages, failures and unrun environments are in [0065 verification](docs/executions/0065-cookie-auth-and-avatar/verification.md), not inherited historical counts |
-| Remaining implementation/qualification | XHS exact profiles, DY/KS avatars and broader Zhihu avatar forms, remaining media and current Linux/platform/archive/playback; historical failed Bili canary remains unresolved |
+| Accounts and creators | Native MediaCrawler QR/Cookie login can now be explicitly adopted into an Account as a verified, isolated saved-session profile; creator identity enrichment and all live platform results still require qualification |
+| Subscriptions and operations | An adopted Account profile is used by the existing history/incremental scheduler and Job-scoped ingestion; reversible subscription removal, safe Job reports and user-oriented status/next actions remain available |
+| Verification | Exact current tests/build/packages, corrected failures and unrun environments are in [0073 verification](docs/executions/0073-mediacrawler-session-adoption/verification.md), not inherited historical counts |
+| Remaining implementation/qualification | Rebuild and qualify the Linux deployment, native logins/profile adoption, creator capture, CDN downloads, history completeness, later increments and final directory/NFO output; historical failed Bili canary remains unresolved |
 
 Per-execution detail, evidence and exact commands live in [`docs/executions/`](docs/README.md) — this README intentionally does not stack execution narratives.
 
 ## Crawler console
 
-The Docker build now compiles the pinned MediaCrawler WebUI directly. After reviewing its pinned non-commercial learning license, set `MEDIA_SYNC_MEDIACRAWLER_LICENSE_ACKNOWLEDGED=true`; then sign in to media-sync and choose **Crawler console** in the sidebar or open `/crawler/` to use the upstream platform selector, QR/Cookie login, creator/detail/search modes, start/stop controls, live logs and data browser. media-sync adds only the same-origin auth/CSRF boundary, authenticated WebSockets, browser QR relay, fixed upstream Python, persistent profiles and a fixed output root; it does not reimplement the platform crawlers.
+The Docker build compiles the pinned MediaCrawler WebUI directly. After reviewing its pinned non-commercial learning license, set `MEDIA_SYNC_MEDIACRAWLER_LICENSE_ACKNOWLEDGED=true` in the **API service environment**; the supervisor's separate `--accept-mediacrawler-license` flag does not enable `/crawler/`. Then sign in to media-sync and choose **Crawler console** in the sidebar or open `/crawler/` to use the upstream platform selector, QR/Cookie login, creator/detail/search modes, start/stop controls, live logs and data browser. media-sync adds only the same-origin auth/CSRF boundary, authenticated WebSockets, browser QR relay, fixed upstream Python, persistent profiles and a fixed output root; it does not reimplement the platform crawlers.
 
-Upstream artifacts are written to `/data/mediacrawler/webui-output`, and login profiles to `/data/mediacrawler/webui-profiles`. A deployment may bind-mount all of `/data` to the host. An Emby/Jellyfin connection is not required to generate compatible directories and NFO files. This slice does not yet connect console artifacts automatically to the Subscription → history → scheduled incremental → NFO pipeline, and real seven-platform results still require deployment qualification.
+Use the native console to log in, wait until its process is idle, then return to **Accounts** and explicitly adopt that platform's saved session into the matching Account. The scheduler uses the verified Account-specific snapshot for Subscription history and later incremental runs. Shared artifacts in `/data/mediacrawler/webui-output` remain an interactive-console area and are intentionally not imported into unrelated Jobs. A deployment may bind-mount all of `/data`; an Emby/Jellyfin connection is not required to generate compatible directories and NFO files. Real seven-platform login/capture/download results still require deployment qualification.
 
 ## Offline quickstart (Fake adapter, no network)
 

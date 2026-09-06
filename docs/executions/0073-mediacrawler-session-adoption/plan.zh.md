@@ -30,8 +30,8 @@
 
 - 针对 Account 形状的暂存快照调用既有锁定 MediaCrawler saved-session 探针，使用固定 checkout 与专用解释器。强制非交互／无头 saved-session 行为，并保留禁止二维码回退的现有 fence。
 - 沿用既有截止时间、受控 child 进程树、安全输出解析与秘密脱敏。只接受所请求平台精确的 authenticated 终态；expired、login-required、timed-out、cancelled、含糊及格式异常结果全部关闭失败。
-- 探针成功后，在发布事务中再次检查 Operation 所有权、Account revision／平台及目标身份。复用 repository 不变量设置 `login_method=saved_session`、`auth_status=authenticated`，推进 auth revision，并清除不兼容 credential／profile-path 字段。
-- 只有 Account profile 替换与数据库发布一致后才返回有界结果。若数据库发布冲突，恢复 Account 的旧 profile 且不得展示成功。重启对账必须保守：安装状态不确定不能算 authenticated Account，必须进入显式重试／恢复路径。
+- 探针成功后，在持有 Account profile 锁的情况下，于发布事务再次检查 Account revision／平台及目标身份。复用 repository 不变量设置 `login_method=saved_session`、`auth_status=authenticated`，推进 auth revision，并清除不兼容 credential／profile-path 字段。
+- 只有 Account profile 替换与数据库发布一致后才返回有界结果。若数据库发布冲突，恢复 Account 的旧 profile 且不得展示成功。该同步 mutation 不增加耐久认领 Operation 或重启对账器；复制/替换期间被强杀仍是未验证残余风险。
 
 ## 5. 把账户 UI 切换为原生登录流程
 

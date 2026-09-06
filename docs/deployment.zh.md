@@ -1,10 +1,20 @@
 [English](deployment.md) | **中文**
 
-# Docker 部署与安全控制台检查点
+# Docker 部署与原生会话流程
 
-本指南使用内含锁定 MediaCrawler 运行时的自托管容器部署 media-sync，要求 Linux 主机与 Docker Compose v2。当前 0055 安全控制台与启动预检已实现，本地离线与合成浏览器门禁已通过；准确状态见[验证](executions/0055-operator-auth-playback-evidence/secure-console/verification.zh.md)。后端鉴权、Web session／内存 CSRF、退出／过期与二维码／SSE 已接线，`/legacy` 仅提供受保护迁移提示；无 v2 构建时根页仅提示构建／CLI。当前 Linux 镜像、运行用户权限与平台／媒体服务器真人流程仍为 NOT_RUN，不能用旧 0050 镜像 PASS 或公开 health 成功替代。
+本指南使用内含锁定 MediaCrawler 运行时的自托管容器部署 media-sync，要求 Linux 主机与 Docker Compose v2。当前 0073 实现使用经认证的原生 `/crawler/` 执行 QR/Cookie 登录，再把保存的 profile 显式认领给同平台 Account，供既有 Subscription scheduler 使用；准确离线证据见[0073 验证](executions/0073-mediacrawler-session-adoption/verification.zh.md)。当前 0073 Linux 镜像、修正配置后的 crawler 页面、真人 profile 认领与平台/媒体服务器流程仍为 `NOT_RUN`；历史镜像 PASS、公开 health 或许可证门响应都不能替代。
 
-## 抖音/快手粘贴Cookie与知乎可选头像（0065）
+## 当前 0073 操作流程
+
+1. 拉取当前 revision、获取锁定上游并重建 `media-sync` 镜像。
+2. 保留一个同平台本地 Account。阅读锁定许可证后，在 API 服务环境中设置 `MEDIA_SYNC_MEDIACRAWLER_LICENSE_ACKNOWLEDGED: "true"`。
+3. 打开经认证的 `/crawler/`，完成平台原生 QR 或 Cookie 登录，再停止 crawler 或等待其空闲。
+4. 回到“账户”页，把保存的 crawler 会话显式认领给该 Account。认领会校验并快照 profile；scheduler 绝不直接读取活动 WebUI profile。
+5. 添加有界作者订阅；只有确认真人采集/下载范围获授权后，才启动或恢复可选 supervisor。
+
+下方保留旧兼容能力与诊断检查点作为历史细节，不是当前账户页的替代登录说明。
+
+## 历史：抖音/快手粘贴 Cookie 与知乎可选头像（0065）
 
 更新的扫码分类和 B 站限量扫描续跑见[0066 检查点](executions/0066-login-failure-and-workflow/verification.zh.md)。API 与 supervisor 需设置相同的 `MEDIA_SYNC_BILI_SCAN_CONTINUATION_DELAY_SECONDS`：默认 `300`，`0` 关闭，启用时为 `60..604800` 的整数，实际续跑间隔不长于订阅周期。仅当前成功、已认证、来源绑定且确有待续扫描上下文时适用；空、未知或已清空上下文保持普通周期，失败仍按原退避处理。这不代表历史覆盖完整。
 
@@ -136,18 +146,47 @@ export MEDIA_SYNC_MEDIACRAWLER_LICENSE_ACKNOWLEDGED=true
 docker compose up -d --no-deps --force-recreate media-sync
 ```
 
+仓库跟踪的示例会插值这个 shell 变量。如果现有私有
+`docker-compose.yml` 是在加入该设置前复制的，请直接在
+`services.media-sync.environment` 下加入字面值：
+
+```yaml
+MEDIA_SYNC_MEDIACRAWLER_LICENSE_ACKNOWLEDGED: "true"
+```
+
+随后必须强制重建 API 服务容器；普通 restart 不会替换容器环境。以下命令可在
+不输出任何凭据的前提下验证：
+
+```bash
+docker compose exec -T media-sync /bin/sh -c \
+  'test "$MEDIA_SYNC_MEDIACRAWLER_LICENSE_ACKNOWLEDGED" = true && echo LICENSE_ACK_OK'
+```
+
 变量缺失或为 `false` 时，media-sync 本体仍正常启动，但每个已认证
 `/crawler` HTTP 路径（包括上游启动 API）都会统一返回不缓存的
 `503 license_acknowledgement_required`，且不会导入上游应用。该设置不改变
 许可证，也不表示平台真人验收通过。可选 supervisor 继续使用相互独立的
 `--accept-mediacrawler-license` 命令门禁。
 
+当前支持的原生登录流程为：
+
+1. 打开经认证的 `/crawler/`，选择平台并完成其原生 QR 或 Cookie 登录。
+2. 停止爬虫或等待其空闲，回到“账户”页，把保存的 crawler 会话认领给同平台
+   Account。
+3. 添加作者订阅。常驻 scheduler 使用经过验证的 Account 独立 profile 执行历史
+   和后续增量 Job；不会导入共享 `/data/mediacrawler/webui-output` 目录。
+
+必须持久化 `/data`。`/data/mediacrawler/webui-profiles` 是原生控制台登录来源，
+scheduler 使用的已认领 Account 快照由系统另行管理。连接 Emby/Jellyfin 服务器
+仍为可选项；pipeline 可以直接向 `/data/library` 写入兼容的平台/作者目录树与 NFO，
+供另一容器或服务器扫描。
+
 - 公开根登录入口：<http://127.0.0.1:8632/>（仅宿主回环）。成功 login 后还须完成 session/CSRF 初始化才挂载私有页面；白名单内的 SPA HTML 深链接会把未登录导航 303 到该入口。
 - `/legacy` 为受保护的迁移提示，`/api/docs` 也继续受保护；二者均不重新开放匿名业务访问。
 - `GET`/`HEAD /api/v1/health` 与 `/api/v1/ready` 为容器探针有意保持公开；深度就绪及全部业务路由都要求鉴权。
 - SQLite 状态库、归档、Emby 目录与 MediaCrawler 运行时都在 `media-sync-data` 卷的 `/data` 下。
 
-拉取 0050 或更高版本后，应先重建镜像再重启；只执行 `git pull` 无法替换既有镜像中的静态前端：
+拉取当前 0073 或更高版本后，应先重建镜像再重启；只执行 `git pull` 无法替换既有镜像中的静态前端或 Python 代码：
 
 ```bash
 git pull --ff-only
@@ -196,9 +235,9 @@ checkout 的逐项状态、稳定 `detail_code`、实际 Chromium 版本和构�
 
 首个 `4c6d0bf` 镜像若显示 `runtime_invalid / runtime_imports_missing`，根因是正常的 venv launcher 符号链接被解引用成基础 Python。请拉取启动器修复并无缓存重建。保持 `MEDIA_SYNC_MEDIACRAWLER_PYTHON_EXECUTABLE=/opt/mediacrawler-venv/bin/python`，不要替换为解引用后的基础解释器路径。
 
-### 2.2 检查真实扫码浏览器启动方式
+### 2.2 历史自建登录浏览器资格检查
 
-本次登录运行环境修复让登录、作者和详情子进程共用批准的浏览器环境，包含 `PLAYWRIGHT_BROWSERS_PATH`。七平台常规上游启动显式使用已安装的 Playwright Chromium；五个平台的 `channel="chrome"` 在内存适配，不修改锁定 checkout。此策略无需另外安装系统 Google Chrome；平台网络和风控兼容仍须真人验收。
+本节记录旧自建登录运行时资格检查，对镜像诊断仍有价值。当前账户页使用原生 `/crawler/` 登录面与显式 profile 认领。本次登录运行环境修复让登录、作者和详情子进程共用批准的浏览器环境，包含 `PLAYWRIGHT_BROWSERS_PATH`。七平台常规上游启动显式使用已安装的 Playwright Chromium；五个平台的 `channel="chrome"` 在内存适配，不修改锁定 checkout。此策略无需另外安装系统 Google Chrome；平台网络和风控兼容仍须真人验收。
 
 镜像新增 `xdpyinfo`，数据库初始化前等待 Xvfb 真实连接成功。`xvfb_probe_unavailable`、`xvfb_start_failed` 或 `xvfb_ready_timeout` 会在迁移前以非零状态停止启动。保留后台配置预检和受限凭据，不通过改 Origin 或把浏览器复制到用户目录来修复。
 
@@ -218,17 +257,17 @@ docker compose exec -T media-sync /app/.venv/bin/python /app/scripts/check_login
 
 二维码转发现接收上游 base64 字符串与允许的 PNG/JPEG/WebP base64 data URI，并规范化成有界 PNG，不抓取 URL 或打开图片查看器。不支持/畸形/超限输入静默拒绝，既有字节输入保持有界原样兼容。正常转发失败会删除私有临时文件；强杀子进程仍可能在私有账户目录留下二维码临时文件，因此不承诺完整强杀清理。
 
-账户页把唯一关联的最近登录结果与预检分开显示。即使图片传递报错或悬挂，只要观察到 Operation 终态就停止等待二维码。`operation_login_browser_launch_failed` 标识实际启动边界；旧 `operation_login_failed` 仍是未知，不猜测网络/Cookie 原因。畸形、歧义或互相矛盾的持久诊断不投影。见[本轮验证](executions/0055-operator-auth-playback-evidence/login-diagnostics/verification.zh.md)与[运行后续验证](executions/0055-operator-auth-playback-evidence/login-runtime-followup/verification.zh.md)。粘贴 Cookie 校验/保存 UI 已列入后续需求，本检查点尚不可用；不要把 Cookie 发到聊天。
+历史账户页会把唯一关联的自建登录结果与预检分开显示；观察到 Operation 终态即停止等待二维码。`operation_login_browser_launch_failed` 标识启动边界，旧 `operation_login_failed` 仍是未知。0055 证据保留在[验证](executions/0055-operator-auth-playback-evidence/login-diagnostics/verification.zh.md)与[运行后续](executions/0055-operator-auth-playback-evidence/login-runtime-followup/verification.zh.md)，但 0073 已不再把这套自建 QR/Cookie 工作台作为账户页正常流程。不要把 Cookie 发到聊天。
 
-## 3. 当前检查点的 Web 与扫码登录状态
+## 3. 当前检查点的 Web 与原生登录状态
 
 后端现已提供严格的操作者 login/session/logout 契约、HttpOnly `SameSite=Strict` 进程内 Cookie，以及对 Cookie 鉴权不安全请求的 CSRF 强制。登录成功会轮换唯一 session；重启、退出、过期或凭据变化都会使其失效。非浏览器自动化可以另配独立解析的 Bearer 凭据，但它不能替代 0055 后续规划的浏览器专属确认权限。
 
-Console v2 现已实现串行 login/session/logout、仅内存 CSRF、私有页面门、过期／401 重置与 QR／SSE 会话接线；这些功能已通过[本地合成浏览器验证](executions/0055-operator-auth-playback-evidence/secure-console/verification.zh.md)，视频仅加载／解码、未点击播放，不构成平台／媒体服务器真人资格。登录 200 本身不授予私有页面权限，仍须 session 初始化成功；延迟旧响应不能恢复旧会话，不自动重放写请求。引导允许“稍后”仅浏览，不接受 MediaCrawler 许可证或启动爬虫。CLI／常驻 supervisor 继续可用；获授权真人金丝雀不以 P1 播放确认 UI 为前置。
+操作者 login/session/logout、仅内存 CSRF、私有页面门及过期/401 重置继续生效。平台登录现在发生在同源、经认证的上游 `/crawler/` 中；登录后，显式 Account 认领请求会验证空闲保存 profile，并原子安装 Account 独立快照。仅有登录 UI 状态或 profile 文件不能认证 Account；本地合成与离线测试也不能赋予真人平台登录资格。
 
 ## 4. 订阅与下载
 
-订阅、调度、下载、归档与 Emby/Jellyfin 发布后端继续可用。Web 管理会话接线已实现并通过[本地合成浏览器验证](executions/0055-operator-auth-playback-evidence/secure-console/verification.zh.md)；CLI 可继续用于已授权流程。已有配置的无人值守链路可通过 `docker compose --profile supervisor up -d` 启动常驻 supervisor；它不运行 serve，也不接收操作者凭据。最终媒体库位于 `/data/library`。
+订阅、调度、下载、归档与 Emby/Jellyfin 兼容发布继续可用。认领后，scheduler 使用 Account 独立 saved-session 快照，而非活动 WebUI profile 或共享 `/data/mediacrawler/webui-output`。已配置的无人值守链路可通过 `docker compose --profile supervisor up -d` 启动常驻 supervisor；它不运行 serve，也不接收操作者凭据。最终媒体库默认位于 `/data/library`，生成目录/NFO 不要求连接 Emby/Jellyfin API。
 
 ## 5. 将媒体库接入 Emby/Jellyfin
 

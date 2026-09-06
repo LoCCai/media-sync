@@ -2,11 +2,11 @@
 
 # 项目工作日志
 
-当前交付：[0072 锁定 MediaCrawler WebUI 的认证集成](executions/0072-mediacrawler-webui-integration/progress.zh.md)，实现提交为 `ea64938`。`/crawler/` 现在直接使用上游的平台／登录／采集／下载控制台并置于 media-sync 鉴权后，不再重复实现这些流程。Python unit 完整套件以 `4633 passed, 3 skipped, 1 warning` 通过，media-sync Web 完整套件 782 项通过，加固后浏览器 bundle 的生产依赖审计为 0。当前 Docker 镜像及在线七平台行为仍为 `NOT_RUN`；控制台输出尚未自动连接 Subscription 历史／增量摄取与 NFO 发布。
+当前交付：[0073 原生 MediaCrawler 会话认领](executions/0073-mediacrawler-session-adoption/progress.zh.md)，实现提交为 `165516a`。操作者现在经鉴权的上游 `/crawler/` 登录，再把空闲 WebUI profile 显式认领给同平台 Account；经过验证的 Account 独立快照会进入既有 Subscription scheduler 与 Job 级摄取，不暴露 Cookie，也不导入共享控制台输出目录。Python unit 完整套件以 `4683 passed, 3 skipped, 1 warning` 通过，media-sync Web 完整套件 799 项通过。当前 Docker 镜像及在线七平台采集/下载仍待资格验收；线上已观察的许可证门表示 API 容器必须单独收到 `MEDIA_SYNC_MEDIACRAWLER_LICENSE_ACKNOWLEDGED=true`，supervisor CLI 参数不能替代。
 
-## 上阶段功能检查点
+## 历史功能检查点
 
-当前工作：[0065抖音/快手Cookie本人校验与知乎可选头像](executions/0065-cookie-auth-and-avatar/progress.zh.md)将单次本人请求接入私密保存及账户/订阅流程。七平台粘贴校验均有实现，快手限含cp.api_ph的Cookie；六平台昵称，知乎头像仅来源支持子集。小红书资料、剩余头像/媒体及真人采集/归档/播放仍须完成。本地输出无需媒体服务器连接。准确验证与发布见[0065验证](executions/0065-cookie-auth-and-avatar/verification.zh.md)，原七平台目标未完成。
+历史检查点 [0065 抖音/快手 Cookie 本人校验与知乎可选头像](executions/0065-cookie-auth-and-avatar/progress.zh.md)曾在原生控制台转向前把一次本人请求接入私密保存及账户/订阅流程；七平台粘贴校验继续作为内部兼容能力，快手需要含 cp.api_ph 的 Cookie。准确历史验证与发布见[0065 验证](executions/0065-cookie-auth-and-avatar/verification.zh.md)；这已不是账户页的正常登录流程。
 
 生产未决：[首次真实B站采集失败](executions/0055-operator-auth-playback-evidence/bili-success-followup/verification.zh.md)及其[调度失败诊断](executions/0055-operator-auth-playback-evidence/scheduler-diagnostics/progress.zh.md)。登录成功和Worker完成不等于采集成功；[统一状态](status.zh.md)区分已实现与待实现。新有界能力的离线通过不替代生产验收，七平台目标不变。
 
@@ -33,7 +33,8 @@
 
 | ID | 里程碑 | 状态 | 提交 |
 | --- | --- | --- | --- |
-| 0072 | 锁定 MediaCrawler WebUI 的认证集成 | 第一批薄集成直接挂载锁定上游控制台，提供固定运行时／输出／profile 根、认证 HTTP／WebSocket、CSRF、二维码 relay、原生媒体下载开关及有界进程／日志／Cookie 处理。离线完整套件通过；Docker／真人资格与自动 Subscription → 摄取 → NFO 仍开放；[验证](executions/0072-mediacrawler-webui-integration/verification.zh.md) | 计划 `dcd3881`；实现 `ea64938`；收尾为包含本行的提交 |
+| 0073 | 原生 MediaCrawler 会话认领 | 用 `/crawler/` → 显式 Account 认领 → 既有 Subscription scheduler 取代重复登录控件。安全 profile 快照/探针/回滚、稳定公开错误、waiting-auth 恢复与精确 scheduler profile 证明均已离线通过；Linux/真人平台验收仍开放；[验证](executions/0073-mediacrawler-session-adoption/verification.zh.md) | 计划 `0b90aaa`；实现 `165516a`；收尾为包含本行的提交 |
+| 0072 | 锁定 MediaCrawler WebUI 的认证集成 | 历史第一批：直接挂载锁定上游控制台，提供固定运行时/输出/profile 根、认证 HTTP/WebSocket、CSRF、二维码 relay、原生媒体下载开关及有界进程/日志/Cookie 处理；当时尚未实现 Account 会话认领；[验证](executions/0072-mediacrawler-webui-integration/verification.zh.md) | 计划 `dcd3881`；实现 `ea64938`；收尾为包含本行的提交 |
 | 0071 | 剩余 runner 输出诊断 | 交付转向直接复用上游 WebUI 时暂停；缺失的 runner 覆盖及此前丢弃的输出仍未解决；[进展](executions/0071-remaining-runner-output-diagnostics/progress.zh.md) | 计划 `3802d98`；由 `dcd3881` 暂停 |
 | 0070 | 安全进程输出诊断 | 扫码及通用作者采集 child 诊断已实现有界、脱敏、精确关联并在既有日志中心展示；其他独立 runner 与真人验收仍开放；[验证](executions/0070-process-output-diagnostics/verification.zh.md) | 计划 `523fa88`；实现/收尾为包含本行的提交 |
 | 0069 | 精确订阅交付 | 精确耐久订阅到目录执行、receipt 恢复、重复链栅栏、扫描证据、迁移护栏及 Windows 目录 pin 已完成离线验证；[验证](executions/0069-exact-subscription-delivery/verification.zh.md) | 计划 `4620291`；实现/收尾为包含本行的提交 |
