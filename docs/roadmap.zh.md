@@ -8,6 +8,8 @@
 
 ## 阶段
 
+优先级更新（0074 计划）：[B 站投稿耐久回填转增量本地交付](executions/0074-bili-backfill-incremental-delivery/goal.zh.md)已冻结为下一执行，但**尚未开始**。它复用原生会话认领和精确订阅交付链：每批最多 30 条并按节奏续跑，到达源末尾后通过头部对账才能发布有时点边界的基线状态，随后使用重叠头部检查做增量，并按完整 Content 发布，避免一条坏旧作品隐藏无关的已验证作品。不新增登录/爬虫/下载器/调度器，不导入共享控制台输出，也不要求媒体服务器连接。通用暂停态策略编辑排在本交付之后。
+
 优先级更新（0069–0070）：[精确订阅交付](executions/0069-exact-subscription-delivery/progress.zh.md)与[安全进程诊断](executions/0070-process-output-diagnostics/progress.zh.md)已实现、完成离线验证并以实施提交 `b22e938` 发布。产品现在可只执行一个订阅而不消费无关任务，持久化/恢复精确本地目录交付链，并以精确耐久身份保存有界脱敏的扫码/采集 child 诊断。下一步部署本 revision，只复现一个失败扫码平台，再跑一次有界订阅 canary；不能宣称旧日志可恢复、永久历史完成、全部 runner 输出已覆盖或真人平台成功。
 
 优先级更新（0068）：[日志中心与登录阶段证据](executions/0068-log-center/progress.zh.md)已有实现，[验证](executions/0068-log-center/verification.zh.md)区分离线结果和待真人验收。下一步是操作者部署后受控测试一个失败平台、处理已报告的Windows exporter目录pin弱点，再继续精确订阅及历史/下载/增量交付。不自动恢复supervisor或重试已认证账户。

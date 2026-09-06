@@ -4,6 +4,8 @@
 
 当前交付：[0073 原生 MediaCrawler 会话认领](executions/0073-mediacrawler-session-adoption/progress.zh.md)，实现提交为 `165516a`。操作者现在经鉴权的上游 `/crawler/` 登录，再把空闲 WebUI profile 显式认领给同平台 Account；经过验证的 Account 独立快照会进入既有 Subscription scheduler 与 Job 级摄取，不暴露 Cookie，也不导入共享控制台输出目录。Python unit 完整套件以 `4683 passed, 3 skipped, 1 warning` 通过，media-sync Web 完整套件 799 项通过。当前 Docker 镜像及在线七平台采集/下载仍待资格验收；线上已观察的许可证门表示 API 容器必须单独收到 `MEDIA_SYNC_MEDIACRAWLER_LICENSE_ACKNOWLEDGED=true`，supervisor CLI 参数不能替代。
 
+下一执行已冻结但尚未开始：[0074 B 站投稿耐久回填转增量本地交付](executions/0074-bili-backfill-incremental-delivery/goal.zh.md)。它会复用 0073 Account 会话与既有精确交付链，每批最多 30 条并按节奏续跑，到达源末尾后先对账再发布有时点边界的基线状态，随后切换到重叠头部检查，并避免一条失败 Content 隐藏无关的已验证 Content。当前不声明任何 0074 实现或真人结果。
+
 ## 历史功能检查点
 
 历史检查点 [0065 抖音/快手 Cookie 本人校验与知乎可选头像](executions/0065-cookie-auth-and-avatar/progress.zh.md)曾在原生控制台转向前把一次本人请求接入私密保存及账户/订阅流程；七平台粘贴校验继续作为内部兼容能力，快手需要含 cp.api_ph 的 Cookie。准确历史验证与发布见[0065 验证](executions/0065-cookie-auth-and-avatar/verification.zh.md)；这已不是账户页的正常登录流程。
@@ -33,6 +35,7 @@
 
 | ID | 里程碑 | 状态 | 提交 |
 | --- | --- | --- | --- |
+| 0074 | B 站投稿耐久回填 → 增量本地交付 | 仅 `PLANNED`：有界按节奏历史批次、源末尾/头部对账、有时点边界的基线状态、重叠增量及完整 Content 单元的部分发布。尚未开始代码、迁移、部署或真人金丝雀；[目标](executions/0074-bili-backfill-incremental-delivery/goal.zh.md)、[计划](executions/0074-bili-backfill-incremental-delivery/plan.zh.md) | 包含本行的计划提交 |
 | 0073 | 原生 MediaCrawler 会话认领 | 用 `/crawler/` → 显式 Account 认领 → 既有 Subscription scheduler 取代重复登录控件。安全 profile 快照/探针/回滚、稳定公开错误、waiting-auth 恢复与精确 scheduler profile 证明均已离线通过；Linux/真人平台验收仍开放；[验证](executions/0073-mediacrawler-session-adoption/verification.zh.md) | 计划 `0b90aaa`；实现 `165516a`；收尾为包含本行的提交 |
 | 0072 | 锁定 MediaCrawler WebUI 的认证集成 | 历史第一批：直接挂载锁定上游控制台，提供固定运行时/输出/profile 根、认证 HTTP/WebSocket、CSRF、二维码 relay、原生媒体下载开关及有界进程/日志/Cookie 处理；当时尚未实现 Account 会话认领；[验证](executions/0072-mediacrawler-webui-integration/verification.zh.md) | 计划 `dcd3881`；实现 `ea64938`；收尾为包含本行的提交 |
 | 0071 | 剩余 runner 输出诊断 | 交付转向直接复用上游 WebUI 时暂停；缺失的 runner 覆盖及此前丢弃的输出仍未解决；[进展](executions/0071-remaining-runner-output-diagnostics/progress.zh.md) | 计划 `3802d98`；由 `dcd3881` 暂停 |

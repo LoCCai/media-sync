@@ -10,6 +10,10 @@
 
 最终离线证据通过：Python 完整 unit 套件（`4683 passed, 3 skipped, 1 warning`）、media-sync Web 完整套件（`26 files / 799 tests`）、Svelte 检查/构建、全仓 Prettier、Ruff lint/format、154 个源码文件的 strict mypy、两个锁定上游检查及 Python 制品构建。精确命令、一项已修正的过时路由数量失败与资格边界见[0073 验证](executions/0073-mediacrawler-session-adoption/verification.zh.md)。部署 `165516a` 前，既有线上 0072 `/crawler/` 返回 `license_acknowledgement_required`，证明其 API 容器尚未单独收到 `MEDIA_SYNC_MEDIACRAWLER_LICENSE_ACKNOWLEDGED=true`；supervisor CLI 确认不能替代，且该观察不能识别 0073 镜像。强制重建容器后的访问、真人 profile 认领及七平台采集/下载/CDN/历史/增量结果仍为 `NOT_RUN`。
 
+## 下一步：规划中的 B 站投稿基线与增量（0074）
+
+[执行 0074](executions/0074-bili-backfill-incremental-delivery/goal.zh.md)目前只有计划。下一实现冻结为一个精确 B 站投稿 Subscription：按节奏执行每批不超过 30 条的回填单元、源末尾/头部对账、有时点边界的 `baseline_snapshot_complete` 状态、重叠定时头部检查及按完整 Content 发布。它明确复用 0073/0069，排除另一套登录/爬虫/下载器/调度器、控制台输出自动导入及强制媒体服务器控制。当前不声明任何 0074 代码、迁移、测试结果、部署或真人资格。
+
 ## 上阶段：精确订阅交付与安全进程诊断（0069–0070）
 
 [0069](executions/0069-exact-subscription-delivery/progress.zh.md)把一次订阅操作贯通为唯一精确耐久 scheduler → 采集 → pipeline → 兼容目录链；不消费无关任务，可从 supervisor 抢占、重试和重启中凭封闭 receipt 恢复，不要求连接 Emby/Jellyfin 服务器，并保留非永久的逐 feed 扫描证据。审查驱动的栅栏阻止重复链；迁移降级与 Windows exporter 目录 pin 已加固，实施提交 `b22e938` 已发布，证据见[验证](executions/0069-exact-subscription-delivery/verification.zh.md)。
