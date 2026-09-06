@@ -24,6 +24,7 @@ from sqlalchemy.orm import Session
 
 from media_sync.application.authentication import AccountLoginRequest, MediaCrawlerQrLoginService
 from media_sync.application.mediacrawler import NormalizedMediaCrawlerOutput, load_normalized_output
+from media_sync.application.mediacrawler_profile_adoption import MediaCrawlerWebUIProfileAdoptionService
 from media_sync.domain import AccountRef, LoginMethod, Platform
 from media_sync.infrastructure.db import (
     AccountRepository,
@@ -242,6 +243,54 @@ class _SuccessfulLoginRunner:
         assert on_account_locked is not None
         on_account_locked()
         return MediaCrawlerLoginResult(MediaCrawlerLoginStatus.AUTHENTICATED, PINNED_SHA)
+
+
+class _AuthenticatedAdoptionRunner:
+    """Prove the adoption probe reads only its Account-shaped staged profile."""
+
+    def __init__(self, runtime_root: Path, expected_profile_bytes: bytes) -> None:
+        self.runtime_root = runtime_root
+        self.expected_profile_bytes = expected_profile_bytes
+        self.requests: list[MediaCrawlerLoginRequest] = []
+
+    def run(
+        self,
+        request: MediaCrawlerLoginRequest,
+        *,
+        cancellation: Event | None = None,
+    ) -> MediaCrawlerLoginResult:
+        assert cancellation is None or not cancellation.is_set()
+        profile = build_run_paths(
+            self.runtime_root,
+            request.platform,
+            request.account_id,
+            request.account_id,
+        ).profile_root
+        assert (profile / "Default" / "Cookies").read_bytes() == self.expected_profile_bytes
+        self.requests.append(request)
+        return MediaCrawlerLoginResult(MediaCrawlerLoginStatus.AUTHENTICATED, PINNED_SHA)
+
+
+class _AdoptedProfileBridge(_Bridge):
+    """Capture the exact managed profile selected by scheduler dispatch."""
+
+    def __init__(self, expected_profile: Path, expected_profile_bytes: bytes) -> None:
+        super().__init__()
+        self.expected_profile = expected_profile
+        self.expected_profile_bytes = expected_profile_bytes
+        self.observed_profiles: list[Path] = []
+
+    def prepare(self, request: BridgeRequest) -> MediaCrawlerRunSpec:
+        profile = build_run_paths(
+            request.integration_root,
+            request.platform,
+            request.account_id,
+            request.execution_id or request.account_id,
+        ).profile_root
+        assert profile == self.expected_profile
+        assert (profile / "Default" / "Cookies").read_bytes() == self.expected_profile_bytes
+        self.observed_profiles.append(profile)
+        return super().prepare(request)
 
 
 class _ProtocolRecordingRunner:
@@ -762,6 +811,116 @@ async def _run_worker(
         worker_id=worker_id,
         heartbeat_interval_seconds=heartbeat_interval_seconds,
     )
+
+
+@pytest.mark.asyncio
+async def test_adopted_webui_profile_is_the_exact_profile_used_by_scheduler(
+    database: Database,
+    tmp_path: Path,
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    profile_bytes = b"synthetic-authenticated-webui-profile"
+    source_profile = runtime_root / "webui-profiles" / "bili_user_data_dir"
+    (source_profile / "Default").mkdir(parents=True)
+    (source_profile / "Default" / "Cookies").write_bytes(profile_bytes)
+
+    with database.session() as session:
+        account = AccountRepository(session).create(
+            platform="bili",
+            adapter="mediacrawler",
+            display_name="adopted scheduler account",
+            login_method="qr",
+            auth_status="required",
+        )
+        account_id = UUID(account.id)
+
+    adoption_runner = _AuthenticatedAdoptionRunner(runtime_root, profile_bytes)
+    adoption = MediaCrawlerWebUIProfileAdoptionService(
+        database,
+        adoption_runner,
+        integration_root=runtime_root,
+        clock=lambda: NOW,
+    ).adopt_account(account_id, 0)
+    expected_profile = build_run_paths(
+        runtime_root,
+        Platform.BILI,
+        account_id,
+        account_id,
+    ).profile_root
+
+    with database.session() as session:
+        author = AuthorRepository(session).upsert(
+            AuthorUpsert(
+                platform="bili",
+                remote_id="adopted-creator-001",
+                display_name="Adopted Fixture Creator",
+            )
+        )
+        subscription = SubscriptionRepository(session).create(
+            account_id=str(account_id),
+            author_id=author.id,
+            interval_seconds=60,
+            max_items=30,
+            policy={
+                "mediacrawler": MediaCrawlerSubscriptionPolicy(
+                    allow_full_history=True,
+                    request_delay_seconds=3.5,
+                    headless=True,
+                ).to_payload()
+            },
+            next_run_at=NOW - timedelta(seconds=1),
+        )
+        subscription_id = subscription.id
+
+    resolver = _Resolver()
+    bridge = _AdoptedProfileBridge(expected_profile, profile_bytes)
+    process_runner = _Runner()
+    result = await _run_worker(
+        database,
+        _handler(
+            database,
+            tmp_path,
+            resolver=resolver,
+            bridge=bridge,
+            runner=process_runner,
+        ),
+        worker_id="adopted-profile-worker",
+    )
+
+    assert adoption.account_id == account_id
+    assert (adoption.login_method, adoption.auth_status) == (
+        LoginMethod.SAVED_SESSION,
+        "authenticated",
+    )
+    assert adoption.auth_revision == 1
+    assert len(adoption_runner.requests) == 1
+    assert len(bridge.requests) == len(bridge.observed_profiles) == len(process_runner.calls) == 1
+    request = bridge.requests[0]
+    assert request.account_id == account_id
+    assert request.subscription_id == UUID(subscription_id)
+    assert request.platform is Platform.BILI
+    assert request.login_method is LoginMethod.SAVED_SESSION
+    assert request.cookie is None and resolver.calls == []
+    assert bridge.observed_profiles == [expected_profile]
+    assert process_runner.calls[0][0].paths.profile_root == expected_profile
+    assert (expected_profile / "Default" / "Cookies").read_bytes() == profile_bytes
+    assert result.status == "succeeded"  # type: ignore[attr-defined]
+    with database.session() as session:
+        persisted = session.get(Account, str(account_id))
+        job = session.scalar(
+            select(Job).where(
+                Job.subscription_id == subscription_id,
+                Job.job_type == "sync.subscription",
+            )
+        )
+        assert persisted is not None
+        assert (persisted.login_method, persisted.auth_status, persisted.auth_revision) == (
+            "saved_session",
+            "authenticated",
+            1,
+        )
+        assert job is not None and job.status == "succeeded"
+        assert session.scalar(select(func.count()).select_from(Content)) == 1
 
 
 @pytest.mark.asyncio

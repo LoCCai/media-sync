@@ -712,11 +712,10 @@ describe('creation, image and operation presentation integration', () => {
     expect(completedInput).not.toMatch(/fullHistory|wizardGates|selectedCapability|canRequestPreview/);
     expect(source).toContain('isCreatorLookupPlatform(selectedAccount.platform)');
     const accounts = readFileSync(new URL('../../routes/accounts/+page.svelte', import.meta.url), 'utf8');
-    expect(accounts).toContain('isCreatorLookupPlatform(selectedAccount.platform)');
-    expect(accounts.replace(/\s+/g, ' ')).toContain(
-      'B 站、微博、快手、知乎、抖音和贴吧 Cookie 作者昵称查询已接入'
-    );
-    expect(accounts).toContain('知乎支持有限可选头像，快手/抖音目前仅昵称');
+    expect(accounts).toContain('href="/crawler/"');
+    expect(accounts).toContain('/crawler-profile');
+    expect(accounts).not.toContain('isCreatorLookupPlatform');
+    expect(accounts).not.toContain('作者昵称查询');
   });
 
   it('allows WB profile lookup without the independently required full-history capture acknowledgement', async () => {

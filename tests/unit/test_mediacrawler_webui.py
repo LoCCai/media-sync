@@ -12,6 +12,7 @@ import threading
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+from uuid import UUID
 
 import pytest
 from fastapi import FastAPI
@@ -24,6 +25,7 @@ from media_sync.integrations.mediacrawler import webui as webui_module
 from media_sync.integrations.mediacrawler.webui import (
     _MAX_LOG_QUEUE_ITEMS,
     _MAX_LOG_READ_CHARACTERS,
+    MediaCrawlerWebUIBusyError,
     _configure_manager,
     _current_qr_response,
     _enforce_same_origin,
@@ -308,6 +310,38 @@ def test_manager_start_failure_removes_private_cookie(tmp_path: Path, monkeypatc
     assert manager.process is None
     assert list((tmp_path / "runtime" / "webui-private").iterdir()) == []
     assert all(secret not in message for message in _messages(manager))
+
+
+def test_manager_runs_profile_adoption_only_while_console_is_idle(tmp_path: Path) -> None:
+    calls: list[tuple[UUID, int]] = []
+
+    def adopt(account_id: UUID, expected_auth_revision: int) -> dict[str, object]:
+        calls.append((account_id, expected_auth_revision))
+        return {"account_id": str(account_id), "auth_revision": expected_auth_revision + 1}
+
+    manager = _configure_manager(
+        _Manager(),
+        checkout=tmp_path / "checkout",
+        python=tmp_path / "venv" / "python",
+        runtime_root=tmp_path / "runtime",
+        profile_adopter=adopt,
+    )
+    account_id = UUID(int=7)
+
+    result = asyncio.run(manager.adopt_profile(account_id, 3))
+
+    assert result == {"account_id": str(account_id), "auth_revision": 4}
+    assert calls == [(account_id, 3)]
+
+    manager._media_sync_active_run = webui_module._ManagedRun(
+        process=_FakeProcess(io.StringIO(), returncode=None),
+        cookie_file=None,
+        known_secrets=(),
+        qr_path=tmp_path / "runtime" / "qr.png",
+    )
+    with pytest.raises(MediaCrawlerWebUIBusyError):
+        asyncio.run(manager.adopt_profile(account_id, 4))
+    assert calls == [(account_id, 3)]
 
 
 def test_manager_redacts_output_and_cleans_natural_exit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

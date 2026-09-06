@@ -13,32 +13,32 @@
 
 ## 2. Define a narrow session-adoption application boundary
 
-- Add one typed application request containing only Account identity, expected Account auth revision and platform. Derive all profile paths from trusted settings and database state; reject path, Cookie, credential and arbitrary metadata fields at the API boundary.
-- Require an existing Account whose platform exactly matches the requested WebUI profile and whose current state is eligible for first adoption. Reject deleted, stale, already busy, platform-mismatched and already populated Accounts with fixed conflict codes.
-- Expose adoption as an operator-authenticated, CSRF-protected mutation with the existing idempotency/Operation conventions where applicable. Return a bounded state and safe next action; never return profile entries, Cookie values, command lines or raw child output.
-- Treat the operation as an explicit claim. The first slice supports adopting an unowned WebUI profile into an empty Account profile only. Do not silently merge, copy, replace or share Chromium profiles.
+- Add one typed application request containing only Account identity and expected Account auth revision. Resolve the platform from the Account and derive all profile paths from trusted settings and database state; reject path, platform, Cookie, credential and arbitrary metadata fields at the API boundary.
+- Require an existing eligible MediaCrawler Account and resolve the exact same-platform WebUI profile from it. Reject deleted, stale, busy or malformed Accounts with fixed conflict codes.
+- Expose adoption as an operator-authenticated, CSRF-protected mutation carrying the Account's expected authentication revision. Return a bounded state and safe next action; never return profile entries, Cookie values, command lines or raw child output.
+- Treat initial adoption and later refresh as the same explicit, revision-fenced snapshot action. Never merge live Chromium trees or share a runtime profile. A successful refresh atomically replaces only that Account's previous snapshot; failure restores it.
 
 ## 3. Make profile transfer exclusive, confined and recoverable
 
-- Add a media-sync-owned coordinator that first proves the embedded WebUI crawler/login child is stopped, then acquires the WebUI profile gate and the destination `MediaCrawlerAccountLock` in one documented order. Reject busy state rather than waiting without a bound.
+- Add a media-sync-owned coordinator that first proves the embedded WebUI crawler/login child is stopped and holds the WebUI profile gate while taking and validating the snapshot. Acquire the destination `MediaCrawlerAccountLock` before the short replacement/publication section. Reject busy state rather than waiting without a bound.
 - Re-read the Account after locks are held. Fence the operation with its expected auth revision and platform so concurrent edits, deletion, login, creator lookup or scheduler dispatch cannot be overwritten by a late result.
-- Validate the source using no-follow filesystem inspection. It must be the exact expected, non-empty platform directory beneath `webui-profiles`; reject symlinks/reparse points, path escape, unsupported special entries and an existing/non-empty destination.
-- Move the source into an attempt-scoped staging location beneath the Account's managed root, then promote it to the exact destination without exposing a partially copied profile. Prefer same-filesystem atomic renames; if platform behavior requires a bounded copy fallback, specify bounds, verify every entry and keep the original until promotion is complete.
-- Maintain an explicit rollback journal in memory/local operation state. Before Account publication, every failure restores the WebUI source when safe, removes only the exact attempt-owned staging/destination, and leaves unrelated profile files untouched. Cleanup failure receives its own fixed classification and does not authenticate the Account.
+- Validate the source using no-follow filesystem inspection. It must be the exact expected, non-empty platform directory beneath `webui-profiles`; reject path escape and prevent symlinks/reparse points or unsupported special entries from being copied.
+- Copy regular files into an attempt-scoped Account-shaped staging location, never following links, while the source is quiescent. Validate this independent snapshot, then promote it to the exact destination with an atomic same-volume directory exchange so the scheduler never observes a partial profile.
+- Maintain an explicit rollback journal for target replacement. Before Account publication, every failure keeps the WebUI source intact, removes only attempt-owned staging data and restores the prior Account profile when safe. Cleanup failure receives its own fixed classification and never turns an unverified Account into authenticated state.
 
 ## 4. Validate the adopted session before publication
 
-- Invoke the existing pinned MediaCrawler saved-session probe against the Account destination, fixed checkout and dedicated interpreter. Force non-interactive/headless saved-session behavior and retain the existing fence that forbids QR fallback.
+- Invoke the existing pinned MediaCrawler saved-session probe against the staged Account-shaped snapshot, fixed checkout and dedicated interpreter. Force non-interactive/headless saved-session behavior and retain the existing fence that forbids QR fallback.
 - Apply the existing deadlines, controlled child process tree, safe output parsing and secret redaction. Accept only the exact authenticated terminal result for the requested platform; expired, login-required, timed-out, cancelled, ambiguous and malformed outcomes fail closed.
 - After a successful probe, re-check operation ownership, Account revision/platform and destination identity in the publication transaction. Reuse repository invariants to set `login_method=saved_session`, `auth_status=authenticated`, advance the auth revision and clear incompatible credential/profile-path fields.
-- Commit a bounded Operation/Event outcome only after filesystem ownership and database publication agree. If database publication conflicts, roll the profile back to the WebUI source and do not surface success. Make restart reconciliation conservative: uncertain ownership is not an authenticated Account and requires an explicit retry/recovery path.
+- Return a bounded outcome only after Account-profile replacement and database publication agree. If database publication conflicts, restore the prior Account profile and do not surface success. Make restart reconciliation conservative: uncertain installation is not an authenticated Account and requires an explicit retry/recovery path.
 
 ## 5. Change the Accounts UI to the native-login flow
 
 - Replace the normal QR/Cookie login calls to action with a concise three-step flow: open `/crawler/`, complete native login for the Account's platform, return and adopt the saved session.
 - Open the same authenticated `/crawler/` route; do not expose an upstream port or create a second login form. Preserve exact deployment prefix/origin behavior delivered by 0072.
-- Add an Account-scoped “Adopt saved session” action that shows the exact platform and Account, requests confirmation, carries the expected auth revision, and reports stable outcomes: no saved profile, crawler busy, Account busy, platform mismatch, validation expired/failed, conflict, cleanup failure or success.
-- On success, refresh the existing Account read model so the user sees `saved_session` / `authenticated` and can continue to creator lookup or Subscription creation. On failure, show a safe actionable message and link to existing bounded job/operation evidence; do not render raw logs or secrets.
+- Add an Account-scoped “Adopt saved session” action that shows the exact platform and Account, carries the expected auth revision, and reports stable outcomes: no saved profile, crawler busy, Account busy, validation expired/failed, conflict, cleanup failure or success.
+- On success, refresh the existing Account read model so the user sees `saved_session` / `authenticated` and can continue to creator lookup or Subscription creation. On failure, show a safe actionable message; do not render raw logs or secrets.
 - Remove or demote custom QR/Cookie controls from the primary Accounts experience. Keep only internal compatibility seams required by the probe/scheduler; API removal or database migration is not required by this execution.
 
 ## 6. Prove connection to the existing Subscription chain
@@ -50,9 +50,9 @@
 
 ## 7. Test failure and concurrency boundaries
 
-- Unit-test path derivation, same-platform enforcement, API schema rejection, operator auth/CSRF, source absence/empty state, destination conflict, unsafe entries, bounded transfer and safe response/log projection.
-- Integration-test WebUI-busy and Account-busy rejection, lock order, duplicate requests, stale auth revision, cancellation at each transfer/probe/publication boundary, timeout, child failure, expired session, malformed result, database conflict, rollback and shutdown reconciliation.
-- Prove successful adoption consumes the source and leaves exactly one Account-owned profile; prove every pre-publication failure leaves the Account unauthenticated and never lets scheduler observe a partial destination.
+- Unit-test path derivation, API schema rejection, operator auth/CSRF, source absence/empty state, unsafe entries, bounded transfer and safe response projection.
+- Integration-test WebUI-busy and Account-busy rejection, stale auth revision, pre-cancellation, expired/failed/malformed probe results, database conflict, prior-profile rollback and successful publication.
+- Prove successful adoption leaves the source intact and installs one independent Account-owned snapshot; prove every pre-publication failure leaves the Account unauthenticated and never lets scheduler observe a partial destination.
 - Regress existing QR/Cookie compatibility services only to ensure the hidden internal seams still work where required. Do not count synthetic success as real platform authentication.
 
 ## 8. Verify, document and release honestly

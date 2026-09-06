@@ -76,8 +76,9 @@ def test_acknowledged_deployment_constructs_upstream_once(tmp_path: Path, monkey
     calls: list[Settings] = []
     shutdown_calls: list[str] = []
 
-    def factory(settings: Settings) -> FastAPI:
+    def factory(settings: Settings, *, profile_adopter: object | None = None) -> FastAPI:
         calls.append(settings)
+        assert callable(profile_adopter)
         upstream = FastAPI()
 
         async def shutdown() -> None:

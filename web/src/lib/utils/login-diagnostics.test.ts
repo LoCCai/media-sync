@@ -60,11 +60,12 @@ const operation = {
 } as Operation;
 
 describe('fixed login diagnostics', () => {
-  it('links the exact failed login operation to the retained log center', () => {
+  it('delegates new account login to the upstream console without retaining the custom login workbench', () => {
     const source = readFileSync(new URL('../../routes/accounts/+page.svelte', import.meta.url), 'utf8');
-    expect(source).toContain('/logs?operation_id=');
-    expect(source).toContain('selectedLoginDiagnostic.operation_id');
-    expect(source).toContain('查看本次日志');
+    expect(source).toContain('href="/crawler/"');
+    expect(source).toContain('/crawler-profile');
+    expect(source).not.toContain('/login-preflight');
+    expect(source).not.toContain('/logs?operation_id=');
   });
 
   it('keeps the exact interrupted operation link without inventing a runner result', () => {

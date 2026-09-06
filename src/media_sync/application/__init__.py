@@ -79,6 +79,13 @@ from media_sync.application.mediacrawler import (
     load_normalized_output,
 )
 from media_sync.application.mediacrawler_download import LazyMediaCrawlerLocatorRefresher
+from media_sync.application.mediacrawler_profile_adoption import (
+    PROFILE_ADOPTION_ERROR_CODES,
+    MediaCrawlerProfileAdoptionError,
+    MediaCrawlerProfileAdoptionRequest,
+    MediaCrawlerProfileAdoptionResult,
+    MediaCrawlerWebUIProfileAdoptionService,
+)
 from media_sync.application.operation_payloads import (
     MAX_IDEMPOTENCY_KEY_LENGTH,
     MAX_OPERATION_ARRAY_ITEMS,
@@ -192,6 +199,7 @@ __all__ = [
     "OPERATION_EVENT_CODES",
     "OPERATION_KINDS",
     "OPERATION_PAYLOAD_SCHEMA_VERSION",
+    "PROFILE_ADOPTION_ERROR_CODES",
     "QUALIFICATION_SCHEMA_VERSION",
     "SAFE_ARCHIVE_MEDIA_TYPES",
     "SUPPORTED_WORKBENCH_ADAPTERS",
@@ -235,7 +243,11 @@ __all__ = [
     "LoginSessionReconciliationSummary",
     "MediaCrawlerLoginSessionReconciler",
     "MediaCrawlerOutputRejected",
+    "MediaCrawlerProfileAdoptionError",
+    "MediaCrawlerProfileAdoptionRequest",
+    "MediaCrawlerProfileAdoptionResult",
     "MediaCrawlerQrLoginService",
+    "MediaCrawlerWebUIProfileAdoptionService",
     "MediaServerError",
     "MediaServerPathStyle",
     "MediaServerProbeResult",

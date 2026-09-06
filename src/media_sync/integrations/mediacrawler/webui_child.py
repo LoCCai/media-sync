@@ -84,6 +84,41 @@ def _prepare_directory(path: Path, checkout: Path) -> Path:
     return resolved
 
 
+def _upstream_option_values(arguments: list[str]) -> dict[str, str]:
+    """Read the manager's value-bearing argv pairs without mutating them."""
+
+    values: dict[str, str] = {}
+    index = 0
+    while index < len(arguments):
+        option = arguments[index]
+        if option.startswith("--") and "=" in option:
+            name, value = option.split("=", 1)
+            values[name] = value
+            index += 1
+            continue
+        if option.startswith("--") and index + 1 < len(arguments):
+            values[option] = arguments[index + 1]
+            index += 2
+            continue
+        index += 1
+    return values
+
+
+def _apply_zhihu_creator_compatibility(config: Any, upstream_args: list[str]) -> None:
+    """Fill the one creator mapping omitted by the pinned upstream CLI."""
+
+    options = _upstream_option_values(upstream_args)
+    if options.get("--platform") != "zhihu" or options.get("--type") != "creator":
+        return
+    creator_id = options.get("--creator_id", "")
+    creator_id_list = [item.strip() for item in creator_id.split(",") if item.strip()]
+    if creator_id_list:
+        # Pinned cmd_arg/arg.py performs this exact split and assigns the
+        # resulting list for every other platform, but has no Zhihu branch.
+        # Keep argv untouched so upstream remains responsible for all parsing.
+        config.ZHIHU_CREATOR_URL_LIST = creator_id_list
+
+
 def run(argv: list[str] | None = None) -> None:
     values = _arguments(argv)
     checkout = Path(values.checkout).expanduser().resolve()
@@ -119,6 +154,7 @@ def run(argv: list[str] | None = None) -> None:
     config.MAX_CONCURRENCY_NUM = 1
 
     upstream_args = list(values.upstream_args)
+    _apply_zhihu_creator_compatibility(config, upstream_args)
     upstream_args.extend(("--save_data_path", str(output_root)))
     if cookie is not None:
         upstream_args.extend(("--cookies", cookie))

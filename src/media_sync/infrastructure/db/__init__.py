@@ -77,6 +77,12 @@ from .playback_evidence_repository import (
     PlaybackEvidenceResult,
     PlaybackEvidenceTransactionError,
 )
+from .profile_adoption_repository import (
+    PROFILE_ADOPTION_ACCOUNT_ERROR_CODES,
+    ProfileAdoptionAccountError,
+    ProfileAdoptionAccountRepository,
+    ProfileAdoptionAccountSnapshot,
+)
 from .repositories import (
     AccountLoginConflictError,
     AccountRepository,
@@ -117,6 +123,7 @@ __all__ = [
     "OPERATION_SUBJECT_ROLES",
     "OPERATION_SUBJECT_TYPES",
     "PLAYBACK_EVIDENCE_SCHEMA_VERSION",
+    "PROFILE_ADOPTION_ACCOUNT_ERROR_CODES",
     "TERMINAL_OPERATION_STATES",
     "Account",
     "AccountLoginConflictError",
@@ -183,6 +190,9 @@ __all__ = [
     "PlaybackEvidenceRepository",
     "PlaybackEvidenceResult",
     "PlaybackEvidenceTransactionError",
+    "ProfileAdoptionAccountError",
+    "ProfileAdoptionAccountRepository",
+    "ProfileAdoptionAccountSnapshot",
     "ProfileSnapshot",
     "ProfileValue",
     "RepositoryError",

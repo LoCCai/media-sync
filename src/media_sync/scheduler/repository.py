@@ -2199,6 +2199,41 @@ class SchedulerRepository:
     def resume_waiting(self, job_id: str, *, now: datetime | None = None) -> SchedulerJobSummary:
         return self.resume(job_id, now=now)
 
+    def resume_waiting_auth_for_account(self, account_id: str | UUID, *, now: datetime | None = None) -> int:
+        """Resume only authentication-blocked source jobs for one exact account.
+
+        User-action waits deliberately remain dormant. Reusing ``resume`` for
+        each selected job preserves subscription and scheduler-lane fencing
+        instead of performing a broad status rewrite.
+        """
+
+        try:
+            normalized_account_id = str(UUID(str(account_id)))
+        except (AttributeError, TypeError, ValueError):
+            raise ValueError("account_id must be a UUID") from None
+        if str(account_id) != normalized_account_id:
+            raise ValueError("account_id must be a canonical UUID")
+        current = _aware_utc(now)
+        self._serialize_sqlite_writer()
+        job_ids = tuple(
+            self.session.scalars(
+                select(Job.id)
+                .join(Subscription, Subscription.id == Job.subscription_id)
+                .where(
+                    Job.job_type == SYNC_SUBSCRIPTION_JOB_TYPE,
+                    Job.account_id == normalized_account_id,
+                    Job.status == "waiting_auth",
+                    Subscription.deleted_at.is_(None),
+                )
+                .order_by(Job.created_at, Job.id)
+            ).all()
+        )
+        resumed = 0
+        for job_id in job_ids:
+            if self.resume(job_id, now=current).status == "queued":
+                resumed += 1
+        return resumed
+
     def cancel_unstarted_for_removal(
         self, job_id: str, *, now: datetime, locked_lanes: tuple[SchedulerLane, ...]
     ) -> SchedulerJobSummary:

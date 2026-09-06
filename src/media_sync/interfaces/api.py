@@ -49,6 +49,9 @@ from media_sync.application import (
     ArchivePreviewSource,
     DurableSubjectRef,
     MediaCrawlerLoginSessionReconciler,
+    MediaCrawlerProfileAdoptionError,
+    MediaCrawlerProfileAdoptionResult,
+    MediaCrawlerWebUIProfileAdoptionService,
     OperationCoordinator,
     OperationCoordinatorError,
     OperationExecution,
@@ -149,7 +152,11 @@ from media_sync.integrations.mediacrawler.subscription_policy import (
     MediaCrawlerSubscriptionPolicyError,
     from_subscription_policy,
 )
-from media_sync.integrations.mediacrawler.webui import create_mediacrawler_webui_app
+from media_sync.integrations.mediacrawler.webui import (
+    MediaCrawlerWebUIBusyError,
+    MediaCrawlerWebUIUnavailableError,
+    create_mediacrawler_webui_app,
+)
 from media_sync.interfaces.cli import (
     _EXPECTED_DATABASE_REVISION,
     _account_login_outcome_payload,
@@ -307,6 +314,23 @@ _ACCOUNT_LOGIN_RETRYABLE_CODES = frozenset(
         "account_login_unexpected",
     }
 )
+_PROFILE_ADOPTION_PUBLIC_ERRORS: dict[str, tuple[int, str]] = {
+    "profile_adoption_account_not_found": (404, "account_not_found"),
+    "profile_adoption_account_ineligible": (409, "account_platform_mismatch"),
+    "profile_adoption_busy": (409, "account_busy"),
+    "profile_adoption_conflict": (409, "account_revision_conflict"),
+    "profile_adoption_source_missing": (409, "crawler_profile_not_found"),
+    "profile_adoption_source_invalid": (409, "crawler_profile_unsafe"),
+    "profile_adoption_source_empty": (409, "crawler_profile_empty"),
+    "profile_adoption_copy_failed": (503, "crawler_profile_transfer_failed"),
+    "profile_adoption_probe_failed": (409, "crawler_profile_auth_failed"),
+    "profile_adoption_probe_unavailable": (503, "crawler_profile_probe_unavailable"),
+    "profile_adoption_result_invalid": (503, "crawler_profile_probe_unavailable"),
+    "profile_adoption_cancelled": (409, "crawler_profile_cancelled"),
+    "profile_adoption_filesystem_failed": (503, "crawler_profile_transfer_failed"),
+    "profile_adoption_rollback_failed": (503, "crawler_profile_cleanup_failed"),
+    "profile_adoption_cleanup_failed": (503, "crawler_profile_cleanup_failed"),
+}
 
 
 def _resolve_web_root() -> Path | None:
@@ -637,6 +661,14 @@ class CreatorLookupStart(BaseModel):
     accept_mediacrawler_license: bool = Field(default=False, strict=True)
 
 
+class CrawlerProfileAdoptionRequest(BaseModel):
+    """The only client-controlled value for adopting an upstream profile."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    expected_auth_revision: int = Field(ge=0, lt=2**63 - 1, strict=True)
+
+
 class BiliScopeUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -868,6 +900,22 @@ class MediaServerAuthorOperationRequest(BaseModel):
         return value
 
 
+def _crawler_profile_adoption_payload(result: MediaCrawlerProfileAdoptionResult) -> dict[str, object]:
+    """Project only bounded ownership evidence; never expose profile paths or files."""
+
+    return {
+        "account_id": str(result.account_id),
+        "platform": result.platform.value,
+        "auth_revision": result.auth_revision,
+        "upstream_sha": result.upstream_sha,
+        "profile_file_count": result.profile_file_count,
+        "profile_byte_count": result.profile_byte_count,
+        "resumed_job_count": result.resumed_job_count,
+        "login_method": result.login_method.value,
+        "auth_status": result.auth_status.value,
+    }
+
+
 # ------------------------------------------------------------------ app factory
 
 
@@ -1038,11 +1086,30 @@ def create_api_app(
     app.state.log_center = log_center
     app.state.creator_profile_service = creator_profile_service
     app.state.cookie_login_service = cookie_login_service
+    profile_adoption_service = (
+        MediaCrawlerWebUIProfileAdoptionService(
+            operation_database,
+            MediaCrawlerLoginProcessRunner(
+                lock_path=resolved.mediacrawler_lock_path,
+                integration_root=resolved.resolved_mediacrawler_runtime_dir,
+                python_executable=resolved.mediacrawler_python_executable,
+                enabled=True,
+                license_acknowledged=True,
+            ),
+            integration_root=resolved.resolved_mediacrawler_runtime_dir,
+        )
+        if resolved.mediacrawler_license_acknowledged and resolved.mediacrawler_python_executable is not None
+        else None
+    )
+    app.state.profile_adoption_service = profile_adoption_service
     deep_readiness_cache: dict[bool, tuple[float, dict[str, object]]] = {}
     deep_readiness_lock = threading.Lock()
     web_root = _resolve_web_root()
     mediacrawler_webui = (
-        create_mediacrawler_webui_app(resolved)
+        create_mediacrawler_webui_app(
+            resolved,
+            profile_adopter=(profile_adoption_service.adopt_account if profile_adoption_service is not None else None),
+        )
         if resolved.mediacrawler_license_acknowledged
         else create_mediacrawler_license_gate_app()
     )
@@ -2200,6 +2267,37 @@ def create_api_app(
             raise _bad_request("database_operation_failed") from None
         finally:
             database.dispose()
+
+    @app.post("/api/v1/accounts/{account_id}/crawler-profile")
+    async def adopt_crawler_profile(
+        account_id: UUID,
+        body: CrawlerProfileAdoptionRequest,
+    ) -> dict[str, object]:
+        """Adopt one quiescent upstream WebUI session into the account pipeline."""
+
+        if not resolved.mediacrawler_license_acknowledged:
+            raise HTTPException(status_code=409, detail="license_acknowledgement_required")
+        manager = getattr(mediacrawler_webui.state, "media_sync_manager", None)
+        adopter = getattr(manager, "adopt_profile", None)
+        if profile_adoption_service is None or not callable(adopter):
+            raise HTTPException(status_code=503, detail="crawler_profile_probe_unavailable")
+        try:
+            result = await adopter(account_id, body.expected_auth_revision)
+        except MediaCrawlerWebUIBusyError:
+            raise HTTPException(status_code=409, detail="crawler_busy") from None
+        except MediaCrawlerWebUIUnavailableError:
+            raise HTTPException(status_code=503, detail="crawler_profile_probe_unavailable") from None
+        except MediaCrawlerProfileAdoptionError as error:
+            status, detail = _PROFILE_ADOPTION_PUBLIC_ERRORS.get(
+                error.code,
+                (503, "crawler_profile_transfer_failed"),
+            )
+            raise HTTPException(status_code=status, detail=detail) from None
+        except Exception:
+            raise HTTPException(status_code=503, detail="crawler_profile_transfer_failed") from None
+        if not isinstance(result, MediaCrawlerProfileAdoptionResult):
+            raise HTTPException(status_code=503, detail="crawler_profile_probe_unavailable")
+        return _crawler_profile_adoption_payload(result)
 
     @app.get("/api/v1/accounts/{account_id}/login-preflight")
     def login_preflight(

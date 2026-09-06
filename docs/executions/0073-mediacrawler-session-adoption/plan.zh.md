@@ -13,32 +13,32 @@
 
 ## 2. 定义狭窄的会话认领应用边界
 
-- 增加一个类型化应用请求，只包含 Account 身份、预期 Account auth revision 和平台。所有 profile 路径都从可信设置和数据库状态派生；API 边界拒绝路径、Cookie、凭据和任意元数据字段。
-- 要求目标是平台精确一致且符合首次认领条件的已有 Account。对已删除、revision 过期、忙碌、平台不一致或 profile 已存在的 Account 返回固定冲突码。
-- 在适用处沿用现有幂等／Operation 约定，把认领暴露为通过操作者认证和 CSRF 防护的 mutation。只返回有界状态和安全下一步；绝不返回 profile 条目、Cookie 值、命令行或原始 child 输出。
-- 把操作定义为显式取得所有权。第一批只支持把尚无所有者的 WebUI profile 认领到 profile 为空的 Account；不得静默合并、复制、替换或共享 Chromium profile。
+- 增加一个类型化应用请求，只包含 Account 身份和预期 Account auth revision。平台从 Account 解析，所有 profile 路径都从可信设置和数据库状态派生；API 边界拒绝路径、平台、Cookie、凭据和任意元数据字段。
+- 要求目标是合格的已有 MediaCrawler Account，并据此解析精确同平台的 WebUI profile。对已删除、revision 过期、忙碌或畸形 Account 返回固定冲突码。
+- 把认领暴露为通过操作者认证和 CSRF 防护、携带 Account 预期认证 revision 的 mutation。只返回有界状态和安全下一步；绝不返回 profile 条目、Cookie 值、命令行或原始 child 输出。
+- 把首次认领和以后刷新定义为相同的显式、受 revision 约束的快照动作。绝不合并活动 Chromium 树或共享运行 profile。成功刷新只原子替换该 Account 的旧快照；失败则恢复旧快照。
 
 ## 3. 让 profile 转移具备独占、受限与可恢复属性
 
-- 增加 media-sync 自有 coordinator：先证明嵌入式 WebUI crawler／登录 child 已停止，再按有文档约束的顺序获取 WebUI profile gate 和目标 `MediaCrawlerAccountLock`。遇到忙碌状态就有界拒绝，不无限等待。
+- 增加 media-sync 自有 coordinator：先证明嵌入式 WebUI crawler／登录 child 已停止，并在取得及验证快照期间持有 WebUI profile gate；在短暂的替换／发布区间前获取目标 `MediaCrawlerAccountLock`。遇到忙碌状态就有界拒绝，不无限等待。
 - 获取锁后重新读取 Account，以预期 auth revision 和平台 fencing 该操作，防止并发编辑、删除、登录、作者查询或 scheduler 派发被迟到结果覆盖。
-- 使用不跟随链接的文件系统检查验证来源。来源必须是 `webui-profiles` 下精确、非空的平台目录；拒绝符号链接／reparse point、路径逃逸、不支持的特殊条目，以及已经存在／非空的目标。
-- 把来源移动到 Account 受管根下 attempt 级暂存位置，再提升为精确目标，过程中不得暴露部分复制的 profile。优先使用同文件系统原子 rename；若平台行为确实需要有界 copy fallback，则必须明确边界、验证每个条目，并在提升完成前保留原始来源。
-- 在内存／本地 Operation 状态维护显式回滚记录。Account 发布前发生任何失败，都应在安全情况下恢复 WebUI 来源，只删除该 attempt 精确拥有的暂存／目标，并保持无关 profile 文件不变。清理失败使用独立固定分类，且不得认证 Account。
+- 使用不跟随链接的文件系统检查验证来源。来源必须是 `webui-profiles` 下精确、非空的平台目录；拒绝路径逃逸，并阻止符号链接／reparse point 或不支持的特殊条目被复制。
+- 在来源静止期间，只把普通文件复制到 Account 形状的 attempt 级暂存位置且绝不跟随链接。验证这份独立快照后，通过同卷原子目录交换提升到精确目标，使 scheduler 永远看不到部分 profile。
+- 为目标替换维护显式回滚记录。Account 发布前发生任何失败，都保留 WebUI 来源，只删除该 attempt 精确拥有的暂存数据，并在安全情况下恢复 Account 的旧 profile。清理失败使用独立固定分类，且绝不能把未经验证的 Account 变为已认证。
 
 ## 4. 发布前验证已认领会话
 
-- 针对 Account 目标调用既有锁定 MediaCrawler saved-session 探针，使用固定 checkout 与专用解释器。强制非交互／无头 saved-session 行为，并保留禁止二维码回退的现有 fence。
+- 针对 Account 形状的暂存快照调用既有锁定 MediaCrawler saved-session 探针，使用固定 checkout 与专用解释器。强制非交互／无头 saved-session 行为，并保留禁止二维码回退的现有 fence。
 - 沿用既有截止时间、受控 child 进程树、安全输出解析与秘密脱敏。只接受所请求平台精确的 authenticated 终态；expired、login-required、timed-out、cancelled、含糊及格式异常结果全部关闭失败。
 - 探针成功后，在发布事务中再次检查 Operation 所有权、Account revision／平台及目标身份。复用 repository 不变量设置 `login_method=saved_session`、`auth_status=authenticated`，推进 auth revision，并清除不兼容 credential／profile-path 字段。
-- 只有文件系统所有权与数据库发布一致后才提交有界 Operation/Event 结果。若数据库发布冲突，把 profile 回滚至 WebUI 来源且不得展示成功。重启对账必须保守：所有权不确定不能算 authenticated Account，必须进入显式重试／恢复路径。
+- 只有 Account profile 替换与数据库发布一致后才返回有界结果。若数据库发布冲突，恢复 Account 的旧 profile 且不得展示成功。重启对账必须保守：安装状态不确定不能算 authenticated Account，必须进入显式重试／恢复路径。
 
 ## 5. 把账户 UI 切换为原生登录流程
 
 - 把正常二维码／Cookie 登录操作改为简洁三步：打开 `/crawler/`、完成该 Account 平台的原生登录、返回并认领已保存会话。
 - 打开同一个经认证的 `/crawler/` 路由；不得暴露上游端口或创建第二个登录表单。保留 0072 已交付的精确部署前缀／Origin 行为。
-- 增加 Account 级“认领已保存会话”操作，显示精确平台和 Account，要求确认，携带预期 auth revision，并展示稳定结果：无已保存 profile、crawler 忙、Account 忙、平台不一致、验证过期／失败、冲突、清理失败或成功。
-- 成功后刷新既有 Account read model，让用户看到 `saved_session` / `authenticated` 并继续作者查询或创建 Subscription。失败时展示安全、可执行的提示，并链接现有有界 Job／Operation 证据；不得渲染原始日志或秘密。
+- 增加 Account 级“认领已保存会话”操作，显示精确平台和 Account，携带预期 auth revision，并展示稳定结果：无已保存 profile、crawler 忙、Account 忙、验证过期／失败、冲突、清理失败或成功。
+- 成功后刷新既有 Account read model，让用户看到 `saved_session` / `authenticated` 并继续作者查询或创建 Subscription。失败时展示安全、可执行的提示；不得渲染原始日志或秘密。
 - 从账户主体验中删除或降级自定义二维码／Cookie 控件。只保留探针／scheduler 所需的内部兼容接缝；本执行不要求删除 API 或执行数据库迁移。
 
 ## 6. 证明已连接既有 Subscription 主链
@@ -50,9 +50,9 @@
 
 ## 7. 测试失败与并发边界
 
-- 单元测试路径派生、同平台强制、API schema 拒绝、操作者认证／CSRF、来源缺失／为空、目标冲突、不安全条目、有界转移及安全响应／日志投影。
-- 集成测试 WebUI 忙与 Account 忙拒绝、锁顺序、重复请求、auth revision 过期、转移／探针／发布各边界取消、超时、child 失败、会话过期、结果异常、数据库冲突、回滚及关闭对账。
-- 证明成功认领会消耗来源并且只留下一个 Account 所有的 profile；证明每种发布前失败都保持 Account 未认证，且 scheduler 永远观察不到部分目标。
+- 单元测试路径派生、API schema 拒绝、操作者认证／CSRF、来源缺失／为空、不安全条目、有界转移及安全响应投影。
+- 集成测试 WebUI 忙与 Account 忙拒绝、auth revision 过期、预取消、探针过期／失败／畸形、数据库冲突、旧 profile 回滚及成功发布。
+- 证明成功认领会保留来源并安装一份独立、由 Account 所有的快照；证明每种发布前失败都保持 Account 未认证，且 scheduler 永远观察不到部分目标。
 - 只为确保隐藏的内部接缝在必需处仍工作而回归既有二维码／Cookie 兼容服务；不得把合成成功计作真人平台认证。
 
 ## 8. 准确验证、记录与发布

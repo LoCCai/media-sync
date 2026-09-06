@@ -12,12 +12,13 @@ import stat
 import subprocess
 import sys
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from types import MethodType, ModuleType
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
@@ -78,6 +79,18 @@ class _ManagedRun:
     windows_job: Any = None
     close_task: asyncio.Task[bool] | None = None
     resources_cleaned: bool = False
+
+
+class MediaCrawlerWebUIBusyError(RuntimeError):
+    """The shared upstream console is still using its platform profile."""
+
+    code = "crawler_busy"
+
+
+class MediaCrawlerWebUIUnavailableError(RuntimeError):
+    """The mounted console has no configured profile-adoption boundary."""
+
+    code = "mediacrawler_webui_unavailable"
 
 
 def _module_belongs_to(module: ModuleType, root: Path) -> bool:
@@ -142,6 +155,7 @@ def _configure_manager(
     checkout: Path,
     python: Path,
     runtime_root: Path,
+    profile_adopter: Callable[[UUID, int], object] | None = None,
 ) -> Any:
     output_root = runtime_root / "webui-output"
     profile_root = runtime_root / "webui-profiles"
@@ -347,6 +361,40 @@ def _configure_manager(
             with contextlib.suppress(asyncio.CancelledError):
                 await reader
 
+    async def adopt_profile(self: Any, account_id: UUID, expected_auth_revision: int) -> object:
+        """Run the blocking ownership hand-off only while the WebUI is idle.
+
+        ``asyncio.to_thread`` cannot cancel an already-running filesystem and
+        browser probe.  Keep the manager lock until that work reaches a final
+        result even when the HTTP caller disconnects, so a new crawler cannot
+        mutate the source profile during a late hand-off.
+        """
+
+        if profile_adopter is None:
+            raise MediaCrawlerWebUIUnavailableError
+        async with self._lock:
+            active = self._media_sync_active_run
+            if isinstance(active, _ManagedRun) and active.process.poll() is None:
+                raise MediaCrawlerWebUIBusyError
+            await await_reader(self)
+            active = self._media_sync_active_run
+            if isinstance(active, _ManagedRun) and active.process.poll() is None:
+                raise MediaCrawlerWebUIBusyError
+            task = asyncio.create_task(asyncio.to_thread(profile_adopter, account_id, expected_auth_revision))
+            cancellation: asyncio.CancelledError | None = None
+            while not task.done():
+                try:
+                    await asyncio.shield(task)
+                except asyncio.CancelledError as error:
+                    cancellation = cancellation or error
+                except BaseException:
+                    break
+            if cancellation is not None:
+                with contextlib.suppress(BaseException):
+                    task.result()
+                raise cancellation
+            return task.result()
+
     async def start(self: Any, config: Any) -> bool:
         async with self._lock:
             active = self._media_sync_active_run
@@ -485,6 +533,7 @@ def _configure_manager(
     manager.start = MethodType(start, manager)
     manager.stop = MethodType(stop, manager)
     manager.shutdown = MethodType(shutdown, manager)
+    manager.adopt_profile = MethodType(adopt_profile, manager)
     return manager
 
 
@@ -583,7 +632,11 @@ def _enforce_same_origin(upstream_app: FastAPI) -> None:
     upstream_app.state.media_sync_same_origin = True
 
 
-def create_mediacrawler_webui_app(settings: Settings) -> FastAPI:
+def create_mediacrawler_webui_app(
+    settings: Settings,
+    *,
+    profile_adopter: Callable[[UUID, int], object] | None = None,
+) -> FastAPI:
     """Return the pinned upstream app, or a fixed-code unavailable surface."""
 
     if settings.mediacrawler_python_executable is None:
@@ -606,6 +659,7 @@ def create_mediacrawler_webui_app(settings: Settings) -> FastAPI:
         checkout=checkout.root,
         python=python.executable,
         runtime_root=runtime_root,
+        profile_adopter=profile_adopter,
     )
     services_module.__dict__["crawler_manager"] = manager
     crawler_module.__dict__["crawler_manager"] = manager
@@ -629,4 +683,8 @@ def create_mediacrawler_webui_app(settings: Settings) -> FastAPI:
     return upstream_app
 
 
-__all__ = ["create_mediacrawler_webui_app"]
+__all__ = [
+    "MediaCrawlerWebUIBusyError",
+    "MediaCrawlerWebUIUnavailableError",
+    "create_mediacrawler_webui_app",
+]

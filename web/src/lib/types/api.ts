@@ -141,6 +141,14 @@ export interface Account {
   created?: boolean;
 }
 
+export interface CrawlerProfileAdoption {
+  account_id: string;
+  platform: Platform;
+  login_method: AccountLoginMethod;
+  auth_status: string;
+  auth_revision: number;
+}
+
 export interface LoginStatus {
   account_id: string;
   auth_status: string;

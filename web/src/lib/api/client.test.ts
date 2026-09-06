@@ -213,6 +213,29 @@ describe('login runtime error copy', () => {
   });
 });
 
+describe('crawler profile adoption error copy', () => {
+  it.each([
+    ['account_not_found', '所选账户不存在或已失效，请刷新账户列表。'],
+    ['account_platform_mismatch', '账户平台与原生登录会话的平台不一致，请确认选择。'],
+    ['account_busy', '该账户正在执行任务，请等待任务结束后再认领会话。'],
+    ['account_revision_conflict', '账户状态已变化，请刷新后重新认领。'],
+    ['crawler_profile_not_found', '原生 MediaCrawler 中未找到该平台的已登录会话，请先完成登录。'],
+    ['crawler_profile_unsafe', '原生 MediaCrawler 会话目录未通过安全检查，未执行认领。'],
+    ['crawler_profile_empty', '原生 MediaCrawler 的平台会话为空，请重新登录后再认领。'],
+    ['crawler_profile_transfer_failed', '无法安全转移原生登录会话；请检查存储空间和目录权限。'],
+    ['crawler_profile_auth_failed', '无法使用该会话确认平台登录，请在原生控制台重新登录。'],
+    ['crawler_profile_probe_unavailable', '无法校验已保存会话，请检查 MediaCrawler 运行时和浏览器环境。'],
+    ['crawler_profile_cancelled', '会话认领已取消，请刷新账户状态后再决定是否重试。'],
+    ['crawler_busy', '原生 MediaCrawler 正在运行，请先停止任务再认领会话。'],
+    ['crawler_profile_cleanup_failed', '会话目录清理或恢复失败，请停止相关任务、刷新账户状态并查看日志。']
+  ])('uses fixed session-adoption copy for %s', (code, expected) => {
+    const error = new ApiError(409, code, { detail: code, raw: 'DO_NOT_RENDER' });
+
+    expect(error.message).toBe(expected);
+    expect(error.message).not.toContain('DO_NOT_RENDER');
+  });
+});
+
 describe('browser session transport', () => {
   it('normalizes Headers, sends memory CSRF only for unsafe methods, and consumes 204', async () => {
     const fetchMock = vi.fn(async (_path: string, _init: RequestInit) => new Response(null, { status: 204 }));
