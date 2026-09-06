@@ -31,3 +31,5 @@ Production evidence remains0067 read-only inspection: DY/KS/Tieba/WB upstream_br
 ## Git publication
 
 Frozen plan bfeb43f. Fresh pre-push fetch confirmed origin/main still d600ed5cdf5763a172e1f5b1dd82346652690041, no concurrent remote changes. Bilingual implementation commit and ordinary push; exact published revision/remote equality follow in a docs closeout. Overall goal remains active.
+
+Implementation committed and pushed: **9539c30d502661d7e110a2b637ae6279174a861e**. Post-push ls-remote matched GitHub main to local HEAD; worktree was clean. This subsequent bilingual docs closeout changes no application code. No server deployment or automatic retry occurred. Deployment instructions are in [usage](usage.md); the full goal is not complete.
