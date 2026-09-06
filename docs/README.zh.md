@@ -2,7 +2,7 @@
 
 # 项目工作日志
 
-当前优先：[0066 登录诊断与订阅自动落盘](executions/0066-login-failure-and-workflow/progress.zh.md)，随后[可编辑目录与订阅到文件闭环](executions/0066-login-failure-and-workflow/next-delivery.zh.md)。最新测试和发布见[0066 验证](executions/0066-login-failure-and-workflow/verification.zh.md)。下方历史功能检查点不代表真人验收已完成。
+当前交付：[0067 共享输出目录](executions/0067-output-directories/progress.zh.md)，精确结果见[0067 验证](executions/0067-output-directories/verification.zh.md)。用户最新要求的[下版日志中心与扫码诊断](executions/0067-output-directories/next-delivery.zh.md)优先推进，之后继续订阅到文件闭环；四平台扫码仍失败，下方历史测试不代表真人验收完成。
 
 ## 上阶段功能检查点
 

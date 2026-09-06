@@ -2,7 +2,13 @@
 
 # 项目统一状态（单一事实来源）
 
-## 最新：失败登录诊断与订阅自动落盘（0066）
+## 最新：共享输出目录与扫码问题复核（0067）
+
+[0067](executions/0067-output-directories/progress.zh.md)实现总目录/七平台覆盖、CAS保存、作者根绑定及API/CLI/独立调度器/媒体树接线。新库按平台分目录，旧库保留平铺；已有发布改根须显式迁移，迁移未实现。无需另外导出或连接媒体服务器。精确测试及发布见[验证](executions/0067-output-directories/verification.zh.md)。
+
+只读浏览器确认DY/KS/贴吧/WB仍扫码超时，Bili/XHS/Zhihu保存为已认证。未宣称修复、未触发生产重试。[下版日志中心](executions/0067-output-directories/next-delivery.zh.md)优先补齐持久分片和精确登录阶段；随后继续精确订阅执行、历史转增量和真实落盘验收。日志中心、这些闭环及总体七平台目标尚未完成。
+
+## 上阶段：失败登录诊断与订阅自动落盘（0066）
 
 [0066 执行](executions/0066-login-failure-and-workflow/progress.zh.md)新增三类固定扫码失败状态，将控制台明确为订阅、自动下载、兼容目录写入流程。限速续跑只作用于严格绑定、确有待续上下文的 B 站扫描，不是永久历史完成。当前测试与发布事实见[验证](executions/0066-login-failure-and-workflow/verification.zh.md)。
 

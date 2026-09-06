@@ -301,6 +301,7 @@ class MediaServerPublicationResolver:
         exporter: MediaServerPublicationExporterPort,
         profile: MediaServerProfile,
         *,
+        scope_resolver: Callable[[str], str] | None = None,
         inspection_max_bytes: int = _DEFAULT_INSPECTION_MAX_BYTES,
         inspection_timeout_seconds: float = _DEFAULT_INSPECTION_TIMEOUT_SECONDS,
         monotonic: Callable[[], float] = time.monotonic,
@@ -328,10 +329,13 @@ class MediaServerPublicationResolver:
             raise ValueError("inspection_timeout_seconds must be positive and finite")
         if not callable(monotonic):
             raise TypeError("monotonic must be callable")
+        if scope_resolver is not None and not callable(scope_resolver):
+            raise TypeError("scope_resolver must be callable")
         self._database = database
         self._exporter = exporter
         self._profile = profile
         self._publication_scope = scope
+        self._scope_resolver = scope_resolver
         self._inspection_max_bytes = inspection_max_bytes
         self._inspection_timeout_seconds = float(inspection_timeout_seconds)
         self._monotonic = monotonic
@@ -412,6 +416,16 @@ class MediaServerPublicationResolver:
 
     def _load_authority(self, author_id: str, *, changed: bool) -> _PublicationAuthority:
         code = "media_server_publication_changed" if changed else "media_server_publication_not_ready"
+        if self._scope_resolver is not None:
+            # The environment-owned server mapping is valid only for its exact
+            # local publication root. Recheck before and after filesystem I/O;
+            # neither a platform override nor a new layout may borrow it.
+            try:
+                selected_scope = self._scope_resolver(author_id)
+            except Exception:
+                raise MediaServerError("media_server_publication_not_ready") from None
+            if not _is_sha256(selected_scope) or selected_scope != self._publication_scope:
+                raise MediaServerError("media_server_publication_not_ready")
         try:
             with self._database.session() as session:
                 stored = session.scalar(

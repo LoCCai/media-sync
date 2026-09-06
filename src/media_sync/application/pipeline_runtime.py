@@ -6,7 +6,7 @@ import hashlib
 import shutil
 import subprocess
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from uuid import UUID
 
@@ -15,6 +15,7 @@ from sqlalchemy import select
 from media_sync.application.downloads import AssetDownloadOutcome, AssetDownloadRequest, AssetDownloadService
 from media_sync.application.emby import EmbyExportRequest, EmbyExportService
 from media_sync.application.mediacrawler_download import LazyMediaCrawlerLocatorRefresher
+from media_sync.application.output_directories import OutputDirectoryError
 from media_sync.application.pipeline import (
     SelectedPipelineAsset,
     SubscriptionAssetSelection,
@@ -70,6 +71,7 @@ class LocalPipelineRuntimeConfig:
     ffprobe_executable: str | None = None
     ffmpeg_executable: str | None = None
     http_client_factory: Callable[[], SafeHttpClient] | None = field(default=None, repr=False)
+    output_root_resolver: Callable[[str], Path] | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         if type(self.enable_mediacrawler) is not bool or type(self.accept_mediacrawler_license) is not bool:
@@ -78,6 +80,8 @@ class LocalPipelineRuntimeConfig:
             raise ValueError("MediaCrawler license acknowledgement requires enablement")
         if self.http_client_factory is not None and not callable(self.http_client_factory):
             raise ValueError("http_client_factory must be callable")
+        if self.output_root_resolver is not None and not callable(self.output_root_resolver):
+            raise ValueError("output_root_resolver must be callable")
         for value, name in (
             (self.download_lease_seconds, "download_lease_seconds"),
             (self.export_lease_seconds, "export_lease_seconds"),
@@ -211,10 +215,36 @@ class SubscriptionPipelineExecutor:
     ) -> SubscriptionPipelineOutcome:
         download_worker_id = _scoped_worker_id(worker_id, "asset")
         export_worker_id = _scoped_worker_id(worker_id, "emby")
+        request = SubscriptionPipelineRequest(
+            subscription_id=subscription_id,
+            expected_account_id=expected_account_id,
+            expected_platform=expected_platform,
+        )
         config = self._config
+        selector = SubscriptionAssetSelector(self._database)
+        if config.output_root_resolver is not None:
+            # Resolve from authoritative scope before binding any output root.
+            # The immutable DB binding fences concurrent settings changes;
+            # this detached config then stays fixed for the whole attempt.
+            selection = selector.select(request.subscription_id)
+            if selection.account_id != request.expected_account_id or selection.platform != request.expected_platform:
+                raise SubscriptionPipelineError("pipeline_subscription_invalid")
+            try:
+                export_root = config.output_root_resolver(str(selection.author_id))
+                if not isinstance(export_root, Path) or not export_root.is_absolute():
+                    raise ValueError("output root resolver must return an absolute Path")
+                config = replace(config, export_root=export_root)
+            except OutputDirectoryError as error:
+                raise SubscriptionPipelineError(
+                    "pipeline_output_directory_unavailable"
+                    if error.code == "output_directory_unavailable"
+                    else "pipeline_output_directory_invalid"
+                ) from None
+            except ValueError:
+                raise SubscriptionPipelineError("pipeline_output_directory_invalid") from None
         download_runner = _PerAssetDownloadRunner(self._database, subscription_id, config)
         service = SubscriptionPipelineService(
-            SubscriptionAssetSelector(self._database),
+            selector,
             download_runner,
             EmbyExportService(
                 self._database,
@@ -236,13 +266,7 @@ class SubscriptionPipelineExecutor:
                 download_runner=download_runner,
             ),
         )
-        return service.run(
-            SubscriptionPipelineRequest(
-                subscription_id=subscription_id,
-                expected_account_id=expected_account_id,
-                expected_platform=expected_platform,
-            )
-        )
+        return service.run(request)
 
 
 def _preflight_selection(

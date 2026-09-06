@@ -25,7 +25,7 @@ from collections.abc import AsyncIterator, Mapping, Sequence
 from contextlib import asynccontextmanager, suppress
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 from uuid import UUID
 
 from fastapi import FastAPI, HTTPException, Query, Request, Response
@@ -76,6 +76,7 @@ from media_sync.application.login_diagnostics import latest_session_login_diagno
 from media_sync.application.media_server import MediaServerError, MediaServerService
 from media_sync.application.media_server_observation import MediaServerObservationService
 from media_sync.application.media_server_publication import MediaServerPublicationResolver
+from media_sync.application.output_directories import OutputDirectoryError, OutputDirectoryService
 from media_sync.application.playback_evidence import (
     PlaybackEvidenceConfirmationError,
     PlaybackEvidenceService,
@@ -749,6 +750,36 @@ class EmbyExport(BaseModel):
     max_attempts: int = Field(default=5, ge=1, le=100)
 
 
+OutputPlatform = Literal["bili", "xhs", "dy", "ks", "wb", "tieba", "zhihu"]
+OutputPath = Annotated[str, Field(min_length=1, max_length=4096)]
+
+
+class OutputDirectoryPreview(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    shared_root: OutputPath
+    platform_overrides: dict[OutputPlatform, OutputPath | None] = Field(max_length=7)
+    layout: Literal["platform_subdirectories", "legacy_flat"]
+
+
+class OutputDirectoryUpdate(OutputDirectoryPreview):
+    expected_revision: int = Field(ge=0, le=9_007_199_254_740_991)
+
+
+def _output_directory_error(error: OutputDirectoryError) -> JSONResponse:
+    status = {
+        "output_directory_conflict": 409,
+        "output_directory_migration_required": 409,
+        "output_directory_author_not_found": 404,
+        "output_directory_unavailable": 503,
+    }.get(error.code, 400)
+    return JSONResponse(
+        status_code=status,
+        content={"detail": error.code, "platforms": list(error.platforms)},
+        headers={"Cache-Control": "no-store"},
+    )
+
+
 class AssetDownload(BaseModel):
     worker_id: str = Field(default="api-asset-worker", min_length=1, max_length=128)
     lease_seconds: int = Field(default=3_600, ge=1, le=86_400)
@@ -813,6 +844,7 @@ def create_api_app(
     assert operator_auth_runtime is not None
     assert operator_origin_policy is not None
     operation_database = Database(resolved.resolved_database_url)
+    output_directories = OutputDirectoryService(operation_database, resolved)
     operations = OperationCoordinator(operation_database)
     operation_reconciliation = _OperationReconciliationTrigger(operations)
     support_bundle_service = SupportBundleService(
@@ -828,7 +860,13 @@ def create_api_app(
         resolved.export_dir,
         staging_root=resolved.job_dir / "emby-export",
     )
-    library_inspection_service = LibraryInspectionService(operation_database, emby_exporter)
+    library_inspection_service = LibraryInspectionService(
+        operation_database,
+        exporter_factory=lambda author: EmbyExporter(
+            output_directories.resolve_author_root(author.id),
+            staging_root=resolved.job_dir / "emby-export",
+        ),
+    )
     creator_profile_service = CreatorProfileService(
         operation_database,
         MediaCrawlerCreatorProfileProcessRunner(
@@ -862,7 +900,17 @@ def create_api_app(
     media_server_profile = resolved.media_server_profile
     media_server_observation_service = (
         MediaServerObservationService(
-            MediaServerPublicationResolver(operation_database, emby_exporter, media_server_profile),
+            MediaServerPublicationResolver(
+                operation_database,
+                emby_exporter,
+                media_server_profile,
+                scope_resolver=lambda author_id: (
+                    EmbyExporter(
+                        output_directories.resolve_author_root(author_id),
+                        staging_root=resolved.job_dir / "emby-export",
+                    ).coordination_scope
+                ),
+            ),
             media_server_service,
         )
         if media_server_profile is not None
@@ -906,6 +954,7 @@ def create_api_app(
     app.state.playback_evidence_service = playback_evidence_service
     app.state.playback_evidence_query = playback_evidence_query
     app.state.library_inspection_service = library_inspection_service
+    app.state.output_directories = output_directories
     app.state.creator_profile_service = creator_profile_service
     app.state.cookie_login_service = cookie_login_service
     deep_readiness_cache: dict[bool, tuple[float, dict[str, object]]] = {}
@@ -1501,6 +1550,34 @@ def create_api_app(
             ),
             "media_server": resolved.media_server_safe_summary.as_dict(),
         }
+
+    @app.get("/api/v1/settings/output", response_model=None)
+    def output_settings_view() -> dict[str, object] | JSONResponse:
+        try:
+            return output_directories.get_policy()
+        except OutputDirectoryError as error:
+            return _output_directory_error(error)
+
+    @app.post("/api/v1/settings/output/preview", response_model=None)
+    def output_settings_preview(body: OutputDirectoryPreview) -> dict[str, object] | JSONResponse:
+        try:
+            return output_directories.preview(
+                body.shared_root, {str(key): value for key, value in body.platform_overrides.items()}, body.layout
+            )
+        except OutputDirectoryError as error:
+            return _output_directory_error(error)
+
+    @app.put("/api/v1/settings/output", response_model=None)
+    def output_settings_update(body: OutputDirectoryUpdate) -> dict[str, object] | JSONResponse:
+        try:
+            return output_directories.update(
+                body.expected_revision,
+                body.shared_root,
+                {str(key): value for key, value in body.platform_overrides.items()},
+                body.layout,
+            )
+        except OutputDirectoryError as error:
+            return _output_directory_error(error)
 
     @app.get("/api/v1/platform-capabilities")
     def platform_capabilities() -> dict[str, object]:
@@ -3263,7 +3340,7 @@ def create_api_app(
                 outcome = EmbyExportService(
                     export_database,
                     EmbyExporter(
-                        run_settings.export_dir,
+                        OutputDirectoryService(export_database, run_settings).bind_author_root(str(body.author_id)),
                         staging_root=run_settings.job_dir / "emby-export",
                     ),
                 ).export_author(
@@ -3282,6 +3359,11 @@ def create_api_app(
                         "already_exported": outcome.already_exported,
                         "managed_file_count": outcome.managed_file_count,
                     }
+                )
+            except OutputDirectoryError as error:
+                return OperationOutcome.failed(
+                    error.code,
+                    retryable=error.code == "output_directory_unavailable",
                 )
             except ExportError as error:
                 return OperationOutcome.failed(

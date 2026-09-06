@@ -78,6 +78,7 @@ _REVISIONS = frozenset(
         "0009_subscription_removal",
         "0010_creator_profiles",
         "0011_cookie_login",
+        "0012_library_output_policy",
     }
 )
 

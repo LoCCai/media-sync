@@ -115,7 +115,7 @@ def test_current_metadata_and_migration_allow_only_same_kinds(tmp_path: Path) ->
 def test_downgrade_refuses_cookie_history_or_live_managed_reference(tmp_path: Path, blocker: str) -> None:
     database = Database(f"sqlite+pysqlite:///{(tmp_path / 'history.sqlite3').as_posix()}")
     try:
-        upgrade_database(database.url)
+        upgrade_database(database.url, HEAD)
         with database.session() as session:
             if blocker == "operation":
                 OperationRepository(session).create_or_replay(kind="account-cookie-login", request_fingerprint="a" * 64)

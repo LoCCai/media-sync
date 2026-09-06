@@ -6,6 +6,7 @@
   import Modal from '$lib/components/Modal.svelte';
   import PageHeader from '$lib/components/PageHeader.svelte';
   import Panel from '$lib/components/Panel.svelte';
+  import OutputDirectorySettings from '$lib/components/OutputDirectorySettings.svelte';
   import StatusBadge from '$lib/components/StatusBadge.svelte';
   import { onboardingAccepted, resetOnboarding } from '$lib/stores/onboarding';
   import { toast } from '$lib/stores/toast';
@@ -69,7 +70,7 @@
 </script>
 
 <div class="page">
-  <PageHeader title="设置" description="查看部署路径、安全边界与控制台本地偏好。">
+  <PageHeader title="设置" description="配置媒体目录，查看部署路径、安全边界与控制台偏好。">
     <svelte:fragment slot="actions"
       ><button class="button secondary" type="button" on:click={load} disabled={loading}
         ><RefreshCw class={loading ? 'spin' : ''} size={15} />刷新</button
@@ -87,6 +88,8 @@
       </div>
     </div>
   {/if}
+
+  <OutputDirectorySettings />
 
   <div class="settings-grid">
     <Panel title="运行配置" description="环境变量解析后的只读值">
@@ -113,7 +116,7 @@
             <dd class="mono">{settings.archive_dir}</dd>
           </div>
           <div class="key-value-row">
-            <dt>媒体输出总目录</dt>
+            <dt>启动默认媒体目录（已保存设置优先）</dt>
             <dd class="mono">{settings.export_dir}</dd>
           </div>
           <div class="key-value-row">
@@ -137,8 +140,7 @@
         </dl>
         <p class="muted">
           续跑只适用于有明确待续检查点的成功 B 站批次，不代表历史已补齐。 当前通过
-          MEDIA_SYNC_BILI_SCAN_CONTINUATION_DELAY_SECONDS 配置，0 为关闭； API 与 supervisor
-          需配置相同值。目录编辑及逐平台覆盖仍待实现。
+          MEDIA_SYNC_BILI_SCAN_CONTINUATION_DELAY_SECONDS 配置，0 为关闭； API 与 supervisor 需配置相同值。
         </p>
       {/if}
     </Panel>

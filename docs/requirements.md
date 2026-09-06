@@ -20,6 +20,12 @@
 - **OUTPUT-002** — Directory changes must not silently move/delete files, strand managed library records or cause an in-flight job to switch roots. Retain output provenance and require explicit migration policy for already-published media.
 - **AUTO-003** — Respect bounded requests, pacing/backoff and authenticated access. Positively identified risk-control or verification must produce an actionable pause; do not bypass challenges or promise guaranteed avoidance. Do not label generic failures as risk-control without evidence.
 
+### Log center (user amendment0067, not implemented)
+
+- **LOG-001** — Persist structured component logs in rolling segments with size/date rotation, age/total-capacity bounds, multi-process safety and explicit evidence-loss indicators.
+- **LOG-002** — Preserve observable QR sub-stages, failed actions/safe frames and exact operation/session/job/run correlations, not generic failure/timeout alone.
+- **LOG-003** — Provide plain-language filters, correlated details and user-requested bounded diagnostic downloads. No ordinary-log secrets, automatic upload or arbitrary file reads. See [next-version requirements](executions/0067-output-directories/next-delivery.md).
+
 ### Accounts and authentication
 
 - **AUTH-001** — Represent separate accounts for `xhs`, `dy`, `ks`, `bili`, `wb`, `tieba` and `zhihu`.

@@ -86,6 +86,9 @@ class LibraryExporterPort(Protocol):
     ) -> PublishedTreeInspection: ...
 
 
+LibraryExporterFactory = Callable[[Author], LibraryExporterPort]
+
+
 @dataclass(frozen=True, slots=True)
 class LibraryPublication:
     """Allowlisted identity of the database-authorized publication head."""
@@ -147,6 +150,8 @@ class _LibraryState:
     current_source_fingerprint: str | None
     snapshot_blocked: bool
     head: _PublicationAnchor | None
+    exporter: LibraryExporterPort
+    publication_scope: str
 
 
 def _is_sha256(value: object) -> bool:
@@ -216,18 +221,24 @@ class LibraryInspectionService:
     def __init__(
         self,
         database: Database,
-        exporter: LibraryExporterPort,
+        exporter: LibraryExporterPort | None = None,
         *,
+        exporter_factory: LibraryExporterFactory | None = None,
         cursor_key: bytes | None = None,
         monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
-        scope = exporter.coordination_scope
+        if (exporter is None) == (exporter_factory is None) or (
+            exporter_factory is not None and not callable(exporter_factory)
+        ):
+            raise LibraryInspectionError("library_inspection_invalid")
+        if exporter is not None and not _is_sha256(exporter.coordination_scope):
+            raise LibraryInspectionError("library_inspection_invalid")
         key = secrets.token_bytes(32) if cursor_key is None else cursor_key
-        if not _is_sha256(scope) or not isinstance(key, bytes) or len(key) < 32 or not callable(monotonic):
+        if not isinstance(key, bytes) or len(key) < 32 or not callable(monotonic):
             raise LibraryInspectionError("library_inspection_invalid")
         self._database = database
         self._exporter = exporter
-        self._publication_scope = scope
+        self._exporter_factory = exporter_factory
         self._cursor_key = key
         self._monotonic = monotonic
 
@@ -269,7 +280,7 @@ class LibraryInspectionService:
             freshness, freshness_reason = _freshness(state)
             head = state.head
             if decoded_cursor is not None:
-                self._check_cursor(decoded_cursor, normalized_author_id, head)
+                self._check_cursor(decoded_cursor, normalized_author_id, head, state.publication_scope)
             if head is None:
                 return LibraryInspection(
                     author_id=normalized_author_id,
@@ -285,7 +296,7 @@ class LibraryInspectionService:
                 )
 
             start_index = 0 if decoded_cursor is None else decoded_cursor.next_index
-            publication = _publication(self._publication_scope, head)
+            publication = _publication(state.publication_scope, head)
             if request_clock() >= deadline:
                 return self._budget_result(
                     normalized_author_id,
@@ -298,7 +309,7 @@ class LibraryInspectionService:
                 )
 
             try:
-                inspected = self._exporter.inspect_published(
+                inspected = state.exporter.inspect_published(
                     state.author,
                     head.identity,
                     start_index=start_index,
@@ -360,7 +371,9 @@ class LibraryInspectionService:
                 integrity_reason = None
             next_cursor = None
             if not reached_end:
-                next_cursor = self._encode_cursor(normalized_author_id, head, inspected.next_index)
+                next_cursor = self._encode_cursor(
+                    normalized_author_id, head, inspected.next_index, state.publication_scope
+                )
             page = LibraryInspectionPage(
                 start_index=inspected.start_index,
                 next_index=inspected.next_index,
@@ -419,6 +432,15 @@ class LibraryInspectionService:
                 )
                 if author is None:
                     raise LibraryInspectionError("library_author_not_found")
+                # The trusted factory receives only a database-loaded identity,
+                # never a client path. Keep its binding local to this request:
+                # a long-lived service must not overwrite another author's scope.
+                exporter = self._exporter_factory(author) if self._exporter_factory is not None else self._exporter
+                if exporter is None or not callable(getattr(exporter, "inspect_published", None)):
+                    raise LibraryInspectionError("library_inspection_failed")
+                scope = exporter.coordination_scope
+                if not _is_sha256(scope):
+                    raise LibraryInspectionError("library_inspection_failed")
                 try:
                     export_author = ExportAuthor(
                         platform=author.platform,
@@ -447,25 +469,25 @@ class LibraryInspectionService:
                     head = _load_emby_publication_head(
                         session,
                         author_id=author_id,
-                        publication_scope=self._publication_scope,
+                        publication_scope=scope,
                         output_path=output_path,
                     )
                 except ExportError:
                     raise LibraryInspectionError("library_publication_inconsistent") from None
-                return _LibraryState(export_author, current_source_fingerprint, snapshot_blocked, head)
+                return _LibraryState(export_author, current_source_fingerprint, snapshot_blocked, head, exporter, scope)
         except LibraryInspectionError:
             raise
         except Exception:
             raise LibraryInspectionError("library_inspection_failed") from None
 
-    def _encode_cursor(self, author_id: str, head: _PublicationAnchor, next_index: int) -> str:
+    def _encode_cursor(self, author_id: str, head: _PublicationAnchor, next_index: int, publication_scope: str) -> str:
         payload: dict[str, object] = {
             "author_id": author_id,
             "job_id": head.job_id,
             "managed_file_count": head.managed_file_count,
             "manifest_sha256": head.manifest_sha256,
             "next_index": next_index,
-            "publication_scope": self._publication_scope,
+            "publication_scope": publication_scope,
             "schema_version": _CURSOR_SCHEMA_VERSION,
             "source_fingerprint": head.source_fingerprint,
             "tree_sha256": head.tree_sha256,
@@ -555,11 +577,12 @@ class LibraryInspectionService:
         cursor: _Cursor,
         author_id: str,
         head: _PublicationAnchor | None,
+        publication_scope: str,
     ) -> None:
         if (
             head is None
             or cursor.author_id != author_id
-            or cursor.publication_scope != self._publication_scope
+            or cursor.publication_scope != publication_scope
             or cursor.job_id != head.job_id
             or cursor.source_fingerprint != head.source_fingerprint
             or cursor.tree_sha256 != head.tree_sha256
@@ -624,7 +647,7 @@ class LibraryInspectionService:
                 0,
                 False,
                 True,
-                self._encode_cursor(author_id, head, start_index),
+                self._encode_cursor(author_id, head, start_index, publication.publication_scope),
             ),
             allowed_actions=_allowed_actions(freshness, "budget_exhausted"),
         )
@@ -656,6 +679,7 @@ class LibraryInspectionService:
 
 
 __all__ = [
+    "LibraryExporterFactory",
     "LibraryExporterPort",
     "LibraryFreshness",
     "LibraryInspection",

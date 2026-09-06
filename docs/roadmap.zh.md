@@ -8,6 +8,8 @@
 
 ## 阶段
 
+优先级更新（0067追加）：[共享输出目录](executions/0067-output-directories/progress.zh.md)已接入配置、调度与写入；[下一版日志中心与登录阶段诊断](executions/0067-output-directories/next-delivery.zh.md)先行，不再盲目重复扫码。接着完成精确订阅执行、永久历史完成/增量语义和真实下载验收。旧文件迁移未实现；此前计划作为历史保留。
+
 优先级更新（0066）：[订阅驱动的本地落盘](executions/0066-login-failure-and-workflow/next-delivery.zh.md)先于头像扩展；依次实现总目录/平台覆盖、精确订阅发现/下载/目录写入、历史转增量和限量真实验收。手动导出仅是维护功能，不要求连接媒体服务器。[0066](executions/0066-login-failure-and-workflow/progress.zh.md)处理扫码诊断丢失和已知待续 B 站扫描的限速续跑，不代表上述后续需求已完成。
 
 当前检查点（0056–0065）：本地目录输出、可恢复删除、安全Job报告、有界B站投稿/动态及六平台昵称已有离线实现。[0065](executions/0065-cookie-auth-and-avatar/progress.zh.md)补抖音/快手Cookie本人验证、保存与订阅复用及知乎有限可选头像。快手限cp.api_ph子集。小红书资料、剩余头像/媒体和当前Linux/真人验收仍必需；历史B站canary未解决。无部署或supervisor恢复。以[状态](status.zh.md)和[0065验证](executions/0065-cookie-auth-and-avatar/verification.zh.md)为准，不继承下文历史测试数。

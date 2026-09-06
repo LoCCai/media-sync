@@ -2,7 +2,13 @@
 
 # Unified project status (single source of truth)
 
-## Latest: failed-login diagnostics and subscription-driven files (0066)
+## Latest: shared output directories and QR failure recheck (0067)
+
+[0067](executions/0067-output-directories/progress.md) implements shared/seven-platform roots, CAS saves, author bindings and API/CLI/independent-worker/library-reader wiring. Fresh libraries use platform folders; existing ones remain flat. Published-root changes require explicit migration, which is not implemented. No extra export step or server connection is required. Exact tests/publication: [verification](executions/0067-output-directories/verification.md).
+
+Read-only browser inspection confirms DY/KS/Tieba/WB QR timeouts and saved authenticated Bili/XHS/Zhihu states. No live fix or retry is claimed. [Next-version log center](executions/0067-output-directories/next-delivery.md) prioritizes persistent segments and precise login stages, then exact-subscription execution, history-to-incremental semantics and real file acceptance. These workflows, logging and the overall seven-platform goal remain incomplete.
+
+## Previous: failed-login diagnostics and subscription-driven files (0066)
 
 [Execution0066](executions/0066-login-failure-and-workflow/progress.md) adds three fixed QR failure classifications and aligns the console with subscription → automatic download → compatible-directory delivery. Paced continuation applies only to strictly bound pending Bili scan context, not permanent history completion. Current test and publication facts: [verification](executions/0066-login-failure-and-workflow/verification.md).
 

@@ -66,6 +66,7 @@ from media_sync.application.login_diagnostics import LoginDiagnostic, latest_ses
 from media_sync.application.mediacrawler import NormalizedMediaCrawlerOutput, load_normalized_output
 from media_sync.application.mediacrawler_download import LazyMediaCrawlerLocatorRefresher
 from media_sync.application.operations import DurableSubjectHook
+from media_sync.application.output_directories import OutputDirectoryError, OutputDirectoryService
 from media_sync.application.subscription_removal import SubscriptionRemovalError, SubscriptionRemovalService
 from media_sync.config import Settings, get_settings
 from media_sync.domain import AccountRef, AssetStatus, Cursor, DomainError, JobStatus, LoginMethod, Platform, RunStatus
@@ -197,7 +198,7 @@ app.add_typer(asset_app, name="asset")
 app.add_typer(emby_app, name="emby")
 app.add_typer(pipeline_app, name="pipeline")
 
-_EXPECTED_DATABASE_REVISION = "0011_cookie_login"
+_EXPECTED_DATABASE_REVISION = "0012_library_output_policy"
 _REQUIRED_DATABASE_TABLES = frozenset(str(name) for name in Base.metadata.tables)
 
 
@@ -1033,6 +1034,7 @@ def _build_pipeline_worker(
             archive_root=settings.archive_dir,
             export_root=settings.export_dir,
             export_staging_root=settings.job_dir / "emby-export",
+            output_root_resolver=OutputDirectoryService(database, settings).bind_author_root,
             mediacrawler_lock_path=settings.mediacrawler_lock_path,
             mediacrawler_runtime_root=settings.resolved_mediacrawler_runtime_dir,
             mediacrawler_python_executable=settings.mediacrawler_python_executable,
@@ -2546,7 +2548,7 @@ def export_emby_author(
         outcome = EmbyExportService(
             database,
             EmbyExporter(
-                settings.export_dir,
+                OutputDirectoryService(database, settings).bind_author_root(str(author_id)),
                 staging_root=settings.job_dir / "emby-export",
             ),
         ).export_author(
@@ -2557,13 +2559,17 @@ def export_emby_author(
                 max_attempts=max_attempts,
             )
         )
-    except ExportError as error:
+    except (ExportError, OutputDirectoryError) as error:
         _emit_record(
             {
                 "author_id": str(author_id),
                 "status": "failed",
                 "error_code": error.code,
-                "retryable": export_error_is_retryable(error.code),
+                "retryable": (
+                    error.code == "output_directory_unavailable"
+                    if isinstance(error, OutputDirectoryError)
+                    else export_error_is_retryable(error.code)
+                ),
             },
             json_output=json_output,
             label="Emby export",

@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 
 import media_sync.interfaces.api as api_module
 from media_sync.application.library import (
+    LibraryExporterFactory,
     LibraryInspection,
     LibraryInspectionError,
     LibraryInspectionPage,
@@ -64,7 +65,14 @@ def _client(
         library_inspection_deadline_seconds=2.5,
     )
     upgrade_database(settings.resolved_database_url)
-    monkeypatch.setattr(api_module, "LibraryInspectionService", lambda _database, _exporter: service)
+
+    def inspection_service(
+        _database: object, *, exporter_factory: LibraryExporterFactory
+    ) -> _FakeLibraryInspectionService:
+        assert callable(exporter_factory)
+        return service
+
+    monkeypatch.setattr(api_module, "LibraryInspectionService", inspection_service)
     return authenticated_test_client(settings, app_factory=api_module.create_api_app)
 
 

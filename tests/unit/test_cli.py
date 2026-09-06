@@ -352,7 +352,9 @@ def test_db_init_runs_packaged_migrations_idempotently(tmp_path: Path, monkeypat
         try:
             assert "alembic_version" in inspect(database.engine).get_table_names()
             with database.engine.connect() as connection:
-                assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0011_cookie_login"
+                assert (
+                    connection.scalar(text("SELECT version_num FROM alembic_version")) == "0012_library_output_policy"
+                )
         finally:
             database.dispose()
     finally:
@@ -401,18 +403,18 @@ def test_db_status_reports_current_complete_schema_without_exposing_target(
         "ok": True,
         "database_driver": "sqlite+pysqlite",
         "reachable": True,
-        "revision": "0011_cookie_login",
-        "expected_revision": "0011_cookie_login",
+        "revision": "0012_library_output_policy",
+        "expected_revision": "0012_library_output_policy",
         "revision_current": True,
-        "required_table_count": 19,
-        "present_table_count": 19,
+        "required_table_count": 21,
+        "present_table_count": 21,
         "missing_tables": [],
         "reason": None,
     }
     assert text_result.exit_code == 0
     assert "Database ready:" in text_result.output
-    assert "revision=0011_cookie_login" in text_result.output
-    assert "tables=19/19" in text_result.output
+    assert "revision=0012_library_output_policy" in text_result.output
+    assert "tables=21/21" in text_result.output
     for output in (json_result.output, text_result.output):
         assert initialized_cli_database not in output
         assert "cli.sqlite3" not in output
@@ -438,7 +440,7 @@ def test_db_status_uninitialized_is_nonzero_read_only_and_redacted(
         assert payload["revision"] is None
         assert payload["revision_current"] is False
         assert payload["present_table_count"] == 0
-        assert len(payload["missing_tables"]) == payload["required_table_count"] == 19
+        assert len(payload["missing_tables"]) == payload["required_table_count"] == 21
         assert payload["reason"] == "database file does not exist"
         assert "sentinel-secret" not in result.output
         assert "Traceback" not in result.output
@@ -490,7 +492,7 @@ def test_db_status_rejects_incomplete_required_table_set(
     payload = json.loads(result.output)
     assert payload["reachable"] is True
     assert payload["revision_current"] is True
-    assert payload["present_table_count"] == 18
+    assert payload["present_table_count"] == 20
     assert payload["missing_tables"] == ["export_records"]
     assert payload["reason"] == "database schema is incomplete"
     assert "Traceback" not in result.output
@@ -2314,6 +2316,11 @@ def test_emby_export_reports_success_and_idempotent_outcomes(
     del initialized_cli_database
     author_id = UUID("00000000-0000-0000-0000-000000000041")
     captured: dict[str, object] = {}
+    monkeypatch.setattr(
+        cli_module.OutputDirectoryService,
+        "bind_author_root",
+        lambda _service, _author_id: get_settings().export_dir,
+    )
 
     class _FakeExporter:
         def __init__(self, export_root: Path, *, staging_root: Path) -> None:
@@ -2382,6 +2389,11 @@ def test_emby_export_failure_uses_fixed_code_and_redacts_exception_chain(
     del initialized_cli_database
     author_id = UUID("00000000-0000-0000-0000-000000000051")
     sentinel = "sentinel-private-export-detail"
+    monkeypatch.setattr(
+        cli_module.OutputDirectoryService,
+        "bind_author_root",
+        lambda _service, _author_id: get_settings().export_dir,
+    )
 
     class _FakeExporter:
         def __init__(self, export_root: Path, *, staging_root: Path) -> None:
@@ -2424,6 +2436,11 @@ def test_emby_export_database_failure_has_fixed_redacted_code(
     del initialized_cli_database
     author_id = UUID("00000000-0000-0000-0000-000000000061")
     sentinel = "sentinel-private-database-detail"
+    monkeypatch.setattr(
+        cli_module.OutputDirectoryService,
+        "bind_author_root",
+        lambda _service, _author_id: get_settings().export_dir,
+    )
 
     class _FakeExporter:
         def __init__(self, export_root: Path, *, staging_root: Path) -> None:

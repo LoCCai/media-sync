@@ -1129,6 +1129,57 @@ class ExportRecord(TimestampMixin, Base):
     content: Mapped[Content] = relationship(back_populates="export_records")
 
 
+class LibraryOutputPolicy(TimestampMixin, Base):
+    """One revisioned compatible-library policy shared by every process."""
+
+    __tablename__ = "library_output_policy"
+    __table_args__ = (
+        CheckConstraint("id = 1", name="singleton"),
+        CheckConstraint("revision >= 0 AND revision <= 9007199254740991", name="revision_range"),
+        CheckConstraint("layout IN ('legacy_flat', 'platform_subdirectories')", name="layout"),
+        CheckConstraint("length(shared_root) BETWEEN 1 AND 4096", name="shared_root_length"),
+        *(
+            CheckConstraint(
+                f"{platform}_root IS NULL OR length({platform}_root) BETWEEN 1 AND 4096",
+                name=f"{platform}_root_length",
+            )
+            for platform in sorted(PLATFORMS)
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=False)
+    revision: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0, server_default="0")
+    shared_root: Mapped[str] = mapped_column(Text, nullable=False)
+    layout: Mapped[str] = mapped_column(String(32), nullable=False)
+    xhs_root: Mapped[str | None] = mapped_column(Text)
+    dy_root: Mapped[str | None] = mapped_column(Text)
+    ks_root: Mapped[str | None] = mapped_column(Text)
+    bili_root: Mapped[str | None] = mapped_column(Text)
+    wb_root: Mapped[str | None] = mapped_column(Text)
+    tieba_root: Mapped[str | None] = mapped_column(Text)
+    zhihu_root: Mapped[str | None] = mapped_column(Text)
+
+
+class AuthorOutputBinding(Base):
+    """An author's immutable publication root, established before file writes."""
+
+    __tablename__ = "author_output_bindings"
+    __table_args__ = (
+        CheckConstraint(f"platform IN ({_quoted_values(PLATFORMS)})", name="platform"),
+        CheckConstraint("length(canonical_root) BETWEEN 1 AND 4096", name="root_length"),
+        CheckConstraint("policy_revision >= 0 AND policy_revision <= 9007199254740991", name="revision_range"),
+        Index("ix_author_output_bindings_platform", "platform"),
+    )
+
+    author_id: Mapped[str] = mapped_column(String(36), ForeignKey("authors.id", ondelete="RESTRICT"), primary_key=True)
+    platform: Mapped[str] = mapped_column(String(32), nullable=False)
+    canonical_root: Mapped[str] = mapped_column(Text, nullable=False)
+    policy_revision: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        UTCDateTime(), default=utc_now, server_default=text("CURRENT_TIMESTAMP"), nullable=False
+    )
+
+
 __all__ = [
     "ACTIVE_OPERATION_STATES",
     "ACTIVE_SYNC_JOB_STATUSES",
@@ -1158,9 +1209,11 @@ __all__ = [
     "Asset",
     "AssetRefreshSource",
     "Author",
+    "AuthorOutputBinding",
     "Content",
     "ExportRecord",
     "Job",
+    "LibraryOutputPolicy",
     "LoginSession",
     "Operation",
     "OperationEvent",

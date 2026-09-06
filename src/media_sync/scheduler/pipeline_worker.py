@@ -53,6 +53,16 @@ _FAILURES: Mapping[str, PipelineFailureClassification] = MappingProxyType(
                 False,
             ),
             PipelineFailureClassification(
+                "pipeline_output_directory_invalid",
+                "output directory configuration requires operator attention",
+                False,
+            ),
+            PipelineFailureClassification(
+                "pipeline_output_directory_unavailable",
+                "output directory configuration is temporarily unavailable",
+                True,
+            ),
+            PipelineFailureClassification(
                 "pipeline_asset_source_ineligible",
                 "asset has no current source for this subscription",
                 True,

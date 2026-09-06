@@ -32,7 +32,7 @@ from media_sync.infrastructure.db.models import (
 )
 
 NOW = datetime(2026, 9, 4, 1, 2, 3, tzinfo=UTC)
-REVISION = "0011_cookie_login"
+REVISION = "0012_library_output_policy"
 
 
 def _database_url(path: Path) -> str:

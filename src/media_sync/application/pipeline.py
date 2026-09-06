@@ -26,6 +26,8 @@ from media_sync.media import AdapterRefreshLocator, MediaDownloadError, parse_lo
 _PIPELINE_ERRORS: dict[str, tuple[str, bool]] = {
     "pipeline_subscription_not_found": ("subscription was not found", False),
     "pipeline_subscription_invalid": ("subscription scope is inconsistent", False),
+    "pipeline_output_directory_invalid": ("output directory configuration requires operator attention", False),
+    "pipeline_output_directory_unavailable": ("output directory configuration is temporarily unavailable", True),
     "pipeline_asset_source_ineligible": ("asset has no current source for this subscription", True),
     "pipeline_download_request_scope_mismatch": ("download request does not target the selected asset", False),
     "pipeline_download_result_scope_mismatch": ("download result does not target the selected asset", False),
