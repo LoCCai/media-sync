@@ -2,7 +2,7 @@
 
 # Progress
 
-Implemented and verified: final login397passed; broader workflow759passed/1Windows-inapplicable skip; Web705passed. Publication is recorded in verification after GitHub reconciliation.
+Implemented, verified and pushed as `47eeb11`: final login397passed; broader workflow759passed/1Windows-inapplicable skip; Web705passed. Fresh fetch confirmed local/remote equality. Details and the following documentation-only publication record are in [verification](verification.md).
 
 - QR results now distinguish `upstream_login_exited`, `upstream_browser_timeout` and `login_confirmation_failed`, without changing the frame shape or exposing exception text. Strict summaries and exact-session diagnostics preserve them through real session/operation persistence. Historical `failed` stays unknown rather than acquiring an invented cause. Authenticated accounts were not changed; a real-service API regression verifies another authenticated account stays unchanged.
 - Accounts and Jobs explain the new statuses, distinguish an existing generic record from absent diagnostics, and show a neutral login phase instead of an unknown phase. Subscription/library guidance presents automatic local directory writes as the normal supervisor workflow; manual publishing is maintenance. Internal export/API compatibility is preserved.

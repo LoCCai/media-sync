@@ -43,3 +43,7 @@ This selected26files. Local ignored JUnit SHA256: `1a2e8d9d8ff42082495fcec1ed12d
 ## Limits
 
 Not a full repository test run. Current Linux image/suite, real platform retries, real creator/download/directory completion, native Emby/Jellyfin playback and fresh server deployment: NOT_RUN. Historical Bili canary remains failed/unresolved. Editable per-platform output, permanent backfill completion and end-to-end real risk-control pause wiring remain required. No historical diagnostic is backfilled with invented causes. Git publication is recorded after verification, not assumed from a local build.
+
+## GitHub publication
+
+Plan commits: `3e50fe1` and scheduler amendment `bdaeb90`. Implementation: `47eeb114cffa9268760b9a51a1bba3321565328d`, bilingual title/body and verification summary. Normal push to `https://github.com/LoCCai/media-sync.git` succeeded; fresh fetch showed HEAD=origin/main at that exact commit, divergence0/0 and a clean worktree. This subsequent bilingual documentation-only record is committed separately and verified by the closing command; its own hash is intentionally not embedded. No server deployment or supervisor restart accompanies the push.

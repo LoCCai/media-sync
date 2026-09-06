@@ -43,3 +43,7 @@ $task0066WorkflowTests = @(rg --files tests | Where-Object { $_ -match '(schedul
 ## 未完成边界
 
 不是全仓库测试。当前Linux镜像/套件、真实平台重试、真实作者/下载/目录完成、原生Emby/Jellyfin播放、新服务器部署均未运行。历史B站canary仍失败未解决；可编辑逐平台目录、永久历史完成、真实风控暂停端到端接线仍必需。不为旧记录补造原因。Git发布在验证后另记，不因本地构建而假定已发布。
+
+## GitHub发布
+
+计划提交 `3e50fe1`，调度补充 `bdaeb90`。实现提交 `47eeb114cffa9268760b9a51a1bba3321565328d`，标题、说明和验证摘要为中英双语。正常推送 `https://github.com/LoCCai/media-sync.git` 成功；重新fetch后HEAD与origin/main均为此完整SHA，分歧0/0、工作区干净。本后续双语文档记录另行提交并由收尾命令核对，刻意不嵌入自身SHA。推送不附带服务器部署或恢复supervisor。
