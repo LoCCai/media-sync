@@ -12,8 +12,10 @@
 ## 2. 建立唯一固定的上游运行时
 
 - 为经过校验的 checkout 及一个专用虚拟环境 Python 增加类型化配置。在开放集成前校验绝对路径、checkout 身份、锁定 commit、许可证确认及所需入口。
+- 增加默认关闭、只接受精确 `true`／`false` token 的部署级许可证确认。未显式确认时不导入或构造上游应用；每个已认证 `/crawler` HTTP 路径（包括 `/crawler/api/crawler/start`）统一返回不缓存的 `503 license_acknowledgement_required`。常驻 supervisor 继续使用相互独立的显式 CLI 门禁。
 - 通过 media-sync 自有 adapter 启动上游 API 与 crawler child，始终选择固定解释器和 checkout 工作目录。在集成接缝替换上游管理器对环境 `uv run` 的假设，但不修改上游文件。
 - 为启动、关闭及 child 终止设置有界行为。checkout、解释器或已构建 WebUI 缺失／不匹配时返回固定不可用状态，绝不回退到其他安装。
+- Starlette 不会传播已挂载 FastAPI 应用的 lifespan，因此在挂载应用 state 暴露一个 media-sync 自有异步关闭 callback，并在释放共享运行状态前由根 lifespan 显式等待它完成。
 - 上游服务只存在于 media-sync 进程／网络私有边界；受支持入口是 `/crawler`，而不是第二个未认证 listener。
 
 ## 3. 挂载经认证的 `/crawler` 入口

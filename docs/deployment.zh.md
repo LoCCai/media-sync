@@ -127,7 +127,22 @@ docker compose run --rm --no-deps --entrypoint /app/.venv/bin/media-sync media-s
 docker compose up -d
 ```
 
-- 公开根登录入口：<http://127.0.0.1:8632/>（仅宿主回环）。成功 login 后还须完成 session/CSRF 初始化才挂载私有页面；8 个精确 SPA HTML 深链接会把未登录导航 303 到该入口。
+内嵌爬虫控制台另有部署级门禁。请先阅读锁定 checkout 中精确版本的
+MediaCrawler 非商业学习许可证；确认后，在 Compose 创建服务前设置唯一接受的
+肯定 token 来启用 `/crawler/`：
+
+```bash
+export MEDIA_SYNC_MEDIACRAWLER_LICENSE_ACKNOWLEDGED=true
+docker compose up -d --no-deps --force-recreate media-sync
+```
+
+变量缺失或为 `false` 时，media-sync 本体仍正常启动，但每个已认证
+`/crawler` HTTP 路径（包括上游启动 API）都会统一返回不缓存的
+`503 license_acknowledgement_required`，且不会导入上游应用。该设置不改变
+许可证，也不表示平台真人验收通过。可选 supervisor 继续使用相互独立的
+`--accept-mediacrawler-license` 命令门禁。
+
+- 公开根登录入口：<http://127.0.0.1:8632/>（仅宿主回环）。成功 login 后还须完成 session/CSRF 初始化才挂载私有页面；白名单内的 SPA HTML 深链接会把未登录导航 303 到该入口。
 - `/legacy` 为受保护的迁移提示，`/api/docs` 也继续受保护；二者均不重新开放匿名业务访问。
 - `GET`/`HEAD /api/v1/health` 与 `/api/v1/ready` 为容器探针有意保持公开；深度就绪及全部业务路由都要求鉴权。
 - SQLite 状态库、归档、Emby 目录与 MediaCrawler 运行时都在 `media-sync-data` 卷的 `/data` 下。

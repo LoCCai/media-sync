@@ -2,7 +2,15 @@
 
 # 项目统一状态（单一事实来源）
 
-## 最新：精确订阅交付与安全进程诊断（0069–0070）
+## 最新：锁定 MediaCrawler WebUI 的认证首批集成（0072）
+
+[执行 0072](executions/0072-mediacrawler-webui-integration/progress.zh.md)把锁定上游采集控制台接入经认证的 `/crawler/`，没有在 media-sync 中重写其登录／控制／采集／下载能力。严格的部署许可证确认默认关闭，在明确启用前阻止导入／启动上游。随后，工作树实现补上既有操作者 session 与 CSRF 边界、同源浏览器 session WebSocket、固定且经过验证的 checkout／解释器、受管进程树关闭、有界脱敏控制台输出、受限输出／profile／private 根、持久登录 profile、上游媒体下载开关、确定性环境报告及有界认证浏览器二维码 relay。Dockerfile 在隔离副本中构建上游 React UI，锁定 checkout 保持原样。
+
+离线证据通过：Python 完整 unit 套件（`4633 passed, 3 skipped, 1 warning`）、Python 142 项专项联合、media-sync Web 完整套件（`25 files / 782 tests / 1.52s`）、Web 专项 1 个文件 26 项、Svelte 检查／构建、Ruff／format／mypy／Prettier 专项、锁定上游真实 React 源码临时构建（1,836 个 module）、文档链接及 `git diff --check`。加固后生产依赖审计报告 0 个漏洞；完整构建依赖图仍有 8 个仅开发／构建期发现（6 high、2 low），对应 package 不会复制进最终运行镜像。完整 Docker 镜像／运行时及在线部署仍为 `NOT_RUN`，因此尚未取得部署资格。精确命令与边界见[验证记录](executions/0072-mediacrawler-webui-integration/verification.zh.md)。实现已提交为 `ea64938`。
+
+控制台输出尚未自动连接到 Subscription 派发、历史回填、定时增量、完成态摄取或文件夹／NFO 发布。真人二维码／Cookie 登录及全部七平台真实采集／下载／CDN 资格均为 `NOT_RUN`；合成二维码 relay 不证明可以真实扫码或登录。Emby/Jellyfin 服务器继续为可选项且未执行。执行 [0071](executions/0071-remaining-runner-output-diagnostics/progress.zh.md)只是暂停而非完成，其缺失诊断及旧版已丢弃输出仍未解决。
+
+## 上阶段：精确订阅交付与安全进程诊断（0069–0070）
 
 [0069](executions/0069-exact-subscription-delivery/progress.zh.md)把一次订阅操作贯通为唯一精确耐久 scheduler → 采集 → pipeline → 兼容目录链；不消费无关任务，可从 supervisor 抢占、重试和重启中凭封闭 receipt 恢复，不要求连接 Emby/Jellyfin 服务器，并保留非永久的逐 feed 扫描证据。审查驱动的栅栏阻止重复链；迁移降级与 Windows exporter 目录 pin 已加固，实施提交 `b22e938` 已发布，证据见[验证](executions/0069-exact-subscription-delivery/verification.zh.md)。
 
@@ -132,25 +140,27 @@ B站和微博资料已离线实现，其他五平台资料、抖音/快手/贴�
 
 | 里程碑 | 状态 |
 | --- | --- |
-| 离线功能开发 | 平台形状冻结于 0039，外加 0040/0044 运维面与 0050 Console v2 控制面基础；0043（弹幕/字幕）仍延期 |
-| REST API + Web 控制台 | Console v2 会话门、内存 CSRF、退出／过期／401 与 QR／SSE 已实现，本地合成浏览器门禁已通过；8 个精确 HTML 深链接未登录时 303 到根登录，API／未知路由仍拒绝。Legacy 是受保护迁移提示 |
+| 离线功能开发 | 0072 锁定 WebUI 首批薄集成已在 `ea64938` 实现；专项检查与当前 Python／Web 完整套件均通过。控制台输出自动摄取／调度／NFO 延后。此前平台形状仍冻结于 0039 边界，另有 0040／0044 运维面与 0050 Console v2 基础；0043（弹幕／字幕）仍延期 |
+| REST API + Web 控制台 | 0072 挂载经认证的 `/crawler/`，复用 Cookie session／CSRF 并为浏览器 session WebSocket 强制精确 Host／Origin；路由／鉴权／二维码专项通过，真人浏览器／平台行为未取得资格。此前 Console v2 session、退出／过期／401 与 QR／SSE 证据保留为历史；Legacy 是受保护迁移提示 |
 | 操作者鉴权 + 播放证据 | 后端鉴权、不可变身份／账本、仅浏览器确认、有界 current/stale/unknown 投影及资格 v3 已实现。无精确当前证据时 playback 为 IMPLEMENTED/NOT_RUN；PASS 只适用于选定作者。Web 会话集成已实现且本地合成浏览器门禁已通过；确认 UI 仍待实现，真人播放为 NOT_RUN |
-| Docker 打包 | 0041、0048–0050 历史候选镜像与 Console v2 多阶段构建已交付，当时修复版镜像通过 doctor、深度预检与 Chromium 启动；当前 0055 鉴权版镜像尚未执行，不能复用历史 PASS |
+| Docker 打包 | 0072 增加锁定上游 React 的隔离构建／复制阶段，真实锁定 React 源码已在临时副本成功构建。加固后生产依赖审计以 0 个漏洞通过；完整构建依赖图仍有 8 个仅开发／构建期发现。当前精确完整 Docker 构建／运行仍为 `NOT_RUN`。0041、0048–0050 历史候选镜像不能赋予当前工作树资格 |
 | 运维文档 / 安全审查 / 发布清单 | 已交付（0045、0046） |
-| 真人验收（最终门） | 开启中——执行 0047，操作者在 Linux 协助执行 |
+| 真人验收（最终门） | 仍开放——执行 0047 继续作为操作者门；0072 真人二维码／Cookie 登录及七平台采集／下载／CDN 均为 `NOT_RUN` |
 
 ## 验证矩阵
 
 | 维度 | 状态 | 证据 / 阻塞 |
 | --- | --- | --- |
 | 实现（离线形状） | 七平台 15+ 冻结形状 | 执行 0013–0039 记录 |
-| 离线完整套件 | 登录修复：3264 项通过、22 项跳过、1 项既有警告，679.04 秒；收集后新增 29 项接线测试在 134 项联合专项中单独通过，不冒称一次 3293 项全量运行。跳过的 PostgreSQL 用例不是执行证据 | [登录运行环境验证](executions/0055-operator-auth-playback-evidence/login-runtime/verification.zh.md) |
-| API/控制台测试 | 本地合成浏览器 session／CSRF、账户创建、QR、归档图像／视频加载、Jobs SSE、跨标签退出、自然过期与稍后浏览门已通过；Web 9 文件／114 项、Svelte 零 error/warning 与 build 通过。视频只加载／解码，未点击播放；准确证据见[验证](executions/0055-operator-auth-playback-evidence/secure-console/verification.zh.md) | 执行 0055 安全控制台 |
-| 静态与制品门 | 当前 Ruff/format、mypy、compileall、Web、docs／上游与包检查结果统一见[验证](executions/0055-operator-auth-playback-evidence/secure-console/verification.zh.md) | 执行 0055 安全控制台 |
-| Docker 镜像构建 | 0050/0047 镜像预检仍是历史 `PASS`；当前 0055 鉴权版 Compose 接线已代码审查，但本工作站没有 Docker CLI，故为 `NOT_RUN` | 执行 0050/0047 与 0055-A 验证 |
-| 容器就绪 / 重启持久性 / 备份恢复演练 | 旧镜像深度预检为历史 `PASS`；当前镜像就绪、重启持久性与备份恢复 `NOT_RUN` | 执行 0047；docs/operations.zh.md 流程就绪 |
-| 真人登录（任一平台） | 已观察 B 站成功 Operation/会话及 saved_session 账户；离线复现更新后确认遗漏。新证明/复用与平台支持资格仍开放，其余平台失败为历史记录 | [当前跟进](executions/0055-operator-auth-playback-evidence/bili-success-followup/verification.zh.md)；执行 0047 仍为金丝雀门槛 |
-| 真人抓取 / 下载 / 增量性 | 首次 B 站测试 FAILED，零内容，schema_invalid Job / running Run；下载和增量性 NOT_RUN | [当前测试](executions/0055-operator-auth-playback-evidence/bili-success-followup/verification.zh.md)；执行 0047 |
+| 离线完整套件 | 当前 0072 Python unit 完整套件以 `4633 passed, 3 skipped, 1 warning in 547.80s` 通过；Web 完整套件以 `25 files / 782 tests / 1.52s` 通过。Python 142 项联合与 Web 26 项专项也通过。3 项跳过均为 Windows／POSIX 差异，warning 是既有 Starlette TestClient／httpx 弃用提示 | [0072 验证](executions/0072-mediacrawler-webui-integration/verification.zh.md) |
+| API/控制台测试 | 0072 Python 路由／鉴权／许可证／运行时／进程／二维码联合 142 项通过；Web 登录返回专项 26 项通过，Svelte 为 0 error／warning，media-sync 构建通过。锁定上游真实 React 源码也已在临时副本构建通过，但真人浏览器／平台使用仍未取得资格；0055 合成浏览器证据保留为历史 | [0072 验证](executions/0072-mediacrawler-webui-integration/verification.zh.md)；执行 0055 安全控制台 |
+| 静态与制品门 | 0072 Ruff lint／format、严格 mypy、相关文件 Prettier、文档链接与 `git diff --check` 通过；加固后生产依赖审计也以 0 个漏洞通过。完整静态／打包／制品门待执行，全构建依赖图审计仍有 8 个仅开发／构建期发现 | [0072 验证](executions/0072-mediacrawler-webui-integration/verification.zh.md) |
+| 锁定上游 WebUI 依赖审计 | 生产 `PASS`／全构建依赖图 `FAIL`（仅开发依赖残余）——安全补丁后的构建副本生产漏洞为 0，全依赖图为 8 条：6 high、2 low、0 moderate、0 critical；对应 package 不会复制进最终运行镜像。未加固上游原始基线的 11 条（8 high、1 moderate、2 low）仅作为历史发现保留；版本化 checkout／lockfile 保持不变 | [0072 验证](executions/0072-mediacrawler-webui-integration/verification.zh.md) |
+| Docker 镜像构建 | 独立的补丁后上游 React 构建通过，但本工作站没有 Docker，当前 0072 完整镜像构建／运行仍为 `NOT_RUN`；0050／0047 镜像预检只保留为历史 PASS，不能替代 | [0072 验证](executions/0072-mediacrawler-webui-integration/verification.zh.md)；执行 0050／0047 |
+| 容器就绪 / 重启持久性 / 备份恢复演练 | 当前 0072 在线镜像／部署、就绪及持久性未经验证；重启及备份恢复继续为 `NOT_RUN`。旧镜像深度预检只属于历史 `PASS` | [0072 验证](executions/0072-mediacrawler-webui-integration/verification.zh.md)；执行 0047；docs/operations.zh.md |
+| 真人登录（任一平台） | 0072 真人扫码、Cookie 登录及保存 profile 复用均为 `NOT_RUN`；合成 relay 证据不是登录资格。此前观察的 B 站成功及其他失败保留为历史，新证明／复用仍开放 | [0072 验证](executions/0072-mediacrawler-webui-integration/verification.zh.md)；[历史 B 站跟进](executions/0055-operator-auth-playback-evidence/bili-success-followup/verification.zh.md) |
+| 真人抓取 / 下载 / 增量性 | 0072 七平台真人采集／下载／CDN 与增量性均为 `NOT_RUN`。历史首次 B 站金丝雀仍为 FAILED、零内容及 schema_invalid Job／running Run | [0072 验证](executions/0072-mediacrawler-webui-integration/verification.zh.md)；[历史金丝雀](executions/0055-operator-auth-playback-evidence/bili-success-followup/verification.zh.md) |
+| 控制台输出 → Subscription／历史／定时增量／摄取／NFO | 0072 第一批为 `NOT_IMPLEMENTED`；只冻结运行时／输出职责接缝 | [0072 进展](executions/0072-mediacrawler-webui-integration/progress.zh.md) |
 | 真实 Emby/Jellyfin 连接、Library 发现与定向刷新接受 | `NOT_RUN`——0054-A 已实现，但未使用获授权真实服务器 | 执行 0054 与 0047 |
 | Provider/path 项目查找与刷新后项目观察 | `IMPLEMENTED / NOT_RUN`——本地/mock 门禁通过，但未使用获授权真实 Emby/Jellyfin 服务器 | 执行 0054-B 验证 |
 | Provider task completion | `NOT_IMPLEMENTED`——Emby/Jellyfin 共同刷新 API 不提供持久任务身份；阶段 B 不声明该能力 | 执行 0054-B 真实性边界 |
@@ -161,9 +171,10 @@ B站和微博资料已离线实现，其他五平台资料、抖音/快手/贴�
 
 ## 发布阻塞项（v0.1.0-rc1）
 
-安全后台／迁移前预检实现及本地合成浏览器检查已完成，见[当前验证](executions/0055-operator-auth-playback-evidence/secure-console/verification.zh.md)。P1 证据展示／确认 UI 仍待实现，但不阻塞既有 CLI 金丝雀。
+0072 第一批已在 `ea64938` 实现。专项离线检查、Python 完整 unit 套件（`4633 passed, 3 skipped, 1 warning`）、Web 完整套件（`25 files / 782 tests / 1.52s`）及加固后 0 漏洞的生产依赖审计通过。当前 Docker 镜像／运行时及在线部署仍未执行，WebUI 全构建依赖图仍有 8 个仅开发／构建期发现。此前安全后台／迁移前预检证据保留在[0055 验证](executions/0055-operator-auth-playback-evidence/secure-console/verification.zh.md)。
 
-1. P0：当前精确提交／镜像的 Linux 基线未完成（运行用户 secret 可读性、迁移边界、完整套件、宿主机端口、启动／重启持久性、备份恢复与进程基线）——阶段 B；旧镜像通过不能替代。
-2. 真人行零记录——阶段 C 金丝雀（Bilibili + 小红书）先行，随后其余平台。
+1. P0：当前精确镜像的 Linux 基线未完成（运行用户 secret 可读性、迁移边界、宿主机端口、`/crawler/` 启动、重启持久性、备份恢复与进程基线）；旧镜像通过不能替代。
+2. 发布前跟踪、缓解或显式接受锁定上游 WebUI 全构建依赖图的 8 个仅开发／构建期发现。生产审计为零；未加固上游原始基线的 11 条仅作为历史发现。
+3. 0072 真人二维码／登录及七平台采集／下载／CDN 行均为 `NOT_RUN`；任何 Supported 声明前须运行受控金丝雀。
 
 0.1 最低发布条件：至少两个金丝雀平台达到 **Supported**（登录、同步、下载、真实增量、Emby 重扫 + 抽样播放），其余平台如实分级（Experimental / Metadata-only / Blocked External / Unsupported），且项目自我表述为“七平台适配框架；实际资格状态见状态矩阵”，而非“支持七个平台”。

@@ -6,7 +6,7 @@
 
 ## Current status
 
-Current implementation and verification are tracked in [`docs/status.md`](docs/status.md); the latest increment is [0065 Cookie self checks and optional avatar](docs/executions/0065-cookie-auth-and-avatar/progress.md). Source support is not live platform qualification.
+Current implementation and verification are tracked in [`docs/status.md`](docs/status.md); the latest increment is the [0072 thin MediaCrawler WebUI integration](docs/executions/0072-mediacrawler-webui-integration/progress.md). Source support is not live platform qualification.
 
 | Area | Current scope |
 | --- | --- |
@@ -17,6 +17,12 @@ Current implementation and verification are tracked in [`docs/status.md`](docs/s
 | Remaining implementation/qualification | XHS exact profiles, DY/KS avatars and broader Zhihu avatar forms, remaining media and current Linux/platform/archive/playback; historical failed Bili canary remains unresolved |
 
 Per-execution detail, evidence and exact commands live in [`docs/executions/`](docs/README.md) — this README intentionally does not stack execution narratives.
+
+## Crawler console
+
+The Docker build now compiles the pinned MediaCrawler WebUI directly. After reviewing its pinned non-commercial learning license, set `MEDIA_SYNC_MEDIACRAWLER_LICENSE_ACKNOWLEDGED=true`; then sign in to media-sync and choose **Crawler console** in the sidebar or open `/crawler/` to use the upstream platform selector, QR/Cookie login, creator/detail/search modes, start/stop controls, live logs and data browser. media-sync adds only the same-origin auth/CSRF boundary, authenticated WebSockets, browser QR relay, fixed upstream Python, persistent profiles and a fixed output root; it does not reimplement the platform crawlers.
+
+Upstream artifacts are written to `/data/mediacrawler/webui-output`, and login profiles to `/data/mediacrawler/webui-profiles`. A deployment may bind-mount all of `/data` to the host. An Emby/Jellyfin connection is not required to generate compatible directories and NFO files. This slice does not yet connect console artifacts automatically to the Subscription → history → scheduled incremental → NFO pipeline, and real seven-platform results still require deployment qualification.
 
 ## Offline quickstart (Fake adapter, no network)
 
@@ -40,7 +46,7 @@ Docker deployment and the seven-platform qualification procedure are documented 
 
 - Platforms: Xiaohongshu, Douyin, Kuaishou, Bilibili, Weibo, Tieba, Zhihu (adapter framework; per-platform live status is tracked in the qualification matrix, not implied).
 - Authentication: platform accounts retain explicit double-gated QR login, opaque Cookie references and background-only saved sessions. The administration backend additionally has one process-local operator session plus optional distinct Bearer automation; its Web login client is implemented and verified with local synthetic-browser fixtures. Phone login is unsupported.
-- Non-goals: comments/keyword crawling, bangumi/live media, multi-user/public-network deployment.
+- Non-goals: making the upstream comment/keyword tools part of the subscription archive pipeline, bangumi/live media, multi-user or unprotected public-network deployment.
 
 ## License boundary
 

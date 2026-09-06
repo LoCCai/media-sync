@@ -128,7 +128,24 @@ This Docker example has not run on the current Windows workstation (Docker is un
 docker compose up -d
 ```
 
-- Public root login entry: <http://127.0.0.1:8632/> (host loopback only). Login success must be followed by session/CSRF bootstrap before private pages mount; eight exact SPA HTML deep links redirect unauthenticated navigation here with 303.
+The embedded crawler console has a separate deployment gate. Review the exact
+MediaCrawler non-commercial learning license in the pinned checkout first. To
+enable `/crawler/`, set the only accepted affirmative token before Compose
+creates the service:
+
+```bash
+export MEDIA_SYNC_MEDIACRAWLER_LICENSE_ACKNOWLEDGED=true
+docker compose up -d --no-deps --force-recreate media-sync
+```
+
+When the variable is omitted or `false`, media-sync itself still starts, but
+every authenticated `/crawler` HTTP route—including the upstream start API—
+returns the fixed no-store `503 license_acknowledgement_required` response and
+the upstream application is not imported. This setting does not change the
+license or imply platform qualification. The optional supervisor retains its
+independent `--accept-mediacrawler-license` command gate.
+
+- Public root login entry: <http://127.0.0.1:8632/> (host loopback only). Login success must be followed by session/CSRF bootstrap before private pages mount; allowlisted SPA HTML deep links redirect unauthenticated navigation here with 303.
 - `/legacy` is a protected migration notice, and `/api/docs` remains protected; neither reopens anonymous business access.
 - `GET`/`HEAD /api/v1/health` and `/api/v1/ready` remain intentionally public for container probes; deep readiness and every business route require authentication.
 - SQLite state, archive, Emby tree and MediaCrawler runtime live in the `media-sync-data` volume under `/data`.

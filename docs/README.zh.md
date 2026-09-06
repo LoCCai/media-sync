@@ -2,7 +2,7 @@
 
 # 项目工作日志
 
-当前交付：[0069精确订阅交付](executions/0069-exact-subscription-delivery/progress.zh.md)加[0070安全进程诊断](executions/0070-process-output-diagnostics/progress.zh.md)，实施提交为已发布的 `b22e938`。一个指定订阅现在只拥有一条可恢复的 scheduler/采集/pipeline/本地目录链，无需连接媒体服务器；新的扫码/采集失败会在既有日志中心留下有界脱敏的 child 证据。最终离线验证为 Python 6924 个唯一测试、Web 781 项通过。真人登录与生产交付尚未验收；先部署，只复现一个失败平台，再跑一个有界订阅 canary。
+当前交付：[0072 锁定 MediaCrawler WebUI 的认证集成](executions/0072-mediacrawler-webui-integration/progress.zh.md)，实现提交为 `ea64938`。`/crawler/` 现在直接使用上游的平台／登录／采集／下载控制台并置于 media-sync 鉴权后，不再重复实现这些流程。Python unit 完整套件以 `4633 passed, 3 skipped, 1 warning` 通过，media-sync Web 完整套件 782 项通过，加固后浏览器 bundle 的生产依赖审计为 0。当前 Docker 镜像及在线七平台行为仍为 `NOT_RUN`；控制台输出尚未自动连接 Subscription 历史／增量摄取与 NFO 发布。
 
 ## 上阶段功能检查点
 
@@ -33,6 +33,8 @@
 
 | ID | 里程碑 | 状态 | 提交 |
 | --- | --- | --- | --- |
+| 0072 | 锁定 MediaCrawler WebUI 的认证集成 | 第一批薄集成直接挂载锁定上游控制台，提供固定运行时／输出／profile 根、认证 HTTP／WebSocket、CSRF、二维码 relay、原生媒体下载开关及有界进程／日志／Cookie 处理。离线完整套件通过；Docker／真人资格与自动 Subscription → 摄取 → NFO 仍开放；[验证](executions/0072-mediacrawler-webui-integration/verification.zh.md) | 计划 `dcd3881`；实现 `ea64938`；收尾为包含本行的提交 |
+| 0071 | 剩余 runner 输出诊断 | 交付转向直接复用上游 WebUI 时暂停；缺失的 runner 覆盖及此前丢弃的输出仍未解决；[进展](executions/0071-remaining-runner-output-diagnostics/progress.zh.md) | 计划 `3802d98`；由 `dcd3881` 暂停 |
 | 0070 | 安全进程输出诊断 | 扫码及通用作者采集 child 诊断已实现有界、脱敏、精确关联并在既有日志中心展示；其他独立 runner 与真人验收仍开放；[验证](executions/0070-process-output-diagnostics/verification.zh.md) | 计划 `523fa88`；实现/收尾为包含本行的提交 |
 | 0069 | 精确订阅交付 | 精确耐久订阅到目录执行、receipt 恢复、重复链栅栏、扫描证据、迁移护栏及 Windows 目录 pin 已完成离线验证；[验证](executions/0069-exact-subscription-delivery/verification.zh.md) | 计划 `4620291`；实现/收尾为包含本行的提交 |
 | 0058 | Cookie校验、私密保存与复用 | 四平台验证器及B站Cookie资料已实现，三平台验证器/真人门仍开放；[验证](executions/0058-cookie-login/verification.zh.md) | 计划 `f94d557`；实现 `3dc8905` |

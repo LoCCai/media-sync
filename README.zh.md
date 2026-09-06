@@ -6,7 +6,7 @@
 
 ## 当前状态
 
-当前实现和验证以 [`docs/status.zh.md`](docs/status.zh.md) 为准；最新增量为[0065 Cookie本人校验与可选头像](docs/executions/0065-cookie-auth-and-avatar/progress.zh.md)。源码接入不等于真实平台验收通过。
+当前实现和验证以 [`docs/status.zh.md`](docs/status.zh.md) 为准；最新增量为[0072 MediaCrawler WebUI 薄集成](docs/executions/0072-mediacrawler-webui-integration/progress.zh.md)。源码接入不等于真实平台验收通过。
 
 | 方面 | 当前范围 |
 | --- | --- |
@@ -17,6 +17,12 @@
 | 待实现/验收 | 小红书精确资料、抖音/快手头像及更广知乎头像、剩余媒体与当前Linux/平台/归档/播放；历史B站采集失败仍未解决 |
 
 逐执行细节、证据与准确命令都在 [`docs/executions/`](docs/README.zh.md)——本 README 有意不堆叠执行叙事。
+
+## 爬虫控制台
+
+Docker 构建现在直接编译锁定版本的 MediaCrawler WebUI。阅读锁定版本的非商业学习许可证并设置 `MEDIA_SYNC_MEDIACRAWLER_LICENSE_ACKNOWLEDGED=true` 后，登录 media-sync，从侧栏进入“爬虫控制台”，或访问 `/crawler/`，即可使用上游已有的平台选择、二维码/Cookie 登录、creator/detail/search、启动/停止、实时日志和数据查看。media-sync 只补同域鉴权、CSRF、受认证 WebSocket、浏览器二维码中继、固定上游 Python、持久 profile，以及固定输出目录；没有重写平台爬虫。
+
+上游产物写入 `/data/mediacrawler/webui-output`，登录 profile 写入 `/data/mediacrawler/webui-profiles`。部署时可把整个 `/data` bind mount 到宿主机。Emby/Jellyfin 连接不是生成兼容目录与 NFO 的前提；当前批次尚未把控制台产物自动接入 Subscription → 历史采集 → 定时增量 → NFO 流水线，真人七平台结果也仍需部署后逐项验证。
 
 ## 离线快速开始（Fake 适配器，无网络）
 
@@ -40,7 +46,7 @@ Docker 部署与七平台资格验收流程见 [`docs/deployment.zh.md`](docs/de
 
 - 平台：小红书、抖音、快手、哔哩哔哩、微博、贴吧、知乎（适配框架；逐平台真人状态以资格矩阵为准，不作隐含声明）。
 - 登录：平台账户继续使用显式双重门禁扫码登录、不透明 Cookie 引用与仅后台保存会话；管理后端另有单一进程内操作者 session 及可选独立 Bearer 自动化，Web 登录客户端现已实现且本地合成浏览器门禁已通过。不支持手机号登录。
-- 非目标：评论/关键词抓取、番剧/直播媒体、多用户/公网部署。
+- 非目标：把上游的评论/关键词工具纳入订阅归档主流程、番剧/直播媒体、多用户/无防护公网部署。
 
 ## 许可证边界
 

@@ -2,7 +2,7 @@
 
 # media-sync project journal
 
-Current delivery: [0069 exact subscription delivery](executions/0069-exact-subscription-delivery/progress.md) plus [0070 safe process diagnostics](executions/0070-process-output-diagnostics/progress.md), published in implementation commit `b22e938`. One requested subscription now owns one recoverable scheduler/crawl/pipeline/local-directory chain without requiring a media-server connection, while new QR/crawl failures retain bounded redacted child evidence in the existing log center. Final offline verification passed 6924 unique Python and 781 Web tests. Neither live login nor production delivery is yet qualified; deploy first, reproduce one failed platform, then run one bounded subscription canary.
+Current delivery: [0072 authenticated pinned MediaCrawler WebUI integration](executions/0072-mediacrawler-webui-integration/progress.md), implemented in `ea64938`. `/crawler/` now uses the upstream platform/login/crawl/download console behind media-sync authentication instead of duplicating those workflows. The complete Python unit suite passes `4633 passed, 3 skipped, 1 warning`, the complete media-sync Web suite passes 782 tests, and the hardened browser bundle has zero production-dependency audit findings. The current Docker image and online seven-platform behavior are still `NOT_RUN`; console output is not yet connected automatically to Subscription history/incremental ingestion and NFO publication.
 
 ## Previous feature checkpoint
 
@@ -33,6 +33,8 @@ This directory is the durable audit trail for the project. Every execution miles
 
 | ID | Milestone | Status | Commit |
 | --- | --- | --- | --- |
+| 0072 | Authenticated pinned MediaCrawler WebUI integration | The first thin slice directly mounts the pinned upstream console with fixed runtime/output/profile roots, authenticated HTTP/WebSockets, CSRF, QR relay, native media download enabled and bounded process/log/Cookie handling. Offline complete suites pass; Docker/live qualification and automatic Subscription → ingestion → NFO remain open; [verification](executions/0072-mediacrawler-webui-integration/verification.md) | Plan `dcd3881`; implementation `ea64938`; closeout is the commit containing this row |
+| 0071 | Remaining runner output diagnostics | Paused when delivery pivoted to direct upstream WebUI reuse; missing runner coverage and previously discarded output remain unresolved; [progress](executions/0071-remaining-runner-output-diagnostics/progress.md) | Plan `3802d98`; paused by `dcd3881` |
 | 0070 | Safe process-output diagnostics | QR and generic creator-crawl child diagnostics are bounded, redacted, correlated and visible in the existing log center; other standalone runners and live qualification remain open; [verification](executions/0070-process-output-diagnostics/verification.md) | Plan `523fa88`; implementation/closeout is the commit containing this row |
 | 0069 | Exact subscription delivery | Exact durable subscription-to-directory execution, receipt recovery, duplicate-chain fences, scan evidence, migration guardrails and Windows directory pin are offline verified; [verification](executions/0069-exact-subscription-delivery/verification.md) | Plan `4620291`; implementation/closeout is the commit containing this row |
 | 0058 | Cookie validation, private save and reuse | Four validators and Bili Cookie profiles implemented; three validators/live gates open; [verification](executions/0058-cookie-login/verification.md) | Plan `f94d557`; implementation `3dc8905` |

@@ -12,8 +12,10 @@
 ## 2. Establish one fixed upstream runtime
 
 - Add typed configuration for the verified checkout and one dedicated virtual-environment Python. Validate absolute paths, checkout identity, lock commit, license acknowledgement and required entry points before exposing the integration.
+- Add a deployment-level acknowledgement that defaults to false and accepts only the exact `true`/`false` tokens. Without explicit acknowledgement, do not import or construct the upstream application: every authenticated `/crawler` HTTP path, including `/crawler/api/crawler/start`, returns the same no-store `503 license_acknowledgement_required`. The resident supervisor keeps its independent explicit CLI gate.
 - Launch the upstream API and crawler children through a media-sync-owned adapter that always selects the fixed interpreter and checkout working directory. Replace the upstream manager's ambient `uv run` assumption at the integration seam without modifying upstream files.
 - Give startup, shutdown and child termination bounded behavior. A missing/mismatched checkout, interpreter or built WebUI fails with a fixed unavailable state and never falls back to another installation.
+- Because a mounted FastAPI application's lifespan is not propagated by Starlette, expose one media-sync-owned asynchronous shutdown callback on the mounted application and await it from the root lifespan before disposing shared runtime state.
 - Keep the upstream service private to the media-sync process/network boundary; `/crawler` is the supported entry, not a second unauthenticated listener.
 
 ## 3. Mount the authenticated `/crawler` surface
