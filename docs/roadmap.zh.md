@@ -8,6 +8,8 @@
 
 ## 阶段
 
+优先级更新（0069–0070）：[精确订阅交付](executions/0069-exact-subscription-delivery/progress.zh.md)与[安全进程诊断](executions/0070-process-output-diagnostics/progress.zh.md)已实现、完成离线验证并以实施提交 `b22e938` 发布。产品现在可只执行一个订阅而不消费无关任务，持久化/恢复精确本地目录交付链，并以精确耐久身份保存有界脱敏的扫码/采集 child 诊断。下一步部署本 revision，只复现一个失败扫码平台，再跑一次有界订阅 canary；不能宣称旧日志可恢复、永久历史完成、全部 runner 输出已覆盖或真人平台成功。
+
 优先级更新（0068）：[日志中心与登录阶段证据](executions/0068-log-center/progress.zh.md)已有实现，[验证](executions/0068-log-center/verification.zh.md)区分离线结果和待真人验收。下一步是操作者部署后受控测试一个失败平台、处理已报告的Windows exporter目录pin弱点，再继续精确订阅及历史/下载/增量交付。不自动恢复supervisor或重试已认证账户。
 
 优先级更新（0067追加）：[共享输出目录](executions/0067-output-directories/progress.zh.md)已接入配置、调度与写入；[下一版日志中心与登录阶段诊断](executions/0067-output-directories/next-delivery.zh.md)先行，不再盲目重复扫码。接着完成精确订阅执行、永久历史完成/增量语义和真实下载验收。旧文件迁移未实现；此前计划作为历史保留。

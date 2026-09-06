@@ -2,7 +2,15 @@
 
 # 项目统一状态（单一事实来源）
 
-## 最新：持久日志中心与精确登录证据（0068）
+## 最新：精确订阅交付与安全进程诊断（0069–0070）
+
+[0069](executions/0069-exact-subscription-delivery/progress.zh.md)把一次订阅操作贯通为唯一精确耐久 scheduler → 采集 → pipeline → 兼容目录链；不消费无关任务，可从 supervisor 抢占、重试和重启中凭封闭 receipt 恢复，不要求连接 Emby/Jellyfin 服务器，并保留非永久的逐 feed 扫描证据。审查驱动的栅栏阻止重复链；迁移降级与 Windows exporter 目录 pin 已加固，实施提交 `b22e938` 已发布，证据见[验证](executions/0069-exact-subscription-delivery/verification.zh.md)。
+
+[0070](executions/0070-process-output-diagnostics/progress.zh.md)把有界、脱敏安全的扫码/采集子进程诊断接入既有轮转日志中心，覆盖真实锁定版 MediaCrawler 前缀及精确 Operation/session/Job/Run 关联。账户页可把失败或中断登录直达精确日志查询。最终离线门禁为 Python 6924 个唯一测试、Web 781 项通过；所有修正过的失败见[验证](executions/0070-process-output-diagnostics/verification.zh.md)，操作步骤见[使用说明](executions/0070-process-output-diagnostics/usage.zh.md)。
+
+两项增量都尚未部署或真人验收，旧扫码失败仍不可恢复。下一步：部署本 revision，只复现一个失败平台并读取新增安全进程证据，再执行一次有界订阅交付 canary。Cookie/profile/detail/download 子进程输出仍是明确披露的日志缺口；Linux/PostgreSQL/真人平台/CDN/目录播放验收及总体七平台目标继续开放。
+
+## 上阶段：持久日志中心与精确登录证据（0068）
 
 [0068](executions/0068-log-center/progress.zh.md)实现私有轮转分片、可观察扫码阶段、精确生命周期关联、鉴权查询及中文诊断下载。这解决证据丢失，不代表平台登录已修复。默认16MiB/日期轮转、7天、1GiB，不记录凭据和第三方原文。覆盖范围、审查修正及测试见[验证](executions/0068-log-center/verification.zh.md)，部署与保留限制见[使用说明](executions/0068-log-center/usage.zh.md)。
 

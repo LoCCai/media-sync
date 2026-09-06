@@ -11,7 +11,7 @@
 ## 2. 实现一个有界捕获原语
 
 - 在现有 `LogStore` 上新增可复用进程输出捕获模块，使用 API、CLI 与 supervisor 共用的 `state_dir/logs`。
-- 通过私有 pipe 捕获子进程内部 fd 1/2，增量解码并逐行分类。当外层公开通道承载协议时，合并上游 stdout/stderr；只有来源可信时才保留原 stream。
+- 通过私有 pipe 捕获子进程内部 fd 1/2，增量解码并逐行分类。当外层公开通道承载协议时，合并上游 stdout/stderr；只有来源可信时才保留原 stream。必须命中明确 level/traceback/exception 形状，关键词本身不能授权持久化；JSON/JSONL、HTML/DOM 或疑似创作者正文对象按策略过滤。
 - 强制每轮字节数、行数及单行长度限制。即使没有保留自由文本，也要发出摘要与固定丢弃原因。
 - 拒绝相对路径/根日志目录及路径身份变化，不跟随 symlink，也不扩大现有 store 的删除权限。
 
@@ -41,7 +41,7 @@
 
 ## 7. 验证与对抗复核
 
-- 单测安全诊断分类、已知/通用秘密脱敏、二维码/base64/签名 URL 拒绝、非法 UTF-8、超长行、洪泛限制、sink 拒绝及目录安全。
+- 单测安全诊断分类以及敌对 Cookie object、`Set-Cookie`、Authorization、storage-state、二维码/base64、签名 URL、Windows/POSIX 路径，并覆盖非法 UTF-8、超长行、洪泛限制、sink 拒绝及目录安全。哨兵值在已校验事件及受管分片原始字节中都必须不存在。
 - 用真实子进程做契约测试：通用结果 framing 保持精确；扫码结果/事件 framing 仍可解析；诊断输出进入受管分片；秘密和私有路径不泄漏。
 - 测试合法 Operation 关联、无上下文、畸形/混合/恶意环境值，以及没有父授权时直接调用 runner。
 - 运行日志 store/output 专项、MediaCrawler bridge/login 契约、API/前端测试、Ruff/format、mypy、受影响的 Web type/lint/build 及 `git diff --check`。稍后在 `verification(.zh).md` 准确记录结果，不能预先宣称通过。

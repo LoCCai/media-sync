@@ -11,7 +11,7 @@
 ## 2. Implement one bounded capture primitive
 
 - Add a reusable process-output capture module over the existing `LogStore`, selecting the same `state_dir/logs` location used by API, CLI and supervisor.
-- Capture child-internal fd 1/2 through a private pipe, decode incrementally and classify line-by-line. Merge upstream stdout/stderr when the surrounding public channels are protocols and retain the original source only when it is trustworthy.
+- Capture child-internal fd 1/2 through a private pipe, decode incrementally and classify line-by-line. Merge upstream stdout/stderr when the surrounding public channels are protocols and retain the original source only when it is trustworthy. Require explicit level/traceback/exception shapes; keyword hits alone never authorize persistence, and JSON/JSONL, HTML/DOM or likely creator-content objects are policy-filtered.
 - Enforce the per-run byte/line/line-length limits. Emit summaries and explicit fixed dropped reasons even when no free-text line is retained.
 - Reject relative/root log directories and path identity changes; do not follow symlinks or broaden existing store deletion authority.
 
@@ -41,7 +41,7 @@
 
 ## 7. Verification and adversarial review
 
-- Unit-test safe diagnostic classification, known/generic secret redaction, QR/base64/signed-URL rejection, invalid UTF-8, oversize lines, flood limits, sink refusal and directory safety.
+- Unit-test safe diagnostic classification and hostile Cookie object, `Set-Cookie`, Authorization, storage-state, QR/base64, signed-URL and Windows/POSIX path cases, plus invalid UTF-8, oversize lines, flood limits, sink refusal and directory safety. The sentinel must be absent both from validated events and raw managed segment bytes.
 - Contract-test real child processes: generic result framing remains exact; QR result/event framing remains parseable; diagnostic output reaches managed segments; secrets and private paths do not.
 - Test valid Operation correlation, absent context, malformed/mixed/malicious environment values and direct runner invocation without parent authorization.
 - Run focused log-store/output tests, MediaCrawler bridge/login contracts, API/frontend tests, Ruff/format, mypy, web type/lint/build as affected, and `git diff --check`. Record exact results later in `verification(.zh).md`; do not predeclare success.

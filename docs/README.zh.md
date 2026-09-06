@@ -2,7 +2,7 @@
 
 # 项目工作日志
 
-当前交付：[0068持久日志中心与扫码阶段证据](executions/0068-log-center/progress.zh.md)，精确结果见[验证](executions/0068-log-center/verification.zh.md)，部署及使用见[说明](executions/0068-log-center/usage.zh.md)。四平台扫码尚未证明修复，下一步是部署后受控诊断，再继续订阅到文件闭环；下方历史测试不代表真人验收完成。
+当前交付：[0069精确订阅交付](executions/0069-exact-subscription-delivery/progress.zh.md)加[0070安全进程诊断](executions/0070-process-output-diagnostics/progress.zh.md)，实施提交为已发布的 `b22e938`。一个指定订阅现在只拥有一条可恢复的 scheduler/采集/pipeline/本地目录链，无需连接媒体服务器；新的扫码/采集失败会在既有日志中心留下有界脱敏的 child 证据。最终离线验证为 Python 6924 个唯一测试、Web 781 项通过。真人登录与生产交付尚未验收；先部署，只复现一个失败平台，再跑一个有界订阅 canary。
 
 ## 上阶段功能检查点
 
@@ -33,6 +33,8 @@
 
 | ID | 里程碑 | 状态 | 提交 |
 | --- | --- | --- | --- |
+| 0070 | 安全进程输出诊断 | 扫码及通用作者采集 child 诊断已实现有界、脱敏、精确关联并在既有日志中心展示；其他独立 runner 与真人验收仍开放；[验证](executions/0070-process-output-diagnostics/verification.zh.md) | 计划 `523fa88`；实现/收尾为包含本行的提交 |
+| 0069 | 精确订阅交付 | 精确耐久订阅到目录执行、receipt 恢复、重复链栅栏、扫描证据、迁移护栏及 Windows 目录 pin 已完成离线验证；[验证](executions/0069-exact-subscription-delivery/verification.zh.md) | 计划 `4620291`；实现/收尾为包含本行的提交 |
 | 0058 | Cookie校验、私密保存与复用 | 四平台验证器及B站Cookie资料已实现，三平台验证器/真人门仍开放；[验证](executions/0058-cookie-login/verification.zh.md) | 计划 `f94d557`；实现 `3dc8905` |
 | 0057 | 单作者资料 | B站saved-session资料、本地备注、凭单绑定订阅；[验证](executions/0057-creator-profile-lookup/verification.zh.md) | `141f7c4`、`68c4004` |
 | 0056 | 订阅可用性与本地交付 | 删除/暂停恢复、本地输出说明和精确 Job 报告已实现；自动作者资料仍必做；[进度](executions/0056-subscription-usability/progress.zh.md)、[验证](executions/0056-subscription-usability/verification.zh.md) | 计划 `fe54aba`；实现为包含本行的提交 |

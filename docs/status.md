@@ -2,7 +2,15 @@
 
 # Unified project status (single source of truth)
 
-## Latest: persistent log center and precise login evidence (0068)
+## Latest: exact subscription delivery and safe process diagnostics (0069–0070)
+
+[0069](executions/0069-exact-subscription-delivery/progress.md) turns one subscription action into one exact durable scheduler → crawl → pipeline → compatible-directory chain. It does not consume unrelated work, survives supervisor ownership/retry/restart through a closed receipt, does not require an Emby/Jellyfin server connection, and retains non-permanent per-feed scan evidence. Review-driven fences prevent duplicate chains. Migration downgrade and the Windows exporter directory pin are hardened; implementation `b22e938` is published, with evidence in [verification](executions/0069-exact-subscription-delivery/verification.md).
+
+[0070](executions/0070-process-output-diagnostics/progress.md) adds bounded, redaction-safe QR/crawl subprocess diagnostics to the existing rolling log center, including the real pinned MediaCrawler prefix and exact Operation/session/Job/Run correlation. Accounts links failed or interrupted logins to the exact log query. Final offline gates pass 6924 unique Python tests and 781 Web tests; details and all corrected failures are in [verification](executions/0070-process-output-diagnostics/verification.md), with operator steps in [usage](executions/0070-process-output-diagnostics/usage.md).
+
+Neither increment has been deployed or live-qualified. Old QR failures remain unrecoverable. Next: deploy this revision, reproduce exactly one failed platform login, inspect its new safe process evidence, then run one bounded subscription delivery canary. Cookie/profile/detail/download subprocess output remains a disclosed logging gap; live Linux/PostgreSQL/platform/CDN/directory-playback qualification and the overall seven-platform goal remain open.
+
+## Previous: persistent log center and precise login evidence (0068)
 
 [0068](executions/0068-log-center/progress.md) implements private rolling segments, observable QR stages, exact lifecycle association, authenticated queries and Chinese diagnostic downloads. This addresses missing evidence, not proven platform login repair. Defaults are 16 MiB/day, 7 days, 1 GiB; raw credentials/third-party text are excluded. Exact coverage, review fixes and tests: [verification](executions/0068-log-center/verification.md). Deployment and retention limits: [usage](executions/0068-log-center/usage.md).
 

@@ -2,7 +2,7 @@
 
 # media-sync project journal
 
-Current delivery: [0068 persistent log center and QR stage evidence](executions/0068-log-center/progress.md), with exact results in [verification](executions/0068-log-center/verification.md) and [deployment/usage](executions/0068-log-center/usage.md). Four QR platforms are not proven repaired; next is controlled diagnosis after deployment, then the subscription-to-files loop. Historical tests below do not mean live qualification is complete.
+Current delivery: [0069 exact subscription delivery](executions/0069-exact-subscription-delivery/progress.md) plus [0070 safe process diagnostics](executions/0070-process-output-diagnostics/progress.md), published in implementation commit `b22e938`. One requested subscription now owns one recoverable scheduler/crawl/pipeline/local-directory chain without requiring a media-server connection, while new QR/crawl failures retain bounded redacted child evidence in the existing log center. Final offline verification passed 6924 unique Python and 781 Web tests. Neither live login nor production delivery is yet qualified; deploy first, reproduce one failed platform, then run one bounded subscription canary.
 
 ## Previous feature checkpoint
 
@@ -33,6 +33,8 @@ This directory is the durable audit trail for the project. Every execution miles
 
 | ID | Milestone | Status | Commit |
 | --- | --- | --- | --- |
+| 0070 | Safe process-output diagnostics | QR and generic creator-crawl child diagnostics are bounded, redacted, correlated and visible in the existing log center; other standalone runners and live qualification remain open; [verification](executions/0070-process-output-diagnostics/verification.md) | Plan `523fa88`; implementation/closeout is the commit containing this row |
+| 0069 | Exact subscription delivery | Exact durable subscription-to-directory execution, receipt recovery, duplicate-chain fences, scan evidence, migration guardrails and Windows directory pin are offline verified; [verification](executions/0069-exact-subscription-delivery/verification.md) | Plan `4620291`; implementation/closeout is the commit containing this row |
 | 0058 | Cookie validation, private save and reuse | Four validators and Bili Cookie profiles implemented; three validators/live gates open; [verification](executions/0058-cookie-login/verification.md) | Plan `f94d557`; implementation `3dc8905` |
 | 0057 | Single-creator profiles | Bili saved-session profiles, local aliases and receipt-bound subscriptions; [verification](executions/0057-creator-profile-lookup/verification.md) | `141f7c4`, `68c4004` |
 | 0056 | Subscription usability and local delivery | Removal/paused restore, local output guidance and exact-Job reports implemented; automatic creator profiles still required; [progress](executions/0056-subscription-usability/progress.md), [verification](executions/0056-subscription-usability/verification.md) | Plan `fe54aba`; implementation is the commit containing this row |

@@ -2,25 +2,26 @@
 
 # Verification
 
-Status: implementation gates have not run.
+Status: offline release gates passed on the frozen source; live/Linux/PostgreSQL qualification remains explicit below.
 
-## Planning evidence
+## Final evidence
 
-- Worktree and `origin/main`: `f41c6b3ea53a92903c4494daa78c95dc51e828ee` before this checkpoint.
-- Read-only repository trace established that `POST .../run-now` calls only `DurableSchedulerService.run_now`, and both bounded workers use global `claim_next`.
-- A pure in-memory Bilibili model reproduced a source-end sweep that missed one still-visible item after a page-boundary deletion; existing coverage checks still accepted the sweep. This prevents any permanent `history_complete` claim.
-- Real Windows process evidence established: exporter access `0` allowed ancestor rename; `FILE_LIST_DIRECTORY` denied it while open and allowed it after release.
-- Existing focused output inspection baseline: `22 passed, 39 deselected`. An in-memory directory-access substitution passed the exporter/application/pipeline set: `109 passed`. These are design evidence only, not verification of an edited source tree.
+- Final complete Python coverage was executed in three isolated groups and totals `6924 passed, 40 skipped` after removing one intentional eight-test helper overlap: unit `4604 passed, 3 skipped`, contract `1085 passed, 2 skipped`, integration `1235 passed, 35 skipped`. The raw unit command reported `4612 passed, 3 skipped in 511.42s` because it also collected the eight-test media-server helper; contract completed in 489.20s and integration in 422.79s. The only warning class was the existing Starlette/httpx deprecation. Skips are Windows/POSIX or unavailable real-PostgreSQL conditions.
+- The earlier exact-delivery race/recovery review suite passed `255` tests. After final review found the stale supervisor-lease gap, the corrected source additionally passed all 17 subscription-delivery API tests and a 14-test lease-focused selection. These overlapping selections cover both scheduler/pipeline enqueue orderings, supervisor ownership, `claimed`/`running` expiry reclaim, same-ID `retry_wait`, expired-Operation deferral, durable receipt recovery and no-second-chain assertions.
+- Migration/database/package-resource selection: `52 passed`. SQLite authorized/refused downgrade cases and PostgreSQL statement ordering are covered; no real PostgreSQL URL was configured.
+- The final stale-inventory correction selection passed `112` tests after updating SystemExit semantics, seven Cookie-capable platforms and the authenticated route inventory to 75.
+- Web final gate passed 25 files / 781 tests; Prettier passed, Svelte reported 0 errors and 0 warnings, and the production build passed.
+- Ruff lint passed; the final whole-repository Ruff format check reported 1101 files already formatted; strict mypy passed 149 source files; compileall passed; `uv lock --check` resolved 62 packages; both locked upstream checkouts passed; `git diff --check` passed.
+- The post-fix wheel and sdist contain all 165 application Python files byte-identical to the workspace. Wheel: 172 members, SHA-256 `eaba763d84ce337027cd04cd6f0a6c7fcfad015b240e139a4c61f8e783e3a4cd`. Sdist: 1222 members, SHA-256 `bc073ab59a56f26ec114cbcedacb041b91f06144119a6e97a9827629d1cc1def`. Required migration/Mako resources are present; the precise member audit found no actual `.env`, database, private key, credential, runtime log/profile/output, build-cache, temporary, VCS/tool-state or link member. `.env.example` and eight versioned JSONL crawler fixtures are templates/test data, not runtime state.
 
-## Required implementation gates
+## Failures retained, not relabelled
 
-- Migration upgrade/downgrade preservation and refusal cases on SQLite; PostgreSQL constraint path where available.
-- Exact scheduler/pipeline claim, concurrency, idempotency, cancellation and recovery tests.
-- Typed Operation payload/result/API/auth/log/diagnostic tests.
-- Deterministic no-media-server end-to-end directory delivery and zero-work replay.
-- Bilibili per-feed scan-progress transaction and drift-negative tests; six-platform unproven projection tests.
-- Real Windows rename pin test and non-Windows compatibility check.
-- Complete Python and web quality/build/contract suites.
+- Independent review found four recovery/duplicate-chain risks: an active pipeline owned by supervisor, the reciprocal pipeline-enqueue/materialize ordering, a direct `retry_wait` that prematurely terminalized the Operation, and an observer that only polled a crashed supervisor's stale `claimed`/`running` lease. Each was reproduced, fixed and covered; the last regression only succeeds when the same exact Job is retried and reclaimed after expiry.
+- Full runs started while review edits were still landing were deliberately interrupted and are not release evidence. A later `-x` run found one stale browser-diagnostic assertion after 3219 passes; the next complete run found stale Cookie-capability and 74-route inventories after 6918 passes. After the final lease fix, a monolithic run was stopped at 3% solely to reduce wall time. The first isolated unit command then exposed two collection errors because cross-directory helper imports were omitted from that command; explicitly collecting the eight-test helper fixed the command. The three successful final groups above cover the full 6964-item collection with that overlap accounted for.
+- The first package denylist pass reported the legitimate `web/src/routes/logs/+page.svelte` as suspicious because the rule matched any `logs` path. The rule was narrowed to package-root runtime directories and the complete audit then passed; no member was removed or ignored manually.
 
-Live QR, creator, CDN, download and media-server acceptance: `NOT_RUN`.
+## Not run
 
+- Current Linux/Docker image and real PostgreSQL transactions.
+- Live QR login, creator crawl, CDN retrieval, production download/directory playback, Emby/Jellyfin refresh or supervisor recovery.
+- No production state, credentials, subscriptions or media files were changed.

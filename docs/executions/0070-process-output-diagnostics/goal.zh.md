@@ -12,8 +12,8 @@
 
 1. 复用 `state_dir/logs` 和现有进程独占 JSONL store，不创建第二套无界原始日志归档；原有按大小/日期轮转、保留期、总容量、受管文件与 symlink 防护继续作为权威规则。
 2. 在子进程边界内捕获 MediaCrawler 上游文件描述符输出，不能污染通用采集结果协议、扫码登录结果帧或扫码登录事件帧。
-3. 持久化前执行有界诊断策略：单次最多 4 MiB、4096 行、每行 64 KiB；规范化非法文本；只保留具有诊断价值的安全行；脱敏已知及通用秘密形态。洪泛、超长、乱码、策略过滤和日志 sink 拒绝必须以固定计数/原因可见。
-4. 持久化闭集 `process_output`、`process_output_summary` 与 `process_output_dropped` 事件。自由 `message` 只能用于进程输出事件；若仍类似 Cookie/token、二维码/base64 载荷或签名 URL，则必须拒绝。
+3. 持久化前执行有界诊断策略：单次最多 4 MiB、4096 行、每行 64 KiB；规范化非法文本；只保留明确日志/异常形状；脱敏已知及通用秘密形态。仅命中 `error` 或 `login` 等关键词不能视为安全，JSON/JSONL、HTML/DOM 及疑似作品/正文对象必须始终按策略过滤。洪泛、超长、乱码、策略过滤和日志 sink 拒绝必须以固定计数/原因可见。
+4. 持久化闭集 `process_output`、`process_output_summary` 与 `process_output_dropped` 事件。自由 `message` 只能用于进程输出事件；若仍类似 Cookie/token、`Set-Cookie`、Authorization、storage-state、二维码/base64 载荷、签名 URL 或 Windows/POSIX 私有绝对路径，则必须拒绝。无法可靠局部脱敏时，只保留固定 `[REDACTED]` 证据或丢弃计数。
 5. 事件只能绑定可信且规范的身份。作者采集输出包含 manifest 中精确 account、subscription、Job、Run、platform 与 attempt；扫码输出包含 account/platform，并在父 Operation/correlation 存在时准确关联。缺失或恶意传播上下文应整体忽略，不能猜测或部分接纳。
 6. 直接或不可信方式调用 runner 时保持静默，只有受信父进程显式授权才启用捕获。账户/profile/job/output 的绝对路径都按秘密处理，不得进入持久事件。
 7. 已鉴权日志 API 与中文日志中心保留并展示安全 message、stream、摘要及丢弃原因，同时不能削弱闭集筛选、分页与输出编码。
