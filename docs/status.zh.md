@@ -2,17 +2,23 @@
 
 # 项目统一状态（单一事实来源）
 
-## 最新：把 MediaCrawler 原生会话接入订阅（0073）
+## 最新：B 站投稿耐久回填转增量交付（0074）
+
+[执行 0074](executions/0074-bili-backfill-incremental-delivery/progress.zh.md)已在 `9c81c4b` 完成本地实现，贯通一个精确 B 站投稿 Subscription。每个成功 Run 最多记录 30 个有序 Content 观察；只有封闭的来源 Run pipeline receipt 才能推进耐久 `backfill -> reconciling -> incremental` 状态。到达源末尾会重置有界 head lane，只有稳定且已交付的头部对账才发布 `baseline_snapshot_complete`。认证、作者、策略、scope 或锁定上游漂移会使不兼容证据失效。
+
+交付按完整 Content 隔离。损坏的多分段 Content 不会发布，也不会隐藏其他无关完整 Content；重试积压保持显式。receipt/API/Web 投影区分本轮来源与重试积压，显示固定的部分成功/失败计数，并安全保留 predecessor 媒体。受控 fixture 证明 67 条跨批次完成、漂移后的 68 条来源、后来一条投稿真实下载/归档/NFO 发布，以及不改变任何字节或 mtime 的零工作重跑。Emby/Jellyfin 服务器控制继续为可选项。
+
+最终离线门禁通过：Python `7048 passed, 41 skipped, 108 warnings`、media-sync Web 完整套件（`26 files / 802 tests`）、Svelte 检查/构建、全仓 Prettier、Ruff lint/format、155 个源码文件的 strict mypy、两个锁定上游及 wheel/sdist 构建。完整审查、已修正门禁失败与精确边界见[0074 验证](executions/0074-bili-backfill-incremental-delivery/verification.zh.md)。
+
+Docker/Linux 部署、真人 B 站登录/profile 认领、UID `252671524`、平台请求、CDN 字节、宿主最终归档/媒体库/NFO、后续真人增量周期及 supervisor restart 全部仍为 `NOT_RUN`。
+
+## 上阶段：把 MediaCrawler 原生会话接入订阅（0073）
 
 [执行 0073](executions/0073-mediacrawler-session-adoption/progress.zh.md)已在 `165516a` 实现，完成经鉴权原生 `/crawler/` 登录面到既有 Subscription 流水线的确定性接缝。操作者用上游 QR/Cookie 控件登录，等待控制台进程空闲，再把该平台保存的 profile 显式认领给同平台 Account。media-sync 不跟随链接地安全复制普通文件，用禁止 QR 回退的非交互 saved-session 探针校验快照，在 Account profile 锁下原子安装，并在认证 revision 冲突时恢复旧 profile。内部路径、Cookie 和原始异常不会进入公开 API。
 
 认领成功会发布 `saved_session/authenticated`、递增 Account 认证 revision，并只恢复该 Account 的 `waiting_auth` 同步 Job。集成证明确认精确安装的 Account profile 不经 Cookie secret 解析即进入 scheduler BridgeRequest 与 process spec，随后成功完成规范化摄取。共享 `/data/mediacrawler/webui-output` 继续只是交互控制台产物区，不会导入无关 Job；既有 Job 级 receipt、下载/归档及平台/作者目录与 NFO 输出仍是权威。Emby/Jellyfin 服务器控制为可选项。
 
-最终离线证据通过：Python 完整 unit 套件（`4683 passed, 3 skipped, 1 warning`）、media-sync Web 完整套件（`26 files / 799 tests`）、Svelte 检查/构建、全仓 Prettier、Ruff lint/format、154 个源码文件的 strict mypy、两个锁定上游检查及 Python 制品构建。精确命令、一项已修正的过时路由数量失败与资格边界见[0073 验证](executions/0073-mediacrawler-session-adoption/verification.zh.md)。部署 `165516a` 前，既有线上 0072 `/crawler/` 返回 `license_acknowledgement_required`，证明其 API 容器尚未单独收到 `MEDIA_SYNC_MEDIACRAWLER_LICENSE_ACKNOWLEDGED=true`；supervisor CLI 确认不能替代，且该观察不能识别 0073 镜像。强制重建容器后的访问、真人 profile 认领及七平台采集/下载/CDN/历史/增量结果仍为 `NOT_RUN`。
-
-## 下一步：规划中的 B 站投稿基线与增量（0074）
-
-[执行 0074](executions/0074-bili-backfill-incremental-delivery/goal.zh.md)目前只有计划。下一实现冻结为一个精确 B 站投稿 Subscription：按节奏执行每批不超过 30 条的回填单元、源末尾/头部对账、有时点边界的 `baseline_snapshot_complete` 状态、重叠定时头部检查及按完整 Content 发布。它明确复用 0073/0069，排除另一套登录/爬虫/下载器/调度器、控制台输出自动导入及强制媒体服务器控制。当前不声明任何 0074 代码、迁移、测试结果、部署或真人资格。
+0073 最终离线证据通过：Python 完整 unit 套件（`4683 passed, 3 skipped, 1 warning`）、media-sync Web 完整套件（`26 files / 799 tests`）、Svelte 检查/构建、全仓 Prettier、Ruff lint/format、154 个源码文件的 strict mypy、两个锁定上游检查及 Python 制品构建。精确命令、一项已修正的过时路由数量失败与资格边界见[0073 验证](executions/0073-mediacrawler-session-adoption/verification.zh.md)。部署 `165516a` 前，既有线上 0072 `/crawler/` 返回 `license_acknowledgement_required`，证明其 API 容器尚未单独收到 `MEDIA_SYNC_MEDIACRAWLER_LICENSE_ACKNOWLEDGED=true`；supervisor CLI 确认不能替代，且该观察不能识别 0073 镜像。强制重建容器后的访问、真人 profile 认领及七平台采集/下载/CDN/历史/增量结果仍为 `NOT_RUN`。
 
 ## 上阶段：精确订阅交付与安全进程诊断（0069–0070）
 

@@ -2,9 +2,9 @@
 
 # Goal: durable Bilibili uploads backfill to incremental local delivery
 
-Status: **PLANNED ONLY**. No 0074 application code, migration, deployment or live crawl has started.
+Status: **LOCAL IMPLEMENTATION COMPLETE** in `9c81c4b`. Deployment and live Bilibili qualification have not started.
 
-Execution 0074 will make one exact Bilibili `uploads` Subscription useful after the native MediaCrawler session adoption delivered in 0073. It will reuse the existing Account profile, MediaCrawler runner, scheduler, Job-scoped ingestion, downloader, SHA-256 archive and Emby/Jellyfin-compatible directory/NFO writer. It will not add another login page, crawler, downloader, scheduler or export product.
+Execution 0074 makes one exact Bilibili `uploads` Subscription useful after the native MediaCrawler session adoption delivered in 0073. It reuses the existing Account profile, MediaCrawler runner, scheduler, Job-scoped ingestion, downloader, SHA-256 archive and Emby/Jellyfin-compatible directory/NFO writer. It does not add another login page, crawler, downloader, scheduler or export product.
 
 The intended operator result is straightforward:
 

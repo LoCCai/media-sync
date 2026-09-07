@@ -2,9 +2,9 @@
 
 # 目标：B 站投稿耐久回填转增量本地交付
 
-状态：**仅完成计划**。尚未开始 0074 应用代码、迁移、部署或真人采集。
+状态：**本地实现完成**，实现提交为 `9c81c4b`。尚未开始部署或真人 B 站验收。
 
-执行 0074 要让 0073 原生 MediaCrawler 会话认领后的一个精确 B 站 `uploads` 订阅真正可用。继续复用既有 Account profile、MediaCrawler runner、scheduler、Job 级摄取、下载器、SHA-256 归档及 Emby/Jellyfin 兼容目录/NFO writer；不再增加登录页、爬虫、下载器、调度器或“导出”产品。
+执行 0074 让 0073 原生 MediaCrawler 会话认领后的一个精确 B 站 `uploads` 订阅真正可用。继续复用既有 Account profile、MediaCrawler runner、scheduler、Job 级摄取、下载器、SHA-256 归档及 Emby/Jellyfin 兼容目录/NFO writer；没有增加登录页、爬虫、下载器、调度器或“导出”产品。
 
 目标操作结果保持直接：
 

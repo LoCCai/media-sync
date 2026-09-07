@@ -2,7 +2,7 @@
 
 # Plan
 
-Status: **FROZEN FOR A LATER TURN**. This document authorizes no deployment, platform request or supervisor restart by itself.
+Status: **EXECUTED OFFLINE** in `9c81c4b`. The implementation and deterministic local verification are complete; deployment, platform requests and supervisor restart remain outside this execution.
 
 ## 1. Reconfirm and simplify the existing path
 
