@@ -2,7 +2,7 @@
 
 # Plan
 
-Status: **frozen before implementation**.
+Status: **completed locally in `aec3eac`**.
 
 ## 1. Freeze the mutation contract
 

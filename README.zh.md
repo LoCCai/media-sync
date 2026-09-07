@@ -6,15 +6,15 @@
 
 ## 当前状态
 
-当前实现和验证以 [`docs/status.zh.md`](docs/status.zh.md) 为准；最新增量为[0073 原生会话订阅桥接](docs/executions/0073-mediacrawler-session-adoption/progress.zh.md)，实现提交为 `165516a`。源码接入不等于真实平台验收通过。
+当前实现和验证以 [`docs/status.zh.md`](docs/status.zh.md) 为准；最新增量为[0075 暂停态订阅策略编辑器](docs/executions/0075-paused-subscription-policy-editor/progress.zh.md)，已在 `aec3eac` 实现，并建立在 [0074 B 站耐久交付](docs/executions/0074-bili-backfill-incremental-delivery/progress.zh.md)之上。源码接入不等于真实平台验收通过。
 
 | 方面 | 当前范围 |
 | --- | --- |
 | 本地媒体库 | 归档和Emby/Jellyfin兼容目录独立于可选服务器连接；图文/图集sidecar不等于原生视频播放 |
-| 账户与作者 | MediaCrawler 原生 QR/Cookie 登录现在可显式认领给 Account，形成已验证、隔离的 saved-session profile；作者身份补全与所有真人平台结果仍待验收 |
-| 订阅与任务 | 已认领 Account profile 会进入既有历史/增量 scheduler 与 Job 级摄取；可恢复移除订阅、安全 Job 报告和面向用户的状态/下一步说明继续可用 |
-| 验证 | 当前精确测试/构建/打包、已修正失败与未跑环境见[0073 验证](docs/executions/0073-mediacrawler-session-adoption/verification.zh.md)，不继承旧测试数 |
-| 待实现/验收 | 重建并验收 Linux 部署、原生登录/profile 认领、作者采集、CDN 下载、历史完整性、后续增量及最终目录/NFO；历史 B 站采集失败仍未解决 |
+| 账户与作者 | MediaCrawler 原生 QR/Cookie 登录可显式认领给 Account，形成已验证、隔离的 saved-session profile；作者身份补全与所有真人平台结果仍待验收 |
+| 订阅与任务 | B 站已有耐久有界回填/对账/增量交付路径。全部 MediaCrawler 平台共用带修订栅栏的暂停态周期、上限、请求间隔和浏览器模式编辑；只有 B 站有采集范围，编辑不会启动或恢复任务 |
+| 验证 | 当前精确测试/构建/打包、B 站/XHS 渲染检查、已修正失败与未跑环境见[0075 验证](docs/executions/0075-paused-subscription-policy-editor/verification.zh.md)，不继承旧测试数 |
+| 待实现/验收 | 先冻结并实现 XHS 自身的有界分页与交付证据，再逐平台推进；重建并验收 Linux、原生登录/profile 认领、真人作者/CDN 流量及宿主最终目录/NFO。历史 B 站采集失败仍未解决 |
 
 逐执行细节、证据与准确命令都在 [`docs/executions/`](docs/README.zh.md)——本 README 有意不堆叠执行叙事。
 

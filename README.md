@@ -6,15 +6,15 @@
 
 ## Current status
 
-Current implementation and verification are tracked in [`docs/status.md`](docs/status.md); the latest increment is the [0073 native-session subscription bridge](docs/executions/0073-mediacrawler-session-adoption/progress.md), implemented in `165516a`. Source support is not live platform qualification.
+Current implementation and verification are tracked in [`docs/status.md`](docs/status.md); the latest increment is the [0075 paused subscription policy editor](docs/executions/0075-paused-subscription-policy-editor/progress.md), implemented in `aec3eac` on top of [0074's durable Bilibili delivery](docs/executions/0074-bili-backfill-incremental-delivery/progress.md). Source support is not live platform qualification.
 
 | Area | Current scope |
 | --- | --- |
 | Local media library | Archive and Emby/Jellyfin-compatible directories work independently of optional server connections; text/gallery sidecars are not a claim of native video playback |
-| Accounts and creators | Native MediaCrawler QR/Cookie login can now be explicitly adopted into an Account as a verified, isolated saved-session profile; creator identity enrichment and all live platform results still require qualification |
-| Subscriptions and operations | An adopted Account profile is used by the existing history/incremental scheduler and Job-scoped ingestion; reversible subscription removal, safe Job reports and user-oriented status/next actions remain available |
-| Verification | Exact current tests/build/packages, corrected failures and unrun environments are in [0073 verification](docs/executions/0073-mediacrawler-session-adoption/verification.md), not inherited historical counts |
-| Remaining implementation/qualification | Rebuild and qualify the Linux deployment, native logins/profile adoption, creator capture, CDN downloads, history completeness, later increments and final directory/NFO output; historical failed Bili canary remains unresolved |
+| Accounts and creators | Native MediaCrawler QR/Cookie login can be explicitly adopted into an Account as a verified, isolated saved-session profile; creator identity enrichment and all live platform results still require qualification |
+| Subscriptions and operations | Bilibili has a durable bounded backfill/reconciliation/incremental delivery path. All MediaCrawler platforms share a revision-fenced paused-state editor for interval, item cap, request delay and browser mode; Bilibili alone has capture scope. Editing never starts or resumes work |
+| Verification | Exact current tests/build/packages, rendered Bilibili/XHS checks, corrected failures and unrun environments are in [0075 verification](docs/executions/0075-paused-subscription-policy-editor/verification.md), not inherited historical counts |
+| Remaining implementation/qualification | Freeze and implement XHS-specific bounded pagination and delivery evidence, then continue platform by platform. Rebuild and qualify Linux, native logins/profile adoption, real creator/CDN traffic and final host directory/NFO output; the historical failed Bili canary remains unresolved |
 
 Per-execution detail, evidence and exact commands live in [`docs/executions/`](docs/README.md) — this README intentionally does not stack execution narratives.
 

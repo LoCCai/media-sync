@@ -2,9 +2,9 @@
 
 # 项目工作日志
 
-当前交付：[0073 原生 MediaCrawler 会话认领](executions/0073-mediacrawler-session-adoption/progress.zh.md)，实现提交为 `165516a`。操作者现在经鉴权的上游 `/crawler/` 登录，再把空闲 WebUI profile 显式认领给同平台 Account；经过验证的 Account 独立快照会进入既有 Subscription scheduler 与 Job 级摄取，不暴露 Cookie，也不导入共享控制台输出目录。Python unit 完整套件以 `4683 passed, 3 skipped, 1 warning` 通过，media-sync Web 完整套件 799 项通过。当前 Docker 镜像及在线七平台采集/下载仍待资格验收；线上已观察的许可证门表示 API 容器必须单独收到 `MEDIA_SYNC_MEDIACRAWLER_LICENSE_ACKNOWLEDGED=true`，supervisor CLI 参数不能替代。
+当前交付：[0075 暂停态订阅策略编辑器](executions/0075-paused-subscription-policy-editor/progress.zh.md)，实现提交为 `aec3eac`。未删除、已暂停且空闲的 MediaCrawler 订阅现共用带修订栅栏的周期、单次上限、请求间隔和浏览器模式修改；只有 B 站增加采集范围。事务保留断点、历史、交付证据、文件、`next_run_at`、全历史确认和不透明作者引用，且不会恢复或启动任务。Python 完整套件为 `7067 passed, 43 skipped, 108 warnings`，media-sync Web 完整套件为 `27 files / 818 tests`；B 站/XHS 渲染检查及全部静态/制品门通过。精确 Docker 镜像和全部真人平台结果仍未取得资格。
 
-下一执行已冻结但尚未开始：[0074 B 站投稿耐久回填转增量本地交付](executions/0074-bili-backfill-incremental-delivery/goal.zh.md)。它会复用 0073 Account 会话与既有精确交付链，每批最多 30 条并按节奏续跑，到达源末尾后先对账再发布有时点边界的基线状态，随后切换到重叠头部检查，并避免一条失败 Content 隐藏无关的已验证 Content。当前不声明任何 0074 实现或真人结果。
+此前的 [0074 B 站耐久交付](executions/0074-bili-backfill-incremental-delivery/progress.zh.md)已在 `9c81c4b` 实现：按节奏 ≤30 条回填、交付 receipt、源末尾/头部对账、重叠增量检查及按完整 Content 发布均通过离线门。下一步冻结 XHS 自身的有界作者笔记分页与交付证据。锁定版 XHS helper 当前从空的不透明 cursor 开始，并可能按单轮上限截断已取到的 30 条页面，因此其契约必须阻止页面尾部丢失并验证源末尾/对账，不能复制 B 站页码或时间戳假设。
 
 ## 历史功能检查点
 
@@ -35,7 +35,8 @@
 
 | ID | 里程碑 | 状态 | 提交 |
 | --- | --- | --- | --- |
-| 0074 | B 站投稿耐久回填 → 增量本地交付 | 仅 `PLANNED`：有界按节奏历史批次、源末尾/头部对账、有时点边界的基线状态、重叠增量及完整 Content 单元的部分发布。尚未开始代码、迁移、部署或真人金丝雀；[目标](executions/0074-bili-backfill-incremental-delivery/goal.zh.md)、[计划](executions/0074-bili-backfill-incremental-delivery/plan.zh.md) | 包含本行的计划提交 |
+| 0075 | 暂停态订阅策略编辑器 | 本地完成：共享应用服务、严格 REST/CLI、七平台通用 Web 控制与 B 站 scope 隔离、修订/空闲栅栏、精确保留及 B 站/XHS 渲染 QA；真实 PostgreSQL、Docker/Linux 和真人平台仍为 `NOT_RUN`；[验证](executions/0075-paused-subscription-policy-editor/verification.zh.md) | 计划 `32d1a3e`；实现 `aec3eac`；收尾为包含本行的提交 |
+| 0074 | B 站投稿耐久回填 → 增量本地交付 | 本地完成：有界按节奏历史批次、源末尾/头部对账、有时点边界的基线状态、重叠增量及完整 Content 部分发布通过确定性门；部署/真人金丝雀仍为 `NOT_RUN`；[验证](executions/0074-bili-backfill-incremental-delivery/verification.zh.md) | 计划 `3fa5139`；实现 `9c81c4b`；收尾 `7c4743a` |
 | 0073 | 原生 MediaCrawler 会话认领 | 用 `/crawler/` → 显式 Account 认领 → 既有 Subscription scheduler 取代重复登录控件。安全 profile 快照/探针/回滚、稳定公开错误、waiting-auth 恢复与精确 scheduler profile 证明均已离线通过；Linux/真人平台验收仍开放；[验证](executions/0073-mediacrawler-session-adoption/verification.zh.md) | 计划 `0b90aaa`；实现 `165516a`；收尾为包含本行的提交 |
 | 0072 | 锁定 MediaCrawler WebUI 的认证集成 | 历史第一批：直接挂载锁定上游控制台，提供固定运行时/输出/profile 根、认证 HTTP/WebSocket、CSRF、二维码 relay、原生媒体下载开关及有界进程/日志/Cookie 处理；当时尚未实现 Account 会话认领；[验证](executions/0072-mediacrawler-webui-integration/verification.zh.md) | 计划 `dcd3881`；实现 `ea64938`；收尾为包含本行的提交 |
 | 0071 | 剩余 runner 输出诊断 | 交付转向直接复用上游 WebUI 时暂停；缺失的 runner 覆盖及此前丢弃的输出仍未解决；[进展](executions/0071-remaining-runner-output-diagnostics/progress.zh.md) | 计划 `3802d98`；由 `dcd3881` 暂停 |

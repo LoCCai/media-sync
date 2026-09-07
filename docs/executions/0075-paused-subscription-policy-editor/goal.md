@@ -2,7 +2,7 @@
 
 # Goal: paused subscription policy editor
 
-Status: **frozen for implementation**. No deployment or live-platform action is part of this execution.
+Status: **implemented locally in `aec3eac`**. No deployment or live-platform action was part of this execution.
 
 Execution 0075 adds the operator-facing policy edit that follows the durable Bilibili delivery work in 0074. An existing MediaCrawler subscription can be paused, edited, reviewed, and resumed without deleting its checkpoints, delivery evidence, content, archive bytes, or published library tree.
 

@@ -2,7 +2,17 @@
 
 # 项目统一状态（单一事实来源）
 
-## 最新：B 站投稿耐久回填转增量交付（0074）
+## 最新：暂停态订阅策略编辑器（0075）
+
+[执行 0075](executions/0075-paused-subscription-policy-editor/progress.zh.md)已在 `aec3eac` 实现，为未删除、已暂停且空闲的 MediaCrawler 订阅增加一项封闭、带修订栅栏的策略修改。REST、CLI 与 Web 共用同一服务，覆盖同步周期、单次上限、上游请求间隔和浏览器模式；只有 B 站另有采集范围。XHS、抖音、快手、微博、贴吧和知乎使用四项通用控制，且不能接收 B 站 scope。
+
+短事务会预占 SQLite writer 或锁定精确 PostgreSQL 行，在事务内复核活动 Job/Run/operation 所有权并比较 `expected_schedule_revision`。真实变化只递增一次，精确 no-op 不递增。全历史确认、不透明作者引用、cursor、checkpoint/水位/时间/失败状态、`next_run_at`、扫描/交付证据、历史及媒体均保持不变；编辑器不会把暂停、恢复、取消、采集、下载或导出作为副作用。
+
+最终本地门禁通过：Python 专项 `40 passed, 2 skipped, 1 warning`；Python 完整套件 `7067 passed, 43 skipped, 108 warnings`；Web 完整套件 `27 files / 818 tests`；Svelte 检查/构建、Prettier、Ruff lint/format、156 个源码文件 strict mypy、compileall、62 包锁文件与两个上游检查，以及新 wheel/sdist 构建。合成 Chrome QA 在 1440×900 与 390×844 下通过 B 站和 XHS 保存，控制台警告/错误、页面异常及失败请求均为 0。准确命令和边界见[0075 验证](executions/0075-paused-subscription-policy-editor/verification.zh.md)。
+
+0075 的两项 PostgreSQL 用例已收集，但因没有配置真实 PostgreSQL URL 而跳过。Docker/Linux、真人账户/平台/CDN、宿主归档/媒体库/NFO、媒体服务器及 supervisor 行为全部仍为 `NOT_RUN`。下一实现设计从 XHS 自身的有界作者笔记分页、源末尾证据、对账和交付资格增量开始，不复制 B 站 cursor 语义。
+
+## 上阶段：B 站投稿耐久回填转增量交付（0074）
 
 [执行 0074](executions/0074-bili-backfill-incremental-delivery/progress.zh.md)已在 `9c81c4b` 完成本地实现，贯通一个精确 B 站投稿 Subscription。每个成功 Run 最多记录 30 个有序 Content 观察；只有封闭的来源 Run pipeline receipt 才能推进耐久 `backfill -> reconciling -> incremental` 状态。到达源末尾会重置有界 head lane，只有稳定且已交付的头部对账才发布 `baseline_snapshot_complete`。认证、作者、策略、scope 或锁定上游漂移会使不兼容证据失效。
 
@@ -150,27 +160,27 @@ B站和微博资料已离线实现，其他五平台资料、抖音/快手/贴�
 
 | 里程碑 | 状态 |
 | --- | --- |
-| 离线功能开发 | 0073 已在 `165516a` 实现：原生 WebUI 会话认领现在进入 Account 独立的既有 Subscription scheduler 与 Job 级摄取；Python/Web 完整套件及静态/制品门通过。共享控制台输出有意不作为摄取权威。此前平台形状仍冻结于 0039 边界，另有 0040/0044 运维面与 0050 Console v2 基础；0043（弹幕/字幕）仍延期 |
-| REST API + Web 控制台 | 0073 继续以经认证 `/crawler/` 作为唯一平台登录 UI，并增加严格的 `POST /api/v1/accounts/{account_id}/crawler-profile` 认领和固定安全 UI 操作提示。既有 Cookie session/CSRF 与精确 Host/Origin 浏览器 WebSocket 保护保持不变；真人浏览器/平台行为未取得资格，Legacy 是受保护迁移提示 |
+| 离线功能开发 | 0075 已在 `aec3eac` 实现：全部 MediaCrawler 平台共用暂停态通用策略编辑器，且 B 站 scope 严格隔离。它建立在 0074 已取得交付资格的 B 站回填/增量状态之上，不改写断点、历史或媒体。Python/Web 完整套件及静态/制品门通过；共享控制台输出仍有意不作为摄取权威 |
+| REST API + Web 控制台 | 0075 新增严格 `PUT /api/v1/subscriptions/{id}/policy`、对应 CLI 命令及带修订/session/弹窗栅栏的 Web 编辑器。既有认证 `/crawler/`、Cookie session/CSRF 和精确 Host/Origin WebSocket 保护保持不变；合成浏览器通过，真人平台行为未取得资格，Legacy 仍是受保护迁移提示 |
 | 操作者鉴权 + 播放证据 | 后端鉴权、不可变身份／账本、仅浏览器确认、有界 current/stale/unknown 投影及资格 v3 已实现。无精确当前证据时 playback 为 IMPLEMENTED/NOT_RUN；PASS 只适用于选定作者。Web 会话集成已实现且本地合成浏览器门禁已通过；确认 UI 仍待实现，真人播放为 NOT_RUN |
 | Docker 打包 | 0072 增加锁定上游 React 的隔离构建／复制阶段，真实锁定 React 源码已在临时副本成功构建。加固后生产依赖审计以 0 个漏洞通过；完整构建依赖图仍有 8 个仅开发／构建期发现。当前精确完整 Docker 构建／运行仍为 `NOT_RUN`。0041、0048–0050 历史候选镜像不能赋予当前工作树资格 |
 | 运维文档 / 安全审查 / 发布清单 | 已交付（0045、0046） |
-| 真人验收（最终门） | 仍开放——执行 0047 继续作为操作者门；0073 原生 QR/Cookie 登录、profile 认领及七平台采集/下载/CDN/历史/增量均为 `NOT_RUN` |
+| 真人验收（最终门） | 仍开放——执行 0047 继续作为操作者门；精确 0075 镜像、原生 QR/Cookie 登录、profile 认领及七平台采集/下载/CDN/历史/增量均为 `NOT_RUN` |
 
 ## 验证矩阵
 
 | 维度 | 状态 | 证据 / 阻塞 |
 | --- | --- | --- |
 | 实现（离线形状） | 七平台 15+ 冻结形状 | 执行 0013–0039 记录 |
-| 离线完整套件 | 当前 0073 Python unit 完整套件以 `4683 passed, 3 skipped, 1 warning in 587.55s` 通过；Web 完整套件以 `26 files / 799 tests` 通过。3 项跳过是既有 Windows/POSIX 资格分支，warning 是既有 Starlette TestClient/httpx 弃用提示 | [0073 验证](executions/0073-mediacrawler-session-adoption/verification.zh.md) |
-| API/控制台测试 | 0073 六文件认领/WebUI/API 联合 83 项通过，覆盖严格 schema、安全错误、profile 复制/探针/回滚和知乎兼容；另一个专项集成测试证明已认领 profile → scheduler → 规范化摄取。真人浏览器/平台使用仍未取得资格 | [0073 验证](executions/0073-mediacrawler-session-adoption/verification.zh.md) |
-| 静态与制品门 | 0073 全仓 Ruff lint/format 与 Prettier、154 个源码文件 strict mypy、两个锁定上游检查及 wheel/sdist 构建通过；收尾重新执行文档链接与 `git diff --check`。0072 加固后的生产依赖审计继续为 0，全构建依赖图仍有 8 个仅开发/构建期发现 | [0073 验证](executions/0073-mediacrawler-session-adoption/verification.zh.md) |
+| 离线完整套件 | 当前 0075 Python 完整套件以 `7067 passed, 43 skipped, 108 warnings in 1638.69s` 通过；Web 完整套件以 `27 files / 818 tests` 通过。跳过项均为明确记录的 OS/PostgreSQL/`uv` 资格分支，warning 为既有依赖弃用提示 | [0075 验证](executions/0075-paused-subscription-policy-editor/verification.zh.md) |
+| API/控制台测试 | 0075 策略/API/CLI/鉴权联合为 `40 passed, 2 skipped`；两项真实 PostgreSQL 策略检查仍为 `NOT_RUN`。合成 Chrome 证明 B 站与 XHS 保存后仍暂停、平台 scope 保持隔离，浏览器/页面/请求错误数均为 0 | [0075 验证](executions/0075-paused-subscription-policy-editor/verification.zh.md) |
+| 静态与制品门 | 0075 对 406 个文件的 Ruff lint/format、Web Prettier、156 个源码文件 strict mypy、compileall、62 包锁文件、两个上游及 wheel/sdist 构建通过；收尾重跑文档链接与 `git diff --check`。0072 加固后的生产依赖审计继续为 0，全构建依赖图仍有 8 个仅开发/构建期发现 | [0075 验证](executions/0075-paused-subscription-policy-editor/verification.zh.md) |
 | 锁定上游 WebUI 依赖审计 | 生产 `PASS`／全构建依赖图 `FAIL`（仅开发依赖残余）——安全补丁后的构建副本生产漏洞为 0，全依赖图为 8 条：6 high、2 low、0 moderate、0 critical；对应 package 不会复制进最终运行镜像。未加固上游原始基线的 11 条（8 high、1 moderate、2 low）仅作为历史发现保留；版本化 checkout／lockfile 保持不变 | [0072 验证](executions/0072-mediacrawler-webui-integration/verification.zh.md) |
-| Docker 镜像构建 | 独立的补丁后上游 React 构建继续通过，但本工作站没有 Docker，当前 0073 完整镜像构建/运行仍为 `NOT_RUN`；操作者线上许可证门观察不能确认部署 revision 或赋予镜像资格 | [0073 验证](executions/0073-mediacrawler-session-adoption/verification.zh.md)；执行 0050/0047 |
-| 容器就绪 / 重启持久性 / 备份恢复演练 | 当前线上 API 通过关闭的许可证门返回了响应，但修正配置后的 `/crawler/`、精确 0073 身份、就绪与持久性均未经验证；重启和备份恢复继续为 `NOT_RUN`。旧镜像深度预检仅为历史 `PASS` | [0073 验证](executions/0073-mediacrawler-session-adoption/verification.zh.md)；执行 0047；docs/operations.zh.md |
-| 真人登录（任一平台） | 0073 真人原生 QR/Cookie 登录与 Account profile 认领均为 `NOT_RUN`；离线 saved-session 探针不等于登录资格。此前 B 站成功观察与其他失败保留为历史，新证明/复用仍开放 | [0073 验证](executions/0073-mediacrawler-session-adoption/verification.zh.md)；[历史 B 站跟进](executions/0055-operator-auth-playback-evidence/bili-success-followup/verification.zh.md) |
-| 真人抓取 / 下载 / 增量性 | 0073 七平台真人作者采集/下载/CDN/历史完整性及后续增量均为 `NOT_RUN`。历史首次 B 站金丝雀仍为 FAILED、零内容及 schema_invalid Job/running Run | [0073 验证](executions/0073-mediacrawler-session-adoption/verification.zh.md)；[历史金丝雀](executions/0055-operator-auth-playback-evidence/bili-success-followup/verification.zh.md) |
-| 原生 WebUI 会话 → Account → Subscription scheduler/摄取/NFO | 0073 的 profile 认领与精确 scheduler 摄取为 `IMPLEMENTED / OFFLINE PASS`；既有交付/NFO 回归通过。共享控制台输出有意不导入；真人端到端平台字节与最终目录检查仍为 `NOT_RUN` | [0073 进展](executions/0073-mediacrawler-session-adoption/progress.zh.md) |
+| Docker 镜像构建 | 独立的补丁后上游 React 构建继续通过，但本工作站没有 Docker，精确 0075 完整镜像构建/运行仍为 `NOT_RUN`；操作者历史线上门观察不能确认本 revision 或赋予镜像资格 | [0075 验证](executions/0075-paused-subscription-policy-editor/verification.zh.md)；执行 0050/0047 |
+| 容器就绪 / 重启持久性 / 备份恢复演练 | 历史线上 API 曾通过关闭的许可证门返回响应，但精确 0075 身份、就绪与持久性未经验证；重启和备份恢复继续为 `NOT_RUN`。旧镜像深度预检仅为历史 `PASS` | [0075 验证](executions/0075-paused-subscription-policy-editor/verification.zh.md)；执行 0047；docs/operations.zh.md |
+| 真人登录（任一平台） | 精确 0075 revision 的真人原生 QR/Cookie 登录与 Account profile 认领仍为 `NOT_RUN`；离线 saved-session 探针不等于登录资格。此前 B 站成功观察与其他失败保留为历史，新证明/复用仍开放 | [0075 验证](executions/0075-paused-subscription-policy-editor/verification.zh.md)；[历史 B 站跟进](executions/0055-operator-auth-playback-evidence/bili-success-followup/verification.zh.md) |
+| 真人抓取 / 下载 / 增量性 | 七平台真人作者采集/下载/CDN/历史完整性及后续增量仍为 `NOT_RUN`。0074 只对 B 站确定性路径取得资格；XHS 及其他平台仍需各自源码驱动的耐久契约。历史首次 B 站金丝雀仍为失败 | [0074 验证](executions/0074-bili-backfill-incremental-delivery/verification.zh.md)；[0075 验证](executions/0075-paused-subscription-policy-editor/verification.zh.md) |
+| 原生 WebUI 会话 → Account → Subscription scheduler/摄取/NFO | `IMPLEMENTED / OFFLINE PASS`：0073 提供 profile 认领，0074 增加 B 站交付资格回填/增量发布，0075 增加安全暂停态策略编辑。共享控制台输出有意不导入；真人端到端平台字节与最终目录检查仍为 `NOT_RUN` | [0075 进展](executions/0075-paused-subscription-policy-editor/progress.zh.md) |
 | 交互式 `/crawler/` 输出自动导入 | `NOT_IMPLEMENTED / 有意分离`——`/data/mediacrawler/webui-output` 属于临时控制台运行，不是可信 Job receipt。定时摄取改从绑定 Account 的 Subscription 及其隔离 profile 启动 | [0073 目标](executions/0073-mediacrawler-session-adoption/goal.zh.md) |
 | 真实 Emby/Jellyfin 连接、Library 发现与定向刷新接受 | `NOT_RUN`——0054-A 已实现，但未使用获授权真实服务器 | 执行 0054 与 0047 |
 | Provider/path 项目查找与刷新后项目观察 | `IMPLEMENTED / NOT_RUN`——本地/mock 门禁通过，但未使用获授权真实 Emby/Jellyfin 服务器 | 执行 0054-B 验证 |
@@ -182,10 +192,10 @@ B站和微博资料已离线实现，其他五平台资料、抖音/快手/贴�
 
 ## 发布阻塞项（v0.1.0-rc1）
 
-0073 原生会话桥接已在 `165516a` 实现。专项离线检查、Python 完整 unit 套件（`4683 passed, 3 skipped, 1 warning`）、Web 完整套件（`26 files / 799 tests`）、静态/制品门及继承的加固后 0 漏洞生产依赖审计通过。当前线上 API 仅通过关闭的许可证门被访问；精确镜像身份、修正配置后的 `/crawler/`、profile 认领及真人流水线均未取得资格。WebUI 全构建依赖图仍有 8 个仅开发/构建期发现。
+0075 暂停态策略编辑器已在 `aec3eac` 实现，建立在 0074 已取得交付资格的 B 站路径之上。Python/Web 专项与完整套件、合成浏览器渲染交互、静态/制品门及继承的加固后 0 漏洞生产依赖审计通过。精确镜像、修正配置后的 `/crawler/`、profile 认领及真人流水线均未取得资格。WebUI 全构建依赖图仍有 8 个仅开发/构建期发现。
 
 1. P0：当前精确镜像的 Linux 基线未完成（运行用户 secret 可读性、迁移边界、宿主机端口、`/crawler/` 启动、重启持久性、备份恢复与进程基线）；旧镜像通过不能替代。
 2. 发布前跟踪、缓解或显式接受锁定上游 WebUI 全构建依赖图的 8 个仅开发／构建期发现。生产审计为零；未加固上游原始基线的 11 条仅作为历史发现。
-3. 0073 真人原生登录/profile 认领及七平台采集/下载/CDN/历史/增量行均为 `NOT_RUN`；任何 Supported 声明前须运行受控金丝雀。
+3. 精确 0075 的真人原生登录/profile 认领及七平台采集/下载/CDN/历史/增量行均为 `NOT_RUN`；任何 Supported 声明前须运行受控金丝雀，通用策略编辑不等于平台交付资格。
 
 0.1 最低发布条件：至少两个金丝雀平台达到 **Supported**（登录、同步、下载、真实增量、Emby 重扫 + 抽样播放），其余平台如实分级（Experimental / Metadata-only / Blocked External / Unsupported），且项目自我表述为“七平台适配框架；实际资格状态见状态矩阵”，而非“支持七个平台”。
