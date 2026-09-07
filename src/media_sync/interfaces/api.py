@@ -60,12 +60,15 @@ from media_sync.application import (
     OperationPayloadError,
     OperationSubmission,
     SubscriptionDraft,
+    SubscriptionPolicyUpdate,
+    SubscriptionPolicyUpdateError,
     WorkbenchError,
     WorkbenchService,
     collect_account_login_preflight,
     operation_idempotency_key_digest,
     operation_request_fingerprint,
     parse_single_byte_range,
+    update_subscription_policy,
 )
 from media_sync.application.authentication import (
     AccountLoginError,
@@ -676,6 +679,17 @@ class BiliScopeUpdate(BaseModel):
     scope: Literal["uploads", "dynamics", "both"]
     max_items: int = Field(ge=1, le=1_000, strict=True)
     expected_schedule_revision: int = Field(ge=0, strict=True)
+
+
+class SubscriptionPolicyUpdateBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    interval_seconds: int = Field(ge=60, le=2_147_483_647, strict=True)
+    max_items: int = Field(ge=1, le=1_000, strict=True)
+    request_delay_seconds: float = Field(gt=0, le=MAX_REQUEST_DELAY_SECONDS, strict=True)
+    headless: bool = Field(strict=True)
+    expected_schedule_revision: int = Field(ge=0, le=2_147_483_647, strict=True)
+    bili_scope: Literal["uploads", "dynamics", "both"] | None = None
 
 
 class SubscriptionDeliveryStart(BaseModel):
@@ -3190,6 +3204,39 @@ def create_api_app(
             )
         except (ValueError, RepositoryError):
             raise HTTPException(status_code=409, detail="bili_scope_update_rejected") from None
+        except SQLAlchemyError:
+            raise _bad_request("database_operation_failed") from None
+        finally:
+            database.dispose()
+
+    @app.put("/api/v1/subscriptions/{subscription_id}/policy")
+    def update_subscription_policy_route(
+        subscription_id: UUID,
+        body: SubscriptionPolicyUpdateBody,
+    ) -> dict[str, object]:
+        database = _database()
+        try:
+            return update_subscription_policy(
+                database,
+                subscription_id,
+                SubscriptionPolicyUpdate(
+                    interval_seconds=body.interval_seconds,
+                    max_items=body.max_items,
+                    request_delay_seconds=body.request_delay_seconds,
+                    headless=body.headless,
+                    expected_schedule_revision=body.expected_schedule_revision,
+                    bili_scope=body.bili_scope,
+                ),
+            ).to_payload()
+        except SubscriptionPolicyUpdateError as error:
+            status_code = (
+                404
+                if error.code == "subscription_policy_not_found"
+                else 400
+                if error.code == "subscription_policy_options_invalid"
+                else 409
+            )
+            raise HTTPException(status_code=status_code, detail=error.code) from None
         except SQLAlchemyError:
             raise _bad_request("database_operation_failed") from None
         finally:

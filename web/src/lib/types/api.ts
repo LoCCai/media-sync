@@ -191,6 +191,22 @@ export interface SubscriptionLifecycleResult {
   media_preserved: true;
 }
 
+export interface SubscriptionPolicyUpdateResult {
+  id: string;
+  platform: Platform;
+  status: 'paused';
+  enabled: false;
+  interval_seconds: number;
+  max_items: number;
+  schedule_revision: number;
+  checkpoint_revision: number;
+  next_run_at: string | null;
+  policy_summary: SubscriptionPolicySummary;
+  changed: boolean;
+  checkpoint_preserved: true;
+  media_preserved: true;
+}
+
 export interface SubscriptionDeliveryStart {
   expected_schedule_revision: number;
   global_capacity: number;

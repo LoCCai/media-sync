@@ -43,10 +43,13 @@ from media_sync.application import (
     SubscriptionDraft,
     SubscriptionPipelineError,
     SubscriptionPipelineExecutor,
+    SubscriptionPolicyUpdate,
+    SubscriptionPolicyUpdateError,
     SyncRequest,
     SyncService,
     WorkbenchError,
     WorkbenchService,
+    update_subscription_policy,
 )
 from media_sync.application.authentication import (
     AccountLoginError,
@@ -1753,6 +1756,65 @@ def list_subscriptions(
             for subscription in SubscriptionRepository(session).list(deleted=deleted)
         ]
     _emit_list(records, json_output=json_output, label="subscriptions")
+
+
+@subscription_app.command("policy")
+def set_subscription_policy(
+    subscription_id: Annotated[UUID, typer.Option(help="Paused idle MediaCrawler subscription UUID.")],
+    interval_seconds: Annotated[
+        int,
+        typer.Option(min=60, max=2_147_483_647, help="Polling interval in seconds."),
+    ],
+    max_items: Annotated[int, typer.Option(min=1, max=1_000, help="Maximum items per run.")],
+    request_delay_seconds: Annotated[
+        float,
+        typer.Option(
+            min=0.001,
+            max=MAX_REQUEST_DELAY_SECONDS,
+            help="Positive MediaCrawler upstream crawl-delay setting.",
+        ),
+    ],
+    browser_mode: Annotated[
+        str,
+        typer.Option("--browser-mode", help="Required browser mode: headless or headed."),
+    ],
+    expected_schedule_revision: Annotated[
+        int,
+        typer.Option(min=0, max=2_147_483_647, help="Exact current schedule revision."),
+    ],
+    bili_scope: Annotated[
+        str | None,
+        typer.Option(help="Optional Bili uploads, dynamics or both scope."),
+    ] = None,
+    json_output: Annotated[bool, typer.Option("--json", help="Emit machine-readable JSON.")] = False,
+) -> None:
+    """Atomically edit a paused policy without resuming work or changing checkpoints."""
+
+    if browser_mode not in {"headless", "headed"}:
+        raise typer.BadParameter("browser_mode must be headless or headed")
+    database: Database | None = None
+    try:
+        database = Database(get_settings().resolved_database_url)
+        result = update_subscription_policy(
+            database,
+            subscription_id,
+            SubscriptionPolicyUpdate(
+                interval_seconds=interval_seconds,
+                max_items=max_items,
+                request_delay_seconds=request_delay_seconds,
+                headless=browser_mode == "headless",
+                expected_schedule_revision=expected_schedule_revision,
+                bili_scope=bili_scope,
+            ),
+        )
+    except SubscriptionPolicyUpdateError as error:
+        raise typer.BadParameter(f"{error.code}: policy was not changed") from None
+    except SQLAlchemyError:
+        raise typer.BadParameter("subscription policy database operation failed safely") from None
+    finally:
+        if database is not None:
+            database.dispose()
+    _emit_record(result.to_payload(), json_output=json_output, label="Subscription policy")
 
 
 @subscription_app.command("bili-scope")

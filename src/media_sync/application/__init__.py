@@ -154,6 +154,15 @@ from media_sync.application.qualifications import (
     QualificationError,
     QualificationService,
 )
+from media_sync.application.subscription_policy_update import (
+    MAX_SUBSCRIPTION_INTERVAL_SECONDS,
+    MAX_SUBSCRIPTION_SCHEDULE_REVISION,
+    SUBSCRIPTION_POLICY_UPDATE_ERROR_CODES,
+    SubscriptionPolicyUpdate,
+    SubscriptionPolicyUpdateError,
+    SubscriptionPolicyUpdateResult,
+    update_subscription_policy,
+)
 from media_sync.application.sync import SyncRequest, SyncResult, SyncService
 from media_sync.application.workbench import (
     FAKE_ADAPTER,
@@ -194,6 +203,8 @@ __all__ = [
     "MAX_OPERATION_PAYLOAD_DEPTH",
     "MAX_OPERATION_REQUEST_IDENTITY_BYTES",
     "MAX_OPERATION_RESULT_BYTES",
+    "MAX_SUBSCRIPTION_INTERVAL_SECONDS",
+    "MAX_SUBSCRIPTION_SCHEDULE_REVISION",
     "MEDIACRAWLER_ADAPTER",
     "MIN_IDEMPOTENCY_KEY_LENGTH",
     "OPERATION_EVENT_CODES",
@@ -202,6 +213,7 @@ __all__ = [
     "PROFILE_ADOPTION_ERROR_CODES",
     "QUALIFICATION_SCHEMA_VERSION",
     "SAFE_ARCHIVE_MEDIA_TYPES",
+    "SUBSCRIPTION_POLICY_UPDATE_ERROR_CODES",
     "SUPPORTED_WORKBENCH_ADAPTERS",
     "WORKBENCH_ERROR_CODES",
     "AccountDraft",
@@ -289,6 +301,9 @@ __all__ = [
     "SubscriptionPipelineRequest",
     "SubscriptionPipelineService",
     "SubscriptionPolicySummary",
+    "SubscriptionPolicyUpdate",
+    "SubscriptionPolicyUpdateError",
+    "SubscriptionPolicyUpdateResult",
     "SubscriptionSelectionPreflight",
     "SubscriptionWorkbenchResult",
     "SubscriptionWorkbenchService",
@@ -312,4 +327,5 @@ __all__ = [
     "operation_worker_id",
     "parse_single_byte_range",
     "safe_archive_media_type",
+    "update_subscription_policy",
 ]

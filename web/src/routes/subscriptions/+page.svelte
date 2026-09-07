@@ -9,7 +9,9 @@
     Plus,
     RefreshCw,
     RotateCw,
+    Save,
     ShieldAlert,
+    SlidersHorizontal,
     Trash2,
     Undo2,
     UsersRound
@@ -33,6 +35,7 @@
     Subscription,
     SubscriptionDetail,
     SubscriptionLifecycleResult,
+    SubscriptionPolicyUpdateResult,
     SubscriptionPreview
   } from '$lib/types/api';
   import { formatDate, formatDateLong, intervalLabel, PLATFORM_META, shortId } from '$lib/utils/format';
@@ -72,6 +75,14 @@
     type SubscriptionFailure,
     type SubscriptionLifecycleAction
   } from '$lib/utils/subscription-lifecycle';
+  import {
+    subscriptionPolicyChanged,
+    subscriptionPolicyDraft,
+    subscriptionPolicyRequest,
+    SubscriptionPolicyRequestGate,
+    type SubscriptionPolicyDraft,
+    type SubscriptionPolicyFailure
+  } from '$lib/utils/subscription-policy';
   import {
     EXACT_DELIVERY_NOTICE,
     initialSubscriptionDeliveryView,
@@ -120,6 +131,7 @@
   const previewRequests = new SubscriptionRequestGate();
   const createRequests = new SubscriptionRequestGate();
   const actionRequests = new SubscriptionRequestGate();
+  const policyRequests = new SubscriptionPolicyRequestGate();
   const deliveryDetailRequests = new SubscriptionRequestGate();
   let wizardStep: 1 | 2 | 3 = 1;
 
@@ -130,8 +142,10 @@
   let intervalSeconds = 21_600;
   let maxItems = 30;
   let biliScope: 'uploads' | 'dynamics' | 'both' = 'uploads';
-  let editedScope: 'uploads' | 'dynamics' | 'both' = 'uploads';
-  let scopeSaving = false;
+  let policyDraft: SubscriptionPolicyDraft | null = null;
+  let policySaving = false;
+  let policyFailure: SubscriptionPolicyFailure | null = null;
+  let policySaved = false;
   let requestDelaySeconds = 5;
   let fullHistory = false;
   let headless = true;
@@ -192,7 +206,13 @@
     detail?.platform === 'bili' && detail.bili_delivery
       ? safeBiliDeliveryProgressCard(detail.bili_delivery)
       : null;
-  $: if (!detailOpen) detailRequests.cancel();
+  $: policyRequestPayload = detail ? subscriptionPolicyRequest(detail, policyDraft) : null;
+  $: policyChanged = detail ? subscriptionPolicyChanged(detail, policyDraft) : false;
+  $: if (!detailOpen) {
+    detailRequests.cancel();
+    policyRequests.cancel();
+    policySaving = false;
+  }
   $: if (!deliveryOpen) deliveryDetailRequests.cancel();
   $: if (!addOpen) {
     previewRequests.cancel();
@@ -237,27 +257,85 @@
     };
   }
 
-  async function saveBiliScope(): Promise<void> {
-    if (!detail || scopeSaving || detail.enabled || isRemovedSubscription(detail)) return;
+  function policyScopeChanged(event: Event): void {
+    policyFailure = null;
+    policySaved = false;
+    if (!policyDraft) return;
+    const value = (event.currentTarget as HTMLSelectElement).value;
+    if (value !== 'uploads' && value !== 'dynamics' && value !== 'both') return;
+    policyDraft = {
+      ...policyDraft,
+      bili_scope: value,
+      max_items: value !== 'uploads' && policyDraft.max_items < 2 ? 2 : policyDraft.max_items
+    };
+  }
+
+  function policyDraftChanged(): void {
+    policyFailure = null;
+    policySaved = false;
+  }
+
+  function policyIntervalDraftLabel(value: number): string {
+    return Number.isSafeInteger(value) && value >= 60
+      ? `当前草稿为每 ${intervalLabel(value)}。`
+      : '请输入至少 60 秒的整数。';
+  }
+
+  function refreshPolicyDetail(): void {
+    if (detail) void showDetail(detail);
+  }
+
+  async function saveSubscriptionPolicy(): Promise<void> {
+    if (!detail || !policyRequestPayload || policySaving || isRemovedSubscription(detail)) return;
     const target = detail;
-    scopeSaving = true;
-    try {
-      await api(`/api/v1/subscriptions/${target.id}/bili-scope`, {
-        method: 'POST',
-        body: JSON.stringify({
-          scope: editedScope,
-          max_items: Math.max(editedScope === 'uploads' ? 1 : 2, target.max_items),
-          expected_schedule_revision: target.schedule.schedule_revision
-        })
-      });
-      if (detail?.id === target.id)
-        detail = await api<SubscriptionDetail>(`/api/v1/subscriptions/${target.id}`);
-      toast('采集范围已保存，仍保持暂停；断点和已有媒体保留。', 'success');
-    } catch {
-      toast('未修改：请保持订阅暂停、结束待办采集任务，并重新打开详情后再试。', 'danger');
-    } finally {
-      scopeSaving = false;
+    const payload = policyRequestPayload;
+    const requestedEpoch = $operatorAuth.epoch;
+    policySaving = true;
+    policyFailure = null;
+    const result = await policyRequests.run(
+      (signal) =>
+        api<SubscriptionPolicyUpdateResult>(`/api/v1/subscriptions/${target.id}/policy`, {
+          method: 'PUT',
+          body: JSON.stringify(payload),
+          signal
+        }),
+      { subscriptionId: target.id, platform: target.platform, payload }
+    );
+    if (
+      destroyed ||
+      !detailOpen ||
+      detail?.id !== target.id ||
+      requestedEpoch !== $operatorAuth.epoch ||
+      result.kind === 'superseded'
+    ) {
+      policySaving = false;
+      return;
     }
+    policySaving = false;
+    if (result.kind === 'failed') {
+      policyFailure = result.failure;
+      return;
+    }
+    const saved = result.value;
+    detail = {
+      ...target,
+      enabled: false,
+      interval_seconds: saved.interval_seconds,
+      max_items: saved.max_items,
+      next_run_at: saved.next_run_at,
+      policy_summary: saved.policy_summary,
+      schedule: {
+        ...target.schedule,
+        status: 'paused',
+        interval_seconds: saved.interval_seconds,
+        next_run_at: saved.next_run_at,
+        schedule_revision: saved.schedule_revision
+      }
+    };
+    policyDraft = subscriptionPolicyDraft(detail);
+    policySaved = true;
+    toast('同步策略已保存，订阅仍保持暂停；断点、历史与已有媒体均已保留。', 'success');
+    await load();
   }
 
   async function load(): Promise<void> {
@@ -578,6 +656,11 @@
     detailLoading = true;
     detail = null;
     detailError = '';
+    policyRequests.cancel();
+    policyDraft = null;
+    policySaving = false;
+    policyFailure = null;
+    policySaved = false;
     const result = await detailRequests.run(
       (signal) => api<SubscriptionDetail>(`/api/v1/subscriptions/${requestedId}`, { signal }),
       (value) =>
@@ -591,7 +674,7 @@
     if (result.kind === 'failed') detailError = result.failure.message;
     else {
       detail = result.value;
-      editedScope = detail.policy_summary?.bili_scope ?? 'uploads';
+      policyDraft = subscriptionPolicyDraft(detail);
     }
   }
 
@@ -673,6 +756,7 @@
       previewRequests,
       createRequests,
       actionRequests,
+      policyRequests,
       deliveryDetailRequests
     ])
       requests.cancel();
@@ -1385,6 +1469,7 @@
   bind:open={detailOpen}
   title={detail ? subscriptionCreatorLabel(detail) : '订阅详情'}
   description={detail ? `${PLATFORM_META[detail.platform].name} · ${shortId(detail.id)}` : '正在读取…'}
+  dismissible={!policySaving}
   wide
 >
   {#if detailLoading}
@@ -1442,28 +1527,197 @@
       </div>
     </dl>
 
-    {#if detail.platform === 'bili' && !isRemovedSubscription(detail)}
-      <section class="safe-summary">
-        <h3>修改采集范围</h3>
-        <p class="field-help">
-          先暂停订阅并结束待办采集任务。保留两种来源的断点，不删除媒体；动态上限不足 2 时调整为
-          2。保存后不会自动恢复。
-        </p>
-        <select
-          aria-label="新的B站采集范围"
-          class="select"
-          bind:value={editedScope}
-          disabled={detail.enabled || scopeSaving}
+    <section class="policy-editor" aria-labelledby="subscription-policy-editor-title">
+      <div class="policy-editor-heading">
+        <div class="policy-editor-title">
+          <span class="policy-editor-icon"><SlidersHorizontal size={17} /></span>
+          <div>
+            <span class="eyebrow">暂停态编辑</span>
+            <h3 id="subscription-policy-editor-title">同步策略</h3>
+          </div>
+        </div>
+        <StatusBadge
+          status={isRemovedSubscription(detail) ? 'cancelled' : detail.enabled ? 'enabled' : 'paused'}
+          label={isRemovedSubscription(detail) ? '已删除' : detail.enabled ? '先暂停后编辑' : '可编辑'}
+        />
+      </div>
+
+      {#if !policyDraft}
+        <div class="notice danger policy-editor-notice" role="alert">
+          <ShieldAlert size={17} />
+          <div>
+            <strong class="notice-title">无法安全读取当前策略</strong>
+            详情中的策略字段不完整或不受支持，本页不会猜测默认值，也不会发送修改。
+          </div>
+        </div>
+      {:else}
+        {#if isRemovedSubscription(detail)}
+          <div class="notice warning policy-editor-notice">
+            <ShieldAlert size={17} />
+            <div>
+              <strong class="notice-title">已删除订阅不能编辑</strong>
+              需要时先恢复订阅；恢复后仍保持暂停，再重新打开详情修改策略。
+            </div>
+          </div>
+        {:else if detail.enabled}
+          <div class="notice warning policy-editor-notice">
+            <Pause size={17} />
+            <div>
+              <strong class="notice-title">先暂停订阅并等待任务结束</strong>
+              编辑器不会替你暂停、取消任务或终止正在运行的采集。暂停后请重新打开详情取得最新修订。
+            </div>
+          </div>
+        {:else if policySaved}
+          <div class="notice success policy-editor-notice" role="status" aria-live="polite">
+            <CheckCircle2 size={17} />
+            <div>
+              <strong class="notice-title">策略已保存，订阅仍保持暂停</strong>
+              断点、历史记录和已有媒体均已保留；本次没有自动采集、下载或导出。
+            </div>
+          </div>
+        {:else}
+          <div class="notice policy-editor-notice">
+            <Pause size={17} />
+            <div>
+              <strong class="notice-title">保存后仍保持暂停</strong>
+              修改会作为一个整体提交；不会自动恢复订阅，也不会启动采集、下载或导出。
+            </div>
+          </div>
+        {/if}
+
+        <fieldset
+          class="policy-editor-fields"
+          disabled={detail.enabled || isRemovedSubscription(detail) || policySaving}
         >
-          <option value="uploads">仅投稿</option><option value="dynamics">仅动态</option><option value="both"
-            >投稿与动态</option
+          <div class="form-grid policy-editor-grid">
+            <div class="field">
+              <label for="policy-interval-seconds">采集周期（秒）</label>
+              <input
+                id="policy-interval-seconds"
+                class="input"
+                type="number"
+                inputmode="numeric"
+                min="60"
+                max="2147483647"
+                step="1"
+                bind:value={policyDraft.interval_seconds}
+                on:input={policyDraftChanged}
+              />
+              <span class="field-help">{policyIntervalDraftLabel(policyDraft.interval_seconds)}</span>
+            </div>
+            <div class="field">
+              <label for="policy-max-items">单次入库上限</label>
+              <input
+                id="policy-max-items"
+                class="input"
+                type="number"
+                inputmode="numeric"
+                min={detail.platform === 'bili' && policyDraft.bili_scope !== 'uploads' ? 2 : 1}
+                max="1000"
+                step="1"
+                bind:value={policyDraft.max_items}
+                on:input={policyDraftChanged}
+              />
+              <span class="field-help">每轮最多 1–1000 条；不是作者历史完整度声明。</span>
+            </div>
+            <div class="field">
+              <label for="policy-request-delay">上游请求间隔（秒）</label>
+              <input
+                id="policy-request-delay"
+                class="input"
+                type="number"
+                inputmode="decimal"
+                min="0.1"
+                max="300"
+                step="0.1"
+                bind:value={policyDraft.request_delay_seconds}
+                on:input={policyDraftChanged}
+              />
+              <span class="field-help">必须大于 0 且不超过 300 秒。</span>
+            </div>
+            <div class="field">
+              <label for="policy-browser-mode">浏览器模式</label>
+              <select
+                id="policy-browser-mode"
+                class="select"
+                bind:value={policyDraft.headless}
+                on:change={policyDraftChanged}
+              >
+                <option value={true}>后台运行（Headless）</option>
+                <option value={false}>可见浏览器</option>
+              </select>
+              <span class="field-help">只影响下一次运行，不会在保存时启动浏览器。</span>
+            </div>
+            {#if detail.platform === 'bili'}
+              <div class="field wide">
+                <label for="policy-bili-scope">B站采集范围</label>
+                <select
+                  id="policy-bili-scope"
+                  class="select"
+                  value={policyDraft.bili_scope ?? 'uploads'}
+                  on:change={policyScopeChanged}
+                >
+                  <option value="uploads">仅投稿</option>
+                  <option value="dynamics">仅动态（文字、图集及自有视频引用）</option>
+                  <option value="both">投稿与动态</option>
+                </select>
+                <span class="field-help"> 动态或两者要求单次上限至少为 2；不同来源继续使用各自断点。 </span>
+              </div>
+            {/if}
+          </div>
+        </fieldset>
+
+        <div class="policy-preservation" aria-label="策略编辑保留边界">
+          <span><CheckCircle2 size={14} />断点保留</span>
+          <span><CheckCircle2 size={14} />历史保留</span>
+          <span><CheckCircle2 size={14} />媒体保留</span>
+          <span><CheckCircle2 size={14} />下次运行时间不改写</span>
+        </div>
+
+        {#if policyFailure}
+          <div class="notice danger policy-editor-notice" role="alert">
+            <ShieldAlert size={17} />
+            <div>
+              <strong class="notice-title">策略未修改</strong>
+              {policyFailure.message}
+              <div class="policy-failure-actions">
+                {#if policyFailure.destination === 'jobs'}
+                  <a class="text-link" href="/jobs">前往任务页</a>
+                {:else if policyFailure.destination === 'detail'}
+                  <button class="button ghost small" type="button" on:click={refreshPolicyDetail}>
+                    重新读取详情
+                  </button>
+                {:else if policyFailure.destination === 'deleted'}
+                  <button class="button ghost small" type="button" on:click={() => switchView(true)}>
+                    查看已删除订阅
+                  </button>
+                {/if}
+              </div>
+            </div>
+          </div>
+        {/if}
+
+        <div class="policy-editor-actions">
+          <span>
+            {policyRequestPayload
+              ? '有未保存的策略修改'
+              : policyChanged && !detail.enabled && !isRemovedSubscription(detail)
+                ? '请检查字段范围后再保存'
+                : '修改任一字段后即可保存'}
+          </span>
+          <button
+            class="button"
+            type="button"
+            on:click={saveSubscriptionPolicy}
+            disabled={!policyRequestPayload || policySaving}
           >
-        </select>
-        <button class="btn secondary" disabled={detail.enabled || scopeSaving} on:click={saveBiliScope}
-          >保存范围（保持暂停）</button
-        >
-      </section>
-    {/if}
+            {#if policySaving}<RefreshCw class="spin" size={15} />正在确认结果…{:else}<Save
+                size={15}
+              />保存策略（保持暂停）{/if}
+          </button>
+        </div>
+      {/if}
+    </section>
     <div class="safe-summary-grid">
       {#if detail.policy_summary}
         <section class="safe-summary">
@@ -1581,7 +1835,12 @@
   {/if}
   <svelte:fragment slot="footer">
     <a class="button secondary" href="/jobs">查看任务与执行结果</a>
-    <button class="button secondary" type="button" on:click={() => (detailOpen = false)}>关闭</button>
+    <button
+      class="button secondary"
+      type="button"
+      disabled={policySaving}
+      on:click={() => (detailOpen = false)}>关闭</button
+    >
   </svelte:fragment>
 </Modal>
 
@@ -2198,6 +2457,120 @@
     font-size: 12px;
   }
 
+  .policy-editor {
+    margin-top: 18px;
+    border: 1px solid #cbdaf1;
+    border-radius: 12px;
+    padding: 16px;
+    background: linear-gradient(145deg, #fbfdff 0%, #f2f6fd 100%);
+    box-shadow: inset 3px 0 0 #7ea6ed;
+  }
+
+  .policy-editor-heading,
+  .policy-editor-title,
+  .policy-editor-actions,
+  .policy-failure-actions,
+  .policy-preservation {
+    display: flex;
+    align-items: center;
+  }
+
+  .policy-editor-heading {
+    justify-content: space-between;
+    gap: 14px;
+  }
+
+  .policy-editor-title {
+    min-width: 0;
+    gap: 10px;
+  }
+
+  .policy-editor-title h3 {
+    margin: 2px 0 0;
+    color: var(--text);
+    font-size: 15px;
+    font-weight: 650;
+  }
+
+  .policy-editor-icon {
+    display: inline-flex;
+    width: 34px;
+    height: 34px;
+    flex: 0 0 auto;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid #c8daf8;
+    border-radius: 9px;
+    background: #eaf2ff;
+    color: #356dcc;
+  }
+
+  .policy-editor-notice,
+  .policy-editor-fields {
+    margin-top: 14px;
+  }
+
+  .policy-editor-fields {
+    min-width: 0;
+    border: 0;
+    padding: 0;
+  }
+
+  .policy-editor-fields:disabled {
+    opacity: 0.62;
+  }
+
+  .policy-editor-grid {
+    gap: 13px;
+  }
+
+  .policy-editor-grid .field-help {
+    margin: 0;
+    line-height: 1.5;
+  }
+
+  .policy-preservation {
+    gap: 7px;
+    margin-top: 14px;
+    flex-wrap: wrap;
+  }
+
+  .policy-preservation span {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    border: 1px solid #ccebd6;
+    border-radius: 999px;
+    padding: 4px 8px;
+    background: #f1fbf4;
+    color: #247044;
+    font-size: 10.5px;
+    font-weight: 560;
+  }
+
+  .policy-editor-actions {
+    justify-content: space-between;
+    gap: 12px;
+    margin-top: 15px;
+    border-top: 1px solid #dce5f1;
+    padding-top: 14px;
+  }
+
+  .policy-editor-actions > span {
+    color: var(--text-muted);
+    font-size: 11px;
+  }
+
+  .policy-failure-actions {
+    gap: 8px;
+    margin-top: 8px;
+    flex-wrap: wrap;
+  }
+
+  .policy-failure-actions .button {
+    min-height: 28px;
+  }
+
   .safe-summary-grid {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -2319,9 +2692,24 @@
     }
 
     .selection-heading,
-    .preview-title {
+    .preview-title,
+    .policy-editor-heading {
       align-items: flex-start;
       flex-wrap: wrap;
+    }
+
+    .policy-editor {
+      padding: 14px;
+    }
+
+    .policy-editor-actions {
+      align-items: stretch;
+      flex-direction: column;
+    }
+
+    .policy-editor-actions .button {
+      width: 100%;
+      justify-content: center;
     }
   }
 </style>

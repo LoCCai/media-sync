@@ -81,6 +81,15 @@ const ERROR_MESSAGES: Record<string, string> = {
   scheduler_operation_rejected: '调度操作被拒绝，请刷新状态后重试。',
   subscription_exists_with_different_options: '该账户与作者的订阅已存在，但同步策略不同。',
   subscription_options_invalid: '订阅频率、上限或运行策略无效。',
+  subscription_policy_busy: '此订阅仍有待处理任务，请在任务页面确认结束后重试。',
+  subscription_policy_invalid: '当前持久策略无法安全读取，未执行修改。',
+  subscription_policy_not_found: '订阅不存在或已失效。',
+  subscription_policy_options_invalid: '同步周期、上限、请求间隔、浏览器模式或平台范围无效。',
+  subscription_policy_removed: '订阅已删除；如需修改，请先恢复为暂停状态。',
+  subscription_policy_requires_paused: '请先暂停订阅，再修改同步策略。',
+  subscription_policy_revision_conflict: '订阅策略已经变化，请重新打开详情后核对。',
+  subscription_policy_revision_exhausted: '订阅调度修订已达安全上限，未执行修改。',
+  subscription_policy_unsupported_adapter: '当前订阅适配器不支持此策略编辑器。',
   tracked_blob_mismatch: 'MediaCrawler 必需文件与锁定提交不一致。',
   worktree_dirty: 'MediaCrawler 工作树存在修改或未跟踪文件。'
 };

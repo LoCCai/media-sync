@@ -1108,7 +1108,6 @@ def test_scheduler_controls_are_bounded_and_redact_every_output_sink(
             job.payload = {**job.payload, "private": payload_sentinel}
     finally:
         database.dispose()
-
     listed = runner.invoke(
         app,
         ["scheduler", "job", "list", "--subscription-id", subscription_id, "--json"],
@@ -1162,6 +1161,95 @@ def test_scheduler_controls_are_bounded_and_redact_every_output_sink(
         assert sentinel not in retained_output
     assert initialized_cli_database not in retained_output
     assert "cli.sqlite3" not in retained_output
+
+
+def test_subscription_policy_cli_updates_only_a_paused_current_mediacrawler_subscription(
+    initialized_cli_database: str,
+) -> None:
+    account_result = runner.invoke(
+        app,
+        [
+            "account",
+            "add",
+            "--platform",
+            "bili",
+            "--display-name",
+            "Policy CLI account",
+            "--adapter",
+            "mediacrawler",
+            "--login-method",
+            "qr",
+            "--json",
+        ],
+    )
+    assert account_result.exit_code == 0, account_result.output
+    account_id = json.loads(account_result.output)["id"]
+    subscription_result = runner.invoke(
+        app,
+        [
+            "subscription",
+            "add",
+            "--account-id",
+            account_id,
+            "--platform",
+            "bili",
+            "--creator-remote-id",
+            "252671524",
+            "--display-name",
+            "Policy CLI creator",
+            "--json",
+        ],
+    )
+    assert subscription_result.exit_code == 0, subscription_result.output
+    subscription_id = json.loads(subscription_result.output)["id"]
+    assert runner.invoke(app, ["subscription", "pause", "--subscription-id", subscription_id]).exit_code == 0
+    arguments = [
+        "subscription",
+        "policy",
+        "--subscription-id",
+        subscription_id,
+        "--interval-seconds",
+        "7200",
+        "--max-items",
+        "18",
+        "--request-delay-seconds",
+        "9.5",
+        "--browser-mode",
+        "headed",
+        "--expected-schedule-revision",
+        "0",
+        "--bili-scope",
+        "uploads",
+        "--json",
+    ]
+
+    changed = runner.invoke(app, arguments)
+
+    assert changed.exit_code == 0, changed.output
+    payload = json.loads(changed.output)
+    assert payload["id"] == subscription_id
+    assert payload["status"] == "paused" and payload["enabled"] is False
+    assert payload["interval_seconds"] == 7_200 and payload["max_items"] == 18
+    assert payload["schedule_revision"] == 1 and payload["checkpoint_revision"] == 0
+    assert payload["policy_summary"]["request_delay_seconds"] == 9.5
+    assert payload["policy_summary"]["headless"] is False
+    assert payload["policy_summary"]["bili_scope"] == "uploads"
+    assert payload["checkpoint_preserved"] is payload["media_preserved"] is True
+    assert "credential" not in changed.output and "creator_input" not in changed.output
+
+    stale = runner.invoke(app, arguments)
+    assert stale.exit_code == 2
+    assert "subscription_policy_revision_conflict" in stale.output
+
+    database = Database(initialized_cli_database)
+    try:
+        with database.session() as session:
+            row = session.get(Subscription, subscription_id)
+            assert row is not None
+            assert row.enabled is False and row.schedule_revision == 1
+            assert row.interval_seconds == 7_200 and row.max_items == 18
+    finally:
+        database.dispose()
 
 
 def test_scheduler_mediacrawler_enablement_and_license_are_explicit(
