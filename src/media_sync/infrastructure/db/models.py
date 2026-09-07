@@ -141,6 +141,7 @@ SCAN_PROGRESS_STATES = frozenset({"unproven", "scanning", "source_end_observed"}
 SCAN_PROGRESS_STOP_REASONS = frozenset(
     {"item_limit", "list_limit", "head_boundary", "source_end", "restarted", "snapshot_saved", "page_end"}
 )
+BILI_DELIVERY_PHASES = frozenset({"backfill", "reconciling", "incremental", "blocked"})
 
 
 def _quoted_values(values: frozenset[str]) -> str:
@@ -334,6 +335,9 @@ class Subscription(TimestampMixin, Base):
     author: Mapped[Author] = relationship(back_populates="subscriptions")
     scan_progress: Mapped[list[SubscriptionScanProgress]] = relationship(
         back_populates="subscription", cascade="all, delete-orphan", passive_deletes=True
+    )
+    bili_delivery_progress: Mapped[BiliSubscriptionProgress | None] = relationship(
+        back_populates="subscription", cascade="all, delete-orphan", passive_deletes=True, uselist=False
     )
     sync_runs: Mapped[list[SyncRun]] = relationship(
         back_populates="subscription",
@@ -567,6 +571,39 @@ class SyncRun(TimestampMixin, Base):
         back_populates="last_run",
         passive_deletes=True,
     )
+    content_observations: Mapped[list[SyncRunContent]] = relationship(
+        back_populates="run",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        order_by="SyncRunContent.position",
+    )
+
+
+class SyncRunContent(Base):
+    """Exact bounded Content identities observed by one successful Run."""
+
+    __tablename__ = "sync_run_contents"
+    __table_args__ = (
+        UniqueConstraint("run_id", "position"),
+        CheckConstraint("position >= 0 AND position < 30", name="position_range"),
+        CheckConstraint("asset_count >= 0 AND asset_count <= 1000", name="asset_count_range"),
+        Index("ix_sync_run_contents_subscription_content", "subscription_id", "content_id"),
+    )
+
+    run_id: Mapped[str] = mapped_column(String(36), ForeignKey("sync_runs.id", ondelete="CASCADE"), primary_key=True)
+    content_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("contents.id", ondelete="RESTRICT"), primary_key=True
+    )
+    subscription_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("subscriptions.id", ondelete="CASCADE"), nullable=False
+    )
+    position: Mapped[int] = mapped_column(Integer, nullable=False)
+    asset_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    observed_at: Mapped[datetime] = mapped_column(
+        UTCDateTime(), nullable=False, default=utc_now, server_default=text("CURRENT_TIMESTAMP")
+    )
+
+    run: Mapped[SyncRun] = relationship(back_populates="content_observations")
 
 
 class AssetRefreshSource(Base):
@@ -882,6 +919,119 @@ class SubscriptionScanProgress(TimestampMixin, Base):
     source_end_observed_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     source_end_run_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("sync_runs.id", ondelete="RESTRICT"))
     subscription: Mapped[Subscription] = relationship(back_populates="scan_progress")
+
+
+class BiliSubscriptionProgress(TimestampMixin, Base):
+    """Delivery-qualified baseline state for one exact Bili uploads subscription."""
+
+    __tablename__ = "bili_subscription_progress"
+    __table_args__ = (
+        CheckConstraint("schema_version = 1", name="schema_version"),
+        CheckConstraint(f"phase IN ({_quoted_values(BILI_DELIVERY_PHASES)})", name="phase"),
+        CheckConstraint(_canonical_uuid_check("generation_id"), name="generation_id"),
+        CheckConstraint("auth_revision >= 0", name="auth_revision_nonnegative"),
+        CheckConstraint("scope = 'uploads'", name="scope"),
+        CheckConstraint(_sha256_check("author_fingerprint_sha256"), name="author_fingerprint"),
+        CheckConstraint(_sha256_check("policy_fingerprint_sha256"), name="policy_fingerprint"),
+        CheckConstraint(f"length(upstream_sha) = 40 AND {_lower_hex_only('upstream_sha')}", name="upstream_sha"),
+        CheckConstraint(
+            f"source_end_boundary_sha256 IS NULL OR {_sha256_check('source_end_boundary_sha256')}",
+            name="source_end_boundary",
+        ),
+        *(
+            CheckConstraint(f"{column} >= 0 AND {column} <= 9007199254740991", name=f"{column}_range")
+            for column in (
+                "checkpoint_revision",
+                "schedule_revision",
+                "batch_count",
+                "content_observation_count",
+                "backfill_batch_count",
+                "reconciliation_batch_count",
+                "incremental_batch_count",
+                "partial_batch_count",
+                "failed_content_count",
+            )
+        ),
+        CheckConstraint(
+            "backfill_batch_count + reconciliation_batch_count + incremental_batch_count = batch_count",
+            name="phase_batch_counts",
+        ),
+        CheckConstraint("partial_batch_count <= batch_count", name="partial_batch_count"),
+        CheckConstraint("last_lane IS NULL OR last_lane IN ('head', 'history')", name="last_lane"),
+        CheckConstraint(
+            f"last_stop_reason IS NULL OR last_stop_reason IN ({_quoted_values(SCAN_PROGRESS_STOP_REASONS)})",
+            name="last_stop_reason",
+        ),
+        CheckConstraint(
+            "(last_sync_job_id IS NULL AND last_run_id IS NULL AND last_pipeline_job_id IS NULL "
+            "AND last_delivery_at IS NULL) OR "
+            "(last_sync_job_id IS NOT NULL AND last_run_id IS NOT NULL AND last_pipeline_job_id IS NOT NULL "
+            "AND last_delivery_at IS NOT NULL)",
+            name="last_delivery_evidence",
+        ),
+        CheckConstraint(
+            "(source_end_observed_at IS NULL AND source_end_run_id IS NULL "
+            "AND source_end_boundary_sha256 IS NULL) OR "
+            "(source_end_observed_at IS NOT NULL AND source_end_run_id IS NOT NULL "
+            "AND source_end_boundary_sha256 IS NOT NULL)",
+            name="source_end_evidence",
+        ),
+        CheckConstraint(
+            "(reconciled_at IS NULL AND reconciliation_run_id IS NULL AND baseline_snapshot_at IS NULL) OR "
+            "(reconciled_at IS NOT NULL AND reconciliation_run_id IS NOT NULL "
+            "AND baseline_snapshot_at IS NOT NULL)",
+            name="reconciliation_evidence",
+        ),
+        CheckConstraint(
+            "phase != 'incremental' OR baseline_snapshot_at IS NOT NULL",
+            name="incremental_requires_snapshot",
+        ),
+        CheckConstraint(
+            "(phase = 'blocked' AND blocked_code IS NOT NULL) OR (phase != 'blocked' AND blocked_code IS NULL)",
+            name="blocked_code",
+        ),
+    )
+
+    subscription_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("subscriptions.id", ondelete="CASCADE"), primary_key=True
+    )
+    schema_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
+    phase: Mapped[str] = mapped_column(String(32), nullable=False, default="backfill", server_default="backfill")
+    generation_id: Mapped[str] = mapped_column(String(36), nullable=False, default=new_uuid)
+    account_id: Mapped[str] = mapped_column(String(36), ForeignKey("accounts.id", ondelete="RESTRICT"), nullable=False)
+    auth_revision: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    author_id: Mapped[str] = mapped_column(String(36), ForeignKey("authors.id", ondelete="RESTRICT"), nullable=False)
+    author_fingerprint_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    scope: Mapped[str] = mapped_column(String(16), nullable=False, default="uploads", server_default="uploads")
+    policy_fingerprint_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    upstream_sha: Mapped[str] = mapped_column(String(40), nullable=False)
+    checkpoint_revision: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    schedule_revision: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    batch_count: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0, server_default="0")
+    content_observation_count: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0, server_default="0")
+    backfill_batch_count: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0, server_default="0")
+    reconciliation_batch_count: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0, server_default="0")
+    incremental_batch_count: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0, server_default="0")
+    partial_batch_count: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0, server_default="0")
+    failed_content_count: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0, server_default="0")
+    last_lane: Mapped[str | None] = mapped_column(String(16))
+    last_stop_reason: Mapped[str | None] = mapped_column(String(32))
+    last_sync_job_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("jobs.id", ondelete="RESTRICT"))
+    last_run_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("sync_runs.id", ondelete="RESTRICT"))
+    last_pipeline_job_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("jobs.id", ondelete="RESTRICT"))
+    last_delivery_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    source_end_observed_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    source_end_run_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("sync_runs.id", ondelete="RESTRICT"))
+    source_end_boundary_sha256: Mapped[str | None] = mapped_column(String(64))
+    reconciled_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    reconciliation_run_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("sync_runs.id", ondelete="RESTRICT")
+    )
+    baseline_snapshot_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    next_eligible_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    blocked_code: Mapped[str | None] = mapped_column(String(128))
+
+    subscription: Mapped[Subscription] = relationship(back_populates="bili_delivery_progress")
 
 
 class OperationEventStreamState(Base):
@@ -1249,6 +1399,7 @@ __all__ = [
     "ASSET_REFRESH_OBSERVATION_KINDS",
     "ASSET_STATUSES",
     "AUTH_STATUSES",
+    "BILI_DELIVERY_PHASES",
     "CIRCUIT_STATES",
     "CONTENT_KINDS",
     "JOB_STATUSES",
@@ -1275,6 +1426,7 @@ __all__ = [
     "AssetRefreshSource",
     "Author",
     "AuthorOutputBinding",
+    "BiliSubscriptionProgress",
     "Content",
     "ExportRecord",
     "Job",
@@ -1290,4 +1442,5 @@ __all__ = [
     "Subscription",
     "SubscriptionScanProgress",
     "SyncRun",
+    "SyncRunContent",
 ]

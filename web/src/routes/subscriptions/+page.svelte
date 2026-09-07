@@ -75,6 +75,7 @@
   import {
     EXACT_DELIVERY_NOTICE,
     initialSubscriptionDeliveryView,
+    safeBiliDeliveryProgressCard,
     safeScanProgressCards,
     SCAN_PROGRESS_NOTICE,
     subscriptionDeliveryPhaseLabel,
@@ -187,6 +188,10 @@
 
   $: enabledCount = subscriptions.filter((item) => item.enabled).length;
   $: deliveryActive = deliveryView.phase === 'submitting' || deliveryView.phase === 'waiting';
+  $: biliDeliveryCard =
+    detail?.platform === 'bili' && detail.bili_delivery
+      ? safeBiliDeliveryProgressCard(detail.bili_delivery)
+      : null;
   $: if (!detailOpen) detailRequests.cancel();
   $: if (!deliveryOpen) deliveryDetailRequests.cancel();
   $: if (!addOpen) {
@@ -1528,6 +1533,26 @@
         </dl>
       </section>
     {/if}
+    {#if biliDeliveryCard}
+      <section class="delivery-baseline" aria-label="B站本地交付基线">
+        <div class="delivery-status-heading">
+          <div>
+            <span class="eyebrow">B站投稿 · 本地交付基线</span>
+            <h3>{biliDeliveryCard.phase}</h3>
+          </div>
+          <StatusBadge status={biliDeliveryCard.status} label={biliDeliveryCard.phase} />
+        </div>
+        <p>{biliDeliveryCard.notice}</p>
+        <dl>
+          {#each biliDeliveryCard.rows as row}
+            <div>
+              <dt>{row.label}</dt>
+              <dd>{row.value}</dd>
+            </div>
+          {/each}
+        </dl>
+      </section>
+    {/if}
     {#if detail.policy_summary || detail.checkpoint_summary}
       <p class="redaction-note">
         仅展示服务端白名单摘要；secret reference、原始 cursor、签名 URL 与本地路径均不返回。
@@ -1611,8 +1636,7 @@
           <span>
             <strong>我确认执行当前精确订阅</strong>
             <span>
-              我理解上游可能扫描作者历史，随后会下载或复用 author_active_snapshot
-              中的全部有效资产；首次历史可能需要多轮，之后由定时调度检查增量。这不是仅处理本轮新增，也不代表历史已经完整。
+              我理解上游可能扫描作者历史；B站投稿会下载或复用本轮精确内容及该订阅未完成积压，首次历史可能需要多轮，之后由定时调度检查增量。这不代表历史已经完整。
             </span>
           </span>
         </label>
@@ -1671,11 +1695,21 @@
           </div>
         {/if}
         {#if deliveryView.phase === 'succeeded' && deliveryView.operation?.result}
-          <div class="notice success">
+          <div
+            class="notice"
+            class:success={!deliveryView.operation.result.partial}
+            class:warning={deliveryView.operation.result.partial}
+          >
             <CheckCircle2 size={17} />
             <div>
-              <strong class="notice-title">兼容目录证据已验证</strong>
-              成功表示选中资产已全部验证并归档，且兼容目录已重新核对；不表示作者全历史已经完整，也不要求连接媒体服务器。
+              <strong class="notice-title">
+                {deliveryView.operation.result.partial
+                  ? '完整内容已发布，仍有内容待处理'
+                  : '兼容目录证据已验证'}
+              </strong>
+              {deliveryView.operation.result.partial
+                ? '本轮其他完整 Content 已验证并发布；失败 Content 没有被部分发布，可按错误分类继续重试。'
+                : '成功表示选中资产已验证并归档，且兼容目录已重新核对；不表示作者全历史已经完整，也不要求连接媒体服务器。'}
             </div>
           </div>
           <section class="safe-summary delivery-result">
@@ -1883,6 +1917,55 @@
 
   .delivery-result {
     margin-top: 0;
+  }
+
+  .delivery-baseline {
+    display: grid;
+    gap: 10px;
+    margin-top: 18px;
+    border: 1px solid #c9d7ee;
+    border-radius: var(--radius);
+    padding: 14px;
+    background: linear-gradient(145deg, #f7faff, #eef4ff);
+  }
+
+  .delivery-baseline p {
+    margin: 0;
+    color: var(--text-muted);
+    font-size: 10.5px;
+    line-height: 1.6;
+  }
+
+  .delivery-baseline dl {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 7px 18px;
+    margin: 0;
+  }
+
+  .delivery-baseline dl div {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    border-top: 1px solid #dce6f5;
+    padding-top: 7px;
+  }
+
+  .delivery-baseline dt,
+  .delivery-baseline dd {
+    min-width: 0;
+    margin: 0;
+    overflow-wrap: anywhere;
+    font-size: 10.5px;
+  }
+
+  .delivery-baseline dt {
+    color: var(--text-muted);
+  }
+
+  .delivery-baseline dd {
+    color: #263650;
+    text-align: right;
   }
 
   .loading-rows {
@@ -2228,6 +2311,10 @@
     .preview-facts,
     .safe-summary-grid,
     .scan-progress-grid {
+      grid-template-columns: 1fr;
+    }
+
+    .delivery-baseline dl {
       grid-template-columns: 1fr;
     }
 

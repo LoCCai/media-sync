@@ -69,11 +69,24 @@ def pipeline_delivery_receipt(outcome: SubscriptionPipelineOutcome) -> PipelineD
     downloads = outcome.downloads
     expected = {(item.asset_id, item.generation) for item in selected}
     observed = {(item.asset_id, item.generation) for item in downloads}
+    exact_run = outcome.source_run_id is not None
     if (
         len(expected) != len(selected)
         or len(observed) != len(downloads)
-        or expected != observed
         or any(item.status is not AssetStatus.VERIFIED for item in downloads)
+    ):
+        raise SubscriptionDeliveryEvidenceError()
+    if (not exact_run and expected != observed) or (exact_run and not observed.issubset(expected)):
+        raise SubscriptionDeliveryEvidenceError()
+    if exact_run and (
+        outcome.observed_content_count != outcome.delivered_content_count + outcome.failed_content_count
+        or outcome.retry_backlog_content_count
+        != outcome.delivered_retry_backlog_content_count + outcome.failed_retry_backlog_content_count
+        or outcome.failed_content_count + outcome.failed_retry_backlog_content_count
+        != outcome.retryable_failed_content_count + outcome.terminal_failed_content_count
+        or tuple(sorted(set(outcome.failure_codes))) != outcome.failure_codes
+        or bool(outcome.failure_codes)
+        != (outcome.failed_content_count + outcome.failed_retry_backlog_content_count > 0)
     ):
         raise SubscriptionDeliveryEvidenceError()
     downloaded = sum(item.disposition == "downloaded" for item in downloads)
@@ -87,7 +100,7 @@ def pipeline_delivery_receipt(outcome: SubscriptionPipelineOutcome) -> PipelineD
         author_id=str(outcome.selection.author_id),
         platform=outcome.selection.platform,
         export_job_id=export.job_id,
-        selected_asset_count=len(selected),
+        selected_asset_count=len(downloads) if exact_run else len(selected),
         verified_asset_count=len(downloads),
         downloaded_count=downloaded,
         already_verified_count=reused,
@@ -96,6 +109,18 @@ def pipeline_delivery_receipt(outcome: SubscriptionPipelineOutcome) -> PipelineD
         # EmbyExportService returns only after validating either the existing
         # publication or the newly installed tree and its durable result.
         directory_verified=True,
+        schema_version=2 if exact_run else 1,
+        source_run_id=str(outcome.source_run_id) if outcome.source_run_id is not None else None,
+        observed_content_count=outcome.observed_content_count,
+        delivered_content_count=outcome.delivered_content_count,
+        failed_content_count=outcome.failed_content_count,
+        retry_backlog_content_count=outcome.retry_backlog_content_count,
+        delivered_retry_backlog_content_count=outcome.delivered_retry_backlog_content_count,
+        failed_retry_backlog_content_count=outcome.failed_retry_backlog_content_count,
+        retryable_failed_content_count=outcome.retryable_failed_content_count,
+        terminal_failed_content_count=outcome.terminal_failed_content_count,
+        failure_codes=outcome.failure_codes,
+        partial=outcome.failed_content_count + outcome.failed_retry_backlog_content_count > 0,
     )
 
 
@@ -177,6 +202,7 @@ def build_subscription_delivery_result_in_session(
         or pipeline_receipt.account_id != account.id
         or pipeline_receipt.author_id != author.id
         or pipeline_receipt.platform != account.platform
+        or (pipeline_receipt.schema_version == 2 and pipeline_receipt.source_run_id != run.id)
         or author.platform != account.platform
         or export_job.job_type != _EXPORT_JOB_TYPE
         or export_job.status != "succeeded"
@@ -195,7 +221,7 @@ def build_subscription_delivery_result_in_session(
     except KeyError:
         raise SubscriptionDeliveryEvidenceError("subscription_delivery_scope_changed") from None
 
-    return {
+    result: dict[str, object] = {
         "subscription_id": subscription.id,
         "account_id": account.id,
         "author_id": author.id,
@@ -210,7 +236,9 @@ def build_subscription_delivery_result_in_session(
         # comparator.  The persisted zero must not be presented as proof.
         "updated_count": None,
         "discovery_count_semantics": discovery_semantics,
-        "selection_scope": "author_active_snapshot",
+        "selection_scope": (
+            "source_run_plus_retry_backlog" if pipeline_receipt.schema_version == 2 else "author_active_snapshot"
+        ),
         "selected_asset_count": pipeline_receipt.selected_asset_count,
         "verified_asset_count": pipeline_receipt.verified_asset_count,
         "downloaded_count": pipeline_receipt.downloaded_count,
@@ -219,6 +247,20 @@ def build_subscription_delivery_result_in_session(
         "managed_file_count": pipeline_receipt.managed_file_count,
         "directory_verified": pipeline_receipt.directory_verified,
     }
+    if pipeline_receipt.schema_version == 2:
+        result.update(
+            observed_content_count=pipeline_receipt.observed_content_count,
+            delivered_content_count=pipeline_receipt.delivered_content_count,
+            failed_content_count=pipeline_receipt.failed_content_count,
+            retry_backlog_content_count=pipeline_receipt.retry_backlog_content_count,
+            delivered_retry_backlog_content_count=pipeline_receipt.delivered_retry_backlog_content_count,
+            failed_retry_backlog_content_count=pipeline_receipt.failed_retry_backlog_content_count,
+            retryable_failed_content_count=pipeline_receipt.retryable_failed_content_count,
+            terminal_failed_content_count=pipeline_receipt.terminal_failed_content_count,
+            failure_codes=list(pipeline_receipt.failure_codes),
+            partial=pipeline_receipt.partial,
+        )
+    return result
 
 
 __all__ = [

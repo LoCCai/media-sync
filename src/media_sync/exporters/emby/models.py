@@ -162,6 +162,20 @@ class ManagedFile:
 
 
 @dataclass(frozen=True, slots=True)
+class ContentIdentity:
+    """Stable non-secret identity for one exported Content."""
+
+    platform: str
+    remote_type: str
+    remote_id: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "platform", _text(self.platform, "platform").lower())
+        object.__setattr__(self, "remote_type", _text(self.remote_type, "remote_type").lower())
+        object.__setattr__(self, "remote_id", _text(self.remote_id, "content_remote_id"))
+
+
+@dataclass(frozen=True, slots=True)
 class ContentFingerprint:
     """Stable source identity used by per-content export orchestration."""
 
@@ -294,6 +308,7 @@ class ExportResult:
 
 __all__ = [
     "ContentFingerprint",
+    "ContentIdentity",
     "ExportAuthor",
     "ExportContent",
     "ExportResult",

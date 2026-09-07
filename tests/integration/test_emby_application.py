@@ -262,6 +262,92 @@ def test_db_snapshot_exports_golden_tree_and_is_idempotent(database: Database, t
     assert {asset.status for asset in assets} == {"verified"}
 
 
+def test_partial_snapshot_preserves_then_replaces_published_content_and_honors_tombstone(
+    database: Database,
+    tmp_path: Path,
+) -> None:
+    author_id, asset_id = _seed_author(database, tmp_path / "archive")
+    assert asset_id is not None
+    second_payload = b"offline-video-second-part"
+    second_path = (tmp_path / "archive" / "video-part-2.mp4").absolute()
+    second_path.write_bytes(second_payload)
+    with database.session() as session:
+        video = session.scalar(select(Content).where(Content.author_id == author_id, Content.remote_id == "video-1"))
+        assert video is not None
+        second = AssetRepository(session).upsert_for_content(
+            video.id,
+            AssetUpsert(
+                platform="xhs",
+                content_remote_type="note",
+                content_remote_id="video-1",
+                kind="video",
+                position=1,
+                remote_id="asset-video-1-part-2",
+                source_url="https://cdn.example.invalid/video-part-2",
+            ),
+        )
+        second.status = "verified"
+        second.local_path = str(second_path)
+        second.checksum_sha256 = hashlib.sha256(second_payload).hexdigest()
+        second.size_bytes = len(second_payload)
+        second.mime_type = "video/mp4"
+        second.verified_at = NOW
+    service = _service(database, tmp_path)
+    first = service.export_author(EmbyExportRequest(author_id, "full", lease_seconds=60))
+    author_directory = tmp_path / "library" / first.output_path
+    video_paths = sorted(author_directory.glob("Season 2026/*.mp4"))
+    assert len(video_paths) == 2
+    video_path = next(path for path in video_paths if path.read_bytes() == b"offline-video-payload")
+    assert video_path.read_bytes() == b"offline-video-payload"
+    initial_video_bytes = {path.name: path.read_bytes() for path in video_paths}
+
+    with database.session() as session:
+        asset = AssetRepository(session).require(asset_id)
+        asset.status = "failed_retryable"
+    partial = service.export_author(
+        EmbyExportRequest(author_id, "partial", lease_seconds=60, skip_incomplete_contents=True)
+    )
+
+    assert partial.source_fingerprint != first.source_fingerprint
+    assert video_path.read_bytes() == b"offline-video-payload"
+    assert {path.name: path.read_bytes() for path in sorted(author_directory.glob("Season 2026/*.mp4"))} == (
+        initial_video_bytes
+    )
+    partial_manifest = json.loads((author_directory / ".media-sync-managed-v1.json").read_text(encoding="utf-8"))
+    assert {item["remote_id"] for item in partial_manifest["content_fingerprints"]} == {"text-1", "video-1"}
+
+    replacement_payload = b"replacement-video-payload"
+    replacement_path = (tmp_path / "archive" / "video-v2.mp4").absolute()
+    replacement_path.write_bytes(replacement_payload)
+    with database.session() as session:
+        asset = AssetRepository(session).require(asset_id)
+        asset.generation += 1
+        asset.status = "verified"
+        asset.local_path = str(replacement_path)
+        asset.checksum_sha256 = hashlib.sha256(replacement_payload).hexdigest()
+        asset.size_bytes = len(replacement_payload)
+        asset.verified_at = NOW + timedelta(seconds=1)
+    completed = service.export_author(
+        EmbyExportRequest(author_id, "completed", lease_seconds=60, skip_incomplete_contents=True)
+    )
+
+    assert completed.source_fingerprint != partial.source_fingerprint
+    assert video_path.read_bytes() == replacement_payload
+
+    with database.session() as session:
+        video = session.scalar(select(Content).where(Content.author_id == author_id, Content.remote_id == "video-1"))
+        assert video is not None
+        video.tombstoned_at = NOW + timedelta(seconds=2)
+    removed = service.export_author(
+        EmbyExportRequest(author_id, "tombstoned", lease_seconds=60, skip_incomplete_contents=True)
+    )
+
+    assert removed.source_fingerprint != completed.source_fingerprint
+    assert not video_path.exists()
+    removed_manifest = json.loads((author_directory / ".media-sync-managed-v1.json").read_text(encoding="utf-8"))
+    assert {item["remote_id"] for item in removed_manifest["content_fingerprints"]} == {"text-1"}
+
+
 def test_asset_generation_repair_escapes_terminal_missing_source_identity(
     database: Database,
     tmp_path: Path,

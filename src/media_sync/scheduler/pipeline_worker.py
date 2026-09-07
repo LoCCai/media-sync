@@ -20,6 +20,8 @@ from media_sync.application.operations import DurableSubjectHook, DurableSubject
 from media_sync.infrastructure.db import Database, JobRepository, LeaseLostError
 from media_sync.infrastructure.db.models import Job
 
+from .bili_delivery_progress import BiliDeliveryProgressRepository
+from .bili_scan_continuation import BiliScanContinuationPolicy
 from .pipeline import (
     PIPELINE_SUBSCRIPTION_JOB_TYPE,
     PipelineJobRepository,
@@ -274,6 +276,7 @@ class PipelineSubscriptionWorker:
         clock: Callable[[], datetime] = _utc_now,
         retry_delay_seconds: int = PIPELINE_RETRY_DELAY_SECONDS,
         event_sink: EventSink | None = None,
+        bili_delivery_policy: BiliScanContinuationPolicy | None = None,
     ) -> None:
         if not callable(handler):
             raise TypeError("pipeline handler must be callable")
@@ -286,6 +289,7 @@ class PipelineSubscriptionWorker:
         self.event_sink = event_sink
         self.clock = clock
         self.retry_delay_seconds = retry_delay_seconds
+        self.bili_delivery_policy = bili_delivery_policy or BiliScanContinuationPolicy(delay_seconds=0)
 
     @staticmethod
     def _heartbeat_interval(value: float | None, *, lease_seconds: int) -> float:
@@ -496,6 +500,14 @@ class PipelineSubscriptionWorker:
                     replacement_payload=replacement,
                     now=current,
                 )
+                if result.receipt is not None:
+                    BiliDeliveryProgressRepository(session).publish_success(
+                        job,
+                        result.receipt,
+                        upstream_sha=self.bili_delivery_policy.upstream_sha,
+                        continuation_delay_seconds=self.bili_delivery_policy.delay_seconds,
+                        now=current,
+                    )
             else:
                 classification = classify_pipeline_failure(result.error_code or "")
                 retry_at = current + timedelta(seconds=self.retry_delay_seconds) if classification.retryable else None
@@ -509,6 +521,13 @@ class PipelineSubscriptionWorker:
                     retry_at=retry_at,
                     now=current,
                 )
+                if job.status == "failed_terminal":
+                    BiliDeliveryProgressRepository(session).publish_terminal_failure(
+                        job,
+                        error_code=classification.code,
+                        upstream_sha=self.bili_delivery_policy.upstream_sha,
+                        now=current,
+                    )
             if job.job_type != PIPELINE_SUBSCRIPTION_JOB_TYPE:
                 raise LeaseLostError("pipeline worker observed a foreign job type")
             return self._result(job, session=session)

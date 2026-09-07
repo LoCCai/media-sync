@@ -12,7 +12,7 @@ from datetime import datetime
 from pathlib import PurePosixPath
 
 from .errors import ExportConflictError, ExportError
-from .models import ContentFingerprint, ExportAuthor, ExportContent, VerifiedAsset
+from .models import ContentFingerprint, ContentIdentity, ExportAuthor, ExportContent, VerifiedAsset
 
 LAYOUT_VERSION = "emby-jellyfin-v1"
 MANIFEST_NAME = ".media-sync-managed-v1.json"
@@ -221,7 +221,12 @@ def _content_fingerprint(content: ExportContent) -> ContentFingerprint:
     )
 
 
-def export_source_fingerprint(author: ExportAuthor, contents: Sequence[ExportContent]) -> str:
+def export_source_fingerprint(
+    author: ExportAuthor,
+    contents: Sequence[ExportContent],
+    *,
+    preserve_content_identities: Sequence[ContentIdentity] = (),
+) -> str:
     """Fingerprint one complete author render independently of input order."""
 
     content_rows = [
@@ -234,18 +239,35 @@ def export_source_fingerprint(author: ExportAuthor, contents: Sequence[ExportCon
         for item in contents
     ]
     content_rows.sort(key=lambda item: (str(item["platform"]), str(item["remote_type"]), str(item["remote_id"])))
-    return _fingerprint(
-        {
-            "author": {
-                "display_name": author.display_name,
-                "handle": author.handle,
-                "platform": author.platform,
-                "remote_id": author.remote_id,
-            },
-            "contents": content_rows,
-            "layout_version": LAYOUT_VERSION,
-        }
+    payload: dict[str, object] = {
+        "author": {
+            "display_name": author.display_name,
+            "handle": author.handle,
+            "platform": author.platform,
+            "remote_id": author.remote_id,
+        },
+        "contents": content_rows,
+        "layout_version": LAYOUT_VERSION,
+    }
+    preserved = sorted(
+        preserve_content_identities,
+        key=lambda item: (item.platform, item.remote_type, item.remote_id),
     )
+    if preserved:
+        complete_identities = {
+            (str(item["platform"]), str(item["remote_type"]), str(item["remote_id"])) for item in content_rows
+        }
+        preserved_identities = [(item.platform, item.remote_type, item.remote_id) for item in preserved]
+        if len(set(preserved_identities)) != len(preserved_identities) or any(
+            identity in complete_identities for identity in preserved_identities
+        ):
+            raise ExportError("duplicate_content_identity")
+        payload["snapshot_mode"] = "preserve_incomplete_v1"
+        payload["preserve_content_identities"] = [
+            {"platform": item.platform, "remote_id": item.remote_id, "remote_type": item.remote_type}
+            for item in preserved
+        ]
+    return _fingerprint(payload)
 
 
 def _xml_text(value: str) -> str:

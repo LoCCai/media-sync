@@ -53,7 +53,7 @@ from media_sync.infrastructure.db.migration import MIGRATIONS_PACKAGE, upgrade_d
 from media_sync.media import AdapterRefreshLocator, SafeHttpClient, SecureMediaDownloader, ValidatedTarget
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
-HEAD_REVISION = "0013_exact_subscription_delivery"
+HEAD_REVISION = "0014_bili_delivery_baseline"
 
 
 class _PublicResolver:
@@ -200,6 +200,7 @@ def test_built_wheel_contains_and_runs_packaged_migrations(tmp_path: Path) -> No
             "media_sync/infrastructure/db/migrations/versions/0011_cookie_login.py",
             "media_sync/infrastructure/db/migrations/versions/0012_library_output_policy.py",
             "media_sync/infrastructure/db/migrations/versions/0013_exact_subscription_delivery.py",
+            "media_sync/infrastructure/db/migrations/versions/0014_bili_delivery_baseline.py",
         }
         assert required_resources <= wheel_names
         wheel.extractall(installed_root)
@@ -225,7 +226,7 @@ try:
     if "accounts" not in inspect(engine).get_table_names():
         raise AssertionError("packaged migration did not create accounts")
     with engine.connect() as connection:
-        if connection.scalar(text("SELECT version_num FROM alembic_version")) != "0013_exact_subscription_delivery":
+        if connection.scalar(text("SELECT version_num FROM alembic_version")) != "0014_bili_delivery_baseline":
             raise AssertionError("unexpected migration revision")
 finally:
     engine.dispose()

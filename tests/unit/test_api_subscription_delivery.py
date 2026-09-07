@@ -83,6 +83,59 @@ def _request(revision: int = 0) -> dict[str, object]:
     }
 
 
+def test_subscription_detail_exposes_closed_uninitialized_bili_delivery_projection(tmp_path: Path) -> None:
+    settings = _settings(tmp_path)
+    with _client(settings) as client:
+        subscription_id = str(_subscription(client)["id"])
+        response = client.get(f"/api/v1/subscriptions/{subscription_id}")
+
+    assert response.status_code == 200
+    progress = response.json()["bili_delivery"]
+    assert progress == {
+        "schema_version": 1,
+        "initialized": False,
+        "phase": "backfill",
+        "baseline_snapshot_complete": False,
+        "generation_id": None,
+        "batch_count": 0,
+        "content_observation_count": 0,
+        "backfill_batch_count": 0,
+        "reconciliation_batch_count": 0,
+        "incremental_batch_count": 0,
+        "partial_batch_count": 0,
+        "failed_content_count": 0,
+        "last_lane": None,
+        "last_stop_reason": None,
+        "last_delivery_at": None,
+        "source_end_observed_at": None,
+        "source_end_run_id": None,
+        "reconciled_at": None,
+        "reconciliation_run_id": None,
+        "baseline_snapshot_at": None,
+        "next_eligible_at": None,
+        "blocked_code": None,
+    }
+
+
+def test_subscription_detail_fails_closed_when_upstream_lock_is_invalid(tmp_path: Path) -> None:
+    lock_path = tmp_path / "invalid-upstreams.lock.json"
+    lock_path.write_text("{}", encoding="utf-8")
+    settings = Settings(
+        state_dir=tmp_path / "state",
+        archive_dir=tmp_path / "archive",
+        export_dir=tmp_path / "library",
+        job_dir=tmp_path / "jobs",
+        mediacrawler_runtime_dir=tmp_path / "mediacrawler",
+        mediacrawler_lock_path=lock_path,
+    )
+    with _client(settings) as client:
+        subscription_id = str(_subscription(client)["id"])
+        response = client.get(f"/api/v1/subscriptions/{subscription_id}")
+
+    assert response.status_code == 200
+    assert "bili_delivery" not in response.json()
+
+
 def _install_success_fakes(
     monkeypatch: pytest.MonkeyPatch,
     *,

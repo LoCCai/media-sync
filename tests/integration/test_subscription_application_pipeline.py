@@ -2,16 +2,23 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID, uuid4
 
+import httpx
 import pytest
+from sqlalchemy import select
 
-from media_sync.application.downloads import AssetDownloadOutcome, AssetDownloadRequest
-from media_sync.application.emby import EmbyExportOutcome, EmbyExportRequest
+from media_sync.application.downloads import (
+    AssetDownloadOrchestrationError,
+    AssetDownloadOutcome,
+    AssetDownloadRequest,
+    AssetDownloadService,
+)
+from media_sync.application.emby import EmbyExportOutcome, EmbyExportRequest, EmbyExportService
 from media_sync.application.pipeline import (
     SelectedPipelineAsset,
     SubscriptionAssetSelection,
@@ -20,7 +27,9 @@ from media_sync.application.pipeline import (
     SubscriptionPipelineRequest,
     SubscriptionPipelineService,
 )
+from media_sync.application.subscription_delivery import pipeline_delivery_receipt
 from media_sync.domain import AssetStatus, Platform
+from media_sync.exporters.emby import EmbyExporter
 from media_sync.infrastructure.db import (
     AccountRepository,
     AssetRefreshSourceRepository,
@@ -31,10 +40,17 @@ from media_sync.infrastructure.db import (
     ContentUpsert,
     Database,
     SubscriptionRepository,
+    SyncRunRepository,
 )
 from media_sync.infrastructure.db.asset_identity import stable_asset_key
-from media_sync.infrastructure.db.models import Asset, Content
-from media_sync.media import AdapterRefreshLocator
+from media_sync.infrastructure.db.models import Asset, Content, SyncRunContent
+from media_sync.media import (
+    AdapterRefreshLocator,
+    ResolvedLocator,
+    SafeHttpClient,
+    SecureMediaDownloader,
+    ValidatedTarget,
+)
 
 NOW = datetime(2026, 8, 31, 1, 2, 3, tzinfo=UTC)
 
@@ -64,11 +80,12 @@ def _seed_direct_scope(
     suffix: str,
     content_assets: tuple[tuple[str, tuple[tuple[str, int], ...]], ...],
     tombstoned_remote_ids: frozenset[str] = frozenset(),
+    adapter: str = "fake",
 ) -> _SeededScope:
     with database.session() as session:
         account = AccountRepository(session).create(
             platform=Platform.BILI.value,
-            adapter="fake",
+            adapter=adapter,
             display_name=f"fake-account-{suffix}",
         )
         author, contents = AuthorRepository(session).upsert_with_contents(
@@ -89,14 +106,31 @@ def _seed_direct_scope(
         for content, (_remote_id, asset_specs) in zip(contents, content_assets, strict=True):
             persisted: list[UUID] = []
             for kind, position in asset_specs:
+                remote_asset_id = f"{content.remote_id}:{kind}:{position}"
+                locator = None
+                source_url = f"https://fixture.invalid/{suffix}/{content.remote_id}/{kind}/{position}"
+                if adapter == "mediacrawler":
+                    locator = AdapterRefreshLocator(
+                        adapter="mediacrawler",
+                        asset_key=stable_asset_key(
+                            platform=Platform.BILI.value,
+                            content_remote_type=content.remote_type,
+                            content_remote_id=content.remote_id,
+                            kind=kind,
+                            position=position,
+                            remote_id=remote_asset_id,
+                        ),
+                    ).as_dict()
+                    source_url = None
                 asset = repository.upsert_for_content(
                     content.id,
                     AssetUpsert(
                         platform=Platform.BILI.value,
                         kind=kind,
                         position=position,
-                        remote_id=f"{content.remote_id}:{kind}:{position}",
-                        source_url=f"https://fixture.invalid/{suffix}/{content.remote_id}/{kind}/{position}",
+                        remote_id=remote_asset_id,
+                        source_url=source_url,
+                        locator=locator,
                     ),
                 )
                 persisted.append(UUID(asset.id))
@@ -345,12 +379,333 @@ def _pipeline_request(
     *,
     expected_account_id: UUID | None = None,
     expected_platform: str | None = None,
+    source_run_id: UUID | None = None,
 ) -> SubscriptionPipelineRequest:
     return SubscriptionPipelineRequest(
         subscription_id=scope.subscription_id,
         expected_account_id=(scope.account_id if expected_account_id is None else expected_account_id),
         expected_platform=(scope.platform if expected_platform is None else expected_platform),
+        source_run_id=source_run_id,
     )
+
+
+def _attach_source_run(database: Database, scope: _SeededScope, remote_ids: tuple[str, ...]) -> UUID:
+    with database.session() as session:
+        run = SyncRunRepository(session).create(
+            subscription_id=str(scope.subscription_id),
+            status="succeeded",
+            attempt=1,
+        )
+        run.finished_at = NOW
+        sources = AssetRefreshSourceRepository(session)
+        for position, remote_id in enumerate(remote_ids):
+            content = session.scalar(
+                select(Content).where(
+                    Content.author_id == str(scope.author_id),
+                    Content.remote_id == remote_id,
+                )
+            )
+            assert content is not None
+            asset_ids = scope.assets_by_remote_content[remote_id]
+            session.add(
+                SyncRunContent(
+                    run_id=run.id,
+                    content_id=content.id,
+                    subscription_id=str(scope.subscription_id),
+                    position=position,
+                    asset_count=len(asset_ids),
+                    observed_at=NOW,
+                )
+            )
+            for asset_id in asset_ids:
+                sources.upsert_observation(
+                    asset_id=str(asset_id),
+                    subscription_id=str(scope.subscription_id),
+                    last_run_id=run.id,
+                    seen_at=NOW,
+                )
+        return UUID(run.id)
+
+
+class _SelectiveFailureDownloadService(_RecordingDownloadService):
+    def __init__(self, database: Database, archive_root: Path, *, fail_for: UUID) -> None:
+        super().__init__(database, archive_root)
+        self._fail_for = fail_for
+
+    def run(self, request: AssetDownloadRequest) -> AssetDownloadOutcome:
+        if request.asset_id == self._fail_for:
+            self.calls.append(request.asset_id)
+            raise AssetDownloadOrchestrationError("asset_download_terminal")
+        return super().run(request)
+
+
+class _SelectiveRetryableFailureDownloadService(_RecordingDownloadService):
+    def __init__(self, database: Database, archive_root: Path, *, fail_for: UUID) -> None:
+        super().__init__(database, archive_root)
+        self._fail_for = fail_for
+
+    def run(self, request: AssetDownloadRequest) -> AssetDownloadOutcome:
+        if request.asset_id == self._fail_for:
+            self.calls.append(request.asset_id)
+            raise AssetDownloadOrchestrationError("asset_download_state_changed")
+        return super().run(request)
+
+
+class _PublicResolver:
+    def resolve(self, hostname: str, port: int) -> Sequence[str]:
+        assert hostname == "fixture.invalid" and port == 443
+        return ("8.8.8.8",)
+
+
+class _FixtureRefresher:
+    def __init__(self, targets: dict[str, str]) -> None:
+        self._targets = targets
+
+    def resolve(self, locator: AdapterRefreshLocator) -> ResolvedLocator:
+        return ResolvedLocator(self._targets[locator.asset_key])
+
+
+def _file_state(root: Path) -> dict[str, tuple[bytes, int]]:
+    return {
+        path.relative_to(root).as_posix(): (path.read_bytes(), path.stat().st_mtime_ns)
+        for path in sorted(root.rglob("*"), key=lambda item: item.as_posix())
+        if path.is_file()
+    }
+
+
+def test_source_run_pipeline_isolates_terminal_multipart_failure_and_delivers_other_contents(
+    database: Database,
+    tmp_path: Path,
+) -> None:
+    scope = _seed_direct_scope(
+        database,
+        suffix="content-isolation",
+        adapter="mediacrawler",
+        content_assets=(
+            ("a-good", (("video", 0),)),
+            ("b-multipart-bad", (("video", 0), ("video", 1))),
+            ("c-good", (("image", 0),)),
+        ),
+    )
+    run_id = _attach_source_run(database, scope, ("a-good", "b-multipart-bad", "c-good"))
+    bad_assets = scope.assets_by_remote_content["b-multipart-bad"]
+    downloader = _SelectiveFailureDownloadService(database, tmp_path / "archive", fail_for=bad_assets[1])
+    exporter = _RecordingExportService()
+    service = SubscriptionPipelineService(
+        SubscriptionAssetSelector(database),
+        downloader,
+        exporter,
+        download_request_factory=_download_factory(tmp_path),
+        export_request_factory=lambda selection: EmbyExportRequest(
+            str(selection.author_id),
+            "pipeline-export-worker",
+            lease_seconds=60,
+            skip_incomplete_contents=True,
+        ),
+    )
+
+    outcome = service.run(_pipeline_request(scope, source_run_id=run_id))
+    receipt = pipeline_delivery_receipt(outcome)
+
+    assert outcome.observed_content_count == 3
+    assert (outcome.delivered_content_count, outcome.failed_content_count) == (2, 1)
+    assert (outcome.retryable_failed_content_count, outcome.terminal_failed_content_count) == (0, 1)
+    assert outcome.failure_codes == ("pipeline_download_terminal",)
+    assert {item.asset_id for item in outcome.downloads}.isdisjoint(set(bad_assets))
+    assert len(outcome.downloads) == 2
+    assert len(exporter.calls) == 1 and exporter.calls[0].skip_incomplete_contents is True
+    assert (receipt.schema_version, receipt.partial) == (2, True)
+    assert (receipt.observed_content_count, receipt.delivered_content_count, receipt.failed_content_count) == (3, 2, 1)
+    with database.session() as session:
+        first_bad = session.get(Asset, str(bad_assets[0]))
+        second_bad = session.get(Asset, str(bad_assets[1]))
+        assert first_bad is not None and second_bad is not None
+        assert first_bad.status == "verified"
+        assert second_bad.status != "verified"
+
+
+def test_source_run_receipt_reports_retry_backlog_failure_as_partial(
+    database: Database,
+    tmp_path: Path,
+) -> None:
+    scope = _seed_direct_scope(
+        database,
+        suffix="retry-backlog-partial",
+        content_assets=(
+            ("old-retry", (("video", 0),)),
+            ("new-source", (("image", 0),)),
+        ),
+        adapter="mediacrawler",
+    )
+    _attach_source_run(database, scope, ("old-retry",))
+    source_run_id = _attach_source_run(database, scope, ("new-source",))
+    old_asset = scope.assets_by_remote_content["old-retry"][0]
+    new_asset = scope.assets_by_remote_content["new-source"][0]
+    downloader = _SelectiveRetryableFailureDownloadService(
+        database,
+        tmp_path / "archive",
+        fail_for=old_asset,
+    )
+    service = SubscriptionPipelineService(
+        SubscriptionAssetSelector(database),
+        downloader,
+        _RecordingExportService(),
+        download_request_factory=_download_factory(tmp_path),
+        export_request_factory=lambda selection: EmbyExportRequest(
+            str(selection.author_id),
+            "pipeline-export-worker",
+            lease_seconds=60,
+            skip_incomplete_contents=True,
+        ),
+    )
+
+    outcome = service.run(_pipeline_request(scope, source_run_id=source_run_id))
+    receipt = pipeline_delivery_receipt(outcome)
+
+    assert (outcome.observed_content_count, outcome.delivered_content_count, outcome.failed_content_count) == (1, 1, 0)
+    assert (
+        outcome.retry_backlog_content_count,
+        outcome.delivered_retry_backlog_content_count,
+        outcome.failed_retry_backlog_content_count,
+    ) == (1, 0, 1)
+    assert (outcome.retryable_failed_content_count, outcome.terminal_failed_content_count) == (1, 0)
+    assert outcome.failure_codes == ("pipeline_download_retryable",)
+    assert [item.asset_id for item in outcome.downloads] == [new_asset]
+    assert receipt.partial is True
+    assert receipt.failed_content_count == 0
+    assert receipt.failed_retry_backlog_content_count == 1
+    assert receipt.retryable_failed_content_count == 1
+
+
+def test_incremental_source_run_downloads_and_publishes_one_new_content_once(
+    database: Database,
+    tmp_path: Path,
+) -> None:
+    scope = _seed_direct_scope(
+        database,
+        suffix="incremental-real",
+        adapter="mediacrawler",
+        content_assets=(
+            ("old-upload", (("image", 0),)),
+            ("new-upload", (("image", 0),)),
+        ),
+    )
+    old_url = "https://fixture.invalid/incremental-real/old-upload/image/0"
+    new_url = "https://fixture.invalid/incremental-real/new-upload/image/0"
+    payloads = {
+        old_url: b"\x89PNG\r\n\x1a\nold-upload-bytes",
+        new_url: b"\x89PNG\r\n\x1a\nnew-upload-bytes",
+    }
+    requests: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        requests.append(url)
+        payload = payloads[url]
+        return httpx.Response(
+            200,
+            headers={
+                "Content-Length": str(len(payload)),
+                "Content-Type": "image/png",
+                "ETag": f'"{len(requests)}"',
+            },
+            content=payload,
+        )
+
+    def transport_factory(_target: ValidatedTarget) -> httpx.BaseTransport:
+        return httpx.MockTransport(handler)
+
+    archive_root = tmp_path / "archive"
+    library_root = tmp_path / "library"
+    refresh_targets = {
+        stable_asset_key(
+            platform=Platform.BILI.value,
+            content_remote_type="post",
+            content_remote_id=remote_id,
+            kind="image",
+            position=0,
+            remote_id=f"{remote_id}:image:0",
+        ): url
+        for remote_id, url in (("old-upload", old_url), ("new-upload", new_url))
+    }
+    download_service = AssetDownloadService(
+        database,
+        SecureMediaDownloader(
+            SafeHttpClient(_PublicResolver(), transport_factory=transport_factory),
+            refresher=_FixtureRefresher(refresh_targets),
+        ),
+        clock=lambda: NOW,
+    )
+    export_service = EmbyExportService(
+        database,
+        EmbyExporter(library_root, staging_root=tmp_path / "export-work"),
+        clock=lambda: NOW,
+    )
+    service = SubscriptionPipelineService(
+        SubscriptionAssetSelector(database),
+        download_service,
+        export_service,
+        download_request_factory=_download_factory(tmp_path),
+        export_request_factory=lambda selection: EmbyExportRequest(
+            str(selection.author_id),
+            "incremental-export-worker",
+            lease_seconds=60,
+            skip_incomplete_contents=True,
+        ),
+    )
+
+    baseline_run = _attach_source_run(database, scope, ("old-upload",))
+    baseline = service.run(_pipeline_request(scope, source_run_id=baseline_run))
+    assert [item.disposition for item in baseline.downloads] == ["downloaded"]
+    assert requests == [old_url]
+    baseline_library = _file_state(library_root)
+    assert b"old-upload" in b"".join(payload for payload, _mtime in baseline_library.values())
+    assert b"new-upload" not in b"".join(payload for payload, _mtime in baseline_library.values())
+
+    incremental_run = _attach_source_run(database, scope, ("new-upload",))
+    incremental = service.run(_pipeline_request(scope, source_run_id=incremental_run))
+    assert [item.disposition for item in incremental.downloads] == ["downloaded"]
+    assert incremental.export.already_exported is False
+    assert requests == [old_url, new_url]
+    published_library = _file_state(library_root)
+    published_archive = _file_state(archive_root)
+    published_bytes = b"".join(payload for payload, _mtime in published_library.values())
+    assert b"old-upload" in published_bytes and b"new-upload" in published_bytes
+    assert len(list(library_root.rglob("*.nfo"))) == 3
+    assert len(list(archive_root.rglob("*.png"))) == 2
+
+    empty_run = _attach_source_run(database, scope, ())
+    zero_work = service.run(_pipeline_request(scope, source_run_id=empty_run))
+
+    assert zero_work.downloads == ()
+    assert zero_work.export.already_exported is True
+    assert zero_work.export.job_id == incremental.export.job_id
+    assert requests == [old_url, new_url]
+    assert _file_state(archive_root) == published_archive
+    assert _file_state(library_root) == published_library
+
+
+def test_source_run_pipeline_rejects_export_factory_that_can_publish_incomplete_content(
+    database: Database,
+    tmp_path: Path,
+) -> None:
+    scope = _seed_direct_scope(
+        database,
+        suffix="unsafe-export-mode",
+        adapter="mediacrawler",
+        content_assets=(("one", (("video", 0),)),),
+    )
+    run_id = _attach_source_run(database, scope, ("one",))
+    service = SubscriptionPipelineService(
+        SubscriptionAssetSelector(database),
+        _RecordingDownloadService(database, tmp_path / "archive"),
+        _RecordingExportService(),
+        download_request_factory=_download_factory(tmp_path),
+        export_request_factory=_export_factory,
+    )
+
+    with pytest.raises(SubscriptionPipelineError, match="pipeline_export_request_scope_mismatch"):
+        service.run(_pipeline_request(scope, source_run_id=run_id))
 
 
 def test_pipeline_stops_before_export_then_restart_reuses_verified_assets(

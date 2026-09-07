@@ -36,6 +36,7 @@ from .models import (
     AssetRefreshSource,
     Author,
     AuthorOutputBinding,
+    BiliSubscriptionProgress,
     Content,
     CreatorProfile,
     CreatorProfileLookup,
@@ -53,6 +54,7 @@ from .models import (
     Subscription,
     SubscriptionScanProgress,
     SyncRun,
+    SyncRunContent,
 )
 from .operation_repository import (
     OperationConflictError,
@@ -141,6 +143,7 @@ __all__ = [
     "AuthorRepository",
     "AuthorUpsert",
     "Base",
+    "BiliSubscriptionProgress",
     "Content",
     "ContentOwnershipConflictError",
     "ContentUpsert",
@@ -205,6 +208,7 @@ __all__ = [
     "SubscriptionRepository",
     "SubscriptionScanProgress",
     "SyncRun",
+    "SyncRunContent",
     "SyncRunRepository",
     "UTCDateTime",
     "asset_fingerprints",

@@ -579,41 +579,54 @@ def _subscription_delivery_summary(payload: Mapping[str, object]) -> dict[str, o
     """Validate the exact successful receipt for one subscription delivery."""
 
     error_code = "operation_result_invalid"
-    _exact_fields(
-        payload,
-        {
-            "subscription_id",
-            "account_id",
-            "author_id",
-            "platform",
-            "sync_job_id",
-            "run_id",
-            "pipeline_job_id",
-            "export_job_id",
-            "discovery_count",
-            "asset_identity_count",
-            "updated_count",
-            "discovery_count_semantics",
-            "selection_scope",
-            "selected_asset_count",
-            "verified_asset_count",
-            "downloaded_count",
-            "already_verified_count",
-            "publication_disposition",
-            "managed_file_count",
-            "directory_verified",
-        },
-        error_code=error_code,
-    )
+    legacy_fields = {
+        "subscription_id",
+        "account_id",
+        "author_id",
+        "platform",
+        "sync_job_id",
+        "run_id",
+        "pipeline_job_id",
+        "export_job_id",
+        "discovery_count",
+        "asset_identity_count",
+        "updated_count",
+        "discovery_count_semantics",
+        "selection_scope",
+        "selected_asset_count",
+        "verified_asset_count",
+        "downloaded_count",
+        "already_verified_count",
+        "publication_disposition",
+        "managed_file_count",
+        "directory_verified",
+    }
+    content_fields = {
+        "observed_content_count",
+        "delivered_content_count",
+        "failed_content_count",
+        "retry_backlog_content_count",
+        "delivered_retry_backlog_content_count",
+        "failed_retry_backlog_content_count",
+        "retryable_failed_content_count",
+        "terminal_failed_content_count",
+        "failure_codes",
+        "partial",
+    }
+    fields = frozenset(payload)
+    if fields not in {frozenset(legacy_fields), frozenset(legacy_fields | content_fields)}:
+        raise _fail(error_code)
+    content_scoped = fields == legacy_fields | content_fields
     selected = _count(payload["selected_asset_count"], error_code=error_code)
     verified = _count(payload["verified_asset_count"], error_code=error_code)
     downloaded = _count(payload["downloaded_count"], error_code=error_code)
     reused = _count(payload["already_verified_count"], error_code=error_code)
     if verified != selected or downloaded + reused != verified:
         raise _fail(error_code)
-    if payload["selection_scope"] != "author_active_snapshot" or payload["directory_verified"] is not True:
+    expected_scope = "source_run_plus_retry_backlog" if content_scoped else "author_active_snapshot"
+    if payload["selection_scope"] != expected_scope or payload["directory_verified"] is not True:
         raise _fail(error_code)
-    return {
+    result: dict[str, object] = {
         "subscription_id": _uuid(payload["subscription_id"], error_code=error_code),
         "account_id": _uuid(payload["account_id"], error_code=error_code),
         "author_id": _uuid(payload["author_id"], error_code=error_code),
@@ -628,7 +641,7 @@ def _subscription_delivery_summary(payload: Mapping[str, object]) -> dict[str, o
         "discovery_count_semantics": _stable_code(
             payload["discovery_count_semantics"], error_code=error_code, allowed=_DELIVERY_DISCOVERY_SEMANTICS
         ),
-        "selection_scope": "author_active_snapshot",
+        "selection_scope": expected_scope,
         "selected_asset_count": selected,
         "verified_asset_count": verified,
         "downloaded_count": downloaded,
@@ -641,6 +654,43 @@ def _subscription_delivery_summary(payload: Mapping[str, object]) -> dict[str, o
         "managed_file_count": _count(payload["managed_file_count"], error_code=error_code),
         "directory_verified": True,
     }
+    if not content_scoped:
+        return result
+    observed = _count(payload["observed_content_count"], error_code=error_code)
+    delivered = _count(payload["delivered_content_count"], error_code=error_code)
+    failed = _count(payload["failed_content_count"], error_code=error_code)
+    retry_backlog = _count(payload["retry_backlog_content_count"], error_code=error_code)
+    delivered_retry_backlog = _count(payload["delivered_retry_backlog_content_count"], error_code=error_code)
+    failed_retry_backlog = _count(payload["failed_retry_backlog_content_count"], error_code=error_code)
+    retryable = _count(payload["retryable_failed_content_count"], error_code=error_code)
+    terminal = _count(payload["terminal_failed_content_count"], error_code=error_code)
+    partial = _bool(payload["partial"], error_code=error_code)
+    raw_codes = payload["failure_codes"]
+    if not isinstance(raw_codes, list) or len(raw_codes) > 16:
+        raise _fail(error_code)
+    codes = [_safe_error_code(value, error_code=error_code) for value in raw_codes]
+    if (
+        delivered + failed != observed
+        or delivered_retry_backlog + failed_retry_backlog != retry_backlog
+        or retryable + terminal != failed + failed_retry_backlog
+        or partial != (failed + failed_retry_backlog > 0)
+        or codes != sorted(set(codes))
+        or bool(codes) != (failed + failed_retry_backlog > 0)
+    ):
+        raise _fail(error_code)
+    result.update(
+        observed_content_count=observed,
+        delivered_content_count=delivered,
+        failed_content_count=failed,
+        retry_backlog_content_count=retry_backlog,
+        delivered_retry_backlog_content_count=delivered_retry_backlog,
+        failed_retry_backlog_content_count=failed_retry_backlog,
+        retryable_failed_content_count=retryable,
+        terminal_failed_content_count=terminal,
+        failure_codes=codes,
+        partial=partial,
+    )
+    return result
 
 
 def _media_server_summary(

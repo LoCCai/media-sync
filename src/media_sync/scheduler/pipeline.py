@@ -13,11 +13,19 @@ from datetime import UTC, datetime
 from typing import Literal
 from uuid import UUID
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from media_sync.infrastructure.db.base import utc_now
-from media_sync.infrastructure.db.models import ACTIVE_SYNC_JOB_STATUSES, PLATFORMS, Account, Job, Subscription, SyncRun
+from media_sync.infrastructure.db.models import (
+    ACTIVE_SYNC_JOB_STATUSES,
+    PLATFORMS,
+    Account,
+    Job,
+    Subscription,
+    SyncRun,
+    SyncRunContent,
+)
 from media_sync.infrastructure.db.repositories import (
     JobRepository,
     NotFoundError,
@@ -425,6 +433,17 @@ class PipelineJobRepository:
         payload = parse_pipeline_subscription_payload(job)
         source, _run, subscription, account = self._source_scope(payload.sync_job_id, payload.run_id, refresh=True)
         export = self.session.get(Job, receipt.export_job_id, populate_existing=True)
+        observed_content_count = int(
+            self.session.scalar(
+                select(func.count())
+                .select_from(SyncRunContent)
+                .where(
+                    SyncRunContent.run_id == payload.run_id,
+                    SyncRunContent.subscription_id == payload.subscription_id,
+                )
+            )
+            or 0
+        )
         if (
             job.subscription_id != source.subscription_id
             or job.account_id != source.account_id
@@ -439,6 +458,12 @@ class PipelineJobRepository:
             or not isinstance(export.payload.get("result"), Mapping)
             or type(export.payload["result"].get("managed_file_count")) is not int
             or export.payload["result"]["managed_file_count"] != receipt.managed_file_count
+            or (
+                receipt.schema_version == 2
+                and (
+                    receipt.source_run_id != payload.run_id or receipt.observed_content_count != observed_content_count
+                )
+            )
         ):
             raise PipelineJobRepositoryError("pipeline receipt durable scope is invalid")
 

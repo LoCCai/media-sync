@@ -58,13 +58,21 @@ class _SealedSyntheticUploads:
     this deterministic composition exercises durable continuation cheaply.
     """
 
-    def __init__(self, *, empty: bool = False, tamper: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        empty: bool = False,
+        tamper: bool = False,
+        count: int = 3,
+        max_items: int = 1,
+    ) -> None:
         self.identities = (
             ()
             if empty
-            else tuple(BiliIdentity(str(1000 + index), f"BV{index:010d}", 1767225600 - index) for index in range(3))
+            else tuple(BiliIdentity(str(1000 + index), f"BV{index:010d}", 1767225600 - index) for index in range(count))
         )
         self.tamper = tamper
+        self.max_items = max_items
         self.manifests: list[RunnerManifest] = []
         self.coverages: list[BiliScanCoverage] = []
 
@@ -72,7 +80,7 @@ class _SealedSyntheticUploads:
         assert cancellation is not None and not cancellation.is_set()
         manifest = RunnerManifest.load(spec.paths.manifest_path)
         assert manifest == spec.manifest and manifest.bili_scan is not None
-        assert manifest.max_items == 1 and manifest.allow_full_history is False
+        assert manifest.max_items == self.max_items and manifest.allow_full_history is False
         self.manifests.append(manifest)
         unit = BiliScanUnit(manifest.bili_scan, manifest.max_items)
         rows: list[dict[str, object]] = []
@@ -118,7 +126,13 @@ class _SealedSyntheticUploads:
         return MediaCrawlerProcessResult(MediaCrawlerProcessStatus.SUCCEEDED, "Synthetic sealed upload unit")
 
 
-def _seed(database: Database, runtime_root: Path, *, login_method: LoginMethod = LoginMethod.COOKIE) -> str:
+def _seed(
+    database: Database,
+    runtime_root: Path,
+    *,
+    login_method: LoginMethod = LoginMethod.COOKIE,
+    max_items: int = 1,
+) -> str:
     subscription_id = support._seed(
         database,
         creator_remote_id="252671524",
@@ -128,7 +142,7 @@ def _seed(database: Database, runtime_root: Path, *, login_method: LoginMethod =
     with database.session() as session:
         subscription = session.get(Subscription, subscription_id)
         assert subscription is not None
-        subscription.max_items = 1
+        subscription.max_items = max_items
         subscription.policy = {
             "mediacrawler": {**subscription.policy["mediacrawler"], "allow_full_history": False},
         }

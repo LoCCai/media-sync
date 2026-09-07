@@ -353,8 +353,7 @@ def test_db_init_runs_packaged_migrations_idempotently(tmp_path: Path, monkeypat
             assert "alembic_version" in inspect(database.engine).get_table_names()
             with database.engine.connect() as connection:
                 assert (
-                    connection.scalar(text("SELECT version_num FROM alembic_version"))
-                    == "0013_exact_subscription_delivery"
+                    connection.scalar(text("SELECT version_num FROM alembic_version")) == "0014_bili_delivery_baseline"
                 )
         finally:
             database.dispose()
@@ -404,18 +403,18 @@ def test_db_status_reports_current_complete_schema_without_exposing_target(
         "ok": True,
         "database_driver": "sqlite+pysqlite",
         "reachable": True,
-        "revision": "0013_exact_subscription_delivery",
-        "expected_revision": "0013_exact_subscription_delivery",
+        "revision": "0014_bili_delivery_baseline",
+        "expected_revision": "0014_bili_delivery_baseline",
         "revision_current": True,
-        "required_table_count": 22,
-        "present_table_count": 22,
+        "required_table_count": 24,
+        "present_table_count": 24,
         "missing_tables": [],
         "reason": None,
     }
     assert text_result.exit_code == 0
     assert "Database ready:" in text_result.output
-    assert "revision=0013_exact_subscription_delivery" in text_result.output
-    assert "tables=22/22" in text_result.output
+    assert "revision=0014_bili_delivery_baseline" in text_result.output
+    assert "tables=24/24" in text_result.output
     for output in (json_result.output, text_result.output):
         assert initialized_cli_database not in output
         assert "cli.sqlite3" not in output
@@ -441,7 +440,7 @@ def test_db_status_uninitialized_is_nonzero_read_only_and_redacted(
         assert payload["revision"] is None
         assert payload["revision_current"] is False
         assert payload["present_table_count"] == 0
-        assert len(payload["missing_tables"]) == payload["required_table_count"] == 22
+        assert len(payload["missing_tables"]) == payload["required_table_count"] == 24
         assert payload["reason"] == "database file does not exist"
         assert "sentinel-secret" not in result.output
         assert "Traceback" not in result.output
@@ -493,7 +492,7 @@ def test_db_status_rejects_incomplete_required_table_set(
     payload = json.loads(result.output)
     assert payload["reachable"] is True
     assert payload["revision_current"] is True
-    assert payload["present_table_count"] == 21
+    assert payload["present_table_count"] == 23
     assert payload["missing_tables"] == ["export_records"]
     assert payload["reason"] == "database schema is incomplete"
     assert "Traceback" not in result.output
@@ -1271,9 +1270,22 @@ def test_pipeline_worker_cli_wires_bounded_runtime_and_fixed_output(
             captured.update(subscription_id=subscription_id, child_worker_id=worker_id)
 
     class _FakePipelineWorker:
-        def __init__(self, database: object, handler: object, *, retry_delay_seconds: int, event_sink: object) -> None:
+        def __init__(
+            self,
+            database: object,
+            handler: object,
+            *,
+            retry_delay_seconds: int,
+            event_sink: object,
+            bili_delivery_policy: object,
+        ) -> None:
             assert callable(event_sink)
-            captured.update(worker_database=database, handler=handler, retry_delay_seconds=retry_delay_seconds)
+            captured.update(
+                worker_database=database,
+                handler=handler,
+                retry_delay_seconds=retry_delay_seconds,
+                bili_delivery_policy=bili_delivery_policy,
+            )
 
         async def run_bounded(
             self,

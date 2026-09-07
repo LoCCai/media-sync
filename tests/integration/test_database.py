@@ -76,6 +76,7 @@ DOMAIN_TABLES = {
     "assets",
     "author_output_bindings",
     "authors",
+    "bili_subscription_progress",
     "contents",
     "export_records",
     "jobs",
@@ -90,6 +91,7 @@ DOMAIN_TABLES = {
     "scheduler_lanes",
     "subscription_scan_progress",
     "subscriptions",
+    "sync_run_contents",
     "sync_runs",
 }
 

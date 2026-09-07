@@ -213,7 +213,7 @@ export interface SubscriptionDeliveryResult {
   asset_identity_count: number;
   updated_count: number | null;
   discovery_count_semantics: 'created_rows' | 'processed_items';
-  selection_scope: 'author_active_snapshot';
+  selection_scope: 'author_active_snapshot' | 'source_run_plus_retry_backlog';
   selected_asset_count: number;
   verified_asset_count: number;
   downloaded_count: number;
@@ -221,9 +221,45 @@ export interface SubscriptionDeliveryResult {
   publication_disposition: 'published' | 'already_exported';
   managed_file_count: number;
   directory_verified: true;
+  observed_content_count?: number;
+  delivered_content_count?: number;
+  failed_content_count?: number;
+  retry_backlog_content_count?: number;
+  delivered_retry_backlog_content_count?: number;
+  failed_retry_backlog_content_count?: number;
+  retryable_failed_content_count?: number;
+  terminal_failed_content_count?: number;
+  failure_codes?: string[];
+  partial?: boolean;
+}
+
+export interface BiliDeliveryProgress {
+  schema_version: 1;
+  initialized: boolean;
+  phase: 'backfill' | 'reconciling' | 'incremental' | 'blocked';
+  baseline_snapshot_complete: boolean;
+  generation_id: string | null;
+  batch_count: number;
+  content_observation_count: number;
+  backfill_batch_count: number;
+  reconciliation_batch_count: number;
+  incremental_batch_count: number;
+  partial_batch_count: number;
+  failed_content_count: number;
+  last_lane: 'head' | 'history' | null;
+  last_stop_reason: string | null;
+  last_delivery_at: string | null;
+  source_end_observed_at: string | null;
+  source_end_run_id: string | null;
+  reconciled_at: string | null;
+  reconciliation_run_id: string | null;
+  baseline_snapshot_at: string | null;
+  next_eligible_at: string | null;
+  blocked_code: string | null;
 }
 
 export interface SubscriptionDetail extends Subscription {
+  bili_delivery?: BiliDeliveryProgress;
   schedule: {
     subscription_id: string;
     status: string;

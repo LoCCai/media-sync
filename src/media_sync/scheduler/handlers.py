@@ -58,6 +58,7 @@ class SubscriptionJobContext:
         default_factory=lambda: MappingProxyType({}),
         repr=False,
     )
+    auth_revision: int = 0
     schedule_revision: int = 0
     max_items: int = 30
     attempt: int = 1
@@ -94,6 +95,7 @@ class SubscriptionJobContext:
             "subscription_policy",
             MappingProxyType(dict(self.subscription_policy)),
         )
+        _bounded_int(self.auth_revision, name="auth_revision", minimum=0, maximum=9_007_199_254_740_991)
         _bounded_int(self.schedule_revision, name="schedule_revision", minimum=0, maximum=2_147_483_647)
         _bounded_int(self.max_items, name="max_items", minimum=1, maximum=1_000)
         _bounded_int(self.attempt, name="attempt", minimum=1, maximum=100)

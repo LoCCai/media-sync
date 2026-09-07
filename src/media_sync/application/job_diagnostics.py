@@ -80,6 +80,7 @@ _REVISIONS = frozenset(
         "0011_cookie_login",
         "0012_library_output_policy",
         "0013_exact_subscription_delivery",
+        "0014_bili_delivery_baseline",
     }
 )
 

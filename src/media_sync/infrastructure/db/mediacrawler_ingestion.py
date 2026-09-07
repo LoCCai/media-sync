@@ -28,7 +28,7 @@ from media_sync.media.locator import AdapterRefreshLocator
 from .asset_identity import asset_source_hint, stable_asset_key
 from .base import utc_now
 from .database import Database
-from .models import Asset, Content
+from .models import Asset, Content, SyncRunContent
 from .repositories import (
     AssetRefreshSourceRepository,
     AssetRepository,
@@ -351,6 +351,41 @@ def _record_refresh_observations(
             )
 
 
+def _record_run_contents(
+    session: Session,
+    records: Sequence[NormalizedMediaRecord],
+    *,
+    subscription_id: str,
+    run_id: str,
+) -> None:
+    """Persist the exact bounded Content set before checkpoint publication."""
+
+    if len(records) > MAX_BILI_BOUNDED_INGESTION_ITEMS:
+        raise RepositoryError("bounded Bili run content observation limit exceeded")
+    subscription = SubscriptionRepository(session).require_active(subscription_id)
+    observed_at = utc_now()
+    for position, record in enumerate(records):
+        content = session.scalar(
+            select(Content).where(
+                Content.platform == record.content.platform.value,
+                Content.remote_type == record.content.remote_type,
+                Content.remote_id == record.content.remote_id,
+            )
+        )
+        if content is None or content.author_id != subscription.author_id:
+            raise RepositoryError("bounded Bili run content observation scope is invalid")
+        session.add(
+            SyncRunContent(
+                run_id=run_id,
+                content_id=content.id,
+                subscription_id=subscription_id,
+                position=position,
+                asset_count=len(record.assets),
+                observed_at=observed_at,
+            )
+        )
+
+
 class MediaCrawlerIngestionService:
     """Commit normalized MediaCrawler records in independently fenced batches."""
 
@@ -506,6 +541,12 @@ class MediaCrawlerIngestionService:
                 raise RepositoryError("bounded Bili run is not an unpublished ingestion unit")
 
             discovered_count, asset_count = _upsert_batch(session, unique_records)
+            _record_run_contents(
+                session,
+                unique_records,
+                subscription_id=database_subscription_id,
+                run_id=database_run_id,
+            )
             _record_refresh_observations(
                 session,
                 unique_records,

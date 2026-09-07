@@ -393,14 +393,19 @@ class MediaCrawlerLoginProcessRunner:
                     tree_closed = _close_process_tree(process, windows_job)
                     break
                 if output_complete.is_set():
-                    break
+                    frame_complete = bool(output and output[0] is not None)
+                    if frame_complete or process.poll() is not None:
+                        break
                 if time.monotonic() - started >= request.timeout_seconds:
                     disposition = MediaCrawlerLoginStatus.TIMED_OUT
                     _stop_child(process, windows_job)
                     tree_closed = _close_process_tree(process, windows_job)
                     break
                 if cancellation is None:
-                    output_complete.wait(request.poll_seconds)
+                    if output_complete.is_set():
+                        time.sleep(request.poll_seconds)
+                    else:
+                        output_complete.wait(request.poll_seconds)
                 else:
                     cancellation.wait(request.poll_seconds)
         finally:

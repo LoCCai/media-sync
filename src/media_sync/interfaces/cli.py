@@ -128,7 +128,7 @@ from media_sync.integrations.mediacrawler.policies import (
     build_run_paths,
     normalize_creator_reference,
 )
-from media_sync.integrations.mediacrawler.subscription_policy import MAX_REQUEST_DELAY_SECONDS
+from media_sync.integrations.mediacrawler.subscription_policy import MAX_REQUEST_DELAY_SECONDS, from_subscription_policy
 from media_sync.media import (
     DownloadLimits,
     FFmpegStreamCopyMuxer,
@@ -203,7 +203,7 @@ app.add_typer(asset_app, name="asset")
 app.add_typer(emby_app, name="emby")
 app.add_typer(pipeline_app, name="pipeline")
 
-_EXPECTED_DATABASE_REVISION = "0013_exact_subscription_delivery"
+_EXPECTED_DATABASE_REVISION = "0014_bili_delivery_baseline"
 _REQUIRED_DATABASE_TABLES = frozenset(str(name) for name in Base.metadata.tables)
 
 
@@ -1062,6 +1062,7 @@ def _build_pipeline_worker(
 
     def handle(claim: PipelineSubscriptionClaim) -> PipelineHandlerResult:
         try:
+            source_run_id: UUID | None = None
             with database.session() as session:
                 subscription = session.get(Subscription, claim.subscription_id)
                 if (
@@ -1070,11 +1071,18 @@ def _build_pipeline_worker(
                     or subscription.account.platform != claim.platform
                 ):
                     return PipelineHandlerResult.failure("pipeline_subscription_invalid")
+                if (
+                    subscription.account.adapter == "mediacrawler"
+                    and subscription.account.platform == "bili"
+                    and from_subscription_policy(subscription.policy).effective_bili_scope == "uploads"
+                ):
+                    source_run_id = UUID(claim.run_id)
             outcome = executor.run(
                 UUID(claim.subscription_id),
                 expected_account_id=UUID(claim.account_id),
                 expected_platform=claim.platform,
                 worker_id=f"{worker_id}:{claim.job_id}",
+                source_run_id=source_run_id,
             )
             if (
                 str(outcome.selection.subscription_id) != claim.subscription_id
@@ -1101,6 +1109,10 @@ def _build_pipeline_worker(
         handle,
         retry_delay_seconds=retry_delay_seconds,
         event_sink=event_sink,
+        bili_delivery_policy=BiliScanContinuationPolicy.from_lock(
+            settings.mediacrawler_lock_path,
+            delay_seconds=settings.bili_scan_continuation_delay_seconds,
+        ),
     )
 
 

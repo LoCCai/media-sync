@@ -42,6 +42,7 @@ from media_sync.infrastructure.db.repositories import (
     SyncRunRepository,
 )
 
+from .bili_delivery_progress import BiliDeliveryProgressRepository, binding_for_subscription
 from .bili_scan_continuation import BiliScanContinuationPolicy
 from .policy import FailureDisposition, RetryPolicy, classify_failure
 
@@ -99,6 +100,16 @@ def _active_subscription_delivery_operation(subscription_id: Any) -> Any:
             Operation.target_type == _SUBSCRIPTION_OPERATION_TARGET_TYPE,
             Operation.target_id == subscription_id,
             Operation.state.in_(tuple(ACTIVE_OPERATION_STATES)),
+        )
+    )
+
+
+def _active_subscription_pipeline_job(subscription_id: Any) -> Any:
+    return exists(
+        select(Job.id).where(
+            Job.job_type == _PIPELINE_SUBSCRIPTION_JOB_TYPE,
+            Job.subscription_id == subscription_id,
+            Job.status.in_(_ACTIVE_JOB_STATUSES),
         )
     )
 
@@ -712,11 +723,13 @@ class SchedulerRepository:
                 Subscription.created_at,
                 Subscription.id,
             )
-            .limit(batch_limit)
+            .limit(_MAX_BATCH)
         ).all()
 
         materialized: list[MaterializedCycle] = []
         for subscription_id, account_id, schedule_revision, next_run_at, platform in candidates:
+            if len(materialized) >= batch_limit:
+                break
             cycle = self._materialize_cycle(
                 subscription_id=subscription_id,
                 account_id=account_id,
@@ -726,6 +739,7 @@ class SchedulerRepository:
                 now=current,
                 retry_policy=frozen_retry,
                 due_only=True,
+                resume_blocked=False,
             )
             if cycle is not None:
                 materialized.append(cycle)
@@ -742,8 +756,33 @@ class SchedulerRepository:
         now: datetime,
         retry_policy: RetryPolicy,
         due_only: bool,
+        resume_blocked: bool = False,
     ) -> MaterializedCycle | None:
         """Shared revision/active-cycle fence for scheduled and exact creation."""
+
+        subscription = self.session.scalar(
+            select(Subscription)
+            .where(Subscription.id == subscription_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        if (
+            subscription is None
+            or subscription.account_id != account_id
+            or subscription.schedule_revision != schedule_revision
+            or subscription.deleted_at is not None
+            or not subscription.enabled
+        ):
+            return None
+        progress = BiliDeliveryProgressRepository(self.session).ensure_for_materialization(
+            subscription,
+            upstream_sha=self.bili_scan_continuation.upstream_sha,
+            schedule_revision=schedule_revision,
+            now=now,
+            resume_blocked=resume_blocked,
+        )
+        if progress is not None and progress.phase == "blocked":
+            return None
 
         fenced_active_cycle = exists(
             select(Job.id).where(
@@ -752,6 +791,8 @@ class SchedulerRepository:
                 Job.status.in_(tuple(ACTIVE_SYNC_JOB_STATUSES)),
             )
         )
+        fenced_active_pipeline = _active_subscription_pipeline_job(subscription_id)
+        pipeline_conditions = (~fenced_active_pipeline,) if progress is not None else ()
         due_conditions = (
             (
                 or_(Subscription.next_run_at.is_(None), Subscription.next_run_at <= now),
@@ -770,6 +811,7 @@ class SchedulerRepository:
                 Subscription.schedule_revision == schedule_revision,
                 *due_conditions,
                 ~fenced_active_cycle,
+                *pipeline_conditions,
             )
             .values(
                 schedule_revision=Subscription.schedule_revision + 1,
@@ -881,6 +923,7 @@ class SchedulerRepository:
             now=current,
             retry_policy=retry_policy or RetryPolicy(),
             due_only=False,
+            resume_blocked=True,
         )
         if cycle is None:
             raise SchedulerExactConflictError("subscription_delivery_stale")
@@ -1888,7 +1931,11 @@ class SchedulerRepository:
                 minimum=60,
                 maximum=2_147_483_647,
             )
-            if outcome == "success" and payload is not None:
+            if (
+                outcome == "success"
+                and payload is not None
+                and binding_for_subscription(subscription, self.bili_scan_continuation.upstream_sha) is None
+            ):
                 interval = self.bili_scan_continuation.delay_after_success(
                     job=job,
                     run=self.session.get(SyncRun, job.run_id) if job.run_id is not None else None,

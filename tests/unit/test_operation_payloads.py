@@ -331,6 +331,96 @@ def test_subscription_delivery_summary_rejects_false_or_sensitive_receipts(
         operation_result_summary("subscription-delivery", payload)
 
 
+def test_subscription_delivery_summary_persists_closed_partial_content_receipt() -> None:
+    payload: dict[str, object] = {
+        "subscription_id": SUBSCRIPTION_ID,
+        "account_id": ACCOUNT_ID,
+        "author_id": AUTHOR_ID,
+        "platform": "bili",
+        "sync_job_id": JOB_ID,
+        "run_id": RUN_ID,
+        "pipeline_job_id": PIPELINE_JOB_ID,
+        "export_job_id": EXPORT_JOB_ID,
+        "discovery_count": 3,
+        "asset_identity_count": 5,
+        "updated_count": None,
+        "discovery_count_semantics": "created_rows",
+        "selection_scope": "source_run_plus_retry_backlog",
+        "selected_asset_count": 4,
+        "verified_asset_count": 4,
+        "downloaded_count": 3,
+        "already_verified_count": 1,
+        "publication_disposition": "published",
+        "managed_file_count": 12,
+        "directory_verified": True,
+        "observed_content_count": 3,
+        "delivered_content_count": 2,
+        "failed_content_count": 1,
+        "retry_backlog_content_count": 2,
+        "delivered_retry_backlog_content_count": 1,
+        "failed_retry_backlog_content_count": 1,
+        "retryable_failed_content_count": 1,
+        "terminal_failed_content_count": 1,
+        "failure_codes": ["pipeline_download_retryable", "pipeline_download_terminal"],
+        "partial": True,
+    }
+
+    assert operation_result_summary("subscription-delivery", payload) == payload
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        {"delivered_content_count": 3},
+        {"delivered_retry_backlog_content_count": 2},
+        {"retryable_failed_content_count": 0},
+        {"failure_codes": []},
+        {"failure_codes": ["pipeline_download_retryable", "pipeline_download_retryable"]},
+        {"failure_codes": ["pipeline_download_retryable", "private/path"]},
+        {"partial": False},
+        {"selection_scope": "author_active_snapshot"},
+    ],
+)
+def test_subscription_delivery_summary_rejects_inconsistent_partial_content_receipt(
+    mutation: dict[str, object],
+) -> None:
+    payload: dict[str, object] = {
+        "subscription_id": SUBSCRIPTION_ID,
+        "account_id": ACCOUNT_ID,
+        "author_id": AUTHOR_ID,
+        "platform": "bili",
+        "sync_job_id": JOB_ID,
+        "run_id": RUN_ID,
+        "pipeline_job_id": PIPELINE_JOB_ID,
+        "export_job_id": EXPORT_JOB_ID,
+        "discovery_count": 3,
+        "asset_identity_count": 5,
+        "updated_count": None,
+        "discovery_count_semantics": "created_rows",
+        "selection_scope": "source_run_plus_retry_backlog",
+        "selected_asset_count": 4,
+        "verified_asset_count": 4,
+        "downloaded_count": 3,
+        "already_verified_count": 1,
+        "publication_disposition": "published",
+        "managed_file_count": 12,
+        "directory_verified": True,
+        "observed_content_count": 3,
+        "delivered_content_count": 2,
+        "failed_content_count": 1,
+        "retry_backlog_content_count": 2,
+        "delivered_retry_backlog_content_count": 1,
+        "failed_retry_backlog_content_count": 1,
+        "retryable_failed_content_count": 1,
+        "terminal_failed_content_count": 1,
+        "failure_codes": ["pipeline_download_retryable", "pipeline_download_terminal"],
+        "partial": True,
+    }
+    payload.update(mutation)
+    with pytest.raises(OperationPayloadError, match="operation_result_invalid"):
+        operation_result_summary("subscription-delivery", payload)
+
+
 @pytest.mark.parametrize(
     "payload",
     [

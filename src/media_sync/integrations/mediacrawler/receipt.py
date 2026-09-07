@@ -246,6 +246,28 @@ def _signature(stat_result: os.stat_result) -> _FileSignature:
     )
 
 
+def _stable_signature_equal(left: _FileSignature, right: _FileSignature) -> bool:
+    """Compare all identity fields, tolerating only Windows' delayed ctime flush."""
+
+    if left == right:
+        return True
+    return os.name == "nt" and (
+        left.device,
+        left.inode,
+        left.size,
+        left.links,
+        left.mode,
+        left.modified_ns,
+    ) == (
+        right.device,
+        right.inode,
+        right.size,
+        right.links,
+        right.mode,
+        right.modified_ns,
+    )
+
+
 def _require_safe_directory(path: Path) -> Path:
     declared = path.expanduser().absolute()
     try:
@@ -361,18 +383,14 @@ def _read_stable_regular_file(
             or before.st_nlink != 1
             or before.st_size < 1
             or before.st_size > maximum_bytes
-            or (expected_signature is not None and before_signature != expected_signature)
+            or (expected_signature is not None and not _stable_signature_equal(before_signature, expected_signature))
         ):
             raise CompletionReceiptError(CompletionReceiptErrorCode.UNSAFE_PATH)
         descriptor = os.open(path, _open_flags())
         opened = os.fstat(descriptor)
         opened_signature = _signature(opened)
-        if (
-            not stat.S_ISREG(opened.st_mode)
-            or _is_reparse(opened)
-            or opened.st_nlink != 1
-            or opened_signature != before_signature
-        ):
+        signature_matches = _stable_signature_equal(opened_signature, before_signature)
+        if not stat.S_ISREG(opened.st_mode) or _is_reparse(opened) or opened.st_nlink != 1 or not signature_matches:
             raise CompletionReceiptError(CompletionReceiptErrorCode.UNSAFE_PATH)
 
         chunks: list[bytes] = []
@@ -388,7 +406,9 @@ def _read_stable_regular_file(
         payload = b"".join(chunks)
         after = os.fstat(descriptor)
         path_after = path.lstat()
-        if _signature(after) != opened_signature or _signature(path_after) != opened_signature:
+        if not _stable_signature_equal(_signature(after), opened_signature) or not _stable_signature_equal(
+            _signature(path_after), opened_signature
+        ):
             raise CompletionReceiptError(CompletionReceiptErrorCode.OUTPUT_MISMATCH)
         return payload, opened_signature
     except CompletionReceiptError:

@@ -14,13 +14,13 @@ from typing import Protocol
 from uuid import UUID
 
 from sqlalchemy import select
-from sqlalchemy.orm import joinedload
+from sqlalchemy.orm import selectinload
 
-from media_sync.application.downloads import AssetDownloadOutcome, AssetDownloadRequest
+from media_sync.application.downloads import AssetDownloadOrchestrationError, AssetDownloadOutcome, AssetDownloadRequest
 from media_sync.application.emby import EmbyExportOutcome, EmbyExportRequest
 from media_sync.domain import AssetStatus, Platform
 from media_sync.infrastructure.db import AssetRefreshSourceRepository, Database, SubscriptionRepository
-from media_sync.infrastructure.db.models import Asset, Content
+from media_sync.infrastructure.db.models import Asset, AssetRefreshSource, Content, SyncRun, SyncRunContent
 from media_sync.media import AdapterRefreshLocator, MediaDownloadError, parse_locator
 
 _PIPELINE_ERRORS: dict[str, tuple[str, bool]] = {
@@ -70,6 +70,7 @@ class SubscriptionPipelineRequest:
     subscription_id: UUID
     expected_account_id: UUID
     expected_platform: str
+    source_run_id: UUID | None = None
 
     def __post_init__(self) -> None:
         for name in ("subscription_id", "expected_account_id"):
@@ -79,6 +80,16 @@ class SubscriptionPipelineRequest:
             except (AttributeError, TypeError, ValueError) as exc:
                 raise ValueError(f"{name} must be a UUID") from exc
             object.__setattr__(self, name, normalized)
+        if self.source_run_id is not None:
+            try:
+                source_run_id = (
+                    self.source_run_id
+                    if isinstance(self.source_run_id, UUID)
+                    else UUID(str(self.source_run_id).strip())
+                )
+            except (AttributeError, TypeError, ValueError) as exc:
+                raise ValueError("source_run_id must be a UUID") from exc
+            object.__setattr__(self, "source_run_id", source_run_id)
         try:
             platform = Platform(str(self.expected_platform).strip()).value
         except (AttributeError, TypeError, ValueError) as exc:
@@ -110,6 +121,9 @@ class SubscriptionAssetSelection:
     platform: str
     account_adapter: str
     assets: tuple[SelectedPipelineAsset, ...]
+    source_run_id: UUID | None = None
+    selected_content_ids: tuple[UUID, ...] = ()
+    source_content_ids: tuple[UUID, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,6 +133,16 @@ class SubscriptionPipelineOutcome:
     selection: SubscriptionAssetSelection
     downloads: tuple[AssetDownloadOutcome, ...]
     export: EmbyExportOutcome
+    source_run_id: UUID | None = None
+    observed_content_count: int = 0
+    delivered_content_count: int = 0
+    failed_content_count: int = 0
+    retry_backlog_content_count: int = 0
+    delivered_retry_backlog_content_count: int = 0
+    failed_retry_backlog_content_count: int = 0
+    retryable_failed_content_count: int = 0
+    terminal_failed_content_count: int = 0
+    failure_codes: tuple[str, ...] = ()
 
 
 class AssetDownloadRunner(Protocol):
@@ -144,7 +168,7 @@ class SubscriptionAssetSelector:
     def __init__(self, database: Database) -> None:
         self._database = database
 
-    def select(self, subscription_id: UUID) -> SubscriptionAssetSelection:
+    def select(self, subscription_id: UUID, *, source_run_id: UUID | None = None) -> SubscriptionAssetSelection:
         """Return stable required work, rejecting cross-subscription refresh sources."""
 
         canonical_subscription_id = str(subscription_id)
@@ -164,50 +188,96 @@ class SubscriptionAssetSelector:
                 raise SubscriptionPipelineError("pipeline_subscription_invalid")
 
             statement = (
-                select(Asset)
-                .join(Content, Content.id == Asset.content_id)
+                select(Content)
                 .where(
                     Content.author_id == author.id,
                     Content.tombstoned_at.is_(None),
                 )
-                .options(joinedload(Asset.content))
+                .options(selectinload(Content.assets))
                 .order_by(
                     Content.platform,
                     Content.remote_type,
                     Content.remote_id,
                     Content.id,
-                    Asset.kind,
-                    Asset.position,
-                    Asset.id,
                 )
             )
-            assets = list(session.scalars(statement).unique().all())
+            contents = list(session.scalars(statement).unique().all())
             provenance = AssetRefreshSourceRepository(session)
-            selected: list[SelectedPipelineAsset] = []
-            for asset in assets:
-                content = asset.content
-                if asset.platform != content.platform or content.platform != author.platform:
+            source_content_ids: tuple[str, ...] = ()
+            expected_asset_counts: dict[str, int] = {}
+            if source_run_id is not None:
+                run = session.get(SyncRun, str(source_run_id))
+                if run is None or run.subscription_id != subscription.id or run.status != "succeeded":
                     raise SubscriptionPipelineError("pipeline_subscription_invalid")
-                requires_refresh = self._requires_mediacrawler_refresh(asset)
-                if requires_refresh and not any(
-                    source.subscription_id == canonical_subscription_id for source in provenance.list_eligible(asset.id)
-                ):
-                    raise SubscriptionPipelineError("pipeline_asset_source_ineligible")
-                try:
-                    selected.append(
-                        SelectedPipelineAsset(
-                            asset_id=UUID(asset.id),
-                            content_id=UUID(content.id),
-                            generation=asset.generation,
-                            platform=asset.platform,
-                            kind=asset.kind,
-                            position=asset.position,
-                            status=AssetStatus(asset.status),
-                            requires_mediacrawler_refresh=requires_refresh,
+                observations = tuple(
+                    session.scalars(
+                        select(SyncRunContent)
+                        .where(
+                            SyncRunContent.run_id == run.id,
+                            SyncRunContent.subscription_id == subscription.id,
                         )
+                        .order_by(SyncRunContent.position)
+                    ).all()
+                )
+                source_content_ids = tuple(item.content_id for item in observations)
+                expected_asset_counts = {item.content_id: item.asset_count for item in observations}
+                if len(expected_asset_counts) != len(observations):
+                    raise SubscriptionPipelineError("pipeline_subscription_invalid")
+
+            selected: list[SelectedPipelineAsset] = []
+            selected_content_ids: list[str] = []
+            for content in contents:
+                if content.platform != author.platform:
+                    raise SubscriptionPipelineError("pipeline_subscription_invalid")
+                content_assets: list[tuple[Asset, tuple[AssetRefreshSource, ...]]] = []
+                for asset in sorted(content.assets, key=lambda item: (item.kind, item.position, item.id)):
+                    if asset.platform != content.platform:
+                        raise SubscriptionPipelineError("pipeline_subscription_invalid")
+                    eligible = tuple(
+                        source
+                        for source in provenance.list_eligible(asset.id)
+                        if source.subscription_id == canonical_subscription_id
                     )
-                except (TypeError, ValueError):
-                    raise SubscriptionPipelineError("pipeline_subscription_invalid") from None
+                    content_assets.append((asset, eligible))
+
+                in_source_run = content.id in expected_asset_counts
+                retry_backlog = source_run_id is not None and any(
+                    asset.status != AssetStatus.VERIFIED.value and eligible for asset, eligible in content_assets
+                )
+                if source_run_id is not None and not in_source_run and not retry_backlog:
+                    continue
+                selected_content_ids.append(content.id)
+                selected_for_content = [
+                    (asset, eligible)
+                    for asset, eligible in content_assets
+                    if source_run_id is None
+                    or (in_source_run and any(source.last_run_id == str(source_run_id) for source in eligible))
+                    or (not in_source_run and bool(eligible))
+                ]
+                if in_source_run and len(selected_for_content) != expected_asset_counts[content.id]:
+                    raise SubscriptionPipelineError("pipeline_asset_source_ineligible")
+                for asset, eligible in selected_for_content:
+                    requires_refresh = self._requires_mediacrawler_refresh(asset)
+                    if requires_refresh and not eligible:
+                        raise SubscriptionPipelineError("pipeline_asset_source_ineligible")
+                    try:
+                        selected.append(
+                            SelectedPipelineAsset(
+                                asset_id=UUID(asset.id),
+                                content_id=UUID(content.id),
+                                generation=asset.generation,
+                                platform=asset.platform,
+                                kind=asset.kind,
+                                position=asset.position,
+                                status=AssetStatus(asset.status),
+                                requires_mediacrawler_refresh=requires_refresh,
+                            )
+                        )
+                    except (TypeError, ValueError):
+                        raise SubscriptionPipelineError("pipeline_subscription_invalid") from None
+
+            if source_run_id is not None and not set(source_content_ids).issubset(selected_content_ids):
+                raise SubscriptionPipelineError("pipeline_subscription_invalid")
 
             try:
                 return SubscriptionAssetSelection(
@@ -217,6 +287,9 @@ class SubscriptionAssetSelector:
                     platform=author.platform,
                     account_adapter=account.adapter,
                     assets=tuple(selected),
+                    source_run_id=source_run_id,
+                    selected_content_ids=tuple(UUID(item) for item in selected_content_ids),
+                    source_content_ids=tuple(UUID(item) for item in source_content_ids),
                 )
             except (TypeError, ValueError):
                 raise SubscriptionPipelineError("pipeline_subscription_invalid") from None
@@ -256,12 +329,14 @@ class SubscriptionPipelineService:
     def run(self, request: SubscriptionPipelineRequest) -> SubscriptionPipelineOutcome:
         """Converge durable child services; any download failure skips export."""
 
-        initial = self._selector.select(request.subscription_id)
+        initial = self._selector.select(request.subscription_id, source_run_id=request.source_run_id)
         if initial.account_id != request.expected_account_id or initial.platform != request.expected_platform:
             # The coordinator's duplicated durable scope is authoritative.
             # Reject mutable Subscription drift before constructing or running
             # any child download request.
             raise SubscriptionPipelineError("pipeline_subscription_invalid")
+        if request.source_run_id is not None:
+            return self._run_content_scoped(request, initial)
         if self._selection_preflight is not None:
             self._selection_preflight(initial)
         outcomes: list[AssetDownloadOutcome] = []
@@ -304,6 +379,99 @@ class SubscriptionPipelineService:
             export=export_outcome,
         )
 
+    def _run_content_scoped(
+        self,
+        request: SubscriptionPipelineRequest,
+        initial: SubscriptionAssetSelection,
+    ) -> SubscriptionPipelineOutcome:
+        """Isolate failures at complete Content boundaries, then publish once."""
+
+        assets_by_content: dict[UUID, list[SelectedPipelineAsset]] = {
+            content_id: [] for content_id in initial.selected_content_ids
+        }
+        for asset in initial.assets:
+            assets_by_content.setdefault(asset.content_id, []).append(asset)
+
+        outcomes: list[AssetDownloadOutcome] = []
+        failed: dict[UUID, tuple[str, bool]] = {}
+        for content_id in initial.selected_content_ids:
+            content_assets = tuple(assets_by_content.get(content_id, ()))
+            scoped = SubscriptionAssetSelection(
+                subscription_id=initial.subscription_id,
+                account_id=initial.account_id,
+                author_id=initial.author_id,
+                platform=initial.platform,
+                account_adapter=initial.account_adapter,
+                assets=content_assets,
+                source_run_id=initial.source_run_id,
+                selected_content_ids=(content_id,),
+                source_content_ids=((content_id,) if content_id in initial.source_content_ids else ()),
+            )
+            try:
+                if self._selection_preflight is not None:
+                    self._selection_preflight(scoped)
+                content_outcomes: list[AssetDownloadOutcome] = []
+                for asset in content_assets:
+                    download_request = self._download_request_factory(asset)
+                    if download_request.asset_id != asset.asset_id:
+                        raise SubscriptionPipelineError("pipeline_download_request_scope_mismatch")
+                    outcome = self._download_service.run(download_request)
+                    if outcome.asset_id != asset.asset_id:
+                        raise SubscriptionPipelineError("pipeline_download_result_scope_mismatch")
+                    if outcome.status is not AssetStatus.VERIFIED:
+                        raise SubscriptionPipelineError("pipeline_asset_not_verified")
+                    content_outcomes.append(outcome)
+            except AssetDownloadOrchestrationError as error:
+                failed[content_id] = (
+                    "pipeline_download_retryable" if error.retryable else "pipeline_download_terminal",
+                    error.retryable,
+                )
+                continue
+            except SubscriptionPipelineError as error:
+                failed[content_id] = (error.code, error.retryable)
+                continue
+            outcomes.extend(content_outcomes)
+
+        current = self._selector.select(request.subscription_id, source_run_id=request.source_run_id)
+        if self._selection_identity(initial) != self._selection_identity(current):
+            raise SubscriptionPipelineError("pipeline_selection_changed")
+        current_assets = {asset.asset_id: asset for asset in current.assets}
+        for outcome in outcomes:
+            current_asset = current_assets.get(outcome.asset_id)
+            if (
+                current_asset is None
+                or current_asset.generation != outcome.generation
+                or current_asset.status is not AssetStatus.VERIFIED
+                or outcome.status is not AssetStatus.VERIFIED
+            ):
+                raise SubscriptionPipelineError("pipeline_asset_not_verified")
+
+        export_request = self._export_request_factory(current)
+        if export_request.author_id != str(current.author_id) or not export_request.skip_incomplete_contents:
+            raise SubscriptionPipelineError("pipeline_export_request_scope_mismatch")
+        export_outcome = self._export_service.export_author(export_request)
+        source_ids = set(current.source_content_ids)
+        retry_backlog_ids = set(current.selected_content_ids) - source_ids
+        source_failures = {content_id: value for content_id, value in failed.items() if content_id in source_ids}
+        retry_backlog_failures = {
+            content_id: value for content_id, value in failed.items() if content_id in retry_backlog_ids
+        }
+        return SubscriptionPipelineOutcome(
+            selection=current,
+            downloads=tuple(outcomes),
+            export=export_outcome,
+            source_run_id=request.source_run_id,
+            observed_content_count=len(source_ids),
+            delivered_content_count=len(source_ids - set(source_failures)),
+            failed_content_count=len(source_failures),
+            retry_backlog_content_count=len(retry_backlog_ids),
+            delivered_retry_backlog_content_count=len(retry_backlog_ids - set(retry_backlog_failures)),
+            failed_retry_backlog_content_count=len(retry_backlog_failures),
+            retryable_failed_content_count=sum(retryable for _code, retryable in failed.values()),
+            terminal_failed_content_count=sum(not retryable for _code, retryable in failed.values()),
+            failure_codes=tuple(sorted({code for code, _retryable in failed.values()})),
+        )
+
     @staticmethod
     def _context_identity(selection: SubscriptionAssetSelection) -> tuple[UUID, UUID, UUID, str, str]:
         return (
@@ -312,6 +480,20 @@ class SubscriptionPipelineService:
             selection.author_id,
             selection.platform,
             selection.account_adapter,
+        )
+
+    @staticmethod
+    def _selection_identity(selection: SubscriptionAssetSelection) -> tuple[object, ...]:
+        return (
+            selection.subscription_id,
+            selection.account_id,
+            selection.author_id,
+            selection.platform,
+            selection.account_adapter,
+            selection.source_run_id,
+            selection.selected_content_ids,
+            selection.source_content_ids,
+            tuple((asset.asset_id, asset.content_id, asset.generation) for asset in selection.assets),
         )
 
 

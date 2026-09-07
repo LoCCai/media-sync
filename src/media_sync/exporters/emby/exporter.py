@@ -17,6 +17,7 @@ import time
 import unicodedata
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
+from datetime import datetime
 from functools import partial
 from pathlib import Path, PurePosixPath
 from typing import BinaryIO
@@ -30,8 +31,11 @@ from .layout import (
     PlannedFile,
     author_relative_directory,
     build_layout_plan,
+    export_source_fingerprint,
 )
 from .models import (
+    ContentFingerprint,
+    ContentIdentity,
     ExportAuthor,
     ExportContent,
     ExportResult,
@@ -40,10 +44,13 @@ from .models import (
     PublishedIdentity,
     PublishedTreeInspection,
     RenderedExport,
+    VerifiedAsset,
 )
 
 _CHUNK_BYTES = 1024 * 1024
 _MAX_MANIFEST_BYTES = 16 * 1024 * 1024
+_MAX_CONTENT_SOURCE_BYTES = 4 * 1024 * 1024
+_MAX_CONTENT_ASSETS = 10_000
 _TRANSACTION_ROOT_NAME = ".media-sync-transactions-v1"
 _TRANSACTION_CONFLICT_MARKER = "RECOVERY_REQUIRED"
 _TRANSACTION_SCHEMA_VERSION = 2
@@ -73,6 +80,7 @@ class _Manifest:
     author_remote_id: str
     source_fingerprint: str
     tree_sha256: str
+    content_fingerprints: tuple[ContentFingerprint, ...]
     files: tuple[ManagedFile, ...]
 
 
@@ -593,6 +601,8 @@ def _parse_manifest(payload: bytes, author: ExportAuthor) -> _Manifest:
     content_fingerprints = decoded["content_fingerprints"]
     if not isinstance(content_fingerprints, list):
         raise ExportConflictError("managed_manifest_invalid")
+    parsed_content_fingerprints: list[ContentFingerprint] = []
+    seen_content_identities: set[tuple[str, str, str]] = set()
     for item in content_fingerprints:
         if (
             not isinstance(item, dict)
@@ -601,6 +611,22 @@ def _parse_manifest(payload: bytes, author: ExportAuthor) -> _Manifest:
             or _SHA256_PATTERN.fullmatch(item["sha256"]) is None
         ):
             raise ExportConflictError("managed_manifest_invalid")
+        try:
+            identity = ContentIdentity(item["platform"], item["remote_type"], item["remote_id"])
+        except ExportError:
+            raise ExportConflictError("managed_manifest_invalid") from None
+        identity_tuple = (identity.platform, identity.remote_type, identity.remote_id)
+        if identity_tuple in seen_content_identities:
+            raise ExportConflictError("managed_manifest_invalid")
+        seen_content_identities.add(identity_tuple)
+        parsed_content_fingerprints.append(
+            ContentFingerprint(identity.platform, identity.remote_type, identity.remote_id, item["sha256"])
+        )
+    if parsed_content_fingerprints != sorted(
+        parsed_content_fingerprints,
+        key=lambda item: (item.platform, item.remote_type, item.remote_id),
+    ):
+        raise ExportConflictError("managed_manifest_invalid")
     files_payload = decoded["files"]
     if not isinstance(files_payload, list):
         raise ExportConflictError("managed_manifest_invalid")
@@ -636,6 +662,7 @@ def _parse_manifest(payload: bytes, author: ExportAuthor) -> _Manifest:
         author_remote_id=author.remote_id,
         source_fingerprint=source_fingerprint,
         tree_sha256=tree_sha256,
+        content_fingerprints=tuple(parsed_content_fingerprints),
         files=tuple(files),
     )
 
@@ -734,6 +761,243 @@ def _fence_render_predecessor(
         raise ExportConflictError(error_code)
     _verify_published_files(author_directory, current.files, error_code=error_code)
     return current_bytes
+
+
+def _verified_preservation_predecessor(
+    export_root: Path,
+    author_directory: Path,
+    manifest_path: Path,
+    author: ExportAuthor,
+    expected_predecessor: PublishedIdentity | None,
+) -> tuple[_Manifest | None, bytes | None]:
+    """Load exact predecessor bytes before carrying any managed Content files."""
+
+    error_code = "predecessor_mismatch"
+    try:
+        current, current_bytes = _read_predecessor(
+            export_root,
+            author_directory,
+            manifest_path,
+            author,
+        )
+        if current is None or current_bytes is None:
+            if expected_predecessor is None:
+                return None, None
+            raise ExportConflictError(error_code)
+        manifest_stat = _safe_lstat_as(manifest_path, error_code)
+        actual = PublishedIdentity(
+            current.source_fingerprint,
+            current.tree_sha256,
+            _sha256_bytes(current_bytes),
+        )
+        if (
+            expected_predecessor is None
+            or actual != expected_predecessor
+            or manifest_stat is None
+            or not stat.S_ISREG(manifest_stat.st_mode)
+            or manifest_stat.st_nlink != 1
+        ):
+            raise ExportConflictError(error_code)
+        _verify_published_files(author_directory, current.files, error_code=error_code)
+        if _read_manifest_payload(manifest_path) != current_bytes:
+            raise ExportConflictError(error_code)
+        return current, current_bytes
+    except ExportError as error:
+        if isinstance(error, ExportConflictError) and error.code == error_code:
+            raise
+        raise ExportConflictError(error_code) from error
+
+
+def _source_datetime(value: object, *, optional: bool) -> datetime | None:
+    if value is None and optional:
+        return None
+    if not isinstance(value, str) or not value or len(value) > 40:
+        raise ExportConflictError("predecessor_mismatch")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        raise ExportConflictError("predecessor_mismatch") from None
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise ExportConflictError("predecessor_mismatch")
+    return parsed
+
+
+def _content_from_managed_source(
+    payload: bytes,
+    *,
+    author: ExportAuthor,
+    expected: ContentFingerprint,
+) -> ExportContent:
+    """Strictly recover only the layout inputs needed to map predecessor files."""
+
+    expected_fields = {
+        "assets",
+        "author_remote_id",
+        "content_kind",
+        "entity",
+        "first_seen_at",
+        "layout_version",
+        "platform",
+        "published_at",
+        "remote_id",
+        "remote_type",
+        "schema_version",
+        "source_fingerprint",
+    }
+    try:
+        decoded = json.loads(payload.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        raise ExportConflictError("predecessor_mismatch") from None
+    if (
+        not isinstance(decoded, dict)
+        or set(decoded) != expected_fields
+        or decoded["entity"] != "content"
+        or decoded["layout_version"] != LAYOUT_VERSION
+        or decoded["schema_version"] != 1
+        or decoded["author_remote_id"] != author.remote_id
+        or decoded["platform"] != expected.platform
+        or decoded["remote_type"] != expected.remote_type
+        or decoded["remote_id"] != expected.remote_id
+        or decoded["source_fingerprint"] != expected.sha256
+    ):
+        raise ExportConflictError("predecessor_mismatch")
+    asset_rows = decoded["assets"]
+    if not isinstance(asset_rows, list) or len(asset_rows) > _MAX_CONTENT_ASSETS:
+        raise ExportConflictError("predecessor_mismatch")
+    assets: list[VerifiedAsset] = []
+    asset_fields = {
+        "checksum_sha256",
+        "generation",
+        "kind",
+        "mime_type",
+        "position",
+        "remote_id",
+        "size_bytes",
+    }
+    try:
+        for row in asset_rows:
+            if not isinstance(row, dict) or set(row) != asset_fields:
+                raise ExportConflictError("predecessor_mismatch")
+            assets.append(
+                VerifiedAsset(
+                    remote_id=row["remote_id"],
+                    kind=row["kind"],
+                    position=row["position"],
+                    local_path=Path("."),
+                    checksum_sha256=row["checksum_sha256"],
+                    size_bytes=row["size_bytes"],
+                    mime_type=row["mime_type"],
+                    generation=row["generation"],
+                )
+            )
+        first_seen_at = _source_datetime(decoded["first_seen_at"], optional=False)
+        if first_seen_at is None:  # pragma: no cover - guarded by optional=False
+            raise ExportConflictError("predecessor_mismatch")
+        return ExportContent(
+            platform=decoded["platform"],
+            remote_type=decoded["remote_type"],
+            remote_id=decoded["remote_id"],
+            author_remote_id=decoded["author_remote_id"],
+            kind=decoded["content_kind"],
+            first_seen_at=first_seen_at,
+            published_at=_source_datetime(decoded["published_at"], optional=True),
+            assets=tuple(assets),
+        )
+    except (ExportError, TypeError, ValueError):
+        raise ExportConflictError("predecessor_mismatch") from None
+
+
+def _preserved_manifest_members(
+    author_directory: Path,
+    manifest: _Manifest,
+    author: ExportAuthor,
+    identities: Sequence[ContentIdentity],
+) -> tuple[tuple[ContentFingerprint, ...], tuple[ManagedFile, ...]]:
+    """Resolve exact predecessor manifest members for requested Content identities."""
+
+    requested = {(item.platform, item.remote_type, item.remote_id) for item in identities}
+    fingerprints = {(item.platform, item.remote_type, item.remote_id): item for item in manifest.content_fingerprints}
+    selected = requested & set(fingerprints)
+    if not selected:
+        return (), ()
+    manifest_files = {item.relative_path: item for item in manifest.files}
+    members: dict[tuple[str, str, str], tuple[ManagedFile, ...]] = {}
+    for source_file in manifest.files:
+        relative = _validate_relative_path(source_file.relative_path)
+        if len(relative.parts) != 3 or not relative.parts[1].endswith(".assets") or relative.parts[2] != "source.json":
+            continue
+        if source_file.size_bytes > _MAX_CONTENT_SOURCE_BYTES:
+            raise ExportConflictError("predecessor_mismatch")
+        source_path = author_directory.joinpath(*relative.parts)
+        payload = _read_safe_regular(
+            source_path,
+            error_code="predecessor_mismatch",
+            max_bytes=_MAX_CONTENT_SOURCE_BYTES,
+        )
+        try:
+            shallow = json.loads(payload.decode("utf-8"))
+            identity = ContentIdentity(shallow["platform"], shallow["remote_type"], shallow["remote_id"])
+        except (AttributeError, ExportError, KeyError, TypeError, UnicodeDecodeError, json.JSONDecodeError):
+            raise ExportConflictError("predecessor_mismatch") from None
+        identity_tuple = (identity.platform, identity.remote_type, identity.remote_id)
+        expected = fingerprints.get(identity_tuple)
+        if expected is None or identity_tuple in members:
+            raise ExportConflictError("predecessor_mismatch")
+        content = _content_from_managed_source(payload, author=author, expected=expected)
+        content_plan = build_layout_plan(author, (content,))
+        planned_paths = {
+            item.relative_path.as_posix()
+            for item in content_plan.files
+            if item.relative_path.as_posix() not in {"source.json", "tvshow.nfo"}
+        }
+        expected_sources = {path for path in planned_paths if path.endswith(".assets/source.json")}
+        if expected_sources != {source_file.relative_path} or not planned_paths.issubset(manifest_files):
+            raise ExportConflictError("predecessor_mismatch")
+        asset_prefix = source_file.relative_path.removesuffix("/source.json") + "/"
+        content_members = tuple(
+            item
+            for item in manifest.files
+            if item.relative_path in planned_paths or item.relative_path.startswith(asset_prefix)
+        )
+        if source_file not in content_members:
+            raise ExportConflictError("predecessor_mismatch")
+        members[identity_tuple] = content_members
+    if not selected.issubset(members):
+        raise ExportConflictError("predecessor_mismatch")
+    selected_fingerprints = tuple(
+        sorted(
+            (fingerprints[identity] for identity in selected),
+            key=lambda item: (item.platform, item.remote_type, item.remote_id),
+        )
+    )
+    selected_files = {item.relative_path: item for identity in selected for item in members[identity]}
+    return selected_fingerprints, tuple(
+        sorted(selected_files.values(), key=lambda item: (item.relative_path.casefold(), item.relative_path))
+    )
+
+
+def _copy_preserved_members(
+    stage: Path,
+    author_directory: Path,
+    members: Sequence[ManagedFile],
+) -> tuple[ManagedFile, ...]:
+    copied: list[ManagedFile] = []
+    for item in members:
+        relative = _validate_relative_path(item.relative_path)
+        parent = _ensure_child_directories(stage, relative.parent)
+        destination = parent / relative.name
+        if _safe_lstat(destination) is not None:
+            raise ExportConflictError("layout_path_collision")
+        source = author_directory.joinpath(*relative.parts)
+        _copy_to_new_file(
+            source,
+            destination,
+            expected_sha256=item.sha256,
+            expected_size=item.size_bytes,
+            mismatch_code="predecessor_mismatch",
+        )
+        copied.append(item)
+    return tuple(copied)
 
 
 def _write_new_bytes(path: Path, payload: bytes) -> None:
@@ -2373,6 +2637,7 @@ class EmbyExporter:
         *,
         job_id: str,
         expected_predecessor: PublishedIdentity | None,
+        preserve_content_identities: Sequence[ContentIdentity] = (),
     ) -> RenderedExport:
         """Render a byte-complete tree fenced by one trusted predecessor."""
 
@@ -2380,7 +2645,21 @@ class EmbyExporter:
             raise ExportError("invalid_job_id")
         if expected_predecessor is not None and not isinstance(expected_predecessor, PublishedIdentity):
             raise ExportError("invalid_published_identity")
+        raw_preserved_identities = tuple(preserve_content_identities)
+        if any(not isinstance(item, ContentIdentity) for item in raw_preserved_identities):
+            raise ExportError("invalid_content_identity")
+        preserved_identities = tuple(
+            sorted(
+                raw_preserved_identities,
+                key=lambda item: (item.platform, item.remote_type, item.remote_id),
+            )
+        )
         plan: LayoutPlan = build_layout_plan(author, tuple(contents))
+        source_fingerprint = export_source_fingerprint(
+            author,
+            tuple(contents),
+            preserve_content_identities=preserved_identities,
+        )
         _ensure_directory(self._staging_root)
         author_directory = self._export_root / plan.author_segment
         manifest_path = author_directory / MANIFEST_NAME
@@ -2397,26 +2676,53 @@ class EmbyExporter:
                 item = _render_file(stage, planned)
                 managed.append(item)
                 self._fault("after_stage_file", item.relative_path)
-            files = tuple(sorted(managed, key=lambda item: (item.relative_path.casefold(), item.relative_path)))
-            tree_sha256 = _tree_sha256(files)
-            rendered = RenderedExport(
-                layout_version=LAYOUT_VERSION,
-                job_id=job_id,
-                author=author,
-                author_segment=plan.author_segment,
-                staging_directory=stage,
-                predecessor_manifest_sha256=None,
-                source_fingerprint=plan.source_fingerprint,
-                content_fingerprints=plan.content_fingerprints,
-                files=files,
-                tree_sha256=tree_sha256,
-                manifest_sha256="0" * 64,
-            )
-            manifest_bytes = _manifest_bytes(rendered)
-            rendered = replace(rendered, manifest_sha256=_sha256_bytes(manifest_bytes))
-            _write_new_bytes(stage / MANIFEST_NAME, manifest_bytes)
             with _author_lock(lock_path, self._lock_timeout_seconds):
                 _recover_pending_transactions(author_directory, manifest_path, author)
+                preserved_fingerprints: tuple[ContentFingerprint, ...] = ()
+                if preserved_identities:
+                    predecessor, _ = _verified_preservation_predecessor(
+                        self._export_root,
+                        author_directory,
+                        manifest_path,
+                        author,
+                        expected_predecessor,
+                    )
+                    if predecessor is not None:
+                        preserved_fingerprints, preserved_members = _preserved_manifest_members(
+                            author_directory,
+                            predecessor,
+                            author,
+                            preserved_identities,
+                        )
+                        for item in _copy_preserved_members(stage, author_directory, preserved_members):
+                            managed.append(item)
+                            self._fault("after_stage_file", item.relative_path)
+                files = tuple(sorted(managed, key=lambda item: (item.relative_path.casefold(), item.relative_path)))
+                if len({item.relative_path.casefold() for item in files}) != len(files):
+                    raise ExportConflictError("layout_path_collision")
+                content_fingerprints = tuple(
+                    sorted(
+                        (*plan.content_fingerprints, *preserved_fingerprints),
+                        key=lambda item: (item.platform, item.remote_type, item.remote_id),
+                    )
+                )
+                tree_sha256 = _tree_sha256(files)
+                rendered = RenderedExport(
+                    layout_version=LAYOUT_VERSION,
+                    job_id=job_id,
+                    author=author,
+                    author_segment=plan.author_segment,
+                    staging_directory=stage,
+                    predecessor_manifest_sha256=None,
+                    source_fingerprint=source_fingerprint,
+                    content_fingerprints=content_fingerprints,
+                    files=files,
+                    tree_sha256=tree_sha256,
+                    manifest_sha256="0" * 64,
+                )
+                manifest_bytes = _manifest_bytes(rendered)
+                rendered = replace(rendered, manifest_sha256=_sha256_bytes(manifest_bytes))
+                _write_new_bytes(stage / MANIFEST_NAME, manifest_bytes)
                 predecessor_bytes = _fence_render_predecessor(
                     self._export_root,
                     author_directory,
@@ -2471,6 +2777,7 @@ class EmbyExporter:
         *,
         job_id: str,
         expected_predecessor: PublishedIdentity | None,
+        preserve_content_identities: Sequence[ContentIdentity] = (),
     ) -> ExportResult:
         """Render and publish one complete author snapshot."""
 
@@ -2480,6 +2787,7 @@ class EmbyExporter:
                 contents,
                 job_id=job_id,
                 expected_predecessor=expected_predecessor,
+                preserve_content_identities=preserve_content_identities,
             )
         )
 

@@ -20,10 +20,13 @@ from media_sync.integrations.mediacrawler.bridge import MANIFEST_SCHEMA_VERSION
 from media_sync.integrations.mediacrawler.checkout import CheckoutValidationError, load_mediacrawler_lock
 from media_sync.integrations.mediacrawler.subscription_policy import from_subscription_policy
 
+from .bili_delivery_progress import bili_policy_fingerprint
+
 DEFAULT_BILI_SCAN_CONTINUATION_DELAY_SECONDS = 300
 MAX_BILI_SCAN_CONTINUATION_DELAY_SECONDS = 604_800
 _SHA1 = re.compile(r"[0-9a-f]{40}\Z")
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
+_MANIFEST_BINDING_KEYS = frozenset({"account_revision", "policy_fingerprint_sha256"})
 _MANIFEST_KEYS = frozenset(
     {
         "schema_version",
@@ -36,12 +39,15 @@ _MANIFEST_KEYS = frozenset(
         "platform",
         "mode",
         "crawl_revision_before",
+        "account_revision",
+        "policy_fingerprint_sha256",
         "artifact_schema_version",
         "upstream_sha",
         "output_fingerprint_sha256",
         "input_records",
     }
 )
+_LEGACY_MANIFEST_KEYS = _MANIFEST_KEYS - _MANIFEST_BINDING_KEYS
 
 
 def validate_continuation_delay(value: object) -> int:
@@ -69,12 +75,25 @@ def _has_pending_context(state: BiliScanState | BiliMultiFeedState) -> bool:
     )
 
 
-def _bound_manifest(job: Job, run: SyncRun, schedule_revision: int, upstream_sha: str) -> bool:
+def _bound_manifest(
+    job: Job,
+    run: SyncRun,
+    schedule_revision: int,
+    upstream_sha: str,
+    *,
+    auth_revision: int,
+    policy_fingerprint_sha256: str | None,
+) -> bool:
     metadata = run.manifest
-    if not isinstance(metadata, Mapping) or set(metadata) not in (
+    if not isinstance(metadata, Mapping):
+        return False
+    metadata_keys = set(metadata)
+    if metadata_keys not in {
+        _LEGACY_MANIFEST_KEYS,
+        _LEGACY_MANIFEST_KEYS | {"recovered_artifact"},
         _MANIFEST_KEYS,
         _MANIFEST_KEYS | {"recovered_artifact"},
-    ):
+    }:
         return False
     expected: dict[str, object] = {
         "schema_version": 1,
@@ -90,6 +109,11 @@ def _bound_manifest(job: Job, run: SyncRun, schedule_revision: int, upstream_sha
         "upstream_sha": upstream_sha,
         "execution_id": str(uuid5(UUID(job.id), f"media-sync/mediacrawler/attempt/{run.attempt}")),
     }
+    if metadata_keys >= _MANIFEST_BINDING_KEYS:
+        expected.update(
+            account_revision=auth_revision,
+            policy_fingerprint_sha256=policy_fingerprint_sha256,
+        )
     if any(type(metadata.get(key)) is not type(value) or metadata[key] != value for key, value in expected.items()):
         return False
     fingerprint = metadata.get("output_fingerprint_sha256")
@@ -169,6 +193,8 @@ class BiliScanContinuationPolicy:
         try:
             account, author = subscription.account, subscription.author
             before, after = run.checkpoint_revision_before, run.checkpoint_revision_after
+            policy = from_subscription_policy(subscription.policy)
+            policy.validate_bili_max_items(subscription.max_items)
             if (
                 job.job_type != "sync.subscription"
                 or job.status != "succeeded"
@@ -204,11 +230,20 @@ class BiliScanContinuationPolicy:
                 or subscription.cursor != run.cursor_after
                 or not isinstance(run.cursor_after, Mapping)
                 or set(run.cursor_after) != {"value"}
-                or not _bound_manifest(job, run, schedule_revision, self.upstream_sha)
+                or not _bound_manifest(
+                    job,
+                    run,
+                    schedule_revision,
+                    self.upstream_sha,
+                    auth_revision=account.auth_revision,
+                    policy_fingerprint_sha256=(
+                        bili_policy_fingerprint(subscription.policy, subscription.max_items)
+                        if policy.effective_bili_scope == "uploads"
+                        else None
+                    ),
+                )
             ):
                 return ordinary_interval
-            policy = from_subscription_policy(subscription.policy)
-            policy.validate_bili_max_items(subscription.max_items)
             state = state_from_cursor(run.cursor_after["value"])
             state.require_binding(
                 account_id=UUID(account.id),

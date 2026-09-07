@@ -345,6 +345,7 @@ class SubscriptionWorker:
                     creator_reference=subscription.author.remote_id,
                     cursor=cursor,
                     subscription_policy=subscription.policy,
+                    auth_revision=account.auth_revision,
                     schedule_revision=claim.schedule_revision,
                     max_items=subscription.max_items,
                     attempt=claim.attempt,

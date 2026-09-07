@@ -7,7 +7,9 @@ import {
   DELIVERY_OBSERVATION_ENDED,
   DELIVERY_UNAVAILABLE,
   EXACT_DELIVERY_NOTICE,
+  parseBiliDeliveryProgress,
   parseSubscriptionDeliveryOperation,
+  safeBiliDeliveryProgressCard,
   safeScanProgressCards,
   SCAN_PROGRESS_NOTICE,
   subscriptionDeliveryFailure,
@@ -56,6 +58,21 @@ const result: SubscriptionDeliveryResult = {
   publication_disposition: 'published',
   managed_file_count: 9,
   directory_verified: true
+};
+
+const partialResult: SubscriptionDeliveryResult = {
+  ...result,
+  selection_scope: 'source_run_plus_retry_backlog',
+  observed_content_count: 3,
+  delivered_content_count: 3,
+  failed_content_count: 0,
+  retry_backlog_content_count: 2,
+  delivered_retry_backlog_content_count: 1,
+  failed_retry_backlog_content_count: 1,
+  retryable_failed_content_count: 1,
+  terminal_failed_content_count: 0,
+  failure_codes: ['pipeline_download_retryable'],
+  partial: true
 };
 
 function operation(
@@ -142,6 +159,34 @@ describe('exact subscription delivery contract', () => {
     expect(EXACT_DELIVERY_NOTICE).toContain('不是“仅本轮新增”');
     expect(EXACT_DELIVERY_NOTICE).toContain('采集→下载→归档→生成兼容目录');
     expect(EXACT_DELIVERY_NOTICE).toContain('不要求连接 Emby 或 Jellyfin');
+  });
+
+  it('accepts a closed partial content receipt and rejects inconsistent failure evidence', () => {
+    const parsed = parseSubscriptionDeliveryOperation(
+      operation('succeeded', { result: partialResult }),
+      scope,
+      operationId
+    );
+    expect(parsed?.result).toEqual(partialResult);
+    expect(JSON.stringify(subscriptionDeliveryResultRows(partialResult))).toContain('重试积压内容');
+    expect(
+      parseSubscriptionDeliveryOperation(
+        operation('succeeded', {
+          result: { ...partialResult, delivered_content_count: 2 }
+        }),
+        scope,
+        operationId
+      )
+    ).toBeNull();
+    expect(
+      parseSubscriptionDeliveryOperation(
+        operation('succeeded', {
+          result: { ...partialResult, failure_codes: ['pipeline_download_retryable', sentinel] }
+        }),
+        scope,
+        operationId
+      )
+    ).toBeNull();
   });
 });
 
@@ -322,6 +367,75 @@ describe('durable scan progress display', () => {
   });
 });
 
+describe('delivery-qualified Bili baseline display', () => {
+  const progress = {
+    schema_version: 1,
+    initialized: true,
+    phase: 'incremental',
+    baseline_snapshot_complete: true,
+    generation_id: otherId,
+    batch_count: 4,
+    content_observation_count: 67,
+    backfill_batch_count: 3,
+    reconciliation_batch_count: 1,
+    incremental_batch_count: 0,
+    partial_batch_count: 1,
+    failed_content_count: 1,
+    last_lane: 'head',
+    last_stop_reason: 'head_boundary',
+    last_delivery_at: '2026-09-07T12:00:00+00:00',
+    source_end_observed_at: '2026-09-07T11:00:00+00:00',
+    source_end_run_id: runId,
+    reconciled_at: '2026-09-07T12:00:00+00:00',
+    reconciliation_run_id: requestId,
+    baseline_snapshot_at: '2026-09-07T12:00:00+00:00',
+    next_eligible_at: '2026-09-07T18:00:00+00:00',
+    blocked_code: null
+  };
+
+  it('strictly parses bounded counters and labels a reconciled snapshot as incremental', () => {
+    expect(parseBiliDeliveryProgress(progress)?.phase).toBe('incremental');
+    const card = safeBiliDeliveryProgressCard(progress);
+    expect(card.phase).toBe('增量检查');
+    expect(JSON.stringify(card.rows)).toContain('67 条');
+    expect(card.notice).toContain('不表示平台历史永久完整');
+  });
+
+  it('fails closed without reflecting unknown fields or inconsistent completion claims', () => {
+    for (const value of [
+      { ...progress, private_cursor: sentinel },
+      { ...progress, baseline_snapshot_complete: false },
+      { ...progress, incremental_batch_count: 1 },
+      { ...progress, source_end_run_id: null },
+      {
+        ...progress,
+        initialized: false,
+        phase: 'reconciling',
+        baseline_snapshot_complete: false,
+        generation_id: null,
+        batch_count: 0,
+        content_observation_count: 0,
+        backfill_batch_count: 0,
+        reconciliation_batch_count: 0,
+        partial_batch_count: 0,
+        failed_content_count: 0,
+        last_lane: null,
+        last_stop_reason: null,
+        last_delivery_at: null,
+        source_end_observed_at: null,
+        source_end_run_id: null,
+        reconciled_at: null,
+        reconciliation_run_id: null,
+        baseline_snapshot_at: null,
+        blocked_code: null
+      }
+    ]) {
+      expect(parseBiliDeliveryProgress(value)).toBeNull();
+      expect(JSON.stringify(safeBiliDeliveryProgressCard(value))).not.toContain(sentinel);
+    }
+  });
+});
+
 describe('subscriptions route wiring', () => {
   it('separates schedule advancement from exact collection and exposes durable evidence links', () => {
     const source = readFileSync(new URL('../../routes/subscriptions/+page.svelte', import.meta.url), 'utf8');
@@ -332,6 +446,7 @@ describe('subscriptions route wiring', () => {
     expect(source).toContain('mediaCrawlerGate()');
     expect(source).toContain('/logs?operation_id=');
     expect(source).toContain('safeScanProgressCards');
+    expect(source).toContain('safeBiliDeliveryProgressCard');
     expect(source).not.toContain('已安排同步任务；完成状态请到任务页面核对。');
   });
 });

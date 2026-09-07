@@ -135,7 +135,7 @@ from media_sync.infrastructure.db.creator_profile_repository import (
 from media_sync.infrastructure.db.models import ACTIVE_SYNC_JOB_STATUSES
 from media_sync.infrastructure.observability.store import LogStoreError
 from media_sync.integrations.mediacrawler import platform_capabilities_payload
-from media_sync.integrations.mediacrawler.checkout import load_mediacrawler_lock
+from media_sync.integrations.mediacrawler.checkout import CheckoutValidationError, load_mediacrawler_lock
 from media_sync.integrations.mediacrawler.cookie_login_runner import CookieLoginProcessRunner
 from media_sync.integrations.mediacrawler.creator_profile_runner import MediaCrawlerCreatorProfileProcessRunner
 from media_sync.integrations.mediacrawler.license_gate import (
@@ -185,6 +185,7 @@ from media_sync.scheduler import (
     SchedulerWorkerResult,
     StaleLaneError,
 )
+from media_sync.scheduler.bili_delivery_progress import bili_delivery_progress_payload
 from media_sync.scheduler.bili_scan_continuation import BiliScanContinuationPolicy
 from media_sync.security import (
     OPERATOR_SESSION_COOKIE_NAME,
@@ -760,7 +761,7 @@ def _bili_scan_summary_payload(subscription: Subscription, lock_path: Path) -> d
             payload["version"] = 2
             payload["feed"] = state.scope
         payload["status"] = "verified"
-    except (OSError, ValueError, TypeError, KeyError):
+    except (CheckoutValidationError, OSError, ValueError, TypeError, KeyError):
         # Unknown versions, mismatched identities or unavailable locked source
         # are not evidence. Do not expose their values or parser diagnostics.
         pass
@@ -799,10 +800,24 @@ def _subscription_checkpoint_summary_payload(
 
     try:
         progress_sha = load_mediacrawler_lock(lock_path).commit if subscription.account.platform == "bili" else None
-    except (OSError, ValueError):
+    except (CheckoutValidationError, OSError, ValueError):
         progress_sha = None
     payload["scan_progress"] = scan_progress_payload(subscription, upstream_sha=progress_sha)
     return payload
+
+
+def _subscription_bili_delivery_payload(
+    subscription: Subscription,
+    *,
+    lock_path: Path,
+) -> dict[str, object] | None:
+    """Return only the closed delivery projection bound to the current lock."""
+
+    try:
+        upstream_sha = load_mediacrawler_lock(lock_path).commit
+    except (CheckoutValidationError, OSError, ValueError):
+        upstream_sha = None
+    return bili_delivery_progress_payload(subscription, upstream_sha=upstream_sha)
 
 
 class SchedulerTick(BaseModel):
@@ -2961,6 +2976,12 @@ def create_api_app(
                     subscription,
                     lock_path=resolved.mediacrawler_lock_path,
                 )
+                bili_delivery = _subscription_bili_delivery_payload(
+                    subscription,
+                    lock_path=resolved.mediacrawler_lock_path,
+                )
+                if bili_delivery is not None:
+                    payload["bili_delivery"] = bili_delivery
                 payload["schedule"] = _scheduler_schedule_payload(
                     SchedulerRepository(session).get_subscription_schedule(str(subscription_id))
                 )

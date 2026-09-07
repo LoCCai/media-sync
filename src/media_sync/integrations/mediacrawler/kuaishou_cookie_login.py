@@ -25,6 +25,7 @@ _QUERY = (
     "query userInfoQuery {\n  userInfo {\n    id\n    name\n    avatar\n    eid\n    userId\n    __typename\n  }\n}\n"
 )
 _HEADERS = {"User-Agent", "Cookie", "Origin", "Referer", "Content-Type"}
+_MAX_JSON_DEPTH = 64
 
 
 def _invalid() -> _VerificationFailure:
@@ -47,12 +48,40 @@ def _encode_body(candidate: str) -> str:
     return json.dumps(_body(candidate), separators=(",", ":"), ensure_ascii=False)
 
 
+def _bounded_json_depth(payload: bytes) -> bool:
+    """Reject hostile nesting independently of interpreter recursion behavior."""
+
+    depth = 0
+    in_string = False
+    escaped = False
+    for value in payload:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif value == 0x5C:  # backslash
+                escaped = True
+            elif value == 0x22:  # quote
+                in_string = False
+            continue
+        if value == 0x22:
+            in_string = True
+        elif value in {0x5B, 0x7B}:  # [ {
+            depth += 1
+            if depth > _MAX_JSON_DEPTH:
+                return False
+        elif value in {0x5D, 0x7D}:  # ] }
+            depth -= 1
+            if depth < 0:
+                return False
+    return depth == 0 and not in_string and not escaped
+
+
 def _json(payload: bytes) -> dict[str, Any]:
     def constant(value: str) -> Any:
         raise _invalid()
 
     try:
-        if type(payload) is not bytes or not 0 < len(payload) <= MAX_API_BYTES:
+        if type(payload) is not bytes or not 0 < len(payload) <= MAX_API_BYTES or not _bounded_json_depth(payload):
             raise _invalid()
         raw = json.loads(payload.decode("utf-8"), object_pairs_hook=_strict_object, parse_constant=constant)
         if type(raw) is not dict:

@@ -109,6 +109,29 @@ class _FileSnapshot:
         )
 
 
+def _same_named_snapshot(opened: _FileSnapshot, named: _FileSnapshot) -> bool:
+    """Compare a descriptor with its path view without trusting Windows CRT ctime parity."""
+
+    if os.name != "nt":
+        return opened == named
+    # CPython's Windows path-stat and handle-fstat views can expose different
+    # st_ctime_ns values for the same NTFS file. Keep the descriptor ctime in
+    # the durable snapshot (so later fstat changes still fail closed), while
+    # binding the named view through identity, size and mtime. The open handle
+    # denies write and delete sharing for the lifetime of the preview.
+    return (
+        opened.device,
+        opened.inode,
+        opened.size,
+        opened.modified_ns,
+    ) == (
+        named.device,
+        named.inode,
+        named.size,
+        named.modified_ns,
+    )
+
+
 def _is_reparse(details: os.stat_result) -> bool:
     attributes = getattr(details, "st_file_attributes", 0)
     reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
@@ -340,7 +363,9 @@ class ArchivePreview:
             raise _fail("asset_archive_invalid") from None
         _assert_safe_file_stat(opened, expected_size=self._expected_size)
         _assert_safe_file_stat(named, expected_size=self._expected_size)
-        if _FileSnapshot.from_stat(opened) != self._snapshot or _FileSnapshot.from_stat(named) != self._snapshot:
+        if _FileSnapshot.from_stat(opened) != self._snapshot or not _same_named_snapshot(
+            self._snapshot, _FileSnapshot.from_stat(named)
+        ):
             raise _fail("asset_archive_invalid")
 
     def select_range(self, start: int, end: int) -> Self:
@@ -499,7 +524,7 @@ class ArchivePreviewService:
             _assert_safe_file_stat(opened, expected_size=size_bytes)
             _assert_safe_file_stat(named, expected_size=size_bytes)
             snapshot = _FileSnapshot.from_stat(opened)
-            if _FileSnapshot.from_stat(named) != snapshot:
+            if not _same_named_snapshot(snapshot, _FileSnapshot.from_stat(named)):
                 raise _fail("asset_archive_invalid")
 
             digest = hashlib.sha256()
@@ -520,7 +545,7 @@ class ArchivePreviewService:
             _assert_safe_file_stat(current_named, expected_size=size_bytes)
             if (
                 _FileSnapshot.from_stat(after_hash) != snapshot
-                or _FileSnapshot.from_stat(current_named) != snapshot
+                or not _same_named_snapshot(snapshot, _FileSnapshot.from_stat(current_named))
                 or digest.hexdigest() != checksum
             ):
                 raise _fail("asset_archive_invalid")
@@ -530,7 +555,9 @@ class ArchivePreviewService:
             final_named = assert_existing_regular_file(path, root=self._root)
             _assert_safe_file_stat(final_opened, expected_size=size_bytes)
             _assert_safe_file_stat(final_named, expected_size=size_bytes)
-            if _FileSnapshot.from_stat(final_opened) != snapshot or _FileSnapshot.from_stat(final_named) != snapshot:
+            if _FileSnapshot.from_stat(final_opened) != snapshot or not _same_named_snapshot(
+                snapshot, _FileSnapshot.from_stat(final_named)
+            ):
                 raise _fail("asset_archive_invalid")
             preview = ArchivePreview(
                 handle,

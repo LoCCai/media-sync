@@ -212,6 +212,7 @@ class SubscriptionPipelineExecutor:
         expected_account_id: UUID,
         expected_platform: str,
         worker_id: str,
+        source_run_id: UUID | None = None,
     ) -> SubscriptionPipelineOutcome:
         download_worker_id = _scoped_worker_id(worker_id, "asset")
         export_worker_id = _scoped_worker_id(worker_id, "emby")
@@ -219,6 +220,7 @@ class SubscriptionPipelineExecutor:
             subscription_id=subscription_id,
             expected_account_id=expected_account_id,
             expected_platform=expected_platform,
+            source_run_id=source_run_id,
         )
         config = self._config
         selector = SubscriptionAssetSelector(self._database)
@@ -415,6 +417,7 @@ def _export_request(
         worker_id=worker_id,
         lease_seconds=config.export_lease_seconds,
         max_attempts=config.export_max_attempts,
+        skip_incomplete_contents=selection.source_run_id is not None,
     )
 
 

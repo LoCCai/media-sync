@@ -19,6 +19,7 @@ from media_sync.domain.enums import AssetStatus
 from media_sync.exporters.emby import (
     LAYOUT_VERSION,
     ContentFingerprint,
+    ContentIdentity,
     ExportAuthor,
     ExportContent,
     ExportError,
@@ -85,6 +86,7 @@ class EmbyExporterPort(Protocol):
         *,
         job_id: str,
         expected_predecessor: PublishedIdentity | None,
+        preserve_content_identities: Sequence[ContentIdentity] = (),
     ) -> RenderedExport: ...
 
     def publish(self, rendered: RenderedExport) -> ExportResult: ...
@@ -108,6 +110,7 @@ class EmbyExportRequest:
     worker_id: str
     lease_seconds: int = 300
     max_attempts: int = 5
+    skip_incomplete_contents: bool = False
 
     def __post_init__(self) -> None:
         try:
@@ -127,6 +130,8 @@ class EmbyExportRequest:
             raise ValueError("lease_seconds must be between 1 and 86400")
         if isinstance(self.max_attempts, bool) or not 1 <= self.max_attempts <= 100:
             raise ValueError("max_attempts must be between 1 and 100")
+        if type(self.skip_incomplete_contents) is not bool:
+            raise ValueError("skip_incomplete_contents must be boolean")
         object.__setattr__(self, "author_id", author_id)
         object.__setattr__(self, "worker_id", worker_id)
 
@@ -154,6 +159,7 @@ class _SnapshotContent:
 class _Snapshot:
     author: ExportAuthor
     contents: tuple[_SnapshotContent, ...]
+    preserve_content_identities: tuple[ContentIdentity, ...]
     source_fingerprint: str
     output_path: str
 
@@ -663,7 +669,7 @@ def _verified_export_asset(asset: Asset) -> VerifiedAsset:
         raise ExportError("verified_asset_incomplete") from None
 
 
-def _snapshot_from_author(author: Author) -> _Snapshot:
+def _snapshot_from_author(author: Author, *, skip_incomplete_contents: bool = False) -> _Snapshot:
     """Freeze the exact source identity used by publication and inspection."""
 
     try:
@@ -681,7 +687,17 @@ def _snapshot_from_author(author: Author) -> _Snapshot:
         key=lambda content: (content.platform, content.remote_type, content.remote_id, content.id),
     )
     contents: list[_SnapshotContent] = []
+    preserve_content_identities: list[ContentIdentity] = []
     for content in active_contents:
+        if skip_incomplete_contents and any(asset.status != AssetStatus.VERIFIED.value for asset in content.assets):
+            preserve_content_identities.append(
+                ContentIdentity(
+                    platform=content.platform,
+                    remote_type=content.remote_type,
+                    remote_id=content.remote_id,
+                )
+            )
+            continue
         assets = tuple(
             _verified_export_asset(asset)
             for asset in sorted(content.assets, key=lambda asset: (asset.kind, asset.position, asset.id))
@@ -710,15 +726,23 @@ def _snapshot_from_author(author: Author) -> _Snapshot:
         )
 
     frozen_contents = tuple(contents)
+    frozen_preserve_content_identities = tuple(preserve_content_identities)
     source_fingerprint = export_source_fingerprint(
         export_author,
         tuple(item.value for item in frozen_contents),
+        preserve_content_identities=frozen_preserve_content_identities,
     )
     output_path = author_relative_directory(export_author).as_posix()
     relative = PurePosixPath(output_path)
     if relative.is_absolute() or ".." in relative.parts:
         raise ExportError("export_output_path_invalid")
-    return _Snapshot(export_author, frozen_contents, source_fingerprint, output_path)
+    return _Snapshot(
+        export_author,
+        frozen_contents,
+        frozen_preserve_content_identities,
+        source_fingerprint,
+        output_path,
+    )
 
 
 class EmbyExportService:
@@ -786,6 +810,7 @@ class EmbyExportService:
                 tuple(item.value for item in prepared.snapshot.contents),
                 job_id=prepared.staging_token,
                 expected_predecessor=(None if prepared.predecessor is None else prepared.predecessor.identity),
+                preserve_content_identities=prepared.snapshot.preserve_content_identities,
             )
             self._validate_rendered(prepared, rendered)
         except ExportError as error:
@@ -844,7 +869,11 @@ class EmbyExportService:
         subject_hook: DurableSubjectHook | None = None,
     ) -> _PreparedAttempt | _ExistingExport | _PreparationFailure | _RecoveryScan:
         with self._database.session() as session:
-            snapshot = self._load_snapshot(session, request.author_id)
+            snapshot = self._load_snapshot(
+                session,
+                request.author_id,
+                skip_incomplete_contents=request.skip_incomplete_contents,
+            )
             publication_scope = self._publication_scope
             jobs = JobRepository(session)
             records = ExportRecordRepository(session)
@@ -1154,7 +1183,13 @@ class EmbyExportService:
                 at=now,
             )
 
-    def _load_snapshot(self, session: Session, author_id: str) -> _Snapshot:
+    def _load_snapshot(
+        self,
+        session: Session,
+        author_id: str,
+        *,
+        skip_incomplete_contents: bool = False,
+    ) -> _Snapshot:
         # Kept as one eager query graph so no ORM object crosses the transaction.
         author = session.scalar(
             select(Author)
@@ -1163,7 +1198,7 @@ class EmbyExportService:
         )
         if author is None:
             raise ExportError("author_not_found")
-        return _snapshot_from_author(author)
+        return _snapshot_from_author(author, skip_incomplete_contents=skip_incomplete_contents)
 
     @staticmethod
     def _verified_asset(asset: Asset) -> VerifiedAsset:
@@ -1230,12 +1265,32 @@ class EmbyExportService:
             for item in snapshot.contents
         )
 
+    @classmethod
+    def _content_fingerprints_match(
+        cls,
+        snapshot: _Snapshot,
+        actual: tuple[ContentFingerprint, ...],
+    ) -> bool:
+        expected = cls._expected_content_fingerprints(snapshot)
+        expected_by_identity = {(item.platform, item.remote_type, item.remote_id): item.sha256 for item in expected}
+        preserved = {(item.platform, item.remote_type, item.remote_id) for item in snapshot.preserve_content_identities}
+        actual_identities = [(item.platform, item.remote_type, item.remote_id) for item in actual]
+        if actual_identities != sorted(actual_identities) or len(set(actual_identities)) != len(actual_identities):
+            return False
+        actual_by_identity = {identity: item.sha256 for identity, item in zip(actual_identities, actual, strict=True)}
+        expected_matches = all(
+            actual_by_identity.get(identity) == digest for identity, digest in expected_by_identity.items()
+        )
+        return expected_matches and all(
+            identity in expected_by_identity or identity in preserved for identity in actual_identities
+        )
+
     def _validate_rendered(self, prepared: _PreparedAttempt, rendered: RenderedExport) -> None:
         if (
             rendered.job_id != prepared.staging_token
             or rendered.source_fingerprint != prepared.snapshot.source_fingerprint
             or rendered.author_segment != prepared.snapshot.output_path
-            or rendered.content_fingerprints != self._expected_content_fingerprints(prepared.snapshot)
+            or not self._content_fingerprints_match(prepared.snapshot, rendered.content_fingerprints)
         ):
             raise ExportError("render_source_mismatch")
         if any(
@@ -1255,7 +1310,7 @@ class EmbyExportService:
             result.layout_version != LAYOUT_VERSION
             or result.author_directory.absolute() != expected_directory.absolute()
             or result.source_fingerprint != prepared.snapshot.source_fingerprint
-            or result.content_fingerprints != self._expected_content_fingerprints(prepared.snapshot)
+            or not self._content_fingerprints_match(prepared.snapshot, result.content_fingerprints)
             or result.tree_sha256 != rendered.tree_sha256
             or result.manifest_sha256 != rendered.manifest_sha256
             or result.managed_files != rendered.files

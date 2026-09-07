@@ -81,6 +81,7 @@ from media_sync.integrations.mediacrawler.subscription_policy import (
     MediaCrawlerSubscriptionPolicyError,
     from_subscription_policy,
 )
+from media_sync.scheduler.bili_delivery_progress import bili_policy_fingerprint
 from media_sync.scheduler.handlers import (
     SubscriptionHandlerResult,
     SubscriptionJobContext,
@@ -105,8 +106,12 @@ _RUN_METADATA_BASE_KEYS = frozenset(
         "platform",
         "mode",
         "crawl_revision_before",
+        "account_revision",
+        "policy_fingerprint_sha256",
     }
 )
+_RUN_METADATA_BINDING_KEYS = frozenset({"account_revision", "policy_fingerprint_sha256"})
+_RUN_METADATA_LEGACY_BASE_KEYS = _RUN_METADATA_BASE_KEYS - _RUN_METADATA_BINDING_KEYS
 _RUN_METADATA_PROVENANCE_KEYS = frozenset(
     {
         "artifact_schema_version",
@@ -421,6 +426,7 @@ class MediaCrawlerScheduledHandler:
                 or account.adapter != "mediacrawler"
                 or account.login_method != context.account.login_method.value
                 or account.credential_ref != context.account.credential_ref
+                or account.auth_revision != context.auth_revision
                 or author.platform != context.account.platform.value
                 or author.remote_id != context.creator_reference
                 or subscription.max_items != context.max_items
@@ -472,6 +478,15 @@ class MediaCrawlerScheduledHandler:
                 )
 
     @staticmethod
+    def _policy_fingerprint(context: SubscriptionJobContext) -> str | None:
+        if context.account.platform is not Platform.BILI:
+            return None
+        try:
+            return bili_policy_fingerprint(context.subscription_policy, context.max_items)
+        except ValueError:
+            return None
+
+    @staticmethod
     def _run_metadata(
         context: SubscriptionJobContext,
         *,
@@ -491,6 +506,8 @@ class MediaCrawlerScheduledHandler:
             "platform": context.account.platform.value,
             "mode": MediaCrawlerRunMode.FORWARD.value,
             "crawl_revision_before": crawl_revision_before,
+            "account_revision": context.auth_revision,
+            "policy_fingerprint_sha256": MediaCrawlerScheduledHandler._policy_fingerprint(context),
         }
         if recovered is not None:
             payload["recovered_artifact"] = {
@@ -729,7 +746,10 @@ class MediaCrawlerScheduledHandler:
             return None
 
         has_recovered_artifact = "recovered_artifact" in metadata
-        expected_keys = _RUN_METADATA_BASE_KEYS | _RUN_METADATA_PROVENANCE_KEYS
+        metadata_keys = set(metadata)
+        has_binding = metadata_keys >= _RUN_METADATA_BINDING_KEYS
+        base_keys = _RUN_METADATA_BASE_KEYS if has_binding else _RUN_METADATA_LEGACY_BASE_KEYS
+        expected_keys = base_keys | _RUN_METADATA_PROVENANCE_KEYS
         if has_recovered_artifact:
             expected_keys = expected_keys | {"recovered_artifact"}
         if set(metadata) != expected_keys:
@@ -746,6 +766,11 @@ class MediaCrawlerScheduledHandler:
             "mode": MediaCrawlerRunMode.FORWARD.value,
             "artifact_schema_version": MANIFEST_SCHEMA_VERSION,
         }
+        if has_binding:
+            expected_values.update(
+                account_revision=context.auth_revision,
+                policy_fingerprint_sha256=self._policy_fingerprint(context),
+            )
         if any(metadata.get(key) != value for key, value in expected_values.items()):
             return None
         if current_attempt != context.attempt or current_attempt < 1:

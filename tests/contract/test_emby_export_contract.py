@@ -18,6 +18,7 @@ import pytest
 import media_sync.exporters.emby.exporter as exporter_module
 from media_sync.exporters.emby import (
     LAYOUT_VERSION,
+    ContentIdentity,
     EmbyExporter,
     ExportAuthor,
     ExportConflictError,
@@ -206,6 +207,49 @@ def test_golden_tree_nfo_provenance_and_reversed_input_are_byte_identical(tmp_pa
     video_output = next(first.author_directory.glob("Season 2026/*.mp4"))
     assert video_output.read_bytes() == b"video-bytes"
     assert os.stat(video_output).st_ino != os.stat(content.assets[2].local_path).st_ino
+
+
+def test_partial_render_carries_exact_predecessor_content_until_identity_is_removed(tmp_path: Path) -> None:
+    author, content = _fixture(tmp_path)
+    exporter = EmbyExporter(tmp_path / "library", staging_root=tmp_path / "work")
+    initial = exporter.export(author, (content,), job_id="partial-initial", expected_predecessor=None)
+    initial_tree = _tree(initial.author_directory)
+    identity = ContentIdentity(content.platform, content.remote_type, content.remote_id)
+
+    partial = exporter.export(
+        author,
+        (),
+        job_id="partial-preserve",
+        expected_predecessor=_identity(initial),
+        preserve_content_identities=(identity,),
+    )
+    partial_tree = _tree(partial.author_directory)
+
+    assert partial.source_fingerprint != initial.source_fingerprint
+    assert partial.content_fingerprints == initial.content_fingerprints
+    assert {path: payload for path, payload in partial_tree.items() if path != ".media-sync-managed-v1.json"} == {
+        path: payload for path, payload in initial_tree.items() if path != ".media-sync-managed-v1.json"
+    }
+
+    removed = exporter.export(author, (), job_id="partial-remove", expected_predecessor=_identity(partial))
+
+    assert removed.content_fingerprints == ()
+    assert [item.relative_path for item in removed.managed_files] == ["source.json", "tvshow.nfo"]
+    assert not any(path.startswith("Season ") for path in _tree(removed.author_directory))
+
+
+def test_partial_render_rejects_malformed_preserved_identity_with_fixed_error(tmp_path: Path) -> None:
+    author, _content = _fixture(tmp_path)
+    exporter = EmbyExporter(tmp_path / "library", staging_root=tmp_path / "work")
+
+    with pytest.raises(ExportError, match="invalid_content_identity"):
+        exporter.render(
+            author,
+            (),
+            job_id="partial-invalid-identity",
+            expected_predecessor=None,
+            preserve_content_identities=(object(),),  # type: ignore[arg-type]
+        )
 
 
 def test_manifest_has_exact_relative_hash_contract(tmp_path: Path) -> None:

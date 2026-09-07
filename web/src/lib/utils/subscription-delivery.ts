@@ -1,5 +1,6 @@
 import { ApiError } from '../api/client';
 import type {
+  BiliDeliveryProgress,
   OperationState,
   Platform,
   SubscriptionDeliveryResult,
@@ -82,13 +83,23 @@ const STOP_REASONS: Record<string, string> = {
   page_end: '本轮页面结束'
 };
 const SHA1 = /^[0-9a-f]{40}$/;
+const CODE = /^[a-z][a-z0-9_]{0,127}$/;
+const BILI_DELIVERY_PHASES = new Set(['backfill', 'reconciling', 'incremental', 'blocked']);
+const BILI_DELIVERY_PHASE_LABELS: Record<BiliDeliveryProgress['phase'], string> = {
+  backfill: '历史回填',
+  reconciling: '头部对账',
+  incremental: '增量检查',
+  blocked: '需要处理'
+};
 
 export const EXACT_DELIVERY_NOTICE =
-  '只为当前选中的订阅创建并领取精确任务，依次执行采集→下载→归档→生成兼容目录。下载范围是该作者当前全部有效资产快照（author_active_snapshot），可能包含以前入库但尚未下载的资产，不是“仅本轮新增”。生成兼容目录不要求连接 Emby 或 Jellyfin；媒体服务器连接只是可选联动。';
+  '只为当前选中的订阅创建并领取精确任务，依次执行采集→下载→归档→生成兼容目录。B站投稿按本次 Run 内容与该订阅未完成积压（source_run_plus_retry_backlog）处理；其他兼容流程仍可能使用作者有效资产快照（author_active_snapshot），不是“仅本轮新增”。生成兼容目录不要求连接 Emby 或 Jellyfin；媒体服务器连接只是可选联动。';
 export const UPSTREAM_HISTORY_NOTICE =
   '平台作者接口可能扫描完整历史或进行多轮分页；订阅的单次入库上限不一定限制上游扫描量。执行会使用已保存的平台会话并可能触发平台风控，不会自动规避验证码或绕过限制。';
 export const SCAN_PROGRESS_NOTICE =
   '这里只展示已提交且与检查点绑定的扫描证据；未证明、扫描中或曾观察到来源末尾，都不声明全历史完成。';
+export const BILI_DELIVERY_PROGRESS_NOTICE =
+  '“增量检查”表示最近一个有界快照已完成源末尾与头部对账，不表示平台历史永久完整；认证、作者、策略或锁定上游变化会使该证明失效。';
 export const DELIVERY_UNAVAILABLE =
   '暂时无法安全确认本次交付结果；没有自动重试，也不会据此宣称媒体已经写入目录。';
 export const DELIVERY_OBSERVATION_ENDED =
@@ -168,7 +179,7 @@ export function subscriptionDeliveryRequest(
 
 function parseResult(value: unknown, scope: SubscriptionDeliveryScope): SubscriptionDeliveryResult | null {
   const source = record(value);
-  const fields = [
+  const baseFields = [
     'subscription_id',
     'account_id',
     'author_id',
@@ -190,9 +201,22 @@ function parseResult(value: unknown, scope: SubscriptionDeliveryScope): Subscrip
     'managed_file_count',
     'directory_verified'
   ];
+  const contentFields = [
+    'observed_content_count',
+    'delivered_content_count',
+    'failed_content_count',
+    'retry_backlog_content_count',
+    'delivered_retry_backlog_content_count',
+    'failed_retry_backlog_content_count',
+    'retryable_failed_content_count',
+    'terminal_failed_content_count',
+    'failure_codes',
+    'partial'
+  ];
+  const contentScoped = Boolean(source && exactKeys(source, [...baseFields, ...contentFields]));
   if (
     !source ||
-    !exactKeys(source, fields) ||
+    (!exactKeys(source, baseFields) && !contentScoped) ||
     source.subscription_id !== scope.subscription_id ||
     source.platform !== scope.platform ||
     !uuid(source.account_id) ||
@@ -205,7 +229,7 @@ function parseResult(value: unknown, scope: SubscriptionDeliveryScope): Subscrip
     !count(source.asset_identity_count) ||
     !(source.updated_count === null || count(source.updated_count)) ||
     !['created_rows', 'processed_items'].includes(String(source.discovery_count_semantics)) ||
-    source.selection_scope !== 'author_active_snapshot' ||
+    source.selection_scope !== (contentScoped ? 'source_run_plus_retry_backlog' : 'author_active_snapshot') ||
     !count(source.selected_asset_count) ||
     !count(source.verified_asset_count) ||
     !count(source.downloaded_count) ||
@@ -217,7 +241,7 @@ function parseResult(value: unknown, scope: SubscriptionDeliveryScope): Subscrip
     source.directory_verified !== true
   )
     return null;
-  return {
+  const result: SubscriptionDeliveryResult = {
     subscription_id: scope.subscription_id,
     account_id: source.account_id,
     author_id: source.author_id,
@@ -231,7 +255,7 @@ function parseResult(value: unknown, scope: SubscriptionDeliveryScope): Subscrip
     updated_count: source.updated_count,
     discovery_count_semantics:
       source.discovery_count_semantics as SubscriptionDeliveryResult['discovery_count_semantics'],
-    selection_scope: 'author_active_snapshot',
+    selection_scope: contentScoped ? 'source_run_plus_retry_backlog' : 'author_active_snapshot',
     selected_asset_count: source.selected_asset_count,
     verified_asset_count: source.verified_asset_count,
     downloaded_count: source.downloaded_count,
@@ -240,6 +264,44 @@ function parseResult(value: unknown, scope: SubscriptionDeliveryScope): Subscrip
       source.publication_disposition as SubscriptionDeliveryResult['publication_disposition'],
     managed_file_count: source.managed_file_count,
     directory_verified: true
+  };
+  if (!contentScoped) return result;
+  const failureCodes = source.failure_codes;
+  if (
+    !count(source.observed_content_count) ||
+    !count(source.delivered_content_count) ||
+    !count(source.failed_content_count) ||
+    !count(source.retry_backlog_content_count) ||
+    !count(source.delivered_retry_backlog_content_count) ||
+    !count(source.failed_retry_backlog_content_count) ||
+    !count(source.retryable_failed_content_count) ||
+    !count(source.terminal_failed_content_count) ||
+    !Array.isArray(failureCodes) ||
+    failureCodes.length > 16 ||
+    failureCodes.some((code) => typeof code !== 'string' || !CODE.test(code)) ||
+    failureCodes.join(',') !== [...new Set(failureCodes)].sort().join(',') ||
+    typeof source.partial !== 'boolean' ||
+    source.delivered_content_count + source.failed_content_count !== source.observed_content_count ||
+    source.delivered_retry_backlog_content_count + source.failed_retry_backlog_content_count !==
+      source.retry_backlog_content_count ||
+    source.retryable_failed_content_count + source.terminal_failed_content_count !==
+      source.failed_content_count + source.failed_retry_backlog_content_count ||
+    source.partial !== source.failed_content_count + source.failed_retry_backlog_content_count > 0 ||
+    failureCodes.length > 0 !== source.failed_content_count + source.failed_retry_backlog_content_count > 0
+  )
+    return null;
+  return {
+    ...result,
+    observed_content_count: source.observed_content_count,
+    delivered_content_count: source.delivered_content_count,
+    failed_content_count: source.failed_content_count,
+    retry_backlog_content_count: source.retry_backlog_content_count,
+    delivered_retry_backlog_content_count: source.delivered_retry_backlog_content_count,
+    failed_retry_backlog_content_count: source.failed_retry_backlog_content_count,
+    retryable_failed_content_count: source.retryable_failed_content_count,
+    terminal_failed_content_count: source.terminal_failed_content_count,
+    failure_codes: [...failureCodes],
+    partial: source.partial
   };
 }
 
@@ -327,13 +389,21 @@ export function subscriptionDeliveryResultRows(result: SubscriptionDeliveryResul
   label: string;
   value: string;
 }> {
-  return [
+  const rows = [
     {
       label: result.discovery_count_semantics === 'created_rows' ? '本轮新建内容' : '本轮处理条目',
       value: `${result.discovery_count} 条`
     },
     { label: '识别到的资产身份', value: `${result.asset_identity_count} 个` },
-    { label: '作者当前有效资产快照', value: `${result.selected_asset_count} 个，已全部验证` },
+    {
+      label:
+        result.selection_scope === 'source_run_plus_retry_backlog'
+          ? '本轮与重试积压资产'
+          : '作者当前有效资产快照',
+      value: `${result.selected_asset_count} 个，${
+        result.selection_scope === 'author_active_snapshot' ? '已全部验证' : '已验证'
+      }`
+    },
     { label: '本轮下载', value: `${result.downloaded_count} 个` },
     { label: '复用已有已验证文件', value: `${result.already_verified_count} 个` },
     {
@@ -343,12 +413,33 @@ export function subscriptionDeliveryResultRows(result: SubscriptionDeliveryResul
     { label: '受管目录文件', value: `${result.managed_file_count} 个` },
     { label: '目录证据', value: '已由后端重新验证；不依赖媒体服务器连接' }
   ];
+  if (result.selection_scope === 'source_run_plus_retry_backlog') {
+    rows.splice(
+      2,
+      0,
+      { label: '本轮观察内容', value: `${result.observed_content_count ?? 0} 条` },
+      { label: '本轮完整交付内容', value: `${result.delivered_content_count ?? 0} 条` },
+      {
+        label: '本轮未完成内容',
+        value: `${result.failed_content_count ?? 0} 条`
+      },
+      {
+        label: '重试积压内容',
+        value: `${result.retry_backlog_content_count ?? 0} 条（交付 ${result.delivered_retry_backlog_content_count ?? 0} / 未完成 ${result.failed_retry_backlog_content_count ?? 0}）`
+      },
+      {
+        label: '全部失败内容',
+        value: `${(result.failed_content_count ?? 0) + (result.failed_retry_backlog_content_count ?? 0)} 条（可重试 ${result.retryable_failed_content_count ?? 0} / 终态 ${result.terminal_failed_content_count ?? 0}）`
+      }
+    );
+  }
+  return rows;
 }
 
 export function subscriptionDeliveryUpstreamNotice(detail: SubscriptionDetail): string {
   if (detail.platform !== 'bili') return UPSTREAM_HISTORY_NOTICE;
   const scope = detail.policy_summary?.bili_scope ?? 'uploads';
-  return `B站本次只推进当前配置的${scope === 'both' ? '投稿或动态其中一个来源' : scope === 'dynamics' ? '动态来源' : '投稿来源'}有界采集单元；采集单元上限不限制随后对作者当前有效资产快照的下载。一次推进或观察到来源末尾，都不代表全历史完成。`;
+  return `B站本次只推进当前配置的${scope === 'both' ? '投稿或动态其中一个来源' : scope === 'dynamics' ? '动态来源' : '投稿来源'}有界采集单元；投稿交付只选择本轮精确内容与该订阅未完成积压。一次推进或观察到来源末尾，都不代表全历史完成。`;
 }
 
 export interface ScanProgressCard {
@@ -432,6 +523,198 @@ export function safeScanProgressCards(value: unknown): ScanProgressCard[] {
     cards.push({ feed: FEEDS[entry.feed], state: SCAN_STATES[entry.state], rows });
   }
   return cards;
+}
+
+function optionalIso(value: unknown): value is string | null {
+  return (
+    value === null ||
+    (typeof value === 'string' &&
+      value.length <= 40 &&
+      /(?:Z|[+-][0-9]{2}:[0-9]{2})$/.test(value) &&
+      Number.isFinite(Date.parse(value)))
+  );
+}
+
+export function parseBiliDeliveryProgress(value: unknown): BiliDeliveryProgress | null {
+  const source = record(value);
+  const fields = [
+    'schema_version',
+    'initialized',
+    'phase',
+    'baseline_snapshot_complete',
+    'generation_id',
+    'batch_count',
+    'content_observation_count',
+    'backfill_batch_count',
+    'reconciliation_batch_count',
+    'incremental_batch_count',
+    'partial_batch_count',
+    'failed_content_count',
+    'last_lane',
+    'last_stop_reason',
+    'last_delivery_at',
+    'source_end_observed_at',
+    'source_end_run_id',
+    'reconciled_at',
+    'reconciliation_run_id',
+    'baseline_snapshot_at',
+    'next_eligible_at',
+    'blocked_code'
+  ];
+  if (
+    !source ||
+    !exactKeys(source, fields) ||
+    source.schema_version !== 1 ||
+    typeof source.initialized !== 'boolean' ||
+    typeof source.phase !== 'string' ||
+    !BILI_DELIVERY_PHASES.has(source.phase) ||
+    typeof source.baseline_snapshot_complete !== 'boolean' ||
+    !(source.generation_id === null || uuid(source.generation_id)) ||
+    !count(source.batch_count) ||
+    !count(source.content_observation_count) ||
+    !count(source.backfill_batch_count) ||
+    !count(source.reconciliation_batch_count) ||
+    !count(source.incremental_batch_count) ||
+    !count(source.partial_batch_count) ||
+    !count(source.failed_content_count) ||
+    !(
+      source.last_lane === null ||
+      (typeof source.last_lane === 'string' && Object.hasOwn(LANES, source.last_lane))
+    ) ||
+    !(
+      source.last_stop_reason === null ||
+      (typeof source.last_stop_reason === 'string' && Object.hasOwn(STOP_REASONS, source.last_stop_reason))
+    ) ||
+    !optionalIso(source.last_delivery_at) ||
+    !optionalIso(source.source_end_observed_at) ||
+    !(source.source_end_run_id === null || uuid(source.source_end_run_id)) ||
+    !optionalIso(source.reconciled_at) ||
+    !(source.reconciliation_run_id === null || uuid(source.reconciliation_run_id)) ||
+    !optionalIso(source.baseline_snapshot_at) ||
+    !optionalIso(source.next_eligible_at) ||
+    !(
+      source.blocked_code === null ||
+      (typeof source.blocked_code === 'string' && CODE.test(source.blocked_code))
+    )
+  )
+    return null;
+  const phase = source.phase as BiliDeliveryProgress['phase'];
+  const counters =
+    source.backfill_batch_count + source.reconciliation_batch_count + source.incremental_batch_count;
+  if (
+    counters !== source.batch_count ||
+    source.partial_batch_count > source.batch_count ||
+    source.baseline_snapshot_complete !== (phase === 'incremental') ||
+    (source.generation_id !== null) !== source.initialized ||
+    (source.source_end_observed_at !== null) !== (source.source_end_run_id !== null) ||
+    (source.reconciled_at !== null) !== (source.reconciliation_run_id !== null) ||
+    (source.reconciled_at !== null) !== (source.baseline_snapshot_at !== null) ||
+    (phase === 'incremental' && source.baseline_snapshot_at === null) ||
+    (phase === 'blocked') !== (source.blocked_code !== null) ||
+    (!source.initialized &&
+      (phase !== 'backfill' ||
+        source.baseline_snapshot_complete ||
+        source.batch_count !== 0 ||
+        source.content_observation_count !== 0 ||
+        source.partial_batch_count !== 0 ||
+        source.failed_content_count !== 0 ||
+        source.last_lane !== null ||
+        source.last_stop_reason !== null ||
+        source.last_delivery_at !== null ||
+        source.source_end_observed_at !== null ||
+        source.reconciled_at !== null ||
+        source.baseline_snapshot_at !== null ||
+        source.blocked_code !== null))
+  )
+    return null;
+  return {
+    schema_version: 1,
+    initialized: source.initialized,
+    phase,
+    baseline_snapshot_complete: source.baseline_snapshot_complete,
+    generation_id: source.generation_id,
+    batch_count: source.batch_count,
+    content_observation_count: source.content_observation_count,
+    backfill_batch_count: source.backfill_batch_count,
+    reconciliation_batch_count: source.reconciliation_batch_count,
+    incremental_batch_count: source.incremental_batch_count,
+    partial_batch_count: source.partial_batch_count,
+    failed_content_count: source.failed_content_count,
+    last_lane: source.last_lane as BiliDeliveryProgress['last_lane'],
+    last_stop_reason: source.last_stop_reason,
+    last_delivery_at: source.last_delivery_at,
+    source_end_observed_at: source.source_end_observed_at,
+    source_end_run_id: source.source_end_run_id,
+    reconciled_at: source.reconciled_at,
+    reconciliation_run_id: source.reconciliation_run_id,
+    baseline_snapshot_at: source.baseline_snapshot_at,
+    next_eligible_at: source.next_eligible_at,
+    blocked_code: source.blocked_code
+  };
+}
+
+export interface BiliDeliveryProgressCard {
+  phase: string;
+  status: string;
+  notice: string;
+  rows: Array<{ label: string; value: string }>;
+}
+
+function displayTime(value: string | null): string {
+  return value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '—';
+}
+
+export function safeBiliDeliveryProgressCard(value: unknown): BiliDeliveryProgressCard {
+  const progress = parseBiliDeliveryProgress(value);
+  if (!progress) {
+    return {
+      phase: '证据不可用',
+      status: 'unknown',
+      notice: '服务端投影未通过封闭格式校验；请刷新详情并核对任务日志。',
+      rows: [{ label: '基线快照', value: '未声明完成' }]
+    };
+  }
+  const rows = progress.initialized
+    ? [
+        {
+          label: '已交付批次',
+          value: `${progress.batch_count} 轮（回填 ${progress.backfill_batch_count} / 对账 ${progress.reconciliation_batch_count} / 增量 ${progress.incremental_batch_count}）`
+        },
+        { label: '本地交付内容观察', value: `${progress.content_observation_count} 条` },
+        {
+          label: '部分批次 / 当前失败内容',
+          value: `${progress.partial_batch_count} 轮 / ${progress.failed_content_count} 条`
+        },
+        {
+          label: '最近交付',
+          value:
+            progress.last_lane && progress.last_stop_reason
+              ? `${LANES[progress.last_lane]} · ${STOP_REASONS[progress.last_stop_reason]} · ${displayTime(progress.last_delivery_at)}`
+              : displayTime(progress.last_delivery_at)
+        },
+        { label: '最近源末尾证据', value: displayTime(progress.source_end_observed_at) },
+        { label: '最近稳定对账', value: displayTime(progress.reconciled_at) },
+        { label: '下次可运行', value: displayTime(progress.next_eligible_at) }
+      ]
+    : [
+        { label: '交付合格批次', value: '尚未产生' },
+        { label: '基线快照', value: '未声明完成' },
+        { label: '下次可运行', value: displayTime(progress.next_eligible_at) }
+      ];
+  if (progress.blocked_code) rows.push({ label: '阻塞代码', value: progress.blocked_code });
+  return {
+    phase: BILI_DELIVERY_PHASE_LABELS[progress.phase],
+    status:
+      progress.phase === 'incremental'
+        ? 'succeeded'
+        : progress.phase === 'blocked'
+          ? 'failed_terminal'
+          : progress.phase === 'reconciling'
+            ? 'running'
+            : 'queued',
+    notice: BILI_DELIVERY_PROGRESS_NOTICE,
+    rows
+  };
 }
 
 function newUuid(): string {

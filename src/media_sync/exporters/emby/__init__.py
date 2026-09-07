@@ -11,6 +11,7 @@ from .layout import (
 )
 from .models import (
     ContentFingerprint,
+    ContentIdentity,
     ExportAuthor,
     ExportContent,
     ExportResult,
@@ -25,6 +26,7 @@ from .models import (
 __all__ = [
     "LAYOUT_VERSION",
     "ContentFingerprint",
+    "ContentIdentity",
     "EmbyExporter",
     "ExportAuthor",
     "ExportConflictError",
