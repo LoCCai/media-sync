@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import ast
+import importlib.util
 import re
+import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -57,10 +59,30 @@ def _one_class_method(
     return matches[0]
 
 
+def _materialize(module: ast.Module, namespace: dict[str, Any], *, label: str) -> None:
+    """Load a pruned pinned module through the standard import machinery.
+
+    The pruned body is written to a temporary module file and imported with
+    importlib; the caller's namespace seeds the module globals first, so
+    stubs stay visible while the body runs and every definition the body
+    makes is merged back — the same contract as executing the module body.
+    """
+
+    rendered = ast.unparse(ast.fix_missing_locations(module))
+    target = Path(tempfile.mkdtemp(prefix="pinned-prune-")) / f"{label}.py"
+    target.write_text(rendered, encoding="utf-8")
+    spec = importlib.util.spec_from_file_location(f"pinned_{label}", target)
+    assert spec is not None and spec.loader is not None
+    generated = importlib.util.module_from_spec(spec)
+    generated.__dict__.update(namespace)
+    spec.loader.exec_module(generated)
+    namespace.update(vars(generated))
+
+
 def test_pinned_answer_extractor_receives_raw_html_then_discards_its_image_locator() -> None:
-    source_path, tree = _pinned_tree(HELP_PATH)
+    _source_path, tree = _pinned_tree(HELP_PATH)
     method = _one_class_method(tree, "ZhihuExtractor", "_extract_answer_content", ast.FunctionDef)
-    util_source_path, util_tree = _pinned_tree(CRAWLER_UTIL_PATH)
+    _util_source_path, util_tree = _pinned_tree(CRAWLER_UTIL_PATH)
     extract_text = _one_top_level_function(util_tree, "extract_text_from_html", ast.FunctionDef)
 
     class Content:
@@ -73,7 +95,7 @@ def test_pinned_answer_extractor_receives_raw_html_then_discards_its_image_locat
         "zhihu_constant": SimpleNamespace(ZHIHU_URL="https://www.zhihu.com"),
     }
     module = ast.fix_missing_locations(ast.Module(body=[extract_text, method], type_ignores=[]))
-    exec(compile(module, f"{util_source_path};{source_path}", "exec"), namespace)
+    _materialize(module, namespace, label="zhihu_answer_extractor")
     extractor = SimpleNamespace(
         _extract_content_or_comment_author=lambda _author: SimpleNamespace(
             creator_hash="hash:creator",
@@ -101,14 +123,14 @@ def test_pinned_answer_extractor_receives_raw_html_then_discards_its_image_locat
 
 
 def test_pinned_zhihu_content_carries_private_capture_without_serializing_it() -> None:
-    source_path, tree = _pinned_tree(MODEL_PATH)
+    _source_path, tree = _pinned_tree(MODEL_PATH)
     model_imports = [node for node in tree.body if isinstance(node, (ast.Import, ast.ImportFrom))]
     model_classes = [node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "ZhihuContent"]
     assert len(model_classes) == 1, "expected exactly one pinned upstream ZhihuContent definition"
 
     namespace: dict[str, Any] = {}
     module = ast.fix_missing_locations(ast.Module(body=[*model_imports, model_classes[0]], type_ignores=[]))
-    exec(compile(module, str(source_path), "exec"), namespace)
+    _materialize(module, namespace, label="zhihu_content_model")
     content = namespace["ZhihuContent"](
         content_id="101",
         content_type="answer",
@@ -185,7 +207,7 @@ def test_pinned_creator_dispatch_calls_answers_only() -> None:
 
 
 async def test_pinned_update_flattens_model_before_calling_store() -> None:
-    source_path, tree = _pinned_tree(STORE_PATH)
+    _source_path, tree = _pinned_tree(STORE_PATH)
     update = _one_top_level_function(tree, "update_zhihu_content", ast.AsyncFunctionDef)
     stored_rows: list[dict[str, object]] = []
 
@@ -203,7 +225,7 @@ async def test_pinned_update_flattens_model_before_calling_store() -> None:
         ),
     }
     module = ast.fix_missing_locations(ast.Module(body=[update], type_ignores=[]))
-    exec(compile(module, str(source_path), "exec"), namespace)
+    _materialize(module, namespace, label="zhihu_store_update")
 
     class Content:
         source_keyword = ""
@@ -232,7 +254,7 @@ async def test_pinned_update_flattens_model_before_calling_store() -> None:
 
 
 async def test_pinned_jsonl_store_passes_content_mapping_to_writer_unchanged() -> None:
-    source_path, tree = _pinned_tree(STORE_IMPL_PATH)
+    _source_path, tree = _pinned_tree(STORE_IMPL_PATH)
     method = _one_class_method(tree, "ZhihuJsonlStoreImplement", "store_content", ast.AsyncFunctionDef)
     writes: list[tuple[str, dict[str, object]]] = []
 
@@ -242,7 +264,7 @@ async def test_pinned_jsonl_store_passes_content_mapping_to_writer_unchanged() -
 
     namespace: dict[str, Any] = {"Dict": dict}
     module = ast.fix_missing_locations(ast.Module(body=[method], type_ignores=[]))
-    exec(compile(module, str(source_path), "exec"), namespace)
+    _materialize(module, namespace, label="zhihu_jsonl_store")
     row = {
         "content_id": "101",
         "content_url": "https://www.zhihu.com/question/202/answer/101",

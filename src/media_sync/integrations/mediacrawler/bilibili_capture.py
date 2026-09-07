@@ -101,8 +101,13 @@ def _checkout_module(name: str, root: Path) -> Any:
     return module
 
 
-def install_bilibili_capture_shim(manifest: RunnerManifest) -> None:
-    """Install once after the page-identity shim, before upstream ``main.start``."""
+def install_bilibili_capture_shim(manifest: RunnerManifest, checkout_root: Path) -> None:
+    """Install once after the page-identity shim, before upstream ``main.start``.
+
+    ``checkout_root`` must be the checkout root already validated by
+    ``verify_manifest_checkout`` in the caller; the shim never trusts the raw
+    manifest field for filesystem access.
+    """
     state = manifest.bili_scan
     if state is None or manifest.platform.value != "bili":
         raise _failure()
@@ -111,7 +116,7 @@ def install_bilibili_capture_shim(manifest: RunnerManifest) -> None:
         author_fingerprint_sha256=manifest.author_remote_id_fingerprint_sha256,
         upstream_sha=manifest.upstream_sha,
     )
-    root = manifest.checkout_root
+    root = Path(checkout_root)
     core = _checkout_module("media_platform.bilibili.core", root)
     client_module = _checkout_module("media_platform.bilibili.client", root)
     store = _checkout_module("store.bilibili", root)

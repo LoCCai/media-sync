@@ -17,6 +17,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -889,7 +890,8 @@ def _child_text(value: object, maximum: int) -> str:
 def _silenced_upstream() -> Iterator[None]:
     stdout_copy = os.dup(1)
     stderr_copy = os.dup(2)
-    with open(os.devnull, "w", encoding="utf-8") as sink:
+
+    with tempfile.TemporaryFile(mode="w", encoding="utf-8") as sink:
         try:
             sys.stdout.flush()
             sys.stderr.flush()

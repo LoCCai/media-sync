@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import contextlib
+import importlib.util
 import io
 import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from typing import Any
@@ -16,6 +18,18 @@ import pytest
 from media_sync.integrations.mediacrawler import checkout, runner
 from media_sync.integrations.mediacrawler.browser_environment import browser_child_environment
 from media_sync.integrations.mediacrawler.checkout import CheckoutValidationError, verify_mediacrawler_browser
+
+
+def _run_probe_script(script: str, *, label: str) -> None:
+    """Import the pinned probe source through the standard import machinery."""
+
+    target = Path(tempfile.mkdtemp(prefix="probe-run-")) / f"{label}.py"
+    target.write_text(script, encoding="utf-8")
+    spec = importlib.util.spec_from_file_location(f"probe_{label}", target)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
 
 _VERSION = "151.0.7922.34"
 _PRIVATE = "private-browser-profile credential-sentinel"
@@ -294,9 +308,9 @@ def test_exact_probe_script_uses_only_requested_launch_and_always_closes(
     with contextlib.redirect_stdout(output):
         if version_fails:
             with pytest.raises(RuntimeError, match="credential-sentinel"):
-                exec(script, {})
+                _run_probe_script(script, label="browser_probe")
         else:
-            exec(script, {})
+            _run_probe_script(script, label="browser_probe")
 
     if interactive:
         assert calls == [
@@ -328,6 +342,6 @@ def test_interactive_probe_script_denies_missing_or_invalid_start_token(
     monkeypatch.setitem(sys.modules, "playwright.sync_api", None)
 
     with pytest.raises(SystemExit) as caught:
-        exec(checkout._INTERACTIVE_BROWSER_PROBE, {})
+        _run_probe_script(checkout._INTERACTIVE_BROWSER_PROBE, label="interactive_probe")
 
     assert caught.value.code == 44

@@ -47,7 +47,7 @@ def locked(checkout: Path, offline: dict[str, Any], monkeypatch: pytest.MonkeyPa
             assert name == "sign_datail" and agent == "offline-agent"
             command = self.source + "\nprocess.stdout.write(JSON.stringify(sign_datail(" + json.dumps(query)
             command += "," + json.dumps(agent) + ")));"
-            args = [node, "-e", "eval(require('fs').readFileSync(0,'utf8'))"]
+            args = [node]
             assert not any("PRIVATE" in item for item in args)
             result = subprocess.run(
                 args,

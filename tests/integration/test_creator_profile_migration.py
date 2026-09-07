@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from importlib.resources import as_file, files
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -19,11 +20,13 @@ HEAD = "0010_creator_profiles"
 PARENT = "0009_subscription_removal"
 
 
-def _downgrade(database: Database) -> None:
+def _downgrade(database: Database, *, exclusive_maintenance: bool = False) -> None:
     with as_file(files(MIGRATIONS_PACKAGE)) as path:
         configuration = Config()
         configuration.set_main_option("script_location", str(path))
         configuration.set_main_option("sqlalchemy.url", database.url)
+        if exclusive_maintenance:
+            configuration.cmd_opts = SimpleNamespace(x=["exclusive-maintenance=true"])
         command.downgrade(configuration, PARENT)
 
 
@@ -99,6 +102,10 @@ def test_fresh_schema_metadata_nullable_binary_and_auth_default_match(tmp_path: 
     metadata = Database("sqlite+pysqlite:///:memory:")
     try:
         upgrade_database(database.url, HEAD)
+        # Parity must compare the same generation: the metadata always
+        # describes the latest head, so advance the migrated database from
+        # 0010 to the repository head before comparing shapes.
+        upgrade_database(database.url)
         metadata.create_schema()
         for table in ("accounts", "subscriptions", "creator_profiles", "creator_profile_lookups"):
             migration_columns = {item["name"]: item for item in inspect(database.engine).get_columns(table)}
@@ -110,7 +117,7 @@ def test_fresh_schema_metadata_nullable_binary_and_auth_default_match(tmp_path: 
             assert {item["name"] for item in inspect(database.engine).get_check_constraints(table)} == {
                 item["name"] for item in inspect(metadata.engine).get_check_constraints(table)
             }
-        _downgrade(database)
+        _downgrade(database, exclusive_maintenance=True)
         assert "creator_profiles" not in inspect(database.engine).get_table_names()
         upgrade_database(database.url, HEAD)
         assert "creator_profiles" in inspect(database.engine).get_table_names()

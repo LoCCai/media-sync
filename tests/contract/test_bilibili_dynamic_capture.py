@@ -143,7 +143,7 @@ async def test_discovery_is_signed_durable_and_does_not_fetch_details(runtime: A
     runtime.behavior["cached_wbi"] = cached
     client = runtime.crawler.bili_client
     original_request, original_keys = client.request, client.get_wbi_keys
-    bilibili_capture.install_bilibili_capture_shim(runtime.manifest)
+    bilibili_capture.install_bilibili_capture_shim(runtime.manifest, runtime.manifest.checkout_root)
     await runtime.crawler.get_creator_videos(42)
     result = coverage(runtime)
     assert result.stop_reason == "snapshot_saved" and result.record_keys == ()
@@ -162,7 +162,7 @@ async def test_snapshot_resume_exact_details_and_real_owned_av_store(runtime: An
     settings["opus"][row["id_str"]] = opus_item(kind)
     client = runtime.crawler.bili_client
     original_request, original_keys = client.request, client.get_wbi_keys
-    bilibili_capture.install_bilibili_capture_shim(runtime.manifest)
+    bilibili_capture.install_bilibili_capture_shim(runtime.manifest, runtime.manifest.checkout_root)
     await runtime.crawler.get_creator_videos(42)
     result = coverage(runtime)
     assert result.stop_reason == "page_end" and result.next_state.dynamics.head.offset == "next-page"
@@ -246,7 +246,7 @@ async def test_detail_failure_never_emits_coverage_or_advances_pending(runtime: 
         runtime.behavior["failure"] = failure.removeprefix("av_")
     client = runtime.crawler.bili_client
     original_request, original_keys = client.request, client.get_wbi_keys
-    bilibili_capture.install_bilibili_capture_shim(runtime.manifest)
+    bilibili_capture.install_bilibili_capture_shim(runtime.manifest, runtime.manifest.checkout_root)
     fetch_error = sys.modules["media_platform.bilibili.exception"].DataFetchError
     with pytest.raises((BiliDynamicError, fetch_error)):
         await runtime.crawler.get_creator_videos(42)
@@ -266,7 +266,7 @@ async def test_discovery_failure_is_not_empty_success(runtime: Any, failure: str
         settings["data"]["items"][0]["modules"]["module_author"]["mid"] = 43
     else:
         settings["data"]["has_more"] = "1"
-    bilibili_capture.install_bilibili_capture_shim(runtime.manifest)
+    bilibili_capture.install_bilibili_capture_shim(runtime.manifest, runtime.manifest.checkout_root)
     fetch_error = sys.modules["media_platform.bilibili.exception"].DataFetchError
     with pytest.raises((BiliDynamicError, fetch_error)):
         await runtime.crawler.get_creator_videos(42)
@@ -278,7 +278,7 @@ async def test_discovery_failure_is_not_empty_success(runtime: Any, failure: str
 @pytest.mark.parametrize("maximum,consumed", [(2, 1), (3, 2)])
 async def test_av_two_record_cost_preserves_unconsumed_snapshot_tail(runtime: Any, maximum: int, consumed: int) -> None:
     configure(runtime, [item(did="101"), item("AV", did="102"), item(did="103")], maximum=maximum, resume=True)
-    bilibili_capture.install_bilibili_capture_shim(runtime.manifest)
+    bilibili_capture.install_bilibili_capture_shim(runtime.manifest, runtime.manifest.checkout_root)
     await runtime.crawler.get_creator_videos(42)
     result = coverage(runtime)
     assert result.stop_reason == "item_limit"
@@ -291,7 +291,7 @@ async def test_av_two_record_cost_preserves_unconsumed_snapshot_tail(runtime: An
 
 async def test_multiple_details_share_one_locked_wbi_key_read_and_hard_thirty_cap(runtime: Any) -> None:
     configure(runtime, [item(did=str(index)) for index in range(1, 31)], maximum=100, resume=True)
-    bilibili_capture.install_bilibili_capture_shim(runtime.manifest)
+    bilibili_capture.install_bilibili_capture_shim(runtime.manifest, runtime.manifest.checkout_root)
     await runtime.crawler.get_creator_videos(42)
     assert paths(runtime) == [_NAV] + [_DETAIL] * 30
     assert len(dynamics(runtime)) == 30 and len(coverage(runtime).record_keys) == 30
@@ -300,7 +300,7 @@ async def test_multiple_details_share_one_locked_wbi_key_read_and_hard_thirty_ca
 async def test_foreign_opus_summary_fails_before_optional_opus_request(runtime: Any) -> None:
     settings = configure(runtime, [item(opus=True)], resume=True)
     settings["details"]["123456789012345"]["modules"]["module_author"]["mid"] = 43
-    bilibili_capture.install_bilibili_capture_shim(runtime.manifest)
+    bilibili_capture.install_bilibili_capture_shim(runtime.manifest, runtime.manifest.checkout_root)
     with pytest.raises(BiliDynamicIdentityError):
         await runtime.crawler.get_creator_videos(42)
     assert paths(runtime) == [_NAV, _DETAIL]
@@ -340,7 +340,7 @@ async def test_unsupported_opus_summary_never_requests_full_opus(runtime: Any, m
         detail["visible"] = False
     elif mutation == "additional":
         detail["modules"]["module_dynamic"]["additional"] = {"type": "ADDITIONAL_TYPE_VOTE"}
-    bilibili_capture.install_bilibili_capture_shim(runtime.manifest)
+    bilibili_capture.install_bilibili_capture_shim(runtime.manifest, runtime.manifest.checkout_root)
     with pytest.raises(BiliDynamicError, match=r"^bili_dynamic_unsupported$"):
         await runtime.crawler.get_creator_videos(42)
     assert paths(runtime) == [_NAV, _DETAIL]
@@ -353,7 +353,7 @@ async def test_corrupt_snapshot_is_rejected_before_http_without_leaking_path(run
     snapshot.write_bytes(snapshot.read_bytes() + b" ")
     client = runtime.crawler.bili_client
     original_request, original_keys = client.request, client.get_wbi_keys
-    bilibili_capture.install_bilibili_capture_shim(runtime.manifest)
+    bilibili_capture.install_bilibili_capture_shim(runtime.manifest, runtime.manifest.checkout_root)
     with pytest.raises(BiliDynamicError, match=r"^bili_dynamic_schema_invalid$"):
         await runtime.crawler.get_creator_videos(42)
     assert not paths(runtime) and not dynamics(runtime)
@@ -362,7 +362,7 @@ async def test_corrupt_snapshot_is_rejected_before_http_without_leaking_path(run
 
 async def test_duplicate_av_reference_has_two_distinct_dynamics_and_one_owned_video(runtime: Any) -> None:
     configure(runtime, [item("AV", did="101"), item("AV", did="102")], maximum=4, resume=True)
-    bilibili_capture.install_bilibili_capture_shim(runtime.manifest)
+    bilibili_capture.install_bilibili_capture_shim(runtime.manifest, runtime.manifest.checkout_root)
     await runtime.crawler.get_creator_videos(42)
     result = coverage(runtime)
     assert set(result.record_keys) == {("dynamic", "101"), ("dynamic", "102"), ("content", "1")}
@@ -374,7 +374,7 @@ async def test_later_detail_failure_does_not_commit_earlier_successful_identity(
     settings = configure(runtime, [item(did="101"), item(did="102")], resume=True)
     settings["details"]["102"]["id_str"] = "103"
     initial = runtime.manifest.bili_scan.to_cursor()
-    bilibili_capture.install_bilibili_capture_shim(runtime.manifest)
+    bilibili_capture.install_bilibili_capture_shim(runtime.manifest, runtime.manifest.checkout_root)
     with pytest.raises(BiliDynamicIdentityError):
         await runtime.crawler.get_creator_videos(42)
     assert paths(runtime) == [_NAV, _DETAIL, _DETAIL]

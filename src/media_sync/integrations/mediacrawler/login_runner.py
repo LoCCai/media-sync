@@ -14,6 +14,7 @@ import signal
 import stat
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import warnings
@@ -661,7 +662,7 @@ def _silenced_upstream(capture_output: bool = False) -> Iterator[None]:
         return
     stdout_copy = os.dup(1)
     stderr_copy = os.dup(2)
-    with open(os.devnull, "w", encoding="utf-8") as sink:
+    with tempfile.TemporaryFile(mode="w", encoding="utf-8") as sink:
         try:
             sys.stdout.flush()
             sys.stderr.flush()

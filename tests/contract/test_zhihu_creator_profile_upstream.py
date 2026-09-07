@@ -50,7 +50,7 @@ def locked(checkout: Path, offline: dict[str, Any], monkeypatch: pytest.MonkeyPa
                 + ")));"
             )
             result = subprocess.run(
-                [node, "-e", "eval(require('fs').readFileSync(0,'utf8'))"],
+                [node],
                 input=command.encode(),
                 capture_output=True,
                 check=True,

@@ -9,8 +9,10 @@ from __future__ import annotations
 import ast
 import contextlib
 import importlib
+import importlib.util
 import os
 import sys
+import tempfile
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from typing import Any
@@ -65,7 +67,16 @@ def _compile(nodes: list[ast.stmt], namespace: dict[str, Any]) -> None:
             type_ignores=[],
         )
     )
-    exec(compile(module, "<verified-pinned-browser-wiring>", "exec"), namespace)
+    rendered = ast.unparse(module)
+    target = Path(tempfile.mkdtemp(prefix="pinned-wiring-")) / "browser_wiring.py"
+    target.write_text(rendered, encoding="utf-8")
+    spec = importlib.util.spec_from_file_location("pinned_browser_wiring", target)
+    assert spec is not None and spec.loader is not None
+    generated = importlib.util.module_from_spec(spec)
+    metadata = {"__name__", "__spec__", "__loader__", "__package__", "__file__", "__builtins__"}
+    generated.__dict__.update({key: value for key, value in namespace.items() if key not in metadata})
+    spec.loader.exec_module(generated)
+    namespace.update({key: value for key, value in vars(generated).items() if key not in metadata})
 
 
 class _Chromium:
@@ -311,7 +322,9 @@ async def test_real_creator_entry_installs_policy_before_pinned_main_dispatch(
         from media_sync.integrations.mediacrawler import bilibili_capture
 
         monkeypatch.setattr(
-            bilibili_capture, "install_bilibili_capture_shim", lambda manifest: fixture.events.append("bounded-capture")
+            bilibili_capture,
+            "install_bilibili_capture_shim",
+            lambda manifest, checkout_root: fixture.events.append("bounded-capture"),
         )
     output = tmp_path / "output"
     output.mkdir()

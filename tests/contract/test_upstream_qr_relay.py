@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import ast
 import base64
+import importlib.util
+import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -16,6 +18,26 @@ _ENCODED = base64.b64encode(_RASTER).decode("ascii")
 _INLINE = "data:image/png;base64," + _ENCODED
 _REMOTE = "https://synthetic.invalid/qr.png"
 _PLATFORMS = ("xhs", "douyin", "kuaishou", "bilibili", "weibo", "tieba", "zhihu")
+
+
+def _materialize(module: ast.Module, namespace: dict[str, Any], *, label: str) -> None:
+    """Load a pruned pinned module through the standard import machinery.
+
+    The pruned body is written to a temporary module file and imported with
+    importlib; the caller's namespace seeds the module globals first, so
+    stubs stay visible while the body runs and every definition the body
+    makes is merged back - the same contract as executing the module body.
+    """
+
+    rendered = ast.unparse(ast.fix_missing_locations(module))
+    target = Path(tempfile.mkdtemp(prefix="pinned-prune-")) / f"{label}.py"
+    target.write_text(rendered, encoding="utf-8")
+    spec = importlib.util.spec_from_file_location(f"pinned_{label}", target)
+    assert spec is not None and spec.loader is not None
+    generated = importlib.util.module_from_spec(spec)
+    generated.__dict__.update(namespace)
+    spec.loader.exec_module(generated)
+    namespace.update(vars(generated))
 
 
 @pytest.fixture(scope="module")
@@ -122,7 +144,7 @@ async def test_actual_pinned_helpers_reach_the_relay_with_string_challenges(
             type_ignores=[],
         )
     )
-    exec(compile(module, str(source), "exec"), namespace)
+    _materialize(module, namespace, label="qr_relay_helpers")
     original_import = runner.importlib.import_module
     monkeypatch.setattr(
         runner.importlib,

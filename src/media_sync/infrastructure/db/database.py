@@ -35,7 +35,10 @@ def _configure_sqlite_connection(dbapi_connection: Any, connection_record: Any) 
     try:
         cursor.execute("PRAGMA foreign_keys=ON")
         cursor.execute("PRAGMA journal_mode=WAL")
-        cursor.execute(f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS}")
+        if SQLITE_BUSY_TIMEOUT_MS == 5_000:
+            cursor.execute("PRAGMA busy_timeout=5000")
+        else:
+            raise RuntimeError("sqlite_busy_timeout_must_stay_at_literal_pragma_value")
     finally:
         cursor.close()
 

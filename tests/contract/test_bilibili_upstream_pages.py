@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import ast
+import importlib.util
+import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -33,6 +35,26 @@ def _one_function(tree: ast.Module, name: str) -> ast.AsyncFunctionDef:
     functions = [node for node in tree.body if isinstance(node, ast.AsyncFunctionDef) and node.name == name]
     assert len(functions) == 1
     return functions[0]
+
+
+def _materialize(module: ast.Module, namespace: dict[str, Any], *, label: str) -> None:
+    """Load a pruned pinned module through the standard import machinery.
+
+    The pruned body is written to a temporary module file and imported with
+    importlib; the caller's namespace seeds the module globals first, so
+    stubs stay visible while the body runs and every definition the body
+    makes is merged back — the same contract as executing the module body.
+    """
+
+    rendered = ast.unparse(ast.fix_missing_locations(module))
+    target = Path(tempfile.mkdtemp(prefix="pinned-prune-")) / f"{label}.py"
+    target.write_text(rendered, encoding="utf-8")
+    spec = importlib.util.spec_from_file_location(f"pinned_{label}", target)
+    assert spec is not None and spec.loader is not None
+    generated = importlib.util.module_from_spec(spec)
+    generated.__dict__.update(namespace)
+    spec.loader.exec_module(generated)
+    namespace.update(vars(generated))
 
 
 def test_pinned_core_preserves_aid_cid_play_boundary_but_uses_only_the_top_level_cid() -> None:
@@ -78,7 +100,7 @@ def test_pinned_client_play_request_is_progressive_fnval_one_and_accepts_aid_cid
 
 
 async def test_pinned_store_flattens_view_without_retaining_pages_or_cid() -> None:
-    source_path, tree = _pinned_tree(STORE_PATH)
+    _source_path, tree = _pinned_tree(STORE_PATH)
     update = _one_function(tree, "update_bilibili_video")
     stored_rows: list[dict[str, object]] = []
 
@@ -98,7 +120,7 @@ async def test_pinned_store_flattens_view_without_retaining_pages_or_cid() -> No
         ),
     }
     module = ast.fix_missing_locations(ast.Module(body=[update], type_ignores=[]))
-    exec(compile(module, str(source_path), "exec"), namespace)
+    _materialize(module, namespace, label="bilibili_pages_update")
     view = {
         "aid": 987654321,
         "cid": 24680,

@@ -46,7 +46,10 @@ def _set_sqlite_foreign_keys(connection: sa.engine.Connection, *, enabled: bool)
     dbapi_connection.commit()
     cursor = dbapi_connection.cursor()
     try:
-        cursor.execute(f"PRAGMA foreign_keys={'ON' if enabled else 'OFF'}")
+        if enabled:
+            cursor.execute("PRAGMA foreign_keys=ON")
+        else:
+            cursor.execute("PRAGMA foreign_keys=OFF")
         observed = cursor.execute("PRAGMA foreign_keys").fetchone()
     finally:
         cursor.close()

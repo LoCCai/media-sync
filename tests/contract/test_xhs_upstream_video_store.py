@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import ast
+import importlib.util
+import tempfile
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from types import SimpleNamespace
@@ -27,6 +29,26 @@ class _ExtractedXhsStore:
         self.get_video_url_arr = get_video_url_arr
         self.update_xhs_note = update_xhs_note
         self.stored_rows = stored_rows
+
+
+def _materialize(module: ast.Module, namespace: dict[str, Any], *, label: str) -> None:
+    """Load a pruned pinned module through the standard import machinery.
+
+    The pruned body is written to a temporary module file and imported with
+    importlib; the caller's namespace seeds the module globals first, so
+    stubs stay visible while the body runs and every definition the body
+    makes is merged back - the same contract as executing the module body.
+    """
+
+    rendered = ast.unparse(ast.fix_missing_locations(module))
+    target = Path(tempfile.mkdtemp(prefix="pinned-prune-")) / f"{label}.py"
+    target.write_text(rendered, encoding="utf-8")
+    spec = importlib.util.spec_from_file_location(f"pinned_{label}", target)
+    assert spec is not None and spec.loader is not None
+    generated = importlib.util.module_from_spec(spec)
+    generated.__dict__.update(namespace)
+    spec.loader.exec_module(generated)
+    namespace.update(vars(generated))
 
 
 def _extract_xhs_store_contract() -> _ExtractedXhsStore:
@@ -70,7 +92,7 @@ def _extract_xhs_store_contract() -> _ExtractedXhsStore:
         ),
     }
     extracted_module = ast.fix_missing_locations(ast.Module(body=extracted_nodes, type_ignores=[]))
-    exec(compile(extracted_module, str(source_path), "exec"), namespace)
+    _materialize(extracted_module, namespace, label="xhs_video_store")
 
     return _ExtractedXhsStore(
         get_video_url_arr=namespace["get_video_url_arr"],

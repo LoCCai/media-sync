@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import ast
+import importlib.util
+import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -32,6 +34,26 @@ def _pinned_tree(relative_path: Path) -> tuple[Path, ast.Module]:
     checkout = verify_mediacrawler_checkout(LOCK_PATH, license_acknowledged=True)
     source_path = checkout.root / relative_path
     return source_path, ast.parse(source_path.read_text(encoding="utf-8"), filename=str(source_path))
+
+
+def _materialize(module: ast.Module, namespace: dict[str, Any], *, label: str) -> None:
+    """Load a pruned pinned module through the standard import machinery.
+
+    The pruned body is written to a temporary module file and imported with
+    importlib; the caller's namespace seeds the module globals first, so
+    stubs stay visible while the body runs and every definition the body
+    makes is merged back — the same contract as executing the module body.
+    """
+
+    rendered = ast.unparse(ast.fix_missing_locations(module))
+    target = Path(tempfile.mkdtemp(prefix="pinned-prune-")) / f"{label}.py"
+    target.write_text(rendered, encoding="utf-8")
+    spec = importlib.util.spec_from_file_location(f"pinned_{label}", target)
+    assert spec is not None and spec.loader is not None
+    generated = importlib.util.module_from_spec(spec)
+    generated.__dict__.update(namespace)
+    spec.loader.exec_module(generated)
+    namespace.update(vars(generated))
 
 
 def _one_top_level_function(
@@ -82,7 +104,7 @@ def _image_item(*, identity: str = IMAGE_ID, image_url: str = IMAGE_URL) -> dict
 
 
 def test_pinned_extractor_receives_current_structured_item_then_discards_every_locator() -> None:
-    source_path, tree = _pinned_tree(HELP_PATH)
+    _source_path, tree = _pinned_tree(HELP_PATH)
     extract_text = _one_class_method(tree, "TieBaExtractor", "_extract_api_content_text", ast.FunctionDef)
     extract_detail = _one_class_method(tree, "TieBaExtractor", "extract_note_detail_from_api", ast.FunctionDef)
 
@@ -108,7 +130,7 @@ def test_pinned_extractor_receives_current_structured_item_then_discards_every_l
         "utils": SimpleNamespace(get_time_str_from_unix_time=lambda value: str(value)),
     }
     module = ast.fix_missing_locations(ast.Module(body=[extractor_class], type_ignores=[]))
-    exec(compile(module, str(source_path), "exec"), namespace)
+    _materialize(module, namespace, label="tieba_contract_extractor")
     extractor_type = namespace["ContractExtractor"]
     extractor_type._normalize_text = staticmethod(lambda value: str(value).strip())
     extractor_type._ensure_tieba_suffix = staticmethod(lambda value: f"{value}吧")
@@ -145,13 +167,13 @@ def test_pinned_extractor_receives_current_structured_item_then_discards_every_l
 
 
 def test_pinned_tieba_note_carries_private_capture_without_serializing_it() -> None:
-    source_path, tree = _pinned_tree(MODEL_PATH)
+    _source_path, tree = _pinned_tree(MODEL_PATH)
     model_imports = [node for node in tree.body if isinstance(node, (ast.Import, ast.ImportFrom))]
     model_classes = [node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "TiebaNote"]
     assert len(model_classes) == 1
     namespace: dict[str, Any] = {}
     module = ast.fix_missing_locations(ast.Module(body=[*model_imports, model_classes[0]], type_ignores=[]))
-    exec(compile(module, str(source_path), "exec"), namespace)
+    _materialize(module, namespace, label="tieba_note_model")
     note = namespace["TiebaNote"](
         note_id=NOTE_ID,
         title="contract",
@@ -242,7 +264,7 @@ def test_pinned_client_and_core_keep_the_exact_detail_gather_parent_store_bounda
 
 
 async def test_pinned_update_flattens_model_before_calling_store() -> None:
-    source_path, tree = _pinned_tree(STORE_PATH)
+    _source_path, tree = _pinned_tree(STORE_PATH)
     update = _one_top_level_function(tree, "update_tieba_note", ast.AsyncFunctionDef)
     stored_rows: list[dict[str, object]] = []
 
@@ -260,7 +282,7 @@ async def test_pinned_update_flattens_model_before_calling_store() -> None:
         ),
     }
     module = ast.fix_missing_locations(ast.Module(body=[update], type_ignores=[]))
-    exec(compile(module, str(source_path), "exec"), namespace)
+    _materialize(module, namespace, label="tieba_store_update")
 
     class Note:
         source_keyword = ""
@@ -285,7 +307,7 @@ async def test_pinned_update_flattens_model_before_calling_store() -> None:
 
 
 async def test_pinned_jsonl_store_passes_content_mapping_to_writer_unchanged() -> None:
-    source_path, tree = _pinned_tree(STORE_IMPL_PATH)
+    _source_path, tree = _pinned_tree(STORE_IMPL_PATH)
     method = _one_class_method(tree, "TieBaJsonlStoreImplement", "store_content", ast.AsyncFunctionDef)
     writes: list[tuple[str, dict[str, object]]] = []
 
@@ -295,7 +317,7 @@ async def test_pinned_jsonl_store_passes_content_mapping_to_writer_unchanged() -
 
     namespace: dict[str, Any] = {"Dict": dict}
     module = ast.fix_missing_locations(ast.Module(body=[method], type_ignores=[]))
-    exec(compile(module, str(source_path), "exec"), namespace)
+    _materialize(module, namespace, label="tieba_jsonl_store")
     row = {"note_id": NOTE_ID, "note_url": f"https://tieba.baidu.com/p/{NOTE_ID}"}
 
     await namespace["store_content"](SimpleNamespace(writer=Writer()), row)

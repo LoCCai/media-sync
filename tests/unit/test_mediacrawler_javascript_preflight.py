@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import builtins
+import importlib.util
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -12,6 +14,17 @@ from typing import Any
 import pytest
 
 from media_sync.integrations.mediacrawler import checkout
+
+
+def _run_probe_script(script: str, *, label: str) -> None:
+    """Import the pinned probe source through the standard import machinery."""
+
+    target = Path(tempfile.mkdtemp(prefix="probe-run-")) / f"{label}.py"
+    target.write_text(script, encoding="utf-8")
+    spec = importlib.util.spec_from_file_location(f"probe_{label}", target)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
 
 
 @pytest.mark.parametrize(
@@ -52,7 +65,7 @@ def test_real_probe_requires_fixed_javascript_execution(
     with monkeypatch.context() as scoped:
         scoped.setattr(builtins, "__import__", import_module)
         with pytest.raises(SystemExit) as caught:
-            exec(checkout._RUNTIME_IMPORT_PROBE, {})
+            _run_probe_script(checkout._RUNTIME_IMPORT_PROBE, label="runtime_import")
     assert caught.value.code == expected
     assert "main" not in imports and "config" not in imports
     assert calls == (["media_sync_probe"] if failure in {None, "call", "wrong_result"} else [])

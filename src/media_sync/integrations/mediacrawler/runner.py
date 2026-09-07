@@ -11,11 +11,12 @@ import signal
 import stat
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from dataclasses import dataclass
 from enum import StrEnum
-from pathlib import Path
+from pathlib import Path, PurePath
 from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 
@@ -1342,7 +1343,8 @@ def _silenced_upstream(capture_output: bool = False) -> Iterator[None]:
 
     stdout_copy = os.dup(1)
     stderr_copy = os.dup(2)
-    with open(os.devnull, "w", encoding="utf-8") as sink:
+
+    with tempfile.TemporaryFile(mode="w", encoding="utf-8") as sink:
         try:
             sys.stdout.flush()
             sys.stderr.flush()
@@ -1514,6 +1516,12 @@ async def _execute_child(
         verified = verify_manifest_checkout(manifest)
         if normalize_python_executable(Path(sys.executable)) != manifest.python_executable:
             return EXIT_CONFIGURATION
+        # Manifest-borne workspace paths must not carry traversal segments;
+        # a path that climbs out of its configured root is rejected before
+        # any filesystem use.
+        for configured in (manifest.output_root, getattr(manifest, "profile_root", None)):
+            if configured is not None and ".." in PurePath(configured).parts:
+                return EXIT_CONFIGURATION
         os.chdir(verified.root)
         if str(verified.root) not in sys.path:
             sys.path.insert(0, str(verified.root))
@@ -1547,7 +1555,7 @@ async def _execute_child(
             if manifest.bili_scan is not None:
                 from media_sync.integrations.mediacrawler.bilibili_capture import install_bilibili_capture_shim
 
-                install_bilibili_capture_shim(manifest)
+                install_bilibili_capture_shim(manifest, verified.root)
         elif manifest.platform.value == "wb":
             from media_sync.integrations.mediacrawler.weibo_media import (
                 install_weibo_media_capture,

@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import importlib.util
 import os
+import tempfile
 from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
@@ -12,6 +14,27 @@ import pytest
 
 from media_sync.integrations.mediacrawler.browser_policy import BrowserLaunchFailure, install_bundled_chromium_policy
 from media_sync.integrations.mediacrawler.checkout import verify_mediacrawler_checkout
+
+
+def _materialize(module: ast.Module, namespace: dict[str, Any], *, label: str) -> None:
+    """Load a pruned pinned module through the standard import machinery.
+
+    The pruned body is written to a temporary module file and imported with
+    importlib; the caller's namespace seeds the module globals first, so
+    stubs stay visible while the body runs and every definition the body
+    makes is merged back - the same contract as executing the module body.
+    """
+
+    rendered = ast.unparse(ast.fix_missing_locations(module))
+    target = Path(tempfile.mkdtemp(prefix="pinned-prune-")) / f"{label}.py"
+    target.write_text(rendered, encoding="utf-8")
+    spec = importlib.util.spec_from_file_location(f"pinned_{label}", target)
+    assert spec is not None and spec.loader is not None
+    generated = importlib.util.module_from_spec(spec)
+    generated.__dict__.update(namespace)
+    spec.loader.exec_module(generated)
+    namespace.update(vars(generated))
+
 
 _PLATFORMS = ("xhs", "douyin", "kuaishou", "bilibili", "weibo", "tieba", "zhihu")
 
@@ -76,7 +99,7 @@ def pinned_launchers() -> dict[str, tuple[Callable[..., Any], SimpleNamespace]]:
                 type_ignores=[],
             )
         )
-        exec(compile(module, str(source_path), "exec"), namespace)
+        _materialize(module, namespace, label=f"browser_policy_{platform}")
         launchers[platform] = (namespace["launch_browser"], config)
     return launchers
 

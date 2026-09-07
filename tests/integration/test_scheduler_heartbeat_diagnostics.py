@@ -49,7 +49,7 @@ def file_database(tmp_path: Path) -> Iterator[tuple[Database, Path]]:
     def shorten_only_this_test_connection_timeout(connection: Any, _record: Any) -> None:
         cursor = connection.cursor()
         try:
-            cursor.execute(f"PRAGMA busy_timeout={TEST_BUSY_TIMEOUT_MS}")
+            cursor.execute("PRAGMA busy_timeout=100")
         finally:
             cursor.close()
 

@@ -262,9 +262,9 @@ async def test_offline_sync_download_export_pipeline_is_secure_and_idempotent(tm
         ).encode()
         assert hashlib.sha256(canonical_rows).hexdigest() == manifest["tree_sha256"]
 
-        tvshow = ET.fromstring((author_directory / "tvshow.nfo").read_bytes())
+        tvshow = ET.parse(author_directory / "tvshow.nfo").getroot()
         episode_path = next(author_directory.glob("Season 2026/*.nfo"))
-        episode = ET.fromstring(episode_path.read_bytes())
+        episode = ET.parse(episode_path).getroot()
         assert tvshow.tag == "tvshow"
         assert tvshow.findtext("title") == author_snapshot.display_name
         assert episode.tag == "episodedetails"

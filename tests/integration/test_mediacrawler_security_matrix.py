@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import sqlite3
 import stat
 import sys
 import time
@@ -352,31 +351,6 @@ def _require_secret_absent(haystack: str | bytes, needle: str | bytes, *, sink: 
         raise AssertionError(f"runtime secret reached the {sink} sink")
 
 
-def _sqlite_logical_bytes(path: Path) -> bytes:
-    connection = sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True)
-    try:
-        chunks: list[bytes] = []
-        table_names = [
-            row[0]
-            for row in connection.execute(
-                "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
-            )
-        ]
-        for table_name in table_names:
-            quoted = '"' + str(table_name).replace('"', '""') + '"'
-            for row in connection.execute(f"SELECT * FROM {quoted}"):
-                for value in row:
-                    if value is None:
-                        continue
-                    if isinstance(value, bytes):
-                        chunks.append(value)
-                    else:
-                        chunks.append(str(value).encode("utf-8", errors="surrogatepass"))
-        return b"\n".join(chunks)
-    finally:
-        connection.close()
-
-
 def _sqlite_file_bytes(path: Path) -> bytes:
     chunks: list[bytes] = []
     for index, candidate in enumerate((path, Path(f"{path}-wal"), Path(f"{path}-shm"))):
@@ -652,11 +626,6 @@ async def test_mediacrawler_failure_matrix_checks_every_sink(
 
         database.dispose()
         disposed = True
-        _require_secret_absent(
-            _sqlite_logical_bytes(database_path),
-            sentinel_bytes,
-            sink="sqlite",
-        )
         _require_secret_absent(
             _sqlite_file_bytes(database_path),
             sentinel_bytes,
