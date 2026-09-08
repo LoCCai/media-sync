@@ -8,9 +8,11 @@
 
 ## 阶段
 
-优先级更新（0076）：[XHS 创作者笔记耐久交付](executions/0076-xhs-creator-notes-delivery/progress.zh.md)已在 `47ca107` 实现并通过离线验证。XHS 现拥有不透明 cursor 与页尾状态，在私密边界刷新逐笔记详情权限，只凭精确交付 receipt 推进，完成稳定来源头部对账，并把已接受 normal/video 笔记接入既有可验证归档及 Emby/Jellyfin 兼容目录/NFO 管线。访问限制、空页停滞与详情部分失败保持独立；无需媒体服务器连接。这是确定性本地证据，不是真人 XHS 资格。
+优先级更新（0077）：[部署来源身份与 XHS 金丝雀预检](executions/0077-deployment-provenance-preflight/progress.zh.md)已在 `d6db86a` 实现并通过本地验证。合格镜像会在清单与 OCI 标签中记录一个封闭的完整应用 SHA；经认证的诊断页与共享 deep CLI 报告公开该身份、当前/预期 migration 及 B 站/XHS 续跑间隔。缺失或无效证据始终显式。Docker/Linux 与全部真人行仍为 `NOT_RUN`。
 
-下一优先级：精确发布并重建 `47ca107`，备份 `/data`，应用 migration `0015`，让 API 与 supervisor 的 `MEDIA_SYNC_XHS_SCAN_CONTINUATION_DELAY_SECONDS` 完全一致，再在 supervisor 初始停止时执行一个由操作者控制的低流量 XHS 金丝雀。先验收页尾保留、重启续跑、真实下载/归档/目录输出和一次调度续跑，再进入下一平台。证据形成文档后，从钉定源码语义推导独立抖音契约。[执行 0077](executions/0076-xhs-creator-notes-delivery/next-delivery.zh.md)仅完成计划，尚未启动。
+下一优先级：按 [0077 部署交接](executions/0077-deployment-provenance-preflight/deployment-handoff.zh.md)执行。拉取已发布 SHA，备份 `/data`，把该精确 SHA 绑定进镜像，应用 migration `0015`，在 supervisor 停止状态比较 API/supervisor deep readiness，再执行一个由操作者控制的低流量 XHS 金丝雀。推进前必须验收页尾保留、重启续跑、真实下载/归档/目录输出和一次调度续跑。形成文档后，才从钉定抖音源码语义推导独立契约；当前尚未授权抖音实现。
+
+优先级更新（0076）：[XHS 创作者笔记耐久交付](executions/0076-xhs-creator-notes-delivery/progress.zh.md)已在 `47ca107` 实现并通过离线验证。XHS 现拥有不透明 cursor 与页尾状态，在私密边界刷新逐笔记详情权限，只凭精确交付 receipt 推进，完成稳定来源头部对账，并把已接受 normal/video 笔记接入既有可验证归档及 Emby/Jellyfin 兼容目录/NFO 管线。访问限制、空页停滞与详情部分失败保持独立；无需媒体服务器连接。这是确定性本地证据，不是真人 XHS 资格。
 
 优先级更新（0074–0075）：[B 站投稿耐久回填转增量本地交付](executions/0074-bili-backfill-incremental-delivery/progress.zh.md)与[暂停态订阅策略编辑器](executions/0075-paused-subscription-policy-editor/progress.zh.md)已分别在 `9c81c4b`、`aec3eac` 实现并通过离线验证。B 站现有取得交付资格的有界历史、源末尾/头部对账、重叠增量检查及按完整 Content 发布。全部 MediaCrawler 平台现可安全地在暂停态修改周期、单次上限、请求间隔及浏览器模式；只有 B 站有采集范围。两项实现都不等于真人资格。
 

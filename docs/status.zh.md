@@ -2,7 +2,17 @@
 
 # 项目统一状态（单一事实来源）
 
-## 最新：XHS 创作者笔记耐久交付（0076）
+## 最新：部署来源身份与 XHS 金丝雀预检（0077）
+
+[执行 0077](executions/0077-deployment-provenance-preflight/progress.zh.md)已在 `d6db86a` 实现，关闭了当前 Docker 部署无法识别镜像内应用代码的证据缺口。合格构建只接受完整小写源码 SHA，把它写入 `/opt/BUILD-MANIFEST.txt` 与 OCI revision 标签，并继续排除项目自身 `.git`。缺少来源身份显式为 `not_run`；畸形或重复值安全失败且不反射原值。
+
+经认证的 deep-readiness API、诊断页与 `media-sync doctor --deep --accept-mediacrawler-license --json` 现在共享同一份安全证据：经过验证的应用 SHA、数据库当前/预期 migration、B 站/XHS 实际续跑间隔、钉定 MediaCrawler checkout/runtime/browser 检查及固定状态。已知旧 migration 可见但不是 current；未知数据库文本与畸形前端值保持隐藏。CLI 可以在不启动驻留 supervisor 的情况下独立检查 API/supervisor 服务定义。
+
+最终本地门禁通过：Python 完整套件 `7140 passed, 42 skipped, 1 warning`；Web 完整套件 `28 files / 825 tests`；Svelte 检查/构建、Prettier、Ruff lint/format、160 个源码文件 strict mypy、compileall、62 包锁文件、两个钉定上游、制品构建及文档检查均通过。准确修正与命令见[0077 验证](executions/0077-deployment-provenance-preflight/verification.zh.md)。
+
+当前 Windows 工作站没有 Docker，未构建/检查 Linux 镜像，也未修改服务器。真实 Docker/OCI 证据、migration `0015`、API/supervisor 比较、XHS 登录/采集/CDN/目录/重启金丝雀、驻留 supervisor、PostgreSQL 与可选媒体服务器读取仍为 `NOT_RUN`。后续遵循[部署交接](executions/0077-deployment-provenance-preflight/deployment-handoff.zh.md)；XHS 结果形成记录前不得开始抖音交付。
+
+## 上阶段：XHS 创作者笔记耐久交付（0076）
 
 [执行 0076](executions/0076-xhs-creator-notes-delivery/progress.zh.md)已在 `47ca107` 实现，完成一个精确 XHS 创作者笔记 Subscription 的确定性本地路径。锁定版 MediaCrawler 作者接口被封装成逐页有界单元，逐字保留不透明 cursor、页面见证及已完成笔记身份，因此较小的 `max_items` 不会丢弃一个已列出 30 条页面的剩余内容。列表页 `xsec_token` 只存在 child 内存中，以摘要绑定精确笔记身份；详情重试前会重新列出页面取得新 token。
 

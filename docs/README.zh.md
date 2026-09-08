@@ -2,9 +2,9 @@
 
 # 项目工作日志
 
-当前交付：[0076 XHS 创作者笔记耐久交付](executions/0076-xhs-creator-notes-delivery/progress.zh.md)，实现提交为 `47ca107`。一个 XHS 作者笔记 Subscription 现可保留不透明来源 cursor 与页尾，在私密边界使用每笔记新 token，只发布精确已交付 Run 内容，在源末尾后稳定对账头部，再执行有界增量检查。访问限制、空页停滞和详情部分失败始终分开；归档及兼容目录/NFO 输出无需媒体服务器连接。
+当前交付：[0077 部署来源身份与 XHS 金丝雀预检](executions/0077-deployment-provenance-preflight/progress.zh.md)，实现提交为 `d6db86a`。镜像现在可以在封闭构建清单与 OCI 标签中记录一个精确 media-sync 源码 SHA。经认证的诊断页与 `doctor --deep` 会公开经过验证的来源身份、当前/预期 migration 及 B 站/XHS 续跑间隔，以便恢复工作前比较 API 与 supervisor 服务定义。
 
-最终本地证据见[0076 验证](executions/0076-xhs-creator-notes-delivery/verification.zh.md)：Python 完整套件 `7128 passed, 42 skipped, 1 warning`；media-sync Web 完整套件 `27 files / 820 tests`；Svelte/生产构建、Ruff、strict mypy、锁文件/上游、制品及文档门均通过。Linux/Docker、真实 PostgreSQL、真人 XHS 登录/API/CDN、宿主目录、重启、supervisor 与可选媒体服务器读取全部为 `NOT_RUN`。后续遵循[下一交付](executions/0076-xhs-creator-notes-delivery/next-delivery.zh.md)；执行 0077 尚未开始。
+最终本地证据见[0077 验证](executions/0077-deployment-provenance-preflight/verification.zh.md)：Python 完整套件 `7140 passed, 42 skipped, 1 warning`；media-sync Web 完整套件 `28 files / 825 tests`；Svelte/生产构建、Ruff、strict mypy、锁文件/上游、制品及文档门均通过。Docker/Linux、真实 PostgreSQL、真人 XHS 登录/API/CDN、宿主目录、重启、supervisor 与可选媒体服务器读取全部为 `NOT_RUN`。后续遵循[部署交接](executions/0077-deployment-provenance-preflight/deployment-handoff.zh.md)；本次收尾不会启动 XHS 或抖音工作。
 
 ## 历史功能检查点
 
@@ -35,6 +35,7 @@
 
 | ID | 里程碑 | 状态 | 提交 |
 | --- | --- | --- | --- |
+| 0077 | 部署来源身份与 XHS 金丝雀预检 | 本地完成：封闭镜像源码身份、安全 migration/续跑证据、经认证诊断页与共享 deep CLI 报告通过确定性门；Docker 部署/真人验收仍为 `NOT_RUN`；[验证](executions/0077-deployment-provenance-preflight/verification.zh.md) | 计划 `dadd198`；实现 `d6db86a`；收尾为包含本行的提交 |
 | 0076 | XHS 创作者笔记耐久交付 | 本地完成：以来源为依据的不透明 cursor 与页尾保留、新 token 详情门禁、精确 Run 内容发布、独立阻塞/部分状态、稳定头部对账、增量检查及本地目录/NFO 交付通过确定性门；部署/真人验收仍为 `NOT_RUN`；[验证](executions/0076-xhs-creator-notes-delivery/verification.zh.md) | 计划 `295fa2c`；实现 `47ca107`；收尾为包含本行的提交 |
 | 0075 | 暂停态订阅策略编辑器 | 本地完成：共享应用服务、严格 REST/CLI、七平台通用 Web 控制与 B 站 scope 隔离、修订/空闲栅栏、精确保留及 B 站/XHS 渲染 QA；真实 PostgreSQL、Docker/Linux 和真人平台仍为 `NOT_RUN`；[验证](executions/0075-paused-subscription-policy-editor/verification.zh.md) | 计划 `32d1a3e`；实现 `aec3eac`；收尾为包含本行的提交 |
 | 0074 | B 站投稿耐久回填 → 增量本地交付 | 本地完成：有界按节奏历史批次、源末尾/头部对账、有时点边界的基线状态、重叠增量及完整 Content 部分发布通过确定性门；部署/真人金丝雀仍为 `NOT_RUN`；[验证](executions/0074-bili-backfill-incremental-delivery/verification.zh.md) | 计划 `3fa5139`；实现 `9c81c4b`；收尾 `7c4743a` |

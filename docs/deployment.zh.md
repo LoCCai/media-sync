@@ -2,17 +2,17 @@
 
 # Docker 部署与原生会话流程
 
-本指南使用内含锁定 MediaCrawler 运行时的自托管容器部署 media-sync，要求 Linux 主机与 Docker Compose v2。当前 0076 实现使用经认证的原生 `/crawler/` 执行 QR/Cookie 登录，把保存的 profile 显式认领给同平台 Account，并在既有 Subscription scheduler 上增加耐久 XHS 创作者笔记回填/对账/增量交付；准确本地证据见[0076 验证](executions/0076-xhs-creator-notes-delivery/verification.zh.md)。当前 0076 Linux 镜像、migration、真人 profile 认领、XHS API/CDN、宿主输出及可选媒体服务器流程仍为 `NOT_RUN`；历史镜像 PASS、公开 health 或许可证门响应都不能替代。
+本指南使用内含锁定 MediaCrawler 运行时的自托管容器部署 media-sync，要求 Linux 主机与 Docker Compose v2。执行 0077 在 0076 XHS 创作者笔记交付金丝雀前增加精确应用源码身份与共享深度预检；准确本地证据见[0077 验证](executions/0077-deployment-provenance-preflight/verification.zh.md)。当前 Linux 镜像、OCI 标签、migration、API/supervisor 比较、真人 profile 认领、XHS API/CDN、宿主输出及可选媒体服务器流程仍为 `NOT_RUN`；历史镜像 PASS、公开 health 或许可证门响应都不能替代。
 
-## 当前 0076 操作流程
+## 当前 0077 操作流程
 
-1. 备份 SQLite 数据库、托管凭据和持久化 `/data`，拉取精确实现 `47ca107`，获取锁定上游，并从同一镜像重建两个服务。API 正常启动时应用 migration `0015_xhs_creator_notes`。
+1. 备份 SQLite 数据库、托管凭据和持久化 `/data`；以 fast-forward 拉取 `origin/main`，要求 tracked worktree 干净，把完整 `git rev-parse HEAD` 导出为 `MEDIA_SYNC_SOURCE_REVISION`，获取锁定上游，并从同一镜像重建两个服务。API 正常启动时应用 migration `0015_xhs_creator_notes`。
 2. 阅读锁定许可证后，在 API 服务中设置 `MEDIA_SYNC_MEDIACRAWLER_LICENSE_ACKNOWLEDGED: "true"`。API 与 supervisor 必须设置相同的 `MEDIA_SYNC_XHS_SCAN_CONTINUATION_DELAY_SECONDS`；有界金丝雀建议使用默认 `300`，`0` 只关闭快速续跑，仍保留普通 Subscription 调度。
 3. 先保持 supervisor 停止。打开经认证的 `/crawler/`，完成 XHS 原生 QR 或 Cookie 登录，停止 crawler 或等待其空闲，再把保存会话显式认领给匹配的 XHS Account。认领会校验并快照 profile；scheduler 绝不直接读取活动 WebUI profile。
 4. 使用精确受保护作者 URL 创建一个已暂停、低流量的 XHS 创作者 Subscription。只恢复该订阅并手动运行一个精确单元，检查页尾进度、Job/Run/pipeline 所有权、下载字节、SHA-256 归档及兼容目录/NFO 输出。
 5. 重启一次 API 并证明从同一耐久状态继续；此后才能恢复可选 supervisor，并只观察一次调度续跑。遇到认证含糊、身份不一致、访问限制、migration/配置漂移、目录失败或无法解释的 Job/Run 分叉时停止。
 
-归档及兼容目录/NFO 输出无需 Emby/Jellyfin API 连接。API 与 supervisor 必须保持 archive、library、jobs、state 及 MediaCrawler 挂载一致。真人部署证据需另行记录，上述步骤本身不构成验收；见 [0076 下一交付计划](executions/0076-xhs-creator-notes-delivery/next-delivery.zh.md)。下方保留旧兼容能力与诊断检查点作为历史细节，不是当前账户页的替代登录说明。
+归档及兼容目录/NFO 输出无需 Emby/Jellyfin API 连接。API 与 supervisor 必须保持 archive、library、jobs、state 及 MediaCrawler 挂载一致。真人部署证据需另行记录，上述步骤本身不构成验收；遵循完整的 [0077 部署交接](executions/0077-deployment-provenance-preflight/deployment-handoff.zh.md)。下方保留旧兼容能力与诊断检查点作为历史细节，不是当前账户页的替代登录说明。
 
 ## 历史：抖音/快手粘贴 Cookie 与知乎可选头像（0065）
 
@@ -87,6 +87,8 @@ git clone <你的仓库> media-sync && cd media-sync
 sh scripts/fetch_mediacrawler.sh   # 必选：宿主机预取锁定上游
 cp docker-compose.example.yml docker-compose.yml   # 本地副本已被 git 忽略
 export MEDIA_SYNC_OPERATOR_CREDENTIAL_FILE=/绝对/私有路径/operator-credential.txt
+test -z "$(git status --porcelain)"
+export MEDIA_SYNC_SOURCE_REVISION="$(git rev-parse HEAD)"
 docker compose build          # 如需改端口/路径，先编辑你的本地副本
 ```
 
@@ -94,7 +96,7 @@ docker compose build          # 如需改端口/路径，先编辑你的本地�
 
 示例 Compose 会把宿主机文件挂载成 Docker secret `/run/secrets/operator_credential`，设置 `MEDIA_SYNC_SECRET_FILE_DIR=/run/secrets`，并只向应用提供类型化引用 `file:operator_credential`；同时设置精确浏览器 origin `http://127.0.0.1:8632`。凭据值不会提交到 Git、复制进镜像或写入 SQLite。
 
-构建在独立 Node/pnpm 阶段编译 SvelteKit 5 控制台，只把静态产物复制进 Python 应用；最终运行镜像不包含 pnpm 和前端 `node_modules`，但包含锁定爬虫 JavaScript 签名所需的独立 Debian Node.js 运行时。构建清单记录构建期版本、前端锁文件摘要和 `javascript_runtime`。
+构建在独立 Node/pnpm 阶段编译 SvelteKit 5 控制台，只把静态产物复制进 Python 应用；最终运行镜像不包含 pnpm 和前端 `node_modules`，但包含锁定爬虫 JavaScript 签名所需的独立 Debian Node.js 运行时。构建清单记录构建期版本、前端锁文件摘要、`javascript_runtime` 与经过验证的源码 revision；同一 revision 也是 OCI `org.opencontainers.image.revision` 标签。缺少来源身份时使用精确 `unavailable` 哨兵，并显示为 `not_run`，不会猜测提交。
 
 第 0 步（`fetch_mediacrawler.sh`）按 `upstreams.lock.json` 的精确提交把 MediaCrawler 克隆到 git 忽略的 `.mediacrawler-local/`；构建会 COPY 并校验其 SHA，因此**构建容器自身不再访问 github.com**（容器网络到不了 GitHub 的大陆主机，改在宿主机这一步设置 `BUILD_HTTPS_PROXY=...`）。`git pull` 变更锁定提交后需重跑该脚本。
 
@@ -108,7 +110,7 @@ export BASE_IMAGE=python:3.13-slim-bookworm@sha256:<digest>
 docker compose build --no-cache
 ```
 
-compose 模板会把 `BASE_IMAGE` 作为 build arg 透传，构建清单记录解析后的值。
+compose 模板会把 `BASE_IMAGE` 与 `MEDIA_SYNC_SOURCE_REVISION` 作为 build arg 透传，构建清单记录两个解析后的值。启动后，经认证的诊断页与 `media-sync doctor --deep --accept-mediacrawler-license --json` 会公开[部署交接](executions/0077-deployment-provenance-preflight/deployment-handoff.zh.md)所需的安全来源/migration/续跑证据。
 
 最终镜像阶段还会以非特权 `mediasync` 用户执行 `media-sync mediacrawler doctor --accept-license --json`。checkout 不匹配或 MediaCrawler Python 缺少导入现在会直接让构建失败，不再产出直到登录时才失败的镜像。Chromium 启动仍是独立的运行时/深度预检门。
 

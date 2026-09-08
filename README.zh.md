@@ -6,15 +6,15 @@
 
 ## 当前状态
 
-当前实现和验证以 [`docs/status.zh.md`](docs/status.zh.md) 为准；最新增量为[0076 XHS 创作者笔记耐久交付](docs/executions/0076-xhs-creator-notes-delivery/progress.zh.md)，已在 `47ca107` 实现，并建立在 [0075 暂停态订阅策略编辑器](docs/executions/0075-paused-subscription-policy-editor/progress.zh.md)之上。源码接入不等于真实平台验收通过。
+当前实现和验证以 [`docs/status.zh.md`](docs/status.zh.md) 为准；最新增量为[0077 部署来源身份与 XHS 金丝雀预检](docs/executions/0077-deployment-provenance-preflight/progress.zh.md)，已在 `d6db86a` 实现，并建立在 [0076 XHS 创作者笔记耐久交付](docs/executions/0076-xhs-creator-notes-delivery/progress.zh.md)之上。源码接入与镜像身份都不等于真实平台验收通过。
 
 | 方面 | 当前范围 |
 | --- | --- |
 | 本地媒体库 | 归档和Emby/Jellyfin兼容目录独立于可选服务器连接；图文/图集sidecar不等于原生视频播放 |
 | 账户与作者 | MediaCrawler 原生 QR/Cookie 登录可显式认领给 Account，形成已验证、隔离的 saved-session profile；作者身份补全与所有真人平台结果仍待验收 |
 | 订阅与任务 | B 站和 XHS 现已有各自来源语义的耐久有界回填/对账/增量交付路径。全部 MediaCrawler 平台共用带修订栅栏的暂停态编辑；只有 B 站有采集范围，编辑不会启动或恢复任务 |
-| 验证 | 当前精确测试/构建/打包、已修正失败与未跑环境见[0076 验证](docs/executions/0076-xhs-creator-notes-delivery/verification.zh.md)，不继承旧测试数 |
-| 待实现/验收 | 在 Linux 重建 0076，用一个获授权 XHS 作者验证真人 CDN、宿主最终目录/NFO、重启和 supervisor；随后从钉定抖音源码推导下一个耐久平台契约。历史 B 站采集失败仍未解决 |
+| 验证 | 当前精确测试/构建/打包、已修正问题与未跑环境见[0077 验证](docs/executions/0077-deployment-provenance-preflight/verification.zh.md)，不继承旧测试数 |
+| 待实现/验收 | 拉取已发布 SHA，以该精确来源身份构建并比较 API/supervisor deep readiness，再用一个获授权 XHS 作者验证真人 CDN、宿主最终目录/NFO、重启和 supervisor。此后才从钉定抖音源码推导下一个耐久平台契约；历史 B 站采集失败仍未解决 |
 
 逐执行细节、证据与准确命令都在 [`docs/executions/`](docs/README.zh.md)——本 README 有意不堆叠执行叙事。
 
@@ -40,7 +40,7 @@ uv run media-sync pipeline run --max-jobs 1 --json
 
 ## 部署与真人验证
 
-Docker 部署与七平台资格验收流程见 [`docs/deployment.zh.md`](docs/deployment.zh.md)（构建/运行）、[`docs/operations.zh.md`](docs/operations.zh.md)（备份/恢复/升级）与 [`docs/executions/0047-seven-platform-live-qualification/`](docs/executions/0047-seven-platform-live-qualification/)（带支持等级的验收计划）。`media-sync serve` 现在必须先从外部解析操作者凭据才能绑定端口。示例端口应继续只发布到宿主机回环；非回环浏览器 origin 必须使用 HTTPS。当前 Web 鉴权已接线，已按[检查点记录](docs/executions/0055-operator-auth-playback-evidence/secure-console/verification.zh.md)通过本地合成浏览器验证；CLI 与常驻 supervisor 继续可用。配置预检不替代当前 Linux 镜像、平台账户或媒体服务器真人资格。
+Docker 部署与七平台资格验收流程见 [`docs/deployment.zh.md`](docs/deployment.zh.md)（构建/运行）、[`docs/operations.zh.md`](docs/operations.zh.md)（备份/恢复/升级）与 [`docs/executions/0047-seven-platform-live-qualification/`](docs/executions/0047-seven-platform-live-qualification/)（带支持等级的验收计划）。[0077 交接](docs/executions/0077-deployment-provenance-preflight/deployment-handoff.zh.md)会在 XHS 金丝雀前增加精确镜像身份与 API/supervisor 比较。`media-sync serve` 必须先从外部解析操作者凭据才能绑定端口；示例端口应继续只发布到宿主机回环，非回环浏览器 origin 必须使用 HTTPS。配置或来源预检都不替代当前 Linux 镜像、平台账户或媒体服务器真人资格。
 
 ## 范围
 

@@ -2,7 +2,17 @@
 
 # Unified project status (single source of truth)
 
-## Latest: durable XHS creator-note delivery (0076)
+## Latest: deployment provenance and XHS canary preflight (0077)
+
+[Execution 0077](executions/0077-deployment-provenance-preflight/progress.md), implemented in `d6db86a`, closes the evidence gap that prevented identifying the application code inside the current Docker deployment. A qualifying build accepts only a full lowercase source SHA, records it in `/opt/BUILD-MANIFEST.txt` and the OCI revision label, and continues to exclude the project `.git` directory. Missing provenance is explicitly `not_run`; malformed or duplicate values fail closed without being reflected.
+
+The authenticated deep-readiness API, Diagnostics page and `media-sync doctor --deep --accept-mediacrawler-license --json` now share the same safe evidence: validated application SHA, current/expected database migration, effective Bilibili/XHS continuation delays, pinned MediaCrawler checkout/runtime/browser checks and fixed states. Known older migrations remain visible but not current; unknown database text and malformed frontend values remain hidden. The CLI permits independent API/supervisor service-definition checks without starting the resident supervisor.
+
+Final local gates: complete Python `7140 passed, 42 skipped, 1 warning`; complete Web `28 files / 825 tests`; Svelte check/build, Prettier, Ruff lint/format, strict mypy over 160 source files, compileall, 62-package lock, both pinned upstreams, package builds and documentation checks pass. Exact corrections and commands are in [0077 verification](executions/0077-deployment-provenance-preflight/verification.md).
+
+Docker is unavailable on this Windows workstation. No Linux image was built or inspected, and the server was not changed. Real Docker/OCI evidence, migration `0015`, API/supervisor comparison, XHS login/capture/CDN/directory/restart canary, resident supervisor, PostgreSQL and optional media-server reading remain `NOT_RUN`. Follow the [deployment handoff](executions/0077-deployment-provenance-preflight/deployment-handoff.md); do not begin Douyin delivery before the XHS result is recorded.
+
+## Previous: durable XHS creator-note delivery (0076)
 
 [Execution 0076](executions/0076-xhs-creator-notes-delivery/progress.md), implemented in `47ca107`, completes the deterministic local path for one exact XHS creator-notes Subscription. The pinned MediaCrawler creator API is wrapped as one page-bound unit with a verbatim opaque cursor, a retained page witness and completed-note identities, so a small `max_items` cannot discard the rest of an already listed 30-note page. List-page `xsec_token` values remain child-memory-only, are bound to exact note identities by digest, and are refreshed by re-listing before detail retry.
 

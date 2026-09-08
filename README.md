@@ -6,15 +6,15 @@
 
 ## Current status
 
-Current implementation and verification are tracked in [`docs/status.md`](docs/status.md); the latest increment is [0076 durable XHS creator-note delivery](docs/executions/0076-xhs-creator-notes-delivery/progress.md), implemented in `47ca107` on top of [0075's paused subscription policy editor](docs/executions/0075-paused-subscription-policy-editor/progress.md). Source support is not live platform qualification.
+Current implementation and verification are tracked in [`docs/status.md`](docs/status.md); the latest increment is [0077 deployment provenance and XHS canary preflight](docs/executions/0077-deployment-provenance-preflight/progress.md), implemented in `d6db86a` on top of [0076 durable XHS creator-note delivery](docs/executions/0076-xhs-creator-notes-delivery/progress.md). Source support and image identity are not live platform qualification.
 
 | Area | Current scope |
 | --- | --- |
 | Local media library | Archive and Emby/Jellyfin-compatible directories work independently of optional server connections; text/gallery sidecars are not a claim of native video playback |
 | Accounts and creators | Native MediaCrawler QR/Cookie login can be explicitly adopted into an Account as a verified, isolated saved-session profile; creator identity enrichment and all live platform results still require qualification |
 | Subscriptions and operations | Bilibili and XHS now have source-specific durable bounded backfill/reconciliation/incremental delivery paths. All MediaCrawler platforms share a revision-fenced paused-state editor; Bilibili alone has capture scope. Editing never starts or resumes work |
-| Verification | Exact current tests/build/packages, corrected failures and unrun environments are in [0076 verification](docs/executions/0076-xhs-creator-notes-delivery/verification.md), not inherited historical counts |
-| Remaining implementation/qualification | Rebuild and qualify 0076 on Linux with one authorized XHS creator, real CDN traffic, final host directory/NFO and restart/supervisor evidence; then derive the next durable platform contract from pinned Douyin source. The historical failed Bili canary remains unresolved |
+| Verification | Exact current tests/build/packages, corrected findings and unrun environments are in [0077 verification](docs/executions/0077-deployment-provenance-preflight/verification.md), not inherited historical counts |
+| Remaining implementation/qualification | Pull the published SHA, build with that exact source identity, compare API/supervisor deep readiness, then qualify one authorized XHS creator with real CDN, host directory/NFO and restart/supervisor evidence. Only then derive the next durable platform contract from pinned Douyin source; the historical failed Bili canary remains unresolved |
 
 Per-execution detail, evidence and exact commands live in [`docs/executions/`](docs/README.md) — this README intentionally does not stack execution narratives.
 
@@ -40,7 +40,7 @@ Quality gates: `uv run ruff check . && uv run ruff format --check .`, `uv run my
 
 ## Deployment and live verification
 
-Docker deployment and the seven-platform qualification procedure are documented in [`docs/deployment.md`](docs/deployment.md) (build/run), [`docs/operations.md`](docs/operations.md) (backup/restore/upgrade) and [`docs/executions/0047-seven-platform-live-qualification/`](docs/executions/0047-seven-platform-live-qualification/) (the acceptance plan with support tiers). `media-sync serve` now requires an externally resolved operator credential before it binds. Keep the example port on host loopback; non-loopback browser origins require HTTPS. Web authentication is now wired and has passed local synthetic-browser verification in the [checkpoint record](docs/executions/0055-operator-auth-playback-evidence/secure-console/verification.md); the CLI and resident supervisor remain available. Configuration preflight does not substitute for current Linux-image, platform-account or media-server live qualification.
+Docker deployment and the seven-platform qualification procedure are documented in [`docs/deployment.md`](docs/deployment.md) (build/run), [`docs/operations.md`](docs/operations.md) (backup/restore/upgrade) and [`docs/executions/0047-seven-platform-live-qualification/`](docs/executions/0047-seven-platform-live-qualification/) (the acceptance plan with support tiers). [0077's handoff](docs/executions/0077-deployment-provenance-preflight/deployment-handoff.md) adds exact image identity and API/supervisor comparison before the XHS canary. `media-sync serve` requires an externally resolved operator credential before it binds. Keep the example port on host loopback; non-loopback browser origins require HTTPS. Configuration or provenance preflight does not substitute for current Linux-image, platform-account or media-server live qualification.
 
 ## Scope
 
