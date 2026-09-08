@@ -8,9 +8,11 @@
 
 ## 阶段
 
-优先级更新（0074–0075）：[B 站投稿耐久回填转增量本地交付](executions/0074-bili-backfill-incremental-delivery/progress.zh.md)与[暂停态订阅策略编辑器](executions/0075-paused-subscription-policy-editor/progress.zh.md)已分别在 `9c81c4b`、`aec3eac` 实现并通过离线验证。B 站现有取得交付资格的有界历史、源末尾/头部对账、重叠增量检查及按完整 Content 发布。全部 MediaCrawler 平台现可安全地在暂停态修改周期、单次上限、请求间隔及浏览器模式；只有 B 站有采集范围。两项实现都不等于真人资格。
+优先级更新（0076）：[XHS 创作者笔记耐久交付](executions/0076-xhs-creator-notes-delivery/progress.zh.md)已在 `47ca107` 实现并通过离线验证。XHS 现拥有不透明 cursor 与页尾状态，在私密边界刷新逐笔记详情权限，只凭精确交付 receipt 推进，完成稳定来源头部对账，并把已接受 normal/video 笔记接入既有可验证归档及 Emby/Jellyfin 兼容目录/NFO 管线。访问限制、空页停滞与详情部分失败保持独立；无需媒体服务器连接。这是确定性本地证据，不是真人 XHS 资格。
 
-下一优先级：实施前冻结 XHS 自身的作者笔记契约。锁定上游通过 `/api/sns/web/v1/user_posted` 返回不透明 `cursor`、`has_more` 及名义 30 条页面；当前全量 helper 会把已取页面切到 `CRAWLER_MAX_NOTES_COUNT`，后续运行又从空 cursor 开始。下一执行必须拥有有界列表身份、防止页面尾部丢失、验证 cursor 推进与源末尾、区分详情物化失败、重新对账新鲜头部，并且只有精确交付 receipt 才推进状态；不能复用 B 站页码或发布时间假设。
+下一优先级：精确发布并重建 `47ca107`，备份 `/data`，应用 migration `0015`，让 API 与 supervisor 的 `MEDIA_SYNC_XHS_SCAN_CONTINUATION_DELAY_SECONDS` 完全一致，再在 supervisor 初始停止时执行一个由操作者控制的低流量 XHS 金丝雀。先验收页尾保留、重启续跑、真实下载/归档/目录输出和一次调度续跑，再进入下一平台。证据形成文档后，从钉定源码语义推导独立抖音契约。[执行 0077](executions/0076-xhs-creator-notes-delivery/next-delivery.zh.md)仅完成计划，尚未启动。
+
+优先级更新（0074–0075）：[B 站投稿耐久回填转增量本地交付](executions/0074-bili-backfill-incremental-delivery/progress.zh.md)与[暂停态订阅策略编辑器](executions/0075-paused-subscription-policy-editor/progress.zh.md)已分别在 `9c81c4b`、`aec3eac` 实现并通过离线验证。B 站现有取得交付资格的有界历史、源末尾/头部对账、重叠增量检查及按完整 Content 发布。全部 MediaCrawler 平台现可安全地在暂停态修改周期、单次上限、请求间隔及浏览器模式；只有 B 站有采集范围。两项实现都不等于真人资格。
 
 优先级更新（0069–0070）：[精确订阅交付](executions/0069-exact-subscription-delivery/progress.zh.md)与[安全进程诊断](executions/0070-process-output-diagnostics/progress.zh.md)已实现、完成离线验证并以实施提交 `b22e938` 发布。产品现在可只执行一个订阅而不消费无关任务，持久化/恢复精确本地目录交付链，并以精确耐久身份保存有界脱敏的扫码/采集 child 诊断。下一步部署本 revision，只复现一个失败扫码平台，再跑一次有界订阅 canary；不能宣称旧日志可恢复、永久历史完成、全部 runner 输出已覆盖或真人平台成功。
 

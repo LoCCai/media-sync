@@ -2,17 +2,17 @@
 
 # Docker 部署与原生会话流程
 
-本指南使用内含锁定 MediaCrawler 运行时的自托管容器部署 media-sync，要求 Linux 主机与 Docker Compose v2。当前 0073 实现使用经认证的原生 `/crawler/` 执行 QR/Cookie 登录，再把保存的 profile 显式认领给同平台 Account，供既有 Subscription scheduler 使用；准确离线证据见[0073 验证](executions/0073-mediacrawler-session-adoption/verification.zh.md)。当前 0073 Linux 镜像、修正配置后的 crawler 页面、真人 profile 认领与平台/媒体服务器流程仍为 `NOT_RUN`；历史镜像 PASS、公开 health 或许可证门响应都不能替代。
+本指南使用内含锁定 MediaCrawler 运行时的自托管容器部署 media-sync，要求 Linux 主机与 Docker Compose v2。当前 0076 实现使用经认证的原生 `/crawler/` 执行 QR/Cookie 登录，把保存的 profile 显式认领给同平台 Account，并在既有 Subscription scheduler 上增加耐久 XHS 创作者笔记回填/对账/增量交付；准确本地证据见[0076 验证](executions/0076-xhs-creator-notes-delivery/verification.zh.md)。当前 0076 Linux 镜像、migration、真人 profile 认领、XHS API/CDN、宿主输出及可选媒体服务器流程仍为 `NOT_RUN`；历史镜像 PASS、公开 health 或许可证门响应都不能替代。
 
-## 当前 0073 操作流程
+## 当前 0076 操作流程
 
-1. 拉取当前 revision、获取锁定上游并重建 `media-sync` 镜像。
-2. 保留一个同平台本地 Account。阅读锁定许可证后，在 API 服务环境中设置 `MEDIA_SYNC_MEDIACRAWLER_LICENSE_ACKNOWLEDGED: "true"`。
-3. 打开经认证的 `/crawler/`，完成平台原生 QR 或 Cookie 登录，再停止 crawler 或等待其空闲。
-4. 回到“账户”页，把保存的 crawler 会话显式认领给该 Account。认领会校验并快照 profile；scheduler 绝不直接读取活动 WebUI profile。
-5. 添加有界作者订阅；只有确认真人采集/下载范围获授权后，才启动或恢复可选 supervisor。
+1. 备份 SQLite 数据库、托管凭据和持久化 `/data`，拉取精确实现 `47ca107`，获取锁定上游，并从同一镜像重建两个服务。API 正常启动时应用 migration `0015_xhs_creator_notes`。
+2. 阅读锁定许可证后，在 API 服务中设置 `MEDIA_SYNC_MEDIACRAWLER_LICENSE_ACKNOWLEDGED: "true"`。API 与 supervisor 必须设置相同的 `MEDIA_SYNC_XHS_SCAN_CONTINUATION_DELAY_SECONDS`；有界金丝雀建议使用默认 `300`，`0` 只关闭快速续跑，仍保留普通 Subscription 调度。
+3. 先保持 supervisor 停止。打开经认证的 `/crawler/`，完成 XHS 原生 QR 或 Cookie 登录，停止 crawler 或等待其空闲，再把保存会话显式认领给匹配的 XHS Account。认领会校验并快照 profile；scheduler 绝不直接读取活动 WebUI profile。
+4. 使用精确受保护作者 URL 创建一个已暂停、低流量的 XHS 创作者 Subscription。只恢复该订阅并手动运行一个精确单元，检查页尾进度、Job/Run/pipeline 所有权、下载字节、SHA-256 归档及兼容目录/NFO 输出。
+5. 重启一次 API 并证明从同一耐久状态继续；此后才能恢复可选 supervisor，并只观察一次调度续跑。遇到认证含糊、身份不一致、访问限制、migration/配置漂移、目录失败或无法解释的 Job/Run 分叉时停止。
 
-下方保留旧兼容能力与诊断检查点作为历史细节，不是当前账户页的替代登录说明。
+归档及兼容目录/NFO 输出无需 Emby/Jellyfin API 连接。API 与 supervisor 必须保持 archive、library、jobs、state 及 MediaCrawler 挂载一致。真人部署证据需另行记录，上述步骤本身不构成验收；见 [0076 下一交付计划](executions/0076-xhs-creator-notes-delivery/next-delivery.zh.md)。下方保留旧兼容能力与诊断检查点作为历史细节，不是当前账户页的替代登录说明。
 
 ## 历史：抖音/快手粘贴 Cookie 与知乎可选头像（0065）
 

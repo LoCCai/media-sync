@@ -2,9 +2,9 @@
 
 # 项目工作日志
 
-当前交付：[0075 暂停态订阅策略编辑器](executions/0075-paused-subscription-policy-editor/progress.zh.md)，实现提交为 `aec3eac`。未删除、已暂停且空闲的 MediaCrawler 订阅现共用带修订栅栏的周期、单次上限、请求间隔和浏览器模式修改；只有 B 站增加采集范围。事务保留断点、历史、交付证据、文件、`next_run_at`、全历史确认和不透明作者引用，且不会恢复或启动任务。Python 完整套件为 `7067 passed, 43 skipped, 108 warnings`，media-sync Web 完整套件为 `27 files / 818 tests`；B 站/XHS 渲染检查及全部静态/制品门通过。精确 Docker 镜像和全部真人平台结果仍未取得资格。
+当前交付：[0076 XHS 创作者笔记耐久交付](executions/0076-xhs-creator-notes-delivery/progress.zh.md)，实现提交为 `47ca107`。一个 XHS 作者笔记 Subscription 现可保留不透明来源 cursor 与页尾，在私密边界使用每笔记新 token，只发布精确已交付 Run 内容，在源末尾后稳定对账头部，再执行有界增量检查。访问限制、空页停滞和详情部分失败始终分开；归档及兼容目录/NFO 输出无需媒体服务器连接。
 
-此前的 [0074 B 站耐久交付](executions/0074-bili-backfill-incremental-delivery/progress.zh.md)已在 `9c81c4b` 实现：按节奏 ≤30 条回填、交付 receipt、源末尾/头部对账、重叠增量检查及按完整 Content 发布均通过离线门。下一步冻结 XHS 自身的有界作者笔记分页与交付证据。锁定版 XHS helper 当前从空的不透明 cursor 开始，并可能按单轮上限截断已取到的 30 条页面，因此其契约必须阻止页面尾部丢失并验证源末尾/对账，不能复制 B 站页码或时间戳假设。
+最终本地证据见[0076 验证](executions/0076-xhs-creator-notes-delivery/verification.zh.md)：Python 完整套件 `7128 passed, 42 skipped, 1 warning`；media-sync Web 完整套件 `27 files / 820 tests`；Svelte/生产构建、Ruff、strict mypy、锁文件/上游、制品及文档门均通过。Linux/Docker、真实 PostgreSQL、真人 XHS 登录/API/CDN、宿主目录、重启、supervisor 与可选媒体服务器读取全部为 `NOT_RUN`。后续遵循[下一交付](executions/0076-xhs-creator-notes-delivery/next-delivery.zh.md)；执行 0077 尚未开始。
 
 ## 历史功能检查点
 
@@ -35,6 +35,7 @@
 
 | ID | 里程碑 | 状态 | 提交 |
 | --- | --- | --- | --- |
+| 0076 | XHS 创作者笔记耐久交付 | 本地完成：以来源为依据的不透明 cursor 与页尾保留、新 token 详情门禁、精确 Run 内容发布、独立阻塞/部分状态、稳定头部对账、增量检查及本地目录/NFO 交付通过确定性门；部署/真人验收仍为 `NOT_RUN`；[验证](executions/0076-xhs-creator-notes-delivery/verification.zh.md) | 计划 `295fa2c`；实现 `47ca107`；收尾为包含本行的提交 |
 | 0075 | 暂停态订阅策略编辑器 | 本地完成：共享应用服务、严格 REST/CLI、七平台通用 Web 控制与 B 站 scope 隔离、修订/空闲栅栏、精确保留及 B 站/XHS 渲染 QA；真实 PostgreSQL、Docker/Linux 和真人平台仍为 `NOT_RUN`；[验证](executions/0075-paused-subscription-policy-editor/verification.zh.md) | 计划 `32d1a3e`；实现 `aec3eac`；收尾为包含本行的提交 |
 | 0074 | B 站投稿耐久回填 → 增量本地交付 | 本地完成：有界按节奏历史批次、源末尾/头部对账、有时点边界的基线状态、重叠增量及完整 Content 部分发布通过确定性门；部署/真人金丝雀仍为 `NOT_RUN`；[验证](executions/0074-bili-backfill-incremental-delivery/verification.zh.md) | 计划 `3fa5139`；实现 `9c81c4b`；收尾 `7c4743a` |
 | 0073 | 原生 MediaCrawler 会话认领 | 用 `/crawler/` → 显式 Account 认领 → 既有 Subscription scheduler 取代重复登录控件。安全 profile 快照/探针/回滚、稳定公开错误、waiting-auth 恢复与精确 scheduler profile 证明均已离线通过；Linux/真人平台验收仍开放；[验证](executions/0073-mediacrawler-session-adoption/verification.zh.md) | 计划 `0b90aaa`；实现 `165516a`；收尾为包含本行的提交 |

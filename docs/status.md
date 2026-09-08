@@ -2,7 +2,19 @@
 
 # Unified project status (single source of truth)
 
-## Latest: paused subscription policy editor (0075)
+## Latest: durable XHS creator-note delivery (0076)
+
+[Execution 0076](executions/0076-xhs-creator-notes-delivery/progress.md), implemented in `47ca107`, completes the deterministic local path for one exact XHS creator-notes Subscription. The pinned MediaCrawler creator API is wrapped as one page-bound unit with a verbatim opaque cursor, a retained page witness and completed-note identities, so a small `max_items` cannot discard the rest of an already listed 30-note page. List-page `xsec_token` values remain child-memory-only, are bound to exact note identities by digest, and are refreshed by re-listing before detail retry.
+
+Migration `0015_xhs_creator_notes` adds delivery-qualified `backfill -> reconciling -> incremental` progress plus an explicit `blocked` phase. Only an exact pipeline receipt for the exact source Run may advance it. Delivered `has_more=false` is source-end evidence; `access_restricted`, `empty_page_stalled`, item-cap and per-note detail failures stay distinct. Stable head reconciliation is required before incrementality, and the source-end observation never claims permanent historical completeness.
+
+Accepted normal/video note records flow through exact Run-content selection into the existing verified downloader, SHA-256 archive and configured local Emby/Jellyfin-compatible directory/NFO writer without requiring a media-server connection. One unavailable or unsupported note remains an honest partial result without hiding valid siblings. REST/Web expose closed progress and fixed failure codes without tokens, cursors, creator references, raw platform payloads or host paths. `MEDIA_SYNC_XHS_SCAN_CONTINUATION_DELAY_SECONDS` must match between API and supervisor; `0` disables only fast pacing and retains ordinary scheduling/progress.
+
+Final local gates: complete Python `7128 passed, 42 skipped, 1 warning`; complete Web `27 files / 820 tests`; Svelte check/build, Prettier, Ruff lint/format, strict mypy over 160 source files, compileall, 62-package lock, both pinned upstreams, package builds and documentation checks pass. Exact corrected failures and commands are in [0076 verification](executions/0076-xhs-creator-notes-delivery/verification.md).
+
+Linux/Docker, real PostgreSQL, live XHS login/API/CDN, host archive/library/NFO, restart, resident supervisor and optional media-server reading remain `NOT_RUN`. Follow the [next delivery](executions/0076-xhs-creator-notes-delivery/next-delivery.md) for an operator-controlled deployment canary and the subsequent source-first Douyin design. Execution 0077 has not started.
+
+## Previous: paused subscription policy editor (0075)
 
 [Execution 0075](executions/0075-paused-subscription-policy-editor/progress.md), implemented in `aec3eac`, adds one closed, revision-fenced policy mutation for active, paused and idle MediaCrawler subscriptions. REST, CLI and Web share the same service for polling interval, per-run item cap, upstream request delay and browser mode; Bilibili alone also receives capture scope. XHS, Douyin, Kuaishou, Weibo, Tieba and Zhihu use the generic four controls and cannot receive a Bilibili scope.
 

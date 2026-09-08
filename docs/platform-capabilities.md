@@ -46,10 +46,13 @@ Creator-mode dispatch exists for all seven platforms (`media_platform/*/core.py:
 
 Current media-sync overlay: the table above describes the pinned upstream, not all product behavior. Executions0059–0062 add independent bounded Bili upload/dynamic continuations and explicit uploads/dynamics/both scope (legacy stays uploads-only), exact WORD/DRAW/full OPUS and owned AV references, private retained page snapshots, exact image refresh and offline archive/local Emby-compatible output. Local export needs no media-server connection; text/gallery HTML is not native video-playback qualification. Reposts, unknown/paid/live/column components and live end-to-end qualification remain unsupported or `NOT_RUN` as detailed in [0062](executions/0062-bili-dynamic-workflow/progress.md).
 
+[0076](executions/0076-xhs-creator-notes-delivery/progress.md), implemented in `47ca107`, adds an independent XHS creator-note overlay instead of trusting the upstream all-notes loop. One durable page unit preserves the opaque cursor and unconsumed page tail, binds fresh in-memory `xsec_token` authority to exact note identities, distinguishes access restriction/empty-page stall/detail partials, and advances `backfill -> reconciling -> incremental` only after an exact pipeline receipt. Accepted ordinary normal/video notes reuse the verified downloader, SHA-256 archive and configured local compatible directory/NFO writer. Mixed video-image semantics, gallery music and unsupported note types remain unsupported; Linux/Docker, live XHS API/CDN, host directories, restart, supervisor and media-server reading remain `NOT_RUN`.
+
 - Preserve the user-supplied remote creator ID and a user-provided display label in the independent `media-sync` database.
 - Give every run a hard wall-clock timeout and output-item watchdog.
 - Require an explicit `allow_full_history` acknowledgement only for an audited creator path that remains unbounded. Executions0019/0020 install bounded Zhihu-answer/Tieba-thread loops; new bounded Bili requests in0059/0062 also omit the acknowledgement, while legacy unbounded artifacts retain their gate.
 - Legacy ingestion may stop at known IDs/publish watermark, but Bili continuation-based history never uses that old watermark as coverage. Independent pending page/detail progress is retained; never treat downstream truncation or a source-end observation as proof of complete history.
+- XHS continuation retains listed-but-undelivered note identities separately from the next opaque source cursor. `has_more=false` is only a time-bound source-end observation; stable delivered head reconciliation is required before incremental state.
 - Work around Zhihu creator input in the external runner without editing the upstream checkout.
 
 ## Media behavior

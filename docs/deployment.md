@@ -2,17 +2,17 @@
 
 # Docker deployment and native-session workflow
 
-This guide deploys media-sync with the pinned MediaCrawler runtime on a Linux host with Docker Compose v2. The current 0073 implementation uses the authenticated native `/crawler/` for QR/Cookie login, then explicitly adopts its saved profile into a matching Account for the existing Subscription scheduler; exact offline evidence is in [0073 verification](executions/0073-mediacrawler-session-adoption/verification.md). The current 0073 Linux image, post-configuration crawler page, live profile adoption and platform/media-server workflows remain `NOT_RUN`; neither historical image passes nor public health/license-gate responses substitute for them.
+This guide deploys media-sync with the pinned MediaCrawler runtime on a Linux host with Docker Compose v2. The current 0076 implementation uses the authenticated native `/crawler/` for QR/Cookie login, explicitly adopts its saved profile into a matching Account, and adds durable XHS creator-note backfill/reconciliation/incremental delivery to the existing Subscription scheduler. Exact local evidence is in [0076 verification](executions/0076-xhs-creator-notes-delivery/verification.md). The current 0076 Linux image, migration, live profile adoption, XHS API/CDN, host output and optional media-server workflows remain `NOT_RUN`; neither historical image passes nor public health/license-gate responses substitute for them.
 
-## Current 0073 operator workflow
+## Current 0076 operator workflow
 
-1. Pull the current revision, fetch the locked upstream and rebuild the `media-sync` image.
-2. Keep a local Account for the same platform. Set `MEDIA_SYNC_MEDIACRAWLER_LICENSE_ACKNOWLEDGED: "true"` under the API service environment after reviewing the pinned license.
-3. Open authenticated `/crawler/`, complete the platform's native QR or Cookie login, then stop the crawler or wait until it is idle.
-4. Return to **Accounts** and explicitly adopt the saved crawler session into that Account. Adoption validates and snapshots the profile; the scheduler never reads the active WebUI profile directly.
-5. Add a bounded creator Subscription, then start or restore the optional supervisor only when the live crawl/download scope is authorized.
+1. Back up the SQLite database, managed credentials and persistent `/data`, pull exact implementation `47ca107`, fetch the locked upstream and rebuild both services from the same image. Normal API startup applies migration `0015_xhs_creator_notes`.
+2. Set `MEDIA_SYNC_MEDIACRAWLER_LICENSE_ACKNOWLEDGED: "true"` under the API service after reviewing the pinned license. Set `MEDIA_SYNC_XHS_SCAN_CONTINUATION_DELAY_SECONDS` identically under both API and supervisor; default `300` is the bounded-canary recommendation, while `0` disables only fast continuation and retains ordinary Subscription scheduling.
+3. Keep the supervisor stopped. Open authenticated `/crawler/`, complete native XHS QR or Cookie login, stop the crawler or wait until it is idle, then explicitly adopt the saved session into a matching XHS Account. Adoption validates and snapshots the profile; the scheduler never reads the active WebUI profile directly.
+4. Create one paused, low-volume XHS creator Subscription with the exact protected creator URL. Resume only that Subscription and run one exact manual unit; inspect its page-tail progress, Job/Run/pipeline ownership, downloaded bytes, SHA-256 archive and compatible directory/NFO output.
+5. Restart the API once and prove continuation from the same durable state. Only then restore the optional supervisor and observe one scheduled continuation. Stop on authentication ambiguity, identity mismatch, access restriction, migration/config drift, directory failure or unexplained Job/Run divergence.
 
-The sections below retain older compatibility and diagnostic checkpoints as historical detail; they are not alternate login instructions for the current Accounts page.
+Archive and compatible directory/NFO output do not require an Emby/Jellyfin API connection. Keep archive, library, jobs, state and MediaCrawler mounts identical between API and supervisor. Record real deployment evidence separately; the steps above are not themselves a live qualification. See the [0076 next-delivery plan](executions/0076-xhs-creator-notes-delivery/next-delivery.md). The sections below retain older compatibility and diagnostic checkpoints as historical detail; they are not alternate login instructions for the current Accounts page.
 
 ## Historical: DY/KS pasted Cookie and optional Zhihu avatar (0065)
 

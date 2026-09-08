@@ -47,10 +47,13 @@
 
 当前media-sync覆盖：上表描述锁定上游，不等于产品全部能力。0059–0062增加独立有界B站投稿/动态续抓及显式投稿/动态/两者范围（旧订阅仍仅投稿），精确WORD/DRAW/完整OPUS和自有AV引用、私密整页断点、精确图片刷新及离线归档/Emby兼容目录输出。本地导出无需连接媒体服务器；图文HTML不等于原生视频播放验收。转发原文、未知/付费/直播/专栏组件及真实闭环仍按[0062](executions/0062-bili-dynamic-workflow/progress.zh.md)区分不支持与 `NOT_RUN`。
 
+[0076](executions/0076-xhs-creator-notes-delivery/progress.zh.md)已在 `47ca107` 增加独立 XHS 创作者笔记覆盖，不再信任上游全笔记循环。一个耐久页面单元会保留不透明 cursor 与未消费页尾，把新鲜的内存 `xsec_token` 权限绑定到精确笔记身份，区分访问限制、空页停滞和详情部分失败，并且只有精确 pipeline receipt 才能推进 `backfill -> reconciling -> incremental`。已接受的普通 normal/video 笔记复用可验证下载、SHA-256 归档及已配置本地兼容目录/NFO 写入。混合视频图片语义、图集音乐和不支持的笔记类型仍未支持；Linux/Docker、真人 XHS API/CDN、宿主目录、重启、supervisor 及媒体服务器读取仍为 `NOT_RUN`。
+
 - 在独立数据库保存用户输入的远端作者 ID 与用户提供的显示名称。
 - 每次任务设置硬超时和输出条数看门狗。
 - 只对审计后仍然无界的creator路径要求显式确认 `allow_full_history`。0019/0020安装有界知乎回答/贴吧主题循环；0059/0062的新有界B站请求也不再要求确认，旧无界artifact仍保留门禁。
 - 旧导入可能在已知ID/发布时间水位停止，但B站continuation历史不把旧水位当覆盖证明；保留独立待处理页/详情进度。不得把导入截断或本轮源末尾观察冒充完整历史。
+- XHS continuation 把已列出但未交付的笔记身份与下一不透明来源 cursor 分开保存；`has_more=false` 只是有时间边界的源末尾观察，进入增量前必须完成稳定且已交付的头部对账。
 - 在外部运行器中兼容知乎作者参数，不修改上游检出。
 
 ## 媒体行为

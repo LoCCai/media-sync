@@ -2,7 +2,19 @@
 
 # 项目统一状态（单一事实来源）
 
-## 最新：暂停态订阅策略编辑器（0075）
+## 最新：XHS 创作者笔记耐久交付（0076）
+
+[执行 0076](executions/0076-xhs-creator-notes-delivery/progress.zh.md)已在 `47ca107` 实现，完成一个精确 XHS 创作者笔记 Subscription 的确定性本地路径。锁定版 MediaCrawler 作者接口被封装成逐页有界单元，逐字保留不透明 cursor、页面见证及已完成笔记身份，因此较小的 `max_items` 不会丢弃一个已列出 30 条页面的剩余内容。列表页 `xsec_token` 只存在 child 内存中，以摘要绑定精确笔记身份；详情重试前会重新列出页面取得新 token。
+
+Migration `0015_xhs_creator_notes` 增加取得交付资格的 `backfill -> reconciling -> incremental` 进度及显式 `blocked` 阶段。只有精确来源 Run 的精确 pipeline receipt 才能推进状态。已交付的 `has_more=false` 是源末尾证据；`access_restricted`、`empty_page_stalled`、单元上限和逐笔记详情失败保持独立。进入增量前必须完成稳定头部对账，源末尾观察不代表历史已永久完整。
+
+已接受的 normal/video 笔记会通过精确 Run 内容选择进入既有可验证下载、SHA-256 归档和已配置的本地 Emby/Jellyfin 兼容目录/NFO 写入器，无需连接媒体服务器。一条不可用或不支持的笔记会如实形成部分结果，不隐藏同页有效内容。REST/Web 公开封闭进度与固定失败码，但不泄露 token、cursor、作者引用、平台原始载荷或宿主路径。API 与 supervisor 必须配置相同的 `MEDIA_SYNC_XHS_SCAN_CONTINUATION_DELAY_SECONDS`；`0` 只关闭快速节奏，仍保留普通调度与进度。
+
+最终本地门禁通过：Python 完整套件 `7128 passed, 42 skipped, 1 warning`；Web 完整套件 `27 files / 820 tests`；Svelte 检查/构建、Prettier、Ruff lint/format、160 个源码文件 strict mypy、compileall、62 包锁文件、两个钉定上游、制品构建及文档检查均通过。准确修正记录和命令见[0076 验证](executions/0076-xhs-creator-notes-delivery/verification.zh.md)。
+
+Linux/Docker、真实 PostgreSQL、真人 XHS 登录/API/CDN、宿主 archive/library/NFO、重启、驻留 supervisor 及可选媒体服务器读取仍为 `NOT_RUN`。后续按[下一交付](executions/0076-xhs-creator-notes-delivery/next-delivery.zh.md)先做受操作者控制的部署金丝雀，再设计来源优先的抖音交付。执行 0077 尚未开始。
+
+## 上阶段：暂停态订阅策略编辑器（0075）
 
 [执行 0075](executions/0075-paused-subscription-policy-editor/progress.zh.md)已在 `aec3eac` 实现，为未删除、已暂停且空闲的 MediaCrawler 订阅增加一项封闭、带修订栅栏的策略修改。REST、CLI 与 Web 共用同一服务，覆盖同步周期、单次上限、上游请求间隔和浏览器模式；只有 B 站另有采集范围。XHS、抖音、快手、微博、贴吧和知乎使用四项通用控制，且不能接收 B 站 scope。
 
