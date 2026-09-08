@@ -18,7 +18,7 @@ from sqlalchemy import func, select
 from media_sync.config import Settings
 from media_sync.infrastructure.db import Database, LoginSessionRepository
 from media_sync.infrastructure.db.migration import upgrade_database
-from media_sync.infrastructure.db.models import Author, Subscription
+from media_sync.infrastructure.db.models import Author, Subscription, XhsSubscriptionProgress
 from media_sync.integrations.mediacrawler.bilibili_scan import (
     BiliIdentity,
     BiliLane,
@@ -27,6 +27,7 @@ from media_sync.integrations.mediacrawler.bilibili_scan import (
     BiliUnitSummary,
 )
 from media_sync.integrations.mediacrawler.checkout import load_mediacrawler_lock
+from media_sync.scheduler.xhs_delivery_progress import xhs_policy_fingerprint
 
 
 def _client(tmp_path: Path) -> TestClient:
@@ -113,6 +114,96 @@ def test_platform_capabilities_are_complete_versioned_and_path_free(tmp_path: Pa
     assert str(tmp_path) not in response.text
     assert "credential_ref" not in response.text
     assert "creator_secret_ref" not in response.text
+
+
+def test_xhs_subscription_detail_projects_only_closed_delivery_progress(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    account = _account(client, "xhs", "xhs-delivery-progress")
+    created = client.post(
+        "/api/v1/subscriptions",
+        json={
+            "account_id": account["id"],
+            "platform": "xhs",
+            "creator_remote_id": "5f1234567890abcdef123456",
+            "display_name": "XHS delivery creator",
+            "creator_reference_ref": "env:XHS_CREATOR_REFERENCE",
+            "allow_full_history": True,
+            "max_items": 7,
+        },
+    )
+    assert created.status_code == 201
+    identifier = created.json()["id"]
+    settings = client.app.state.settings  # type: ignore[attr-defined]
+    database = Database(settings.resolved_database_url)
+    try:
+        with database.session() as session:
+            subscription = session.get(Subscription, identifier)
+            assert subscription is not None
+            session.add(
+                XhsSubscriptionProgress(
+                    subscription_id=subscription.id,
+                    phase="backfill",
+                    generation_id=str(uuid4()),
+                    account_id=subscription.account_id,
+                    auth_revision=subscription.account.auth_revision,
+                    author_id=subscription.author_id,
+                    author_fingerprint_sha256=hashlib.sha256(subscription.author.remote_id.encode()).hexdigest(),
+                    creator_fingerprint_sha256="a" * 64,
+                    scope="notes",
+                    policy_fingerprint_sha256=xhs_policy_fingerprint(subscription.policy, subscription.max_items),
+                    upstream_sha=load_mediacrawler_lock(settings.mediacrawler_lock_path).commit,
+                    checkpoint_revision=subscription.checkpoint_revision,
+                    schedule_revision=subscription.schedule_revision,
+                    batch_count=1,
+                    note_observation_count=2,
+                    cursor_step_count=1,
+                    backfill_batch_count=1,
+                    partial_batch_count=1,
+                    failed_note_count=1,
+                    last_stop_reason="unit_cap_reached",
+                    created_at=datetime.now(UTC),
+                    updated_at=datetime.now(UTC),
+                )
+            )
+    finally:
+        database.dispose()
+
+    response = client.get(f"/api/v1/subscriptions/{identifier}")
+    assert response.status_code == 200
+    progress = response.json()["xhs_delivery"]
+    assert progress["initialized"] is True
+    assert (progress["phase"], progress["cursor_step_count"], progress["failed_note_count"]) == (
+        "backfill",
+        1,
+        1,
+    )
+    assert set(progress) == {
+        "schema_version",
+        "initialized",
+        "phase",
+        "baseline_snapshot_complete",
+        "generation_id",
+        "batch_count",
+        "note_observation_count",
+        "cursor_step_count",
+        "backfill_batch_count",
+        "reconciliation_batch_count",
+        "incremental_batch_count",
+        "partial_batch_count",
+        "failed_note_count",
+        "last_stop_reason",
+        "last_delivery_at",
+        "source_end_observed_at",
+        "source_end_run_id",
+        "reconciled_at",
+        "reconciliation_run_id",
+        "baseline_snapshot_at",
+        "next_eligible_at",
+        "blocked_code",
+    }
+    serialized_progress = json.dumps(progress, sort_keys=True)
+    assert "cursor" not in serialized_progress.replace("cursor_step_count", "")
+    assert "xsec" not in response.text and "XHS_CREATOR_REFERENCE" not in response.text
 
 
 def test_request_validation_never_echoes_rejected_secret_or_creator_input(tmp_path: Path) -> None:

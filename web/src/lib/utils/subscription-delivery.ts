@@ -5,7 +5,8 @@ import type {
   Platform,
   SubscriptionDeliveryResult,
   SubscriptionDeliveryStart,
-  SubscriptionDetail
+  SubscriptionDetail,
+  XhsDeliveryProgress
 } from '$lib/types/api';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -57,7 +58,11 @@ const DELIVERY_ERRORS: Record<string, string> = {
   operator_auth_required: '后台会话已失效；本地停止观察，但服务端操作不一定已经停止。',
   operator_csrf_forbidden: '后台会话已经变化；请求未自动重放，请使用任务页面核对。',
   request_validation_failed: '交付请求格式无效；没有自动重试。',
-  request_timeout: '本地等待请求结果超时，无法判断服务端是否接受；不要直接重复提交，请先核对任务。'
+  request_timeout: '本地等待请求结果超时，无法判断服务端是否接受；不要直接重复提交，请先核对任务。',
+  xhs_access_restricted: 'XHS 返回访问受限；已保留当前游标和已完成笔记，请降低频率并稍后从同一页继续。',
+  xhs_empty_page_stalled: 'XHS 返回空页面但仍声称有下一页，游标没有推进；不会把它误判为历史末尾。',
+  xhs_note_detail_partial:
+    '本轮有 XHS 笔记详情未取得；其他完整笔记已保留，失败笔记会在同一页用新 token 重试。'
 };
 const FEEDS: Record<string, string> = {
   uploads: '普通投稿',
@@ -91,15 +96,30 @@ const BILI_DELIVERY_PHASE_LABELS: Record<BiliDeliveryProgress['phase'], string> 
   incremental: '增量检查',
   blocked: '需要处理'
 };
+const XHS_DELIVERY_PHASES = new Set(['backfill', 'reconciling', 'incremental', 'blocked']);
+const XHS_DELIVERY_PHASE_LABELS: Record<XhsDeliveryProgress['phase'], string> = {
+  backfill: '历史笔记回填',
+  reconciling: '头部笔记对账',
+  incremental: '增量笔记检查',
+  blocked: '需要处理'
+};
+const XHS_STOP_REASONS: Record<Exclude<XhsDeliveryProgress['last_stop_reason'], null>, string> = {
+  has_more_false: '列表明确返回没有下一页',
+  empty_page_stalled: '空页面且游标没有推进',
+  access_restricted: '平台访问受限',
+  unit_cap_reached: '本轮达到页面或条目边界'
+};
 
 export const EXACT_DELIVERY_NOTICE =
-  '只为当前选中的订阅创建并领取精确任务，依次执行采集→下载→归档→生成兼容目录。B站投稿按本次 Run 内容与该订阅未完成积压（source_run_plus_retry_backlog）处理；其他兼容流程仍可能使用作者有效资产快照（author_active_snapshot），不是“仅本轮新增”。生成兼容目录不要求连接 Emby 或 Jellyfin；媒体服务器连接只是可选联动。';
+  '只为当前选中的订阅创建并领取精确任务，依次执行采集→下载→归档→生成兼容目录。B站投稿和带创作者凭据的 XHS 笔记按本次 Run 内容与该订阅未完成积压（source_run_plus_retry_backlog）处理；其他兼容流程仍可能使用作者有效资产快照（author_active_snapshot），不是“仅本轮新增”。生成兼容目录不要求连接 Emby 或 Jellyfin；媒体服务器连接只是可选联动。';
 export const UPSTREAM_HISTORY_NOTICE =
   '平台作者接口可能扫描完整历史或进行多轮分页；订阅的单次入库上限不一定限制上游扫描量。执行会使用已保存的平台会话并可能触发平台风控，不会自动规避验证码或绕过限制。';
 export const SCAN_PROGRESS_NOTICE =
   '这里只展示已提交且与检查点绑定的扫描证据；未证明、扫描中或曾观察到来源末尾，都不声明全历史完成。';
 export const BILI_DELIVERY_PROGRESS_NOTICE =
   '“增量检查”表示最近一个有界快照已完成源末尾与头部对账，不表示平台历史永久完整；认证、作者、策略或锁定上游变化会使该证明失效。';
+export const XHS_DELIVERY_PROGRESS_NOTICE =
+  '“增量笔记检查”只表示不透明游标历史到达明确末页，并以新 token 稳定重列过头部；不会显示游标或 token，也不表示平台历史永久不变。';
 export const DELIVERY_UNAVAILABLE =
   '暂时无法安全确认本次交付结果；没有自动重试，也不会据此宣称媒体已经写入目录。';
 export const DELIVERY_OBSERVATION_ENDED =
@@ -713,6 +733,175 @@ export function safeBiliDeliveryProgressCard(value: unknown): BiliDeliveryProgre
             ? 'running'
             : 'queued',
     notice: BILI_DELIVERY_PROGRESS_NOTICE,
+    rows
+  };
+}
+
+export function parseXhsDeliveryProgress(value: unknown): XhsDeliveryProgress | null {
+  const source = record(value);
+  const fields = [
+    'schema_version',
+    'initialized',
+    'phase',
+    'baseline_snapshot_complete',
+    'generation_id',
+    'batch_count',
+    'note_observation_count',
+    'cursor_step_count',
+    'backfill_batch_count',
+    'reconciliation_batch_count',
+    'incremental_batch_count',
+    'partial_batch_count',
+    'failed_note_count',
+    'last_stop_reason',
+    'last_delivery_at',
+    'source_end_observed_at',
+    'source_end_run_id',
+    'reconciled_at',
+    'reconciliation_run_id',
+    'baseline_snapshot_at',
+    'next_eligible_at',
+    'blocked_code'
+  ];
+  if (
+    !source ||
+    !exactKeys(source, fields) ||
+    source.schema_version !== 1 ||
+    typeof source.initialized !== 'boolean' ||
+    typeof source.phase !== 'string' ||
+    !XHS_DELIVERY_PHASES.has(source.phase) ||
+    typeof source.baseline_snapshot_complete !== 'boolean' ||
+    !(source.generation_id === null || uuid(source.generation_id)) ||
+    !count(source.batch_count) ||
+    !count(source.note_observation_count) ||
+    !count(source.cursor_step_count) ||
+    !count(source.backfill_batch_count) ||
+    !count(source.reconciliation_batch_count) ||
+    !count(source.incremental_batch_count) ||
+    !count(source.partial_batch_count) ||
+    !count(source.failed_note_count) ||
+    !(
+      source.last_stop_reason === null ||
+      (typeof source.last_stop_reason === 'string' &&
+        Object.hasOwn(XHS_STOP_REASONS, source.last_stop_reason))
+    ) ||
+    !optionalIso(source.last_delivery_at) ||
+    !optionalIso(source.source_end_observed_at) ||
+    !(source.source_end_run_id === null || uuid(source.source_end_run_id)) ||
+    !optionalIso(source.reconciled_at) ||
+    !(source.reconciliation_run_id === null || uuid(source.reconciliation_run_id)) ||
+    !optionalIso(source.baseline_snapshot_at) ||
+    !optionalIso(source.next_eligible_at) ||
+    !(
+      source.blocked_code === null ||
+      (typeof source.blocked_code === 'string' && CODE.test(source.blocked_code))
+    )
+  )
+    return null;
+  const phase = source.phase as XhsDeliveryProgress['phase'];
+  const batchTotal =
+    source.backfill_batch_count + source.reconciliation_batch_count + source.incremental_batch_count;
+  if (
+    batchTotal !== source.batch_count ||
+    source.partial_batch_count > source.batch_count ||
+    source.cursor_step_count > source.batch_count ||
+    source.baseline_snapshot_complete !== (phase === 'incremental') ||
+    (source.generation_id !== null) !== source.initialized ||
+    (source.source_end_observed_at !== null) !== (source.source_end_run_id !== null) ||
+    (source.reconciled_at !== null) !== (source.reconciliation_run_id !== null) ||
+    (source.reconciled_at !== null) !== (source.baseline_snapshot_at !== null) ||
+    (phase === 'incremental' && source.baseline_snapshot_at === null) ||
+    (source.baseline_snapshot_at !== null && !['incremental', 'blocked'].includes(phase)) ||
+    (phase === 'blocked') !== (source.blocked_code !== null) ||
+    (!source.initialized &&
+      (phase !== 'backfill' ||
+        source.batch_count !== 0 ||
+        source.note_observation_count !== 0 ||
+        source.cursor_step_count !== 0 ||
+        source.partial_batch_count !== 0 ||
+        source.failed_note_count !== 0 ||
+        source.last_stop_reason !== null ||
+        source.last_delivery_at !== null ||
+        source.source_end_observed_at !== null ||
+        source.reconciled_at !== null ||
+        source.baseline_snapshot_at !== null ||
+        source.blocked_code !== null))
+  )
+    return null;
+  return {
+    schema_version: 1,
+    initialized: source.initialized,
+    phase,
+    baseline_snapshot_complete: source.baseline_snapshot_complete,
+    generation_id: source.generation_id,
+    batch_count: source.batch_count,
+    note_observation_count: source.note_observation_count,
+    cursor_step_count: source.cursor_step_count,
+    backfill_batch_count: source.backfill_batch_count,
+    reconciliation_batch_count: source.reconciliation_batch_count,
+    incremental_batch_count: source.incremental_batch_count,
+    partial_batch_count: source.partial_batch_count,
+    failed_note_count: source.failed_note_count,
+    last_stop_reason: source.last_stop_reason as XhsDeliveryProgress['last_stop_reason'],
+    last_delivery_at: source.last_delivery_at,
+    source_end_observed_at: source.source_end_observed_at,
+    source_end_run_id: source.source_end_run_id,
+    reconciled_at: source.reconciled_at,
+    reconciliation_run_id: source.reconciliation_run_id,
+    baseline_snapshot_at: source.baseline_snapshot_at,
+    next_eligible_at: source.next_eligible_at,
+    blocked_code: source.blocked_code
+  };
+}
+
+export function safeXhsDeliveryProgressCard(value: unknown): BiliDeliveryProgressCard {
+  const progress = parseXhsDeliveryProgress(value);
+  if (!progress) {
+    return {
+      phase: '证据不可用',
+      status: 'unknown',
+      notice: '服务端 XHS 投影未通过封闭格式校验；请刷新详情并核对任务日志。',
+      rows: [{ label: '增量基线', value: '未声明完成' }]
+    };
+  }
+  const rows = progress.initialized
+    ? [
+        {
+          label: '已交付批次',
+          value: `${progress.batch_count} 轮（回填 ${progress.backfill_batch_count} / 对账 ${progress.reconciliation_batch_count} / 增量 ${progress.incremental_batch_count}）`
+        },
+        { label: '已推进游标页', value: `${progress.cursor_step_count} 步` },
+        { label: '已交付笔记观察', value: `${progress.note_observation_count} 条` },
+        {
+          label: '部分批次 / 最近失败笔记',
+          value: `${progress.partial_batch_count} 轮 / ${progress.failed_note_count} 条`
+        },
+        {
+          label: '最近停止原因',
+          value: progress.last_stop_reason ? XHS_STOP_REASONS[progress.last_stop_reason] : '—'
+        },
+        { label: '最近交付', value: displayTime(progress.last_delivery_at) },
+        { label: '明确源末页', value: displayTime(progress.source_end_observed_at) },
+        { label: '最近稳定头部对账', value: displayTime(progress.reconciled_at) },
+        { label: '下次可运行', value: displayTime(progress.next_eligible_at) }
+      ]
+    : [
+        { label: '交付合格批次', value: '尚未产生' },
+        { label: '增量基线', value: '未声明完成' },
+        { label: '下次可运行', value: displayTime(progress.next_eligible_at) }
+      ];
+  if (progress.blocked_code) rows.push({ label: '阻塞代码', value: progress.blocked_code });
+  return {
+    phase: XHS_DELIVERY_PHASE_LABELS[progress.phase],
+    status:
+      progress.phase === 'incremental'
+        ? 'succeeded'
+        : progress.phase === 'blocked'
+          ? 'failed_retryable'
+          : progress.phase === 'reconciling'
+            ? 'running'
+            : 'queued',
+    notice: XHS_DELIVERY_PROGRESS_NOTICE,
     rows
   };
 }

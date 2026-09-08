@@ -73,6 +73,7 @@ from media_sync.integrations.mediacrawler.runner import (
 from media_sync.integrations.mediacrawler.weibo_media import (
     WEIBO_IMAGES_FIELD,
 )
+from media_sync.integrations.mediacrawler.xhs_creator_notes import XhsScanState
 from media_sync.security import SecretValue
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -643,6 +644,9 @@ def _request(
     execution_id: UUID | None = None,
     sync_run_id: UUID | None = None,
     request_delay_seconds: float = 2.0,
+    author_remote_id: str = "fixture-creator",
+    xhs_bounded_capture: bool = False,
+    xhs_scan_cursor_before: str | None = None,
 ) -> BridgeRequest:
     durable_job_id = job_id or uuid4()
     return BridgeRequest(
@@ -656,7 +660,7 @@ def _request(
         intended_mode=intended_mode,
         platform=platform,
         login_method=login_method,
-        author_remote_id="fixture-creator",
+        author_remote_id=author_remote_id,
         creator_reference=creator,
         license_acknowledged=True,
         allow_full_history=(platform in FULL_HISTORY_PLATFORMS) if allow_full_history is None else allow_full_history,
@@ -671,6 +675,8 @@ def _request(
         execution_id=execution_id,
         sync_run_id=sync_run_id,
         request_delay_seconds=request_delay_seconds,
+        xhs_bounded_capture=xhs_bounded_capture,
+        xhs_scan_cursor_before=xhs_scan_cursor_before,
     )
 
 
@@ -1003,6 +1009,85 @@ def test_signed_creator_and_cookie_never_reach_persistent_or_display_sinks(
     assert CREATOR_SENTINEL not in visible
     assert creator not in visible
     assert any(isinstance(value, SecretValue) and value.reveal() == creator for value in spec.known_secrets)
+
+
+def test_bounded_xhs_manifest_carries_only_bound_state_and_token_fingerprint(
+    fake_project: FakeProject,
+    tmp_path: Path,
+) -> None:
+    author_id = "5f1234567890abcdef123456"
+    creator = f"https://www.xiaohongshu.com/user/profile/{author_id}?xsec_token={CREATOR_SENTINEL}&xsec_source=pc_user"
+    spec = _bridge().prepare(
+        _request(
+            fake_project,
+            tmp_path / "bounded-xhs",
+            creator=SecretValue(creator),
+            author_remote_id=author_id,
+            xhs_bounded_capture=True,
+        )
+    )
+    loaded = RunnerManifest.load(spec.paths.manifest_path)
+    assert loaded == spec.manifest
+    assert loaded.xhs_scan is not None and loaded.bili_scan is None
+    assert loaded.xhs_scan_input_cursor is None
+    assert isinstance(loaded.xhs_scan, XhsScanState)
+    loaded.xhs_scan.require_binding(
+        account_id=loaded.account_id,
+        author_fingerprint_sha256=hashlib.sha256(author_id.encode()).hexdigest(),
+        creator_fingerprint_sha256=hashlib.sha256(creator.encode()).hexdigest(),
+        upstream_sha=fake_project.commit,
+    )
+    persisted = spec.paths.manifest_path.read_text(encoding="utf-8")
+    assert CREATOR_SENTINEL not in persisted and creator not in persisted
+    assert set(loaded.as_payload()["xhs_scan"]) == {"schema_version", "input_cursor", "state"}
+
+
+def test_bounded_xhs_manifest_replays_exact_opaque_state(
+    fake_project: FakeProject,
+    tmp_path: Path,
+) -> None:
+    author_id = "5f1234567890abcdef123456"
+    creator = f"https://www.xiaohongshu.com/user/profile/{author_id}?xsec_token={CREATOR_SENTINEL}&xsec_source=pc_user"
+    first = _bridge().prepare(
+        _request(
+            fake_project,
+            tmp_path / "bounded-xhs-first",
+            creator=SecretValue(creator),
+            author_remote_id=author_id,
+            xhs_bounded_capture=True,
+        )
+    )
+    assert first.manifest.xhs_scan is not None
+    cursor = first.manifest.xhs_scan.to_cursor()
+    second = _bridge().prepare(
+        _request(
+            fake_project,
+            tmp_path / "bounded-xhs-second",
+            creator=SecretValue(creator),
+            author_remote_id=author_id,
+            xhs_bounded_capture=True,
+            xhs_scan_cursor_before=cursor,
+        )
+    )
+    assert second.manifest.xhs_scan == first.manifest.xhs_scan
+    assert second.manifest.xhs_scan_input_cursor == cursor
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"platform": Platform.BILI, "xhs_bounded_capture": True},
+        {"xhs_scan_cursor_before": "xhs-notes-v1:{}"},
+        {"intended_mode": MediaCrawlerRunMode.BACKFILL, "xhs_bounded_capture": True},
+    ],
+)
+def test_bounded_xhs_request_rejects_wrong_scope(
+    fake_project: FakeProject,
+    tmp_path: Path,
+    kwargs: dict[str, object],
+) -> None:
+    with pytest.raises(BridgeConfigurationError):
+        _request(fake_project, tmp_path / f"bad-xhs-{uuid4()}", **kwargs)  # type: ignore[arg-type]
 
 
 @pytest.mark.parametrize(

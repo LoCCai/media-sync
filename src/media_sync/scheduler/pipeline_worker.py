@@ -28,6 +28,8 @@ from .pipeline import (
     PipelineSubscriptionClaim,
 )
 from .pipeline_receipt import PipelineDeliveryReceipt
+from .xhs_delivery_progress import XhsDeliveryProgressRepository
+from .xhs_scan_continuation import XhsScanContinuationPolicy
 
 PIPELINE_RETRY_DELAY_SECONDS = 30
 _MAX_JOBS = 1_000
@@ -277,6 +279,7 @@ class PipelineSubscriptionWorker:
         retry_delay_seconds: int = PIPELINE_RETRY_DELAY_SECONDS,
         event_sink: EventSink | None = None,
         bili_delivery_policy: BiliScanContinuationPolicy | None = None,
+        xhs_delivery_policy: XhsScanContinuationPolicy | None = None,
     ) -> None:
         if not callable(handler):
             raise TypeError("pipeline handler must be callable")
@@ -290,6 +293,7 @@ class PipelineSubscriptionWorker:
         self.clock = clock
         self.retry_delay_seconds = retry_delay_seconds
         self.bili_delivery_policy = bili_delivery_policy or BiliScanContinuationPolicy(delay_seconds=0)
+        self.xhs_delivery_policy = xhs_delivery_policy or XhsScanContinuationPolicy(delay_seconds=0)
 
     @staticmethod
     def _heartbeat_interval(value: float | None, *, lease_seconds: int) -> float:
@@ -508,6 +512,13 @@ class PipelineSubscriptionWorker:
                         continuation_delay_seconds=self.bili_delivery_policy.delay_seconds,
                         now=current,
                     )
+                    XhsDeliveryProgressRepository(session).publish_success(
+                        job,
+                        result.receipt,
+                        upstream_sha=self.xhs_delivery_policy.upstream_sha,
+                        continuation_delay_seconds=self.xhs_delivery_policy.delay_seconds,
+                        now=current,
+                    )
             else:
                 classification = classify_pipeline_failure(result.error_code or "")
                 retry_at = current + timedelta(seconds=self.retry_delay_seconds) if classification.retryable else None
@@ -526,6 +537,12 @@ class PipelineSubscriptionWorker:
                         job,
                         error_code=classification.code,
                         upstream_sha=self.bili_delivery_policy.upstream_sha,
+                        now=current,
+                    )
+                    XhsDeliveryProgressRepository(session).publish_terminal_failure(
+                        job,
+                        error_code=classification.code,
+                        upstream_sha=self.xhs_delivery_policy.upstream_sha,
                         now=current,
                     )
             if job.job_type != PIPELINE_SUBSCRIPTION_JOB_TYPE:

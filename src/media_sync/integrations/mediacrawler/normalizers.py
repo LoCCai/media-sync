@@ -79,6 +79,7 @@ from .weibo_media import (
     validate_weibo_poster_url,
     validate_weibo_video_url,
 )
+from .xhs_creator_notes import XHS_SCAN_IDENTITY_FIELD
 from .xhs_live import XHS_LIVE_MAX_PAIRS, XHS_LIVE_VIDEO_FIELD, XHS_LIVE_VIDEO_LIST_FIELD
 from .xhs_media import validate_xhs_video_url
 from .zhihu_media import (
@@ -114,6 +115,7 @@ _PRIVATE_MEDIA_FIELDS = frozenset(
         WEIBO_VIDEO_POSTER_FIELD,
         XHS_LIVE_VIDEO_FIELD,
         XHS_LIVE_VIDEO_LIST_FIELD,
+        XHS_SCAN_IDENTITY_FIELD,
         ZHIHU_IMAGE_FIELD,
         ZHIHU_IMAGES_FIELD,
     }

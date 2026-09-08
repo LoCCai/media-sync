@@ -45,6 +45,7 @@ _MANIFEST_KEYS = frozenset(
         "upstream_sha",
         "output_fingerprint_sha256",
         "input_records",
+        "creator_fingerprint_sha256",
     }
 )
 _LEGACY_MANIFEST_KEYS = _MANIFEST_KEYS - _MANIFEST_BINDING_KEYS
@@ -83,6 +84,7 @@ def _bound_manifest(
     *,
     auth_revision: int,
     policy_fingerprint_sha256: str | None,
+    creator_fingerprint_sha256: str,
 ) -> bool:
     metadata = run.manifest
     if not isinstance(metadata, Mapping):
@@ -108,6 +110,7 @@ def _bound_manifest(
         "artifact_schema_version": MANIFEST_SCHEMA_VERSION,
         "upstream_sha": upstream_sha,
         "execution_id": str(uuid5(UUID(job.id), f"media-sync/mediacrawler/attempt/{run.attempt}")),
+        "creator_fingerprint_sha256": creator_fingerprint_sha256,
     }
     if metadata_keys >= _MANIFEST_BINDING_KEYS:
         expected.update(
@@ -241,6 +244,7 @@ class BiliScanContinuationPolicy:
                         if policy.effective_bili_scope == "uploads"
                         else None
                     ),
+                    creator_fingerprint_sha256=hashlib.sha256(author.remote_id.encode("utf-8")).hexdigest(),
                 )
             ):
                 return ordinary_interval

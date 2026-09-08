@@ -43,6 +43,7 @@ from .repository import (
     SchedulerRepository,
     SubscriptionSchedule,
 )
+from .xhs_scan_continuation import XhsScanContinuationPolicy
 
 
 def _utc_now() -> datetime:
@@ -97,13 +98,19 @@ class DurableSchedulerService:
         *,
         clock: Callable[[], datetime] = _utc_now,
         bili_scan_continuation: BiliScanContinuationPolicy | None = None,
+        xhs_scan_continuation: XhsScanContinuationPolicy | None = None,
     ) -> None:
         self.database = database
         self.clock = clock
         self.bili_scan_continuation = bili_scan_continuation
+        self.xhs_scan_continuation = xhs_scan_continuation
 
     def _repository(self, session: Session) -> SchedulerRepository:
-        return SchedulerRepository(session, bili_scan_continuation=self.bili_scan_continuation)
+        return SchedulerRepository(
+            session,
+            bili_scan_continuation=self.bili_scan_continuation,
+            xhs_scan_continuation=self.xhs_scan_continuation,
+        )
 
     def tick(self, *, limit: int = 100, retry_policy: RetryPolicy | None = None) -> SchedulerTickResult:
         with self.database.session() as session:
@@ -207,6 +214,7 @@ class SubscriptionWorker:
         random_fraction: Callable[[], float] = random.random,
         claim_registered_only: bool = False,
         bili_scan_continuation: BiliScanContinuationPolicy | None = None,
+        xhs_scan_continuation: XhsScanContinuationPolicy | None = None,
         event_sink: EventSink | None = None,
     ) -> None:
         if type(claim_registered_only) is not bool:
@@ -218,9 +226,14 @@ class SubscriptionWorker:
         self.random_fraction = random_fraction
         self.claim_adapter_allowlist = handlers.keys if claim_registered_only else None
         self.bili_scan_continuation = bili_scan_continuation
+        self.xhs_scan_continuation = xhs_scan_continuation
 
     def _repository(self, session: Session) -> SchedulerRepository:
-        return SchedulerRepository(session, bili_scan_continuation=self.bili_scan_continuation)
+        return SchedulerRepository(
+            session,
+            bili_scan_continuation=self.bili_scan_continuation,
+            xhs_scan_continuation=self.xhs_scan_continuation,
+        )
 
     @staticmethod
     def _heartbeat_interval(value: float | None, *, lease_seconds: int) -> float:

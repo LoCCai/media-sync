@@ -45,6 +45,7 @@ from .policies import (
     upstream_login_type,
 )
 from .subscription_policy import MAX_REQUEST_DELAY_SECONDS
+from .xhs_creator_notes import XhsScanState
 
 LEGACY_MANIFEST_SCHEMA_VERSION = 2
 MANIFEST_SCHEMA_VERSION = 3
@@ -115,6 +116,8 @@ class BridgeRequest:
     bili_bounded_capture: bool = False
     bili_scope: str | None = None
     bili_scan_cursor_before: str | None = field(default=None, repr=False)
+    xhs_bounded_capture: bool = False
+    xhs_scan_cursor_before: str | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         if self.bili_scope is not None and (
@@ -134,6 +137,19 @@ class BridgeRequest:
             or not self.bili_scan_cursor_before.strip()
         ):
             raise BridgeConfigurationError("bounded Bili input cursor is invalid")
+        if type(self.xhs_bounded_capture) is not bool or (
+            self.xhs_bounded_capture
+            and (self.platform is not Platform.XHS or self.intended_mode != MediaCrawlerRunMode.FORWARD)
+        ):
+            raise BridgeConfigurationError("bounded XHS capture requires a forward XHS request")
+        if self.bili_bounded_capture and self.xhs_bounded_capture:
+            raise BridgeConfigurationError("one request cannot carry multiple bounded scan contracts")
+        if self.xhs_scan_cursor_before is not None and (
+            not self.xhs_bounded_capture
+            or type(self.xhs_scan_cursor_before) is not str
+            or not self.xhs_scan_cursor_before.strip()
+        ):
+            raise BridgeConfigurationError("bounded XHS input cursor is invalid")
         try:
             intended_mode = MediaCrawlerRunMode(self.intended_mode)
         except (TypeError, ValueError) as error:
@@ -216,6 +232,8 @@ class RunnerManifest:
     license_sha256: str | None = MEDIACRAWLER_LICENSE_SHA256
     bili_scan: BiliScanState | BiliMultiFeedState | None = field(default=None, repr=False)
     bili_scan_input_cursor: str | None = field(default=None, repr=False)
+    xhs_scan: XhsScanState | None = field(default=None, repr=False)
+    xhs_scan_input_cursor: str | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         if self.bili_scan_input_cursor is not None and (
@@ -255,6 +273,39 @@ class RunnerManifest:
                 raise BridgeConfigurationError("bounded Bili manifest state is invalid") from None
         elif self.bili_scan_input_cursor is not None:
             raise BridgeConfigurationError("Bili cursor requires a bounded scan contract")
+        if self.xhs_scan_input_cursor is not None and (
+            type(self.xhs_scan_input_cursor) is not str or not self.xhs_scan_input_cursor.strip()
+        ):
+            raise BridgeConfigurationError("bounded XHS manifest input cursor is invalid")
+        if self.xhs_scan is not None:
+            if (
+                type(self.xhs_scan) is not XhsScanState
+                or self.platform is not Platform.XHS
+                or self.schema_version != MANIFEST_SCHEMA_VERSION
+                or self.intended_mode != MediaCrawlerRunMode.FORWARD
+                or self.bili_scan is not None
+            ):
+                raise BridgeConfigurationError("bounded XHS manifest scope is invalid")
+            try:
+                self.xhs_scan.require_binding(
+                    account_id=self.account_id,
+                    author_fingerprint_sha256=self.author_remote_id_fingerprint_sha256,
+                    creator_fingerprint_sha256=self.creator_fingerprint_sha256,
+                    upstream_sha=self.upstream_sha,
+                )
+                expected_xhs = XhsScanState.for_cursor(
+                    self.xhs_scan_input_cursor,
+                    account_id=self.account_id,
+                    author_fingerprint_sha256=self.author_remote_id_fingerprint_sha256,
+                    creator_fingerprint_sha256=self.creator_fingerprint_sha256,
+                    upstream_sha=self.upstream_sha,
+                )
+                if self.xhs_scan != expected_xhs:
+                    raise ValueError("scan input mismatch")
+            except ValueError:
+                raise BridgeConfigurationError("bounded XHS manifest state is invalid") from None
+        elif self.xhs_scan_input_cursor is not None:
+            raise BridgeConfigurationError("XHS cursor requires a bounded scan contract")
         if type(self.schema_version) is not int or self.schema_version not in {
             LEGACY_MANIFEST_SCHEMA_VERSION,
             MANIFEST_SCHEMA_VERSION,
@@ -394,6 +445,12 @@ class RunnerManifest:
                 "input_cursor": self.bili_scan_input_cursor,
                 "state": self.bili_scan.to_cursor(),
             }
+        if self.xhs_scan is not None:
+            payload["xhs_scan"] = {
+                "schema_version": 1,
+                "input_cursor": self.xhs_scan_input_cursor,
+                "state": self.xhs_scan.to_cursor(),
+            }
         return payload
 
     @classmethod
@@ -457,6 +514,8 @@ class RunnerManifest:
         expected_keys = legacy_keys if schema_version == LEGACY_MANIFEST_SCHEMA_VERSION else v3_keys
         if schema_version == MANIFEST_SCHEMA_VERSION and "bili_scan" in raw:
             expected_keys = expected_keys | {"bili_scan"}
+        if schema_version == MANIFEST_SCHEMA_VERSION and "xhs_scan" in raw:
+            expected_keys = expected_keys | {"xhs_scan"}
         if set(raw) != expected_keys:
             raise BridgeConfigurationError("runner manifest contains unsupported fields")
 
@@ -613,6 +672,26 @@ class RunnerManifest:
             except ValueError:
                 raise BridgeConfigurationError("bounded Bili manifest state is invalid") from None
             bili_scan_input_cursor = scan_contract["input_cursor"]
+        xhs_scan = None
+        xhs_scan_input_cursor = None
+        if "xhs_scan" in raw:
+            scan_contract = raw["xhs_scan"]
+            if (
+                not isinstance(scan_contract, Mapping)
+                or set(scan_contract) != {"schema_version", "input_cursor", "state"}
+                or type(scan_contract.get("schema_version")) is not int
+                or scan_contract["schema_version"] != 1
+                or type(scan_contract.get("state")) is not str
+                or (
+                    scan_contract.get("input_cursor") is not None and type(scan_contract.get("input_cursor")) is not str
+                )
+            ):
+                raise BridgeConfigurationError("bounded XHS manifest contract is invalid")
+            try:
+                xhs_scan = XhsScanState.from_cursor(scan_contract["state"])
+            except ValueError:
+                raise BridgeConfigurationError("bounded XHS manifest state is invalid") from None
+            xhs_scan_input_cursor = scan_contract["input_cursor"]
         if bili_scan is None:
             require_full_history_acknowledgement(platform, allow_full_history)
         upstream_login_type(login_method)
@@ -658,6 +737,8 @@ class RunnerManifest:
             license_sha256=license_sha256,
             bili_scan=bili_scan,
             bili_scan_input_cursor=bili_scan_input_cursor,
+            xhs_scan=xhs_scan,
+            xhs_scan_input_cursor=xhs_scan_input_cursor,
         )
 
 
@@ -867,6 +948,19 @@ class MediaCrawlerBridge:
                 )
             except ValueError:
                 raise BridgeConfigurationError("bounded Bili input state is invalid") from None
+        creator_fingerprint = hashlib.sha256(creator_reference.encode("utf-8")).hexdigest()
+        xhs_scan = None
+        if request.xhs_bounded_capture:
+            try:
+                xhs_scan = XhsScanState.for_cursor(
+                    request.xhs_scan_cursor_before,
+                    account_id=request.account_id,
+                    author_fingerprint_sha256=hashlib.sha256(request.author_remote_id.encode("utf-8")).hexdigest(),
+                    creator_fingerprint_sha256=creator_fingerprint,
+                    upstream_sha=checkout.commit,
+                )
+            except ValueError:
+                raise BridgeConfigurationError("bounded XHS input state is invalid") from None
 
         scheduler_job_id = request.scheduler_job_id
         execution_id = request.execution_id
@@ -919,7 +1013,7 @@ class MediaCrawlerBridge:
             platform=request.platform,
             login_method=request.login_method,
             author_remote_id_fingerprint_sha256=hashlib.sha256(request.author_remote_id.encode("utf-8")).hexdigest(),
-            creator_fingerprint_sha256=hashlib.sha256(creator_reference.encode("utf-8")).hexdigest(),
+            creator_fingerprint_sha256=creator_fingerprint,
             license_acknowledged=True,
             allow_full_history=request.allow_full_history,
             headless=request.headless,
@@ -933,6 +1027,8 @@ class MediaCrawlerBridge:
             request_delay_seconds=request.request_delay_seconds,
             bili_scan=bili_scan,
             bili_scan_input_cursor=request.bili_scan_cursor_before,
+            xhs_scan=xhs_scan,
+            xhs_scan_input_cursor=request.xhs_scan_cursor_before,
         )
         environment, known_secrets = _child_environment(
             creator_reference,

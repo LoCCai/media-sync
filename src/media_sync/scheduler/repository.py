@@ -45,6 +45,8 @@ from media_sync.infrastructure.db.repositories import (
 from .bili_delivery_progress import BiliDeliveryProgressRepository, binding_for_subscription
 from .bili_scan_continuation import BiliScanContinuationPolicy
 from .policy import FailureDisposition, RetryPolicy, classify_failure
+from .xhs_delivery_progress import XhsDeliveryProgressRepository
+from .xhs_scan_continuation import XhsScanContinuationPolicy
 
 SYNC_SUBSCRIPTION_JOB_TYPE = "sync.subscription"
 SCHEDULE_PAYLOAD_SCHEMA_VERSION = 1
@@ -418,9 +420,16 @@ def _lane_snapshot(lane: SchedulerLane) -> LaneSnapshot:
 class SchedulerRepository:
     """Transactional repository for the one closed subscription Job type."""
 
-    def __init__(self, session: Session, *, bili_scan_continuation: BiliScanContinuationPolicy | None = None) -> None:
+    def __init__(
+        self,
+        session: Session,
+        *,
+        bili_scan_continuation: BiliScanContinuationPolicy | None = None,
+        xhs_scan_continuation: XhsScanContinuationPolicy | None = None,
+    ) -> None:
         self.session = session
         self.bili_scan_continuation = bili_scan_continuation or BiliScanContinuationPolicy()
+        self.xhs_scan_continuation = xhs_scan_continuation or XhsScanContinuationPolicy()
 
     def _serialize_sqlite_writer(self) -> None:
         """Acquire SQLite's writer slot before making a read/decide/CAS choice."""
@@ -774,13 +783,23 @@ class SchedulerRepository:
             or not subscription.enabled
         ):
             return None
-        progress = BiliDeliveryProgressRepository(self.session).ensure_for_materialization(
+        bili_progress = BiliDeliveryProgressRepository(self.session).ensure_for_materialization(
             subscription,
             upstream_sha=self.bili_scan_continuation.upstream_sha,
             schedule_revision=schedule_revision,
             now=now,
             resume_blocked=resume_blocked,
         )
+        xhs_progress = XhsDeliveryProgressRepository(self.session).ensure_for_materialization(
+            subscription,
+            upstream_sha=self.xhs_scan_continuation.upstream_sha,
+            schedule_revision=schedule_revision,
+            now=now,
+            resume_blocked=resume_blocked or platform == "xhs",
+        )
+        if bili_progress is not None and xhs_progress is not None:
+            raise SchedulerRepositoryError("multiple delivery progress contracts selected one subscription")
+        progress = bili_progress or xhs_progress
         if progress is not None and progress.phase == "blocked":
             return None
 

@@ -168,6 +168,7 @@ from media_sync.scheduler import (
 )
 from media_sync.scheduler.bili_scan_continuation import BiliScanContinuationPolicy
 from media_sync.scheduler.policy import classify_failure
+from media_sync.scheduler.xhs_scan_continuation import XhsScanContinuationPolicy
 from media_sync.security import (
     InvalidSecretReferenceError,
     OperatorAuthConfigurationError,
@@ -206,7 +207,7 @@ app.add_typer(asset_app, name="asset")
 app.add_typer(emby_app, name="emby")
 app.add_typer(pipeline_app, name="pipeline")
 
-_EXPECTED_DATABASE_REVISION = "0014_bili_delivery_baseline"
+_EXPECTED_DATABASE_REVISION = "0015_xhs_creator_notes"
 _REQUIRED_DATABASE_TABLES = frozenset(str(name) for name in Base.metadata.tables)
 
 
@@ -967,6 +968,10 @@ def _scheduler_runtime() -> Iterator[tuple[Database, DurableSchedulerService]]:
                 bili_scan_continuation=BiliScanContinuationPolicy.from_lock(
                     settings.mediacrawler_lock_path, delay_seconds=settings.bili_scan_continuation_delay_seconds
                 ),
+                xhs_scan_continuation=XhsScanContinuationPolicy.from_lock(
+                    settings.mediacrawler_lock_path,
+                    delay_seconds=settings.xhs_scan_continuation_delay_seconds,
+                ),
             ),
         )
     except StaleLaneError:
@@ -1025,6 +1030,10 @@ def _build_subscription_worker(
         bili_scan_continuation=BiliScanContinuationPolicy.from_lock(
             settings.mediacrawler_lock_path, delay_seconds=settings.bili_scan_continuation_delay_seconds
         ),
+        xhs_scan_continuation=XhsScanContinuationPolicy.from_lock(
+            settings.mediacrawler_lock_path,
+            delay_seconds=settings.xhs_scan_continuation_delay_seconds,
+        ),
     )
 
 
@@ -1074,12 +1083,12 @@ def _build_pipeline_worker(
                     or subscription.account.platform != claim.platform
                 ):
                     return PipelineHandlerResult.failure("pipeline_subscription_invalid")
-                if (
-                    subscription.account.adapter == "mediacrawler"
-                    and subscription.account.platform == "bili"
-                    and from_subscription_policy(subscription.policy).effective_bili_scope == "uploads"
-                ):
-                    source_run_id = UUID(claim.run_id)
+                if subscription.account.adapter == "mediacrawler":
+                    policy = from_subscription_policy(subscription.policy)
+                    if (subscription.account.platform == "bili" and policy.effective_bili_scope == "uploads") or (
+                        subscription.account.platform == "xhs" and policy.creator_secret_ref is not None
+                    ):
+                        source_run_id = UUID(claim.run_id)
             outcome = executor.run(
                 UUID(claim.subscription_id),
                 expected_account_id=UUID(claim.account_id),
@@ -1115,6 +1124,10 @@ def _build_pipeline_worker(
         bili_delivery_policy=BiliScanContinuationPolicy.from_lock(
             settings.mediacrawler_lock_path,
             delay_seconds=settings.bili_scan_continuation_delay_seconds,
+        ),
+        xhs_delivery_policy=XhsScanContinuationPolicy.from_lock(
+            settings.mediacrawler_lock_path,
+            delay_seconds=settings.xhs_scan_continuation_delay_seconds,
         ),
     )
 
@@ -2109,6 +2122,10 @@ def scheduler_supervise(
                 database,
                 bili_scan_continuation=BiliScanContinuationPolicy.from_lock(
                     settings.mediacrawler_lock_path, delay_seconds=settings.bili_scan_continuation_delay_seconds
+                ),
+                xhs_scan_continuation=XhsScanContinuationPolicy.from_lock(
+                    settings.mediacrawler_lock_path,
+                    delay_seconds=settings.xhs_scan_continuation_delay_seconds,
                 ),
             ),
             subscription_worker=subscription_worker,

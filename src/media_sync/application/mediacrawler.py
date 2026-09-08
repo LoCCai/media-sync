@@ -25,6 +25,12 @@ from media_sync.integrations.mediacrawler.normalizers import (
     normalize_jsonl_bytes,
 )
 from media_sync.integrations.mediacrawler.receipt import load_validated_output_snapshot
+from media_sync.integrations.mediacrawler.xhs_creator_notes import (
+    XHS_SCAN_COVERAGE_FILENAME,
+    XHS_SCAN_IDENTITY_FIELD,
+    XhsNoteIdentity,
+    XhsScanCoverage,
+)
 
 
 class MediaCrawlerOutputRejected(ValueError):
@@ -39,6 +45,7 @@ class NormalizedMediaCrawlerOutput:
     output_fingerprint_sha256: str
     input_records: int
     bili_coverage: BiliScanCoverage | BiliMultiFeedCoverage | None = field(default=None, repr=False)
+    xhs_coverage: XhsScanCoverage | None = field(default=None, repr=False)
 
 
 def validate_bili_record_keys(
@@ -100,6 +107,42 @@ def _bili_content_identities(payload: bytes, *, author_fingerprint_sha256: str) 
     return tuple(identities)
 
 
+def _xhs_content_identities(payload: bytes, *, creator_fingerprint_sha256: str) -> tuple[XhsNoteIdentity, ...]:
+    identities: list[XhsNoteIdentity] = []
+    for line in payload.splitlines():
+        if not line.strip():
+            continue
+        raw = json.loads(line, object_pairs_hook=_closed_object)
+        identity = raw.get(XHS_SCAN_IDENTITY_FIELD) if isinstance(raw, Mapping) else None
+        if not isinstance(identity, Mapping) or set(identity) != {
+            "note_id",
+            "listing_sha256",
+            "token_sha256",
+            "xsec_source",
+            "creator_fingerprint_sha256",
+        }:
+            raise MediaCrawlerOutputRejected("bounded XHS content identity is missing")
+        if identity["creator_fingerprint_sha256"] != creator_fingerprint_sha256:
+            raise MediaCrawlerOutputRejected("bounded XHS creator reference differs")
+        if not isinstance(raw, Mapping) or raw.get("note_id") != identity["note_id"]:
+            raise MediaCrawlerOutputRejected("bounded XHS note identity differs")
+        token = raw.get("xsec_token")
+        if type(token) is not str or hashlib.sha256(token.encode("utf-8")).hexdigest() != identity["token_sha256"]:
+            raise MediaCrawlerOutputRejected("bounded XHS token identity differs")
+        try:
+            identities.append(
+                XhsNoteIdentity(
+                    note_id=identity["note_id"],
+                    listing_sha256=identity["listing_sha256"],
+                    token_sha256=identity["token_sha256"],
+                    xsec_source=identity["xsec_source"],
+                )
+            )
+        except (TypeError, ValueError):
+            raise MediaCrawlerOutputRejected("bounded XHS content identity is invalid") from None
+    return tuple(identities)
+
+
 def load_normalized_output(
     manifest: RunnerManifest,
     *,
@@ -125,7 +168,9 @@ def load_normalized_output(
     records: list[NormalizedMediaRecord] = []
     records_seen = 0
     bili_coverage = None
+    xhs_coverage = None
     bili_identities: list[BiliIdentity] = []
+    xhs_identities: list[XhsNoteIdentity] = []
     dynamic_payloads: dict[str, BiliDynamicPayload] = {}
     for jsonl_file in snapshot.files:
         if PurePosixPath(jsonl_file.relative_path).name == "_media_sync_bili_coverage.jsonl":
@@ -136,6 +181,15 @@ def load_normalized_output(
             ):
                 raise MediaCrawlerOutputRejected("unexpected Bili coverage sidecar")
             bili_coverage = coverage_from_json_line(jsonl_file.payload.decode("utf-8"))
+            continue
+        if PurePosixPath(jsonl_file.relative_path).name == XHS_SCAN_COVERAGE_FILENAME:
+            if (
+                manifest.xhs_scan is None
+                or jsonl_file.relative_path != XHS_SCAN_COVERAGE_FILENAME
+                or xhs_coverage is not None
+            ):
+                raise MediaCrawlerOutputRejected("unexpected XHS coverage sidecar")
+            xhs_coverage = XhsScanCoverage.from_json_line(jsonl_file.payload.decode("utf-8"))
             continue
         if manifest.bili_scan is not None:
             upload_lines: list[bytes] = []
@@ -155,6 +209,13 @@ def load_normalized_output(
             bili_identities.extend(
                 _bili_content_identities(
                     b"\n".join(upload_lines), author_fingerprint_sha256=manifest.author_remote_id_fingerprint_sha256
+                )
+            )
+        if manifest.xhs_scan is not None:
+            xhs_identities.extend(
+                _xhs_content_identities(
+                    jsonl_file.payload,
+                    creator_fingerprint_sha256=manifest.creator_fingerprint_sha256,
                 )
             )
         batch = normalize_jsonl_bytes(
@@ -255,6 +316,36 @@ def load_normalized_output(
                 or record.content.published_at.timestamp() != identity.pubdate
             ):
                 raise MediaCrawlerOutputRejected("bounded Bili normalized identity differs")
+    if manifest.xhs_scan is not None:
+        if xhs_coverage is None:
+            raise MediaCrawlerOutputRejected("bounded XHS coverage is missing")
+        if (
+            hashlib.sha256(creator_remote_id.encode("utf-8")).hexdigest()
+            != manifest.author_remote_id_fingerprint_sha256
+        ):
+            raise MediaCrawlerOutputRejected("bounded XHS creator scope differs")
+        try:
+            xhs_coverage.validate(
+                manifest.xhs_scan,
+                manifest.max_items,
+                normalized_remote_ids=tuple(record.content.remote_id for record in records),
+            )
+        except ValueError:
+            raise MediaCrawlerOutputRejected("bounded XHS coverage and content differ") from None
+        if (
+            len(records) != records_seen
+            or len(xhs_identities) != len(xhs_coverage.successful)
+            or tuple(xhs_identities) != xhs_coverage.successful
+        ):
+            raise MediaCrawlerOutputRejected("bounded XHS coverage and content differ")
+        for record in records:
+            if (
+                record.content.platform is not Platform.XHS
+                or record.content.remote_type != "content"
+                or record.author.remote_id != creator_remote_id
+                or record.content.remote_id not in {identity.note_id for identity in xhs_coverage.successful}
+            ):
+                raise MediaCrawlerOutputRejected("bounded XHS normalized identity differs")
     fingerprint = hashlib.sha256(
         json.dumps(
             snapshot.receipt.as_payload(),
@@ -268,6 +359,7 @@ def load_normalized_output(
         output_fingerprint_sha256=fingerprint,
         input_records=records_seen,
         bili_coverage=bili_coverage,
+        xhs_coverage=xhs_coverage,
     )
 
 

@@ -97,6 +97,7 @@ def _evidence(state: BiliScanState | BiliMultiFeedState = PENDING) -> tuple[Job,
         "execution_id": str(uuid5(UUID(job.id), "media-sync/mediacrawler/attempt/1")),
         "output_fingerprint_sha256": "c" * 64,
         "input_records": 0,
+        "creator_fingerprint_sha256": AUTHOR_HASH,
     }
     return job, run, subscription
 
@@ -217,6 +218,7 @@ def test_unbound_failed_paused_deleted_or_stale_evidence_retains_ordinary_delay(
         ("crawl_revision_before", 1),
         ("artifact_schema_version", 2),
         ("upstream_sha", "d" * 40),
+        ("creator_fingerprint_sha256", "d" * 64),
         ("output_fingerprint_sha256", "wrong"),
         ("input_records", True),
         ("input_records", -1),

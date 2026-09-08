@@ -87,6 +87,7 @@
     EXACT_DELIVERY_NOTICE,
     initialSubscriptionDeliveryView,
     safeBiliDeliveryProgressCard,
+    safeXhsDeliveryProgressCard,
     safeScanProgressCards,
     SCAN_PROGRESS_NOTICE,
     subscriptionDeliveryPhaseLabel,
@@ -194,7 +195,7 @@
       ) {
         lastDeliveryTerminalId = next.operation_id;
         if (next.phase === 'succeeded')
-          toast('此订阅的采集、下载、归档和兼容目录生成证据均已验证。', 'success');
+          toast('本次订阅执行已收尾；请在详情中核对交付计数与增量状态。', 'success');
         void load();
       }
     }
@@ -205,6 +206,10 @@
   $: biliDeliveryCard =
     detail?.platform === 'bili' && detail.bili_delivery
       ? safeBiliDeliveryProgressCard(detail.bili_delivery)
+      : null;
+  $: xhsDeliveryCard =
+    detail?.platform === 'xhs' && detail.xhs_delivery
+      ? safeXhsDeliveryProgressCard(detail.xhs_delivery)
       : null;
   $: policyRequestPayload = detail ? subscriptionPolicyRequest(detail, policyDraft) : null;
   $: policyChanged = detail ? subscriptionPolicyChanged(detail, policyDraft) : false;
@@ -1799,6 +1804,26 @@
         <p>{biliDeliveryCard.notice}</p>
         <dl>
           {#each biliDeliveryCard.rows as row}
+            <div>
+              <dt>{row.label}</dt>
+              <dd>{row.value}</dd>
+            </div>
+          {/each}
+        </dl>
+      </section>
+    {/if}
+    {#if xhsDeliveryCard}
+      <section class="delivery-baseline" aria-label="XHS 笔记本地交付基线">
+        <div class="delivery-status-heading">
+          <div>
+            <span class="eyebrow">XHS 创作者笔记 · 本地交付基线</span>
+            <h3>{xhsDeliveryCard.phase}</h3>
+          </div>
+          <StatusBadge status={xhsDeliveryCard.status} label={xhsDeliveryCard.phase} />
+        </div>
+        <p>{xhsDeliveryCard.notice}</p>
+        <dl>
+          {#each xhsDeliveryCard.rows as row}
             <div>
               <dt>{row.label}</dt>
               <dd>{row.value}</dd>

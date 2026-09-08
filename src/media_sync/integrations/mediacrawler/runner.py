@@ -1592,6 +1592,12 @@ async def _execute_child(
             )
 
             install_xhs_live_capture(verified.root)
+            if getattr(manifest, "xhs_scan", None) is not None:
+                from media_sync.integrations.mediacrawler.xhs_creator_capture import (
+                    install_xhs_creator_capture_shim,
+                )
+
+                install_xhs_creator_capture_shim(manifest, verified.root)
         config.__dict__["COOKIES"] = cookie or ""
         if manifest.login_method.value == "cookie":
             from media_sync.integrations.mediacrawler.cookie_reuse import install_cookie_reuse

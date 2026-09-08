@@ -8,8 +8,10 @@ import {
   DELIVERY_UNAVAILABLE,
   EXACT_DELIVERY_NOTICE,
   parseBiliDeliveryProgress,
+  parseXhsDeliveryProgress,
   parseSubscriptionDeliveryOperation,
   safeBiliDeliveryProgressCard,
+  safeXhsDeliveryProgressCard,
   safeScanProgressCards,
   SCAN_PROGRESS_NOTICE,
   subscriptionDeliveryFailure,
@@ -436,6 +438,55 @@ describe('delivery-qualified Bili baseline display', () => {
   });
 });
 
+describe('delivery-qualified XHS creator-note display', () => {
+  const progress = {
+    schema_version: 1,
+    initialized: true,
+    phase: 'incremental',
+    baseline_snapshot_complete: true,
+    generation_id: otherId,
+    batch_count: 5,
+    note_observation_count: 61,
+    cursor_step_count: 4,
+    backfill_batch_count: 3,
+    reconciliation_batch_count: 2,
+    incremental_batch_count: 0,
+    partial_batch_count: 1,
+    failed_note_count: 1,
+    last_stop_reason: 'unit_cap_reached',
+    last_delivery_at: '2026-09-08T12:00:00+00:00',
+    source_end_observed_at: '2026-09-08T11:00:00+00:00',
+    source_end_run_id: runId,
+    reconciled_at: '2026-09-08T12:00:00+00:00',
+    reconciliation_run_id: requestId,
+    baseline_snapshot_at: '2026-09-08T12:00:00+00:00',
+    next_eligible_at: '2026-09-08T18:00:00+00:00',
+    blocked_code: null
+  };
+
+  it('shows opaque cursor-step evidence without rendering cursor or token material', () => {
+    expect(parseXhsDeliveryProgress(progress)?.phase).toBe('incremental');
+    const card = safeXhsDeliveryProgressCard(progress);
+    expect(card.phase).toBe('增量笔记检查');
+    expect(JSON.stringify(card.rows)).toContain('4 步');
+    expect(card.notice).toContain('不会显示游标或 token');
+    expect(JSON.stringify(card)).not.toContain(sentinel);
+  });
+
+  it('rejects unknown fields, false completion and inconsistent source-end evidence', () => {
+    for (const value of [
+      { ...progress, opaque_cursor: sentinel },
+      { ...progress, baseline_snapshot_complete: false },
+      { ...progress, cursor_step_count: 6 },
+      { ...progress, source_end_run_id: null },
+      { ...progress, last_stop_reason: 'source_end' }
+    ]) {
+      expect(parseXhsDeliveryProgress(value)).toBeNull();
+      expect(JSON.stringify(safeXhsDeliveryProgressCard(value))).not.toContain(sentinel);
+    }
+  });
+});
+
 describe('subscriptions route wiring', () => {
   it('separates schedule advancement from exact collection and exposes durable evidence links', () => {
     const source = readFileSync(new URL('../../routes/subscriptions/+page.svelte', import.meta.url), 'utf8');
@@ -447,6 +498,7 @@ describe('subscriptions route wiring', () => {
     expect(source).toContain('/logs?operation_id=');
     expect(source).toContain('safeScanProgressCards');
     expect(source).toContain('safeBiliDeliveryProgressCard');
+    expect(source).toContain('safeXhsDeliveryProgressCard');
     expect(source).not.toContain('已安排同步任务；完成状态请到任务页面核对。');
   });
 });

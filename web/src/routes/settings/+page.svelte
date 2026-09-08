@@ -147,13 +147,24 @@
             </dd>
           </div>
           <div class="key-value-row">
+            <dt>XHS 历史页续跑</dt>
+            <dd>
+              {settings.xhs_scan_continuation_delay_seconds === undefined
+                ? '当前服务未提供'
+                : settings.xhs_scan_continuation_delay_seconds === 0
+                  ? '已关闭快速续跑，按普通周期调度'
+                  : `${settings.xhs_scan_continuation_delay_seconds} 秒（不长于订阅周期）`}
+            </dd>
+          </div>
+          <div class="key-value-row">
             <dt>MediaCrawler Python</dt>
             <dd class="mono">{settings.mediacrawler_python_executable ?? '未配置'}</dd>
           </div>
         </dl>
         <p class="muted">
-          续跑只适用于有明确待续检查点的成功 B 站批次，不代表历史已补齐。 当前通过
-          MEDIA_SYNC_BILI_SCAN_CONTINUATION_DELAY_SECONDS 配置，0 为关闭； API 与 supervisor 需配置相同值。
+          续跑只适用于有明确待续检查点且完成本地交付的批次，不代表历史永久完整。B 站与 XHS 分别通过
+          MEDIA_SYNC_BILI_SCAN_CONTINUATION_DELAY_SECONDS 和 MEDIA_SYNC_XHS_SCAN_CONTINUATION_DELAY_SECONDS
+          配置，0 为关闭；API 与 supervisor 需配置相同值。
         </p>
       {/if}
     </Panel>

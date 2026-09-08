@@ -26,7 +26,6 @@ from media_sync.infrastructure.db import (
     AuthorRepository,
     AuthorUpsert,
     Database,
-    IngestionMode,
     MediaCrawlerIngestionService,
     SubscriptionRepository,
     SyncRunRepository,
@@ -45,6 +44,12 @@ from media_sync.infrastructure.db.models import (
 )
 from media_sync.integrations.mediacrawler import MediaCrawlerDetailRequest, MediaCrawlerDetailResult
 from media_sync.integrations.mediacrawler.normalizers import NormalizationContext, normalize_jsonl_bytes
+from media_sync.integrations.mediacrawler.xhs_creator_notes import (
+    XhsCreatorPage,
+    XhsNoteIdentity,
+    XhsScanState,
+    XhsScanUnit,
+)
 from media_sync.media import (
     AdapterRefreshLocator,
     MediaRequestProfile,
@@ -178,7 +183,7 @@ def _policy() -> dict[str, object]:
     return {
         "mediacrawler": {
             "schema_version": 1,
-            "allow_full_history": False,
+            "allow_full_history": True,
             "request_delay_seconds": 1.0,
             "headless": True,
             "creator_input": {"secret_ref": CREATOR_SECRET_REF},
@@ -188,8 +193,14 @@ def _policy() -> dict[str, object]:
 
 def _start_ingesting_run(database: Database, subscription_id: str) -> str:
     with database.session() as session:
+        subscription = session.get(Subscription, subscription_id)
+        assert subscription is not None
         runs = SyncRunRepository(session)
-        run = runs.create(subscription_id=subscription_id)
+        run = runs.create(
+            subscription_id=subscription_id,
+            cursor_before=(dict(subscription.cursor) if subscription.cursor is not None else None),
+            checkpoint_revision_before=subscription.checkpoint_revision,
+        )
         runs.set_status(run.id, RunStatus.CLAIMED.value, expected_status=RunStatus.QUEUED.value)
         runs.set_status(run.id, RunStatus.RUNNING.value, expected_status=RunStatus.CLAIMED.value)
         runs.set_status(run.id, RunStatus.INGESTING.value, expected_status=RunStatus.RUNNING.value)
@@ -366,13 +377,31 @@ def test_xhs_creator_authority_gallery_reaches_emby_and_replays_without_network_
         ]
         assert tuple(asset_source_hint(asset.source_url) for asset in record.assets) == IMAGE_HINTS
 
+        xhs_state = XhsScanState.initial(
+            UUID(seed.account_id),
+            hashlib.sha256(AUTHOR_REMOTE_ID.encode()).hexdigest(),
+            hashlib.sha256(CREATOR_REFERENCE.encode()).hexdigest(),
+            UPSTREAM_SHA,
+        )
+        identity = XhsNoteIdentity(
+            CONTENT_ID,
+            hashlib.sha256(b"execution-0017-listing").hexdigest(),
+            hashlib.sha256(DISCOVERY_NOTE_TOKEN.encode()).hexdigest(),
+            "pc_search",
+        )
+        first_unit = XhsScanUnit(xhs_state, CREATOR_MAX_ITEMS)
+        first_unit.observe_page(XhsCreatorPage("", "", False, (identity,)))
+        first_unit.store(identity)
+        first_coverage = first_unit.coverage()
         first_run_id = _start_ingesting_run(database, seed.subscription_id)
-        first_ingest = MediaCrawlerIngestionService(database).ingest(
+        first_ingest = MediaCrawlerIngestionService(database).ingest_xhs_bounded(
             normalized.records,
             subscription_id=seed.subscription_id,
             run_id=first_run_id,
             expected_revision=0,
-            mode=IngestionMode.FORWARD,
+            input_cursor=None,
+            next_cursor=first_coverage.next_state.to_cursor(),
+            coverage=first_coverage,
         )
         assert (first_ingest.accepted_count, first_ingest.discovered_count, first_ingest.asset_count) == (1, 1, 2)
 
@@ -517,15 +546,21 @@ def test_xhs_creator_authority_gallery_reaches_emby_and_replays_without_network_
         _assert_private_values_absent(runtime_root, download_work_root, archive_root, export_work_root, library_root)
 
         replay = normalize_jsonl_bytes(DISCOVERY_JSONL, _normalization_context())
+        second_unit = XhsScanUnit(first_coverage.next_state, CREATOR_MAX_ITEMS)
+        second_unit.observe_page(XhsCreatorPage("", "", False, (identity,)))
+        second_unit.store(identity)
+        second_coverage = second_unit.coverage()
         second_run_id = _start_ingesting_run(database, seed.subscription_id)
-        second_ingest = MediaCrawlerIngestionService(database).ingest(
+        second_ingest = MediaCrawlerIngestionService(database).ingest_xhs_bounded(
             replay.records,
             subscription_id=seed.subscription_id,
             run_id=second_run_id,
             expected_revision=1,
-            mode=IngestionMode.FORWARD,
+            input_cursor=first_coverage.next_state.to_cursor(),
+            next_cursor=second_coverage.next_state.to_cursor(),
+            coverage=second_coverage,
         )
-        assert (second_ingest.accepted_count, second_ingest.discovered_count, second_ingest.asset_count) == (0, 0, 0)
+        assert (second_ingest.accepted_count, second_ingest.discovered_count, second_ingest.asset_count) == (1, 0, 0)
 
         replay_downloads = tuple(harness.service.run(harness.request) for harness in harnesses)
         replay_export = export_service.export_author(

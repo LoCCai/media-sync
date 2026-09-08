@@ -154,7 +154,7 @@ def _manifest_for_request(request: BridgeRequest) -> RunnerManifest:
             lock_path=request.lock_path.resolve(),
             license_acknowledged=request.license_acknowledged,
             author_remote_id_fingerprint_sha256=hashlib.sha256(request.author_remote_id.encode("utf-8")).hexdigest(),
-            creator_fingerprint_sha256="unused-by-fresh-attempt",
+            creator_fingerprint_sha256=hashlib.sha256(request.author_remote_id.encode("utf-8")).hexdigest(),
             upstream_sha=PINNED_SHA,
             # These structural doubles deliberately exercise legacy sealed
             # artifacts; the real-bridge tests below exercise bounded Bili.

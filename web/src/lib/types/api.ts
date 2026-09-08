@@ -124,6 +124,7 @@ export interface Settings {
   job_dir: string;
   api_bind: string;
   bili_scan_continuation_delay_seconds?: number;
+  xhs_scan_continuation_delay_seconds?: number;
   mediacrawler_python_executable: string | null;
   media_server: MediaServerConfiguration;
   logging?: { directory: string; segment_max_bytes: number; total_max_bytes: number; retention_days: number };
@@ -274,8 +275,34 @@ export interface BiliDeliveryProgress {
   blocked_code: string | null;
 }
 
+export interface XhsDeliveryProgress {
+  schema_version: 1;
+  initialized: boolean;
+  phase: 'backfill' | 'reconciling' | 'incremental' | 'blocked';
+  baseline_snapshot_complete: boolean;
+  generation_id: string | null;
+  batch_count: number;
+  note_observation_count: number;
+  cursor_step_count: number;
+  backfill_batch_count: number;
+  reconciliation_batch_count: number;
+  incremental_batch_count: number;
+  partial_batch_count: number;
+  failed_note_count: number;
+  last_stop_reason: 'has_more_false' | 'empty_page_stalled' | 'access_restricted' | 'unit_cap_reached' | null;
+  last_delivery_at: string | null;
+  source_end_observed_at: string | null;
+  source_end_run_id: string | null;
+  reconciled_at: string | null;
+  reconciliation_run_id: string | null;
+  baseline_snapshot_at: string | null;
+  next_eligible_at: string | null;
+  blocked_code: string | null;
+}
+
 export interface SubscriptionDetail extends Subscription {
   bili_delivery?: BiliDeliveryProgress;
+  xhs_delivery?: XhsDeliveryProgress;
   schedule: {
     subscription_id: string;
     status: string;

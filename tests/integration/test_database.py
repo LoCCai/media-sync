@@ -93,6 +93,7 @@ DOMAIN_TABLES = {
     "subscriptions",
     "sync_run_contents",
     "sync_runs",
+    "xhs_subscription_progress",
 }
 
 

@@ -128,6 +128,7 @@ from media_sync.infrastructure.db import (
     Subscription,
     SubscriptionRepository,
     SyncRun,
+    XhsSubscriptionProgress,
 )
 from media_sync.infrastructure.db.cookie_account_repository import CookieAccountError
 from media_sync.infrastructure.db.creator_profile_repository import (
@@ -190,6 +191,8 @@ from media_sync.scheduler import (
 )
 from media_sync.scheduler.bili_delivery_progress import bili_delivery_progress_payload
 from media_sync.scheduler.bili_scan_continuation import BiliScanContinuationPolicy
+from media_sync.scheduler.xhs_delivery_progress import xhs_delivery_progress_payload
+from media_sync.scheduler.xhs_scan_continuation import XhsScanContinuationPolicy
 from media_sync.security import (
     OPERATOR_SESSION_COOKIE_NAME,
     OperatorAuthConfigurationError,
@@ -832,6 +835,35 @@ def _subscription_bili_delivery_payload(
     except (CheckoutValidationError, OSError, ValueError):
         upstream_sha = None
     return bili_delivery_progress_payload(subscription, upstream_sha=upstream_sha)
+
+
+def _subscription_xhs_delivery_payload(
+    subscription: Subscription,
+    *,
+    lock_path: Path,
+) -> dict[str, object] | None:
+    try:
+        upstream_sha = load_mediacrawler_lock(lock_path).commit
+    except (CheckoutValidationError, OSError, ValueError):
+        upstream_sha = None
+    return xhs_delivery_progress_payload(subscription, upstream_sha=upstream_sha)
+
+
+def _xhs_delivery_failure_code(
+    database: Database,
+    *,
+    subscription_id: str,
+    pipeline_job_id: str,
+) -> str | None:
+    with database.session() as session:
+        progress = session.get(XhsSubscriptionProgress, subscription_id)
+        if progress is None or progress.last_pipeline_job_id != pipeline_job_id:
+            return None
+        if progress.blocked_code in {"xhs_access_restricted", "xhs_empty_page_stalled"}:
+            return progress.blocked_code
+        if progress.failed_note_count > 0:
+            return "xhs_note_detail_partial"
+    return None
 
 
 class SchedulerTick(BaseModel):
@@ -1755,6 +1787,7 @@ def create_api_app(
             "job_dir": str(resolved.job_dir),
             "api_bind": f"{resolved.api_host}:{resolved.api_port}",
             "bili_scan_continuation_delay_seconds": resolved.bili_scan_continuation_delay_seconds,
+            "xhs_scan_continuation_delay_seconds": resolved.xhs_scan_continuation_delay_seconds,
             "mediacrawler_python_executable": (
                 str(resolved.mediacrawler_python_executable)
                 if resolved.mediacrawler_python_executable is not None
@@ -2959,6 +2992,10 @@ def create_api_app(
                 bili_scan_continuation=BiliScanContinuationPolicy.from_lock(
                     resolved.mediacrawler_lock_path, delay_seconds=resolved.bili_scan_continuation_delay_seconds
                 ),
+                xhs_scan_continuation=XhsScanContinuationPolicy.from_lock(
+                    resolved.mediacrawler_lock_path,
+                    delay_seconds=resolved.xhs_scan_continuation_delay_seconds,
+                ),
             )
             schedule = {
                 "pause": service.pause_subscription,
@@ -2996,6 +3033,12 @@ def create_api_app(
                 )
                 if bili_delivery is not None:
                     payload["bili_delivery"] = bili_delivery
+                xhs_delivery = _subscription_xhs_delivery_payload(
+                    subscription,
+                    lock_path=resolved.mediacrawler_lock_path,
+                )
+                if xhs_delivery is not None:
+                    payload["xhs_delivery"] = xhs_delivery
                 payload["schedule"] = _scheduler_schedule_payload(
                     SchedulerRepository(session).get_subscription_schedule(str(subscription_id))
                 )
@@ -3028,6 +3071,10 @@ def create_api_app(
                     database,
                     bili_scan_continuation=BiliScanContinuationPolicy.from_lock(
                         resolved.mediacrawler_lock_path, delay_seconds=resolved.bili_scan_continuation_delay_seconds
+                    ),
+                    xhs_scan_continuation=XhsScanContinuationPolicy.from_lock(
+                        resolved.mediacrawler_lock_path,
+                        delay_seconds=resolved.xhs_scan_continuation_delay_seconds,
                     ),
                 ).list_jobs(subscription_id=str(subscription_id), limit=5)
             ]
@@ -3316,9 +3363,17 @@ def create_api_app(
                             raise SubscriptionDeliveryEvidenceError("subscription_delivery_mediacrawler_not_enabled")
                         if not body.accept_mediacrawler_license:
                             raise SubscriptionDeliveryEvidenceError("subscription_delivery_license_required")
-                    cycle = SchedulerRepository(session).materialize_one(
-                        target_id, expected_schedule_revision=body.expected_schedule_revision
-                    )
+                    cycle = SchedulerRepository(
+                        session,
+                        bili_scan_continuation=BiliScanContinuationPolicy.from_lock(
+                            resolved.mediacrawler_lock_path,
+                            delay_seconds=resolved.bili_scan_continuation_delay_seconds,
+                        ),
+                        xhs_scan_continuation=XhsScanContinuationPolicy.from_lock(
+                            resolved.mediacrawler_lock_path,
+                            delay_seconds=resolved.xhs_scan_continuation_delay_seconds,
+                        ),
+                    ).materialize_one(target_id, expected_schedule_revision=body.expected_schedule_revision)
                     context.subject_hook(session, DurableSubjectRef("job", cycle.job_id, role="execution"))
                     return cycle
 
@@ -3519,6 +3574,14 @@ def create_api_app(
                     pipeline_job_id=pipeline_job.job_id,
                     pipeline_receipt=delivery_receipt,
                 )
+                if result.get("platform") == "xhs":
+                    failure_code = _xhs_delivery_failure_code(
+                        worker_database,
+                        subscription_id=target_id,
+                        pipeline_job_id=pipeline_job.job_id,
+                    )
+                    if failure_code is not None:
+                        return OperationOutcome.failed(failure_code, retryable=True)
                 context.progress(phase="directory_verified", current=3, total=3, unit="steps")
                 return OperationOutcome.success(result)
             except (SchedulerExactConflictError, PipelineExactConflictError) as error:
@@ -3562,6 +3625,10 @@ def create_api_app(
                 database,
                 bili_scan_continuation=BiliScanContinuationPolicy.from_lock(
                     resolved.mediacrawler_lock_path, delay_seconds=resolved.bili_scan_continuation_delay_seconds
+                ),
+                xhs_scan_continuation=XhsScanContinuationPolicy.from_lock(
+                    resolved.mediacrawler_lock_path,
+                    delay_seconds=resolved.xhs_scan_continuation_delay_seconds,
                 ),
             ).tick(limit=body.limit)
             return {
@@ -3737,6 +3804,10 @@ def create_api_app(
                 database,
                 bili_scan_continuation=BiliScanContinuationPolicy.from_lock(
                     resolved.mediacrawler_lock_path, delay_seconds=resolved.bili_scan_continuation_delay_seconds
+                ),
+                xhs_scan_continuation=XhsScanContinuationPolicy.from_lock(
+                    resolved.mediacrawler_lock_path,
+                    delay_seconds=resolved.xhs_scan_continuation_delay_seconds,
                 ),
             ).list_jobs(
                 status=status.value if status is not None else None,

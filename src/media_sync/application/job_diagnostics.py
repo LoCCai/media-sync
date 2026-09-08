@@ -81,6 +81,7 @@ _REVISIONS = frozenset(
         "0012_library_output_policy",
         "0013_exact_subscription_delivery",
         "0014_bili_delivery_baseline",
+        "0015_xhs_creator_notes",
     }
 )
 

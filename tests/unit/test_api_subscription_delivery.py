@@ -40,21 +40,24 @@ def _client(settings: Settings) -> TestClient:
     return authenticated_test_client(settings, app_factory=api_module.create_api_app)
 
 
-def _subscription(client: TestClient) -> dict[str, object]:
+def _subscription(client: TestClient, *, platform: str = "bili") -> dict[str, object]:
     account = client.post(
         "/api/v1/accounts",
-        json={"platform": "bili", "display_name": "delivery", "login_method": "qr"},
+        json={"platform": platform, "display_name": "delivery", "login_method": "qr"},
     )
     assert account.status_code == 201
+    payload: dict[str, object] = {
+        "account_id": account.json()["id"],
+        "platform": platform,
+        "creator_remote_id": "252671524" if platform == "bili" else "5f1234567890abcdef123456",
+        "display_name": "delivery-author",
+        "allow_full_history": True,
+    }
+    if platform == "xhs":
+        payload["creator_reference_ref"] = "env:XHS_CREATOR_REFERENCE"
     response = client.post(
         "/api/v1/subscriptions",
-        json={
-            "account_id": account.json()["id"],
-            "platform": "bili",
-            "creator_remote_id": "252671524",
-            "display_name": "delivery-author",
-            "allow_full_history": True,
-        },
+        json=payload,
     )
     assert response.status_code == 201
     return response.json()
@@ -140,6 +143,7 @@ def _install_success_fakes(
     monkeypatch: pytest.MonkeyPatch,
     *,
     target_subscription_id: str,
+    platform: str = "bili",
     entered: threading.Event | None = None,
     release: threading.Event | None = None,
     pipeline_idle: bool = False,
@@ -213,7 +217,7 @@ def _install_success_fakes(
             return SchedulerWorkerResult(sync_job_id, target_subscription_id, "succeeded", 1, run_id)
 
     class FakePipelineRepository:
-        def __init__(self, _session: object) -> None:
+        def __init__(self, _session: object, **_kwargs: object) -> None:
             pass
 
         def get_for_succeeded_sync(self, source_id: str, **kwargs: object) -> SimpleNamespace:
@@ -246,7 +250,7 @@ def _install_success_fakes(
         subscription_id=target_subscription_id,
         account_id=account_id,
         author_id=author_id,
-        platform="bili",
+        platform=platform,
         export_job_id=export_job_id,
         selected_asset_count=2,
         verified_asset_count=2,
@@ -255,6 +259,10 @@ def _install_success_fakes(
         publication_disposition="published",
         managed_file_count=7,
         directory_verified=True,
+        schema_version=2 if platform == "xhs" else 1,
+        source_run_id=run_id if platform == "xhs" else None,
+        observed_content_count=2 if platform == "xhs" else 0,
+        delivered_content_count=2 if platform == "xhs" else 0,
     )
 
     class FakePipelineWorker:
@@ -296,7 +304,7 @@ def _install_success_fakes(
         "subscription_id": target_subscription_id,
         "account_id": account_id,
         "author_id": author_id,
-        "platform": "bili",
+        "platform": platform,
         "sync_job_id": sync_job_id,
         "run_id": run_id,
         "pipeline_job_id": pipeline_job_id,
@@ -305,7 +313,7 @@ def _install_success_fakes(
         "asset_identity_count": 2,
         "updated_count": None,
         "discovery_count_semantics": "created_rows",
-        "selection_scope": "author_active_snapshot",
+        "selection_scope": "source_run_plus_retry_backlog" if platform == "xhs" else "author_active_snapshot",
         "selected_asset_count": 2,
         "verified_asset_count": 2,
         "downloaded_count": 1,
@@ -314,6 +322,19 @@ def _install_success_fakes(
         "managed_file_count": 7,
         "directory_verified": True,
     }
+    if platform == "xhs":
+        result.update(
+            observed_content_count=2,
+            delivered_content_count=2,
+            failed_content_count=0,
+            retry_backlog_content_count=0,
+            delivered_retry_backlog_content_count=0,
+            failed_retry_backlog_content_count=0,
+            retryable_failed_content_count=0,
+            terminal_failed_content_count=0,
+            failure_codes=[],
+            partial=False,
+        )
 
     def build_result(_database: object, **kwargs: object) -> dict[str, object]:
         assert kwargs == {
@@ -340,6 +361,81 @@ def _install_success_fakes(
     monkeypatch.setattr(api_module, "build_subscription_delivery_result", build_result)
     calls["result"] = result
     return calls
+
+
+@pytest.mark.parametrize(
+    ("blocked_code", "failed_note_count", "expected"),
+    [
+        ("xhs_access_restricted", 0, "xhs_access_restricted"),
+        ("xhs_empty_page_stalled", 0, "xhs_empty_page_stalled"),
+        (None, 1, "xhs_note_detail_partial"),
+        (None, 0, None),
+    ],
+)
+def test_xhs_delivery_failure_code_is_bound_to_exact_pipeline(
+    blocked_code: str | None,
+    failed_note_count: int,
+    expected: str | None,
+) -> None:
+    pipeline_job_id = str(uuid4())
+    progress = SimpleNamespace(
+        last_pipeline_job_id=pipeline_job_id,
+        blocked_code=blocked_code,
+        failed_note_count=failed_note_count,
+    )
+
+    class FakeSession:
+        def __enter__(self) -> FakeSession:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def get(self, model: object, identifier: str) -> object:
+            assert model is api_module.XhsSubscriptionProgress
+            assert identifier == "subscription-id"
+            return progress
+
+    database = SimpleNamespace(session=lambda: FakeSession())
+    assert (
+        api_module._xhs_delivery_failure_code(
+            database,
+            subscription_id="subscription-id",
+            pipeline_job_id=pipeline_job_id,
+        )
+        == expected
+    )
+
+
+@pytest.mark.parametrize(
+    "error_code",
+    ["xhs_access_restricted", "xhs_empty_page_stalled", "xhs_note_detail_partial"],
+)
+def test_xhs_exact_delivery_never_reports_blocked_or_partial_page_as_success(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    error_code: str,
+) -> None:
+    settings = _settings(tmp_path)
+    with _client(settings) as client:
+        subscription_id = str(_subscription(client, platform="xhs")["id"])
+        _install_success_fakes(
+            monkeypatch,
+            target_subscription_id=subscription_id,
+            platform="xhs",
+        )
+        monkeypatch.setattr(api_module, "_xhs_delivery_failure_code", lambda *_args, **_kwargs: error_code)
+
+        started = client.post(
+            f"/api/v1/subscriptions/{subscription_id}/execute",
+            json=_request(),
+        )
+        assert started.status_code == 202
+        terminal = _wait_terminal(client, started.json()["operation_id"])
+
+    assert terminal["state"] == "failed_retryable"
+    assert terminal["error_code"] == error_code
+    assert terminal["result"] is None
 
 
 def test_exact_delivery_tracks_one_operation_and_safe_durable_chain(
@@ -557,7 +653,7 @@ def test_exact_delivery_idle_queued_job_is_observed_until_terminal(
             return SchedulerWorkerResult.idle()
 
     class QueuedRepository:
-        def __init__(self, _session: object) -> None:
+        def __init__(self, _session: object, **_kwargs: object) -> None:
             pass
 
         def materialize_one(self, *_args: object, **_kwargs: object) -> SimpleNamespace:

@@ -55,6 +55,7 @@ from .models import (
     SubscriptionScanProgress,
     SyncRun,
     SyncRunContent,
+    XhsSubscriptionProgress,
 )
 from .operation_repository import (
     OperationConflictError,
@@ -211,6 +212,7 @@ __all__ = [
     "SyncRunContent",
     "SyncRunRepository",
     "UTCDateTime",
+    "XhsSubscriptionProgress",
     "asset_fingerprints",
     "create_database_engine",
     "new_uuid",
