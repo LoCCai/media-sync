@@ -12,6 +12,7 @@ import logging
 import math
 import os
 import platform as runtime_platform
+import re
 import shutil
 import signal
 import sys
@@ -208,6 +209,28 @@ app.add_typer(emby_app, name="emby")
 app.add_typer(pipeline_app, name="pipeline")
 
 _EXPECTED_DATABASE_REVISION = "0015_xhs_creator_notes"
+_KNOWN_DATABASE_REVISIONS = frozenset(
+    {
+        "0001_initial_schema",
+        "0002_checkpoint_fencing",
+        "0003_media_download_emby",
+        "0004_scheduler_control_plane",
+        "0005_asset_refresh_sources",
+        "0006_operations_observability",
+        "0007_media_server_operations",
+        "0008_playback_evidence",
+        "0009_subscription_removal",
+        "0010_creator_profiles",
+        "0011_cookie_login",
+        "0012_library_output_policy",
+        "0013_exact_subscription_delivery",
+        "0014_bili_delivery_baseline",
+        _EXPECTED_DATABASE_REVISION,
+    }
+)
+_BUILD_MANIFEST_PATH = Path("/opt/BUILD-MANIFEST.txt")
+_SOURCE_REVISION = re.compile(r"[0-9a-f]{40}\Z")
+_SOURCE_REVISION_UNAVAILABLE = "unavailable"
 _REQUIRED_DATABASE_TABLES = frozenset(str(name) for name in Base.metadata.tables)
 
 
@@ -330,10 +353,11 @@ def collect_database_status(database_url: str) -> dict[str, object]:
         engine.dispose()
 
     revision_current = revisions == (_EXPECTED_DATABASE_REVISION,)
+    observed_revision = revisions[0] if len(revisions) == 1 and revisions[0] in _KNOWN_DATABASE_REVISIONS else None
     status = {
         **base_status,
         "reachable": True,
-        "revision": _EXPECTED_DATABASE_REVISION if revision_current else None,
+        "revision": observed_revision,
         "revision_current": revision_current,
         "present_table_count": len(present_tables),
         "missing_tables": missing_tables,
@@ -484,12 +508,18 @@ def _readiness_path_status(path: Path) -> dict[str, object]:
     }
 
 
-def _read_build_manifest() -> dict[str, object]:
+def _read_build_manifest(manifest_path: Path | None = None) -> dict[str, object]:
     """Read only small, non-secret toolchain facts from the image manifest."""
 
-    manifest_path = Path("/opt/BUILD-MANIFEST.txt")
+    manifest_path = manifest_path or _BUILD_MANIFEST_PATH
     if not manifest_path.is_file():
-        return {"status": "not_run", "present": False, "facts": {}}
+        return {
+            "status": "not_run",
+            "present": False,
+            "source_revision": None,
+            "source_revision_status": "not_run",
+            "facts": {},
+        }
     allowed = {
         "python",
         "uv",
@@ -502,14 +532,43 @@ def _read_build_manifest() -> dict[str, object]:
         "web_lock_sha256",
     }
     facts: dict[str, str] = {}
+    source_revisions: list[str] = []
     try:
         for line in manifest_path.read_text(encoding="utf-8", errors="replace")[:1_048_576].splitlines():
             name, separator, value = line.partition(":")
-            if separator and name in allowed and value.strip():
-                facts[name] = value.strip()[:256]
+            normalized = value.strip()
+            if not separator or not normalized:
+                continue
+            if name == "source_revision":
+                source_revisions.append(normalized)
+            elif name in allowed:
+                facts[name] = normalized[:256]
     except (OSError, UnicodeError):
-        return {"status": "fail", "present": True, "facts": {}}
-    return {"status": "pass", "present": True, "facts": facts}
+        return {
+            "status": "fail",
+            "present": True,
+            "source_revision": None,
+            "source_revision_status": "fail",
+            "facts": {},
+        }
+    source_revision: str | None = None
+    source_revision_status = "not_run"
+    if len(source_revisions) > 1:
+        source_revision_status = "fail"
+    elif source_revisions:
+        candidate = source_revisions[0]
+        if _SOURCE_REVISION.fullmatch(candidate) is not None:
+            source_revision = candidate
+            source_revision_status = "pass"
+        elif candidate != _SOURCE_REVISION_UNAVAILABLE:
+            source_revision_status = "fail"
+    return {
+        "status": "fail" if source_revision_status == "fail" else "pass",
+        "present": True,
+        "source_revision": source_revision,
+        "source_revision_status": source_revision_status,
+        "facts": facts,
+    }
 
 
 def collect_deep_readiness_report(
@@ -605,6 +664,10 @@ def collect_deep_readiness_report(
         "mediacrawler": mediacrawler,
         "browser": browser,
         "build_manifest": _read_build_manifest(),
+        "continuations": {
+            "bili_delay_seconds": settings.bili_scan_continuation_delay_seconds,
+            "xhs_delay_seconds": settings.xhs_scan_continuation_delay_seconds,
+        },
         "security": security,
         "live_qualification": "NOT_RUN",
     }
@@ -1315,8 +1378,37 @@ def _stored_cursor(subscription: Subscription) -> Cursor | None:
 @app.command()
 def doctor(
     json_output: Annotated[bool, typer.Option("--json", help="Emit machine-readable JSON.")] = False,
+    deep: Annotated[
+        bool,
+        typer.Option("--deep", help="Run the same read-only runtime qualification exposed by the API."),
+    ] = False,
+    accept_mediacrawler_license: Annotated[
+        bool,
+        typer.Option(
+            "--accept-mediacrawler-license",
+            help="Acknowledge the pinned non-commercial learning license for a deep check.",
+        ),
+    ] = False,
 ) -> None:
     """Inspect local prerequisites without displaying credentials."""
+
+    if accept_mediacrawler_license and not deep:
+        raise typer.BadParameter("--accept-mediacrawler-license requires --deep")
+    if deep:
+        deep_report = collect_deep_readiness_report(
+            get_settings(),
+            license_acknowledged=accept_mediacrawler_license,
+        )
+        if json_output:
+            typer.echo(json.dumps(deep_report, ensure_ascii=False, indent=2))
+        else:
+            typer.echo(
+                f"Deep readiness: status={deep_report['status']} code={deep_report['code']} "
+                f"live_qualification={deep_report['live_qualification']}"
+            )
+        if deep_report["ok"] is not True:
+            raise typer.Exit(code=1)
+        return
 
     report = collect_doctor_report(get_settings())
     if json_output:

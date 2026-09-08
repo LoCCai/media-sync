@@ -2,6 +2,7 @@
 #
 #   export MEDIA_SYNC_OPERATOR_CREDENTIAL_FILE=/absolute/path/to/operator-credential.txt
 #   export MEDIA_SYNC_MEDIACRAWLER_LICENSE_ACKNOWLEDGED=true  # only after review
+#   export MEDIA_SYNC_SOURCE_REVISION=$(git rev-parse HEAD)   # qualifying image identity
 #   cp docker-compose.example.yml docker-compose.yml
 #   docker compose up -d --build
 #   open http://127.0.0.1:8632/
@@ -29,6 +30,8 @@ services:
         # records it.  docker buildx imagetools inspect python:3.13-slim-bookworm
         # then:  export BASE_IMAGE=python:3.13-slim-bookworm@sha256:<digest>
         BASE_IMAGE: ${BASE_IMAGE:-python:3.13-slim-bookworm}
+        # Missing provenance remains runnable but reports NOT_RUN in Diagnostics.
+        MEDIA_SYNC_SOURCE_REVISION: ${MEDIA_SYNC_SOURCE_REVISION:-unavailable}
     image: media-sync:local
     restart: unless-stopped
     ports:

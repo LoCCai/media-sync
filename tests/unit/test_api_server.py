@@ -83,6 +83,14 @@ def test_deep_readiness_reports_license_gate_without_exposing_paths(tmp_path: Pa
     assert body["code"] == "license_acknowledgement_required"
     assert body["mediacrawler"]["detail_code"] == "license_acknowledgement_required"
     assert body["mediacrawler"]["checks"]["license_acknowledgement"] == "fail"
+    assert body["build_manifest"] == {
+        "status": "not_run",
+        "present": False,
+        "source_revision": None,
+        "source_revision_status": "not_run",
+        "facts": {},
+    }
+    assert body["continuations"] == {"bili_delay_seconds": 300, "xhs_delay_seconds": 300}
     assert body["security"] == {
         "status": "pass",
         "code": None,

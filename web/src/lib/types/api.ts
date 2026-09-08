@@ -762,7 +762,12 @@ export interface DeepReadiness {
   code: string;
   checked_at: string;
   cached: boolean;
-  database: Record<string, unknown> & { ok?: boolean };
+  database: Record<string, unknown> & {
+    ok?: boolean;
+    revision?: string | null;
+    expected_revision?: string | null;
+    revision_current?: boolean;
+  };
   tools: Record<string, ToolCheck>;
   paths: Record<string, { status: CheckState; exists: boolean; writable: boolean }>;
   mediacrawler: {
@@ -784,7 +789,13 @@ export interface DeepReadiness {
   build_manifest: {
     status: CheckState;
     present: boolean;
+    source_revision?: string | null;
+    source_revision_status?: CheckState;
     facts: Record<string, string>;
+  };
+  continuations?: {
+    bili_delay_seconds: number;
+    xhs_delay_seconds: number;
   };
   security: {
     status: 'pass' | 'warn';

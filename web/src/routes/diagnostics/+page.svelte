@@ -9,6 +9,7 @@
   import { onboardingAccepted } from '$lib/stores/onboarding';
   import { toast } from '$lib/stores/toast';
   import type { CheckState, DeepReadiness } from '$lib/types/api';
+  import { deploymentEvidence } from '$lib/utils/deployment-evidence';
   import { formatDateLong, shortId } from '$lib/utils/format';
 
   let report: DeepReadiness | null = null;
@@ -56,6 +57,7 @@
   );
   $: failedCode =
     report?.mediacrawler.detail_code ?? report?.browser.detail_code ?? (report?.ok ? null : report?.code);
+  $: deployment = deploymentEvidence(report);
 
   async function load(refresh: boolean): Promise<void> {
     if (!$onboardingAccepted) {
@@ -213,6 +215,22 @@
     <div class="facts-grid">
       <dl class="key-value-list">
         <div class="key-value-row">
+          <dt>media-sync 源码 revision</dt>
+          <dd class="fact-with-status">
+            <span class="mono fact-clip">{deployment.sourceRevision}</span>
+            <StatusBadge status={deployment.sourceRevisionStatus} />
+          </dd>
+        </div>
+        <div class="key-value-row">
+          <dt>数据库 migration</dt>
+          <dd class="fact-with-status">
+            <span class="mono fact-clip"
+              >{deployment.databaseRevision} / 预期 {deployment.expectedDatabaseRevision}</span
+            >
+            <StatusBadge status={deployment.databaseRevisionStatus} />
+          </dd>
+        </div>
+        <div class="key-value-row">
           <dt>最近检查</dt>
           <dd>{formatDateLong(report?.checked_at)}</dd>
         </div>
@@ -230,6 +248,14 @@
         </div>
       </dl>
       <dl class="key-value-list">
+        <div class="key-value-row">
+          <dt>B 站续跑间隔</dt>
+          <dd>{deployment.biliContinuation}</dd>
+        </div>
+        <div class="key-value-row">
+          <dt>XHS 续跑间隔</dt>
+          <dd>{deployment.xhsContinuation}</dd>
+        </div>
         <div class="key-value-row">
           <dt>构建 Chromium</dt>
           <dd>{report?.build_manifest.facts.chromium ?? '—'}</dd>
@@ -384,9 +410,18 @@
   }
 
   .fact-clip {
+    min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .fact-with-status {
+    display: flex;
+    min-width: 0;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px;
   }
 
   @media (max-width: 1050px) {

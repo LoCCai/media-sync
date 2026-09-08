@@ -12,7 +12,7 @@
 # for the operator's own deployment (non-commercial learning license). This
 # image is for personal use and must not be published or redistributed.
 #
-# Build:   docker build -t media-sync:local .
+# Build:   docker build --build-arg MEDIA_SYNC_SOURCE_REVISION=$(git rev-parse HEAD) -t media-sync:local .
 # Run:     docker compose up -d
 
 # Reproducibility: override BASE_IMAGE with a digest-pinned reference on the
@@ -24,6 +24,7 @@
 ARG BASE_IMAGE=python:3.13-slim-bookworm
 ARG NODE_IMAGE=node:24-bookworm-slim
 ARG NPM_REGISTRY=https://registry.npmjs.org
+ARG MEDIA_SYNC_SOURCE_REVISION=unavailable
 
 # ----------------------------------------------------------- Web Console v2
 # Build the SvelteKit SPA separately. pnpm and Web build dependencies stay here;
@@ -66,6 +67,12 @@ RUN node /tmp/mediacrawler-webui-security-patch.mjs \
 FROM ${BASE_IMAGE} AS base
 # Re-declare so the build manifest can record the (possibly digest-pinned) base.
 ARG BASE_IMAGE
+ARG MEDIA_SYNC_SOURCE_REVISION
+
+# Source provenance is evidence, not a runtime prerequisite. Direct builds may
+# use the closed sentinel; qualifying builds pass their exact clean HEAD.
+RUN printf '%s\n' "${MEDIA_SYNC_SOURCE_REVISION}" | grep -Eq '^(unavailable|[0-9a-f]{40})$'
+LABEL org.opencontainers.image.revision="${MEDIA_SYNC_SOURCE_REVISION}"
 
 # Mirror overrides for mainland-China builds; defaults stay on official
 # sources so the image remains reproducible anywhere. The example compose file
@@ -193,6 +200,7 @@ RUN { echo "python: $(python --version)"; \
       echo "playwright: $(/opt/mediacrawler-venv/bin/python -m playwright --version)"; \
       echo "chromium: $(su mediasync -s /bin/sh -c '/opt/mediacrawler-venv/bin/python -c "from playwright.sync_api import sync_playwright; p = sync_playwright().start(); b = p.chromium.launch(headless=True, args=[\"--disable-dev-shm-usage\"]); print(b.version); b.close(); p.stop()"' || echo launch-failed)"; \
       echo "base_image: ${BASE_IMAGE}"; \
+      echo "source_revision: ${MEDIA_SYNC_SOURCE_REVISION}"; \
       cat /tmp/WEB-BUILD-MANIFEST.txt; \
       echo "--- app venv ---"; /app/.venv/bin/python -m pip freeze 2>/dev/null || uv --project /app pip freeze 2>/dev/null || true; \
       echo "--- mediacrawler venv ---"; /opt/mediacrawler-venv/bin/python -m pip freeze; \
