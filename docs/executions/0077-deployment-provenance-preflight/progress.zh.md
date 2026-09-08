@@ -27,6 +27,7 @@
 
 ## 待完成
 
+- 推送后的[已认证只读观察](online-observation-2026-09-09.zh.md)发现现有容器的 deep checkout/runtime 检查现在通过，但 UI 缺少 0077 的全部来源/migration/续跑行。因此运行应用 revision 与数据库 migration 仍未知，XHS 金丝雀在执行前停止。
 - 当前 Windows 工作站没有 Docker。Dockerfile 实际执行、镜像标签读取、最终 runtime UID/挂载行为及 API/supervisor 容器比较仍为 `NOT_RUN`。
 - 当前服务器尚未从本 revision 重建。必须按[部署交接](deployment-handoff.zh.md)检查精确镜像身份、migration `0015`、钉定 checkout、续跑配置一致性、重启行为和持久挂载。
 - 真人 XHS 登录/profile 认领、作者 API、CDN 下载、宿主 archive/library/NFO 字节、重放、重启续跑及一次驻留 supervisor 周期仍为 `NOT_RUN`。

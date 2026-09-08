@@ -28,6 +28,6 @@
 
 ## 资格边界
 
-- 先前线上观察只证明公开 health/readiness，以及字段不符合 0076 的已认证界面；它不能识别运行提交。本次离线实现不会提升任何线上状态。
+- 推送后的[线上观察](online-observation-2026-09-09.zh.md)发现钉定 checkout/runtime 健康，但已认证 UI 没有任何 0077 来源/migration/续跑字段。它不能识别运行应用提交或当前数据库 migration，因此不提升任何真人状态。
 - 有效源码 SHA 只识别构建输入；它不证明 checkout 干净、持久挂载正确、数据库当前、上游 runtime 合格或平台流量成功。这些仍是独立检查。
 - `live_qualification` 继续为 `NOT_RUN`。任何 XHS 金丝雀前，先在 supervisor 停止状态按[部署交接](deployment-handoff.zh.md)执行。

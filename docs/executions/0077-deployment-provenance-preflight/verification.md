@@ -28,6 +28,6 @@ Implementation revision: `d6db86a`. Planning revision: `dadd198`.
 
 ## Qualification boundary
 
-- The previous online observation proved only public health/readiness and an authenticated UI whose fields did not match 0076; it did not identify the running commit. No online state is upgraded by this offline implementation.
+- The post-push [online observation](online-observation-2026-09-09.md) found a healthy pinned checkout/runtime but an authenticated UI without any 0077 source/migration/continuation field. It does not identify the running application commit or current database migration, so no live state is upgraded.
 - A valid source SHA identifies build input; it does not prove a clean checkout, correct persistent mounts, a current database, a qualified upstream runtime or successful platform traffic. Those remain separate checks.
 - `live_qualification` remains `NOT_RUN`. Follow the [deployment handoff](deployment-handoff.md) with the supervisor stopped before any XHS canary.

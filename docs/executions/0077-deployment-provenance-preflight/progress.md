@@ -27,6 +27,7 @@ Missing provenance remains an explicit `not_run`; malformed or duplicated proven
 
 ## Remaining
 
+- A post-push [authenticated read-only observation](online-observation-2026-09-09.md) found that the existing container's deep checkout/runtime checks now pass, but its UI lacks every 0077 provenance/migration/continuation row. The running application revision and database migration therefore remain unknown, and the XHS canary stopped before execution.
 - Docker is unavailable on this Windows workstation. Dockerfile execution, image-label inspection, final runtime UID/mount behavior and API-versus-supervisor container comparison remain `NOT_RUN`.
 - The current server has not been rebuilt from this revision. Its exact image identity, migration `0015`, pinned checkout, continuation equality, restart behavior and persistent mounts must be checked using the [deployment handoff](deployment-handoff.md).
 - Live XHS login/profile adoption, creator API, CDN download, host archive/library/NFO bytes, replay, restart continuation and one resident-supervisor cycle remain `NOT_RUN`.
