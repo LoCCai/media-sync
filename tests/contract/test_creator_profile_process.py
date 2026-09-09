@@ -337,11 +337,17 @@ def test_hard_parent_death_keeps_guardian_ownership_until_descendants_exit(
     )
     report = None
     try:
-        _until(lambda: (account_root / "report.json").exists())
+        # Real interpreter starts plus the deliberate _TREE_STOP_SECONDS
+        # guardian teardown sleep need far more headroom than the shared
+        # default when the full suite loads the workstation.
+        _until(lambda: (account_root / "report.json").exists(), timeout=60)
         report = json.loads((account_root / "report.json").read_text(encoding="utf-8"))
         process.kill()
         process.wait(timeout=5)
-        _until(lambda: not _pid_alive(report["pid"]) and not _pid_alive(report["child_pid"]))
+        _until(
+            lambda: not _pid_alive(report["pid"]) and not _pid_alive(report["child_pid"]),
+            timeout=60,
+        )
         lock = _AccountFileLock(account_root)
         assert lock.acquire()
         lock.release()

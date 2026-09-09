@@ -239,8 +239,16 @@ WORKDIR /app
 EXPOSE 8632
 VOLUME ["/data"]
 
+# The operator-auth middleware rejects any Host outside the configured
+# origins, so the probe must present the first allowed origin's authority.
+# With no explicit origins configured the loopback authority is the default.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-    CMD curl -fsS http://127.0.0.1:8632/api/v1/health || exit 1
+    CMD authority=$(printf '%s' "$MEDIA_SYNC_OPERATOR_ALLOWED_ORIGINS" | tr -d '"[]' | sed -E 's#^[^:/]+://##; s#,.*$##; s#/.*$##'); \
+        if [ -n "$authority" ]; then \
+            curl -fsS -H "Host: $authority" http://127.0.0.1:8632/api/v1/health || exit 1; \
+        else \
+            curl -fsS http://127.0.0.1:8632/api/v1/health || exit 1; \
+        fi
 
 ENTRYPOINT ["/usr/local/bin/media-sync-entrypoint"]
 CMD ["serve"]
