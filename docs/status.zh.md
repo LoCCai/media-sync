@@ -182,23 +182,23 @@ B站和微博资料已离线实现，其他五平台资料、抖音/快手/贴�
 
 | 里程碑 | 状态 |
 | --- | --- |
-| 离线功能开发 | 0075 已在 `aec3eac` 实现：全部 MediaCrawler 平台共用暂停态通用策略编辑器，且 B 站 scope 严格隔离。它建立在 0074 已取得交付资格的 B 站回填/增量状态之上，不改写断点、历史或媒体。Python/Web 完整套件及静态/制品门通过；共享控制台输出仍有意不作为摄取权威 |
-| REST API + Web 控制台 | 0075 新增严格 `PUT /api/v1/subscriptions/{id}/policy`、对应 CLI 命令及带修订/session/弹窗栅栏的 Web 编辑器。既有认证 `/crawler/`、Cookie session/CSRF 和精确 Host/Origin WebSocket 保护保持不变；合成浏览器通过，真人平台行为未取得资格，Legacy 仍是受保护迁移提示 |
-| 操作者鉴权 + 播放证据 | 后端鉴权、不可变身份／账本、仅浏览器确认、有界 current/stale/unknown 投影及资格 v3 已实现。无精确当前证据时 playback 为 IMPLEMENTED/NOT_RUN；PASS 只适用于选定作者。Web 会话集成已实现且本地合成浏览器门禁已通过；确认 UI 仍待实现，真人播放为 NOT_RUN |
-| Docker 打包 | 0072 增加锁定上游 React 的隔离构建／复制阶段，真实锁定 React 源码已在临时副本成功构建。加固后生产依赖审计以 0 个漏洞通过；完整构建依赖图仍有 8 个仅开发／构建期发现。当前精确完整 Docker 构建／运行仍为 `NOT_RUN`。0041、0048–0050 历史候选镜像不能赋予当前工作树资格 |
-| 运维文档 / 安全审查 / 发布清单 | 已交付（0045、0046） |
-| 真人验收（最终门） | 仍开放——执行 0047 继续作为操作者门；精确 0075 镜像、原生 QR/Cookie 登录、profile 认领及七平台采集/下载/CDN/历史/增量均为 `NOT_RUN` |
+| 离线功能开发 | 0076 已在 `47ca107` 实现：耐久的小红书创作者笔记投递（不透明 cursor、页尾保留、token 门槛 detail、backfill/reconciling/incremental/blocked 阶段），与 0074 已取得交付资格的 B 站回填/增量状态并列。0077（`d6db86a` + `3c31dce`）新增构建溯源与深度就绪预检。Python/Web 完整套件及静态/制品门通过；共享控制台输出仍有意不作为摄取权威 |
+| REST API + Web 控制台 | 0075 的严格策略编辑器（`PUT /api/v1/subscriptions/{id}/policy` + CLI + 带修订栅栏的 Web 编辑器）保持现状；0077 把共享的 Diagnostics/`doctor --deep` 投影扩展出 source-revision、迁移与续跑延迟行。既有认证 `/crawler/`、Cookie session/CSRF 与精确 Host/Origin WebSocket 保护不变。真人平台行为未取得资格 |
+| 操作者鉴权 + 播放证据 | 后端鉴权、不可变身份／账本、仅浏览器确认、有界投影及资格 v3 保持已实现。无精确当前证据时 playback 为 IMPLEMENTED/NOT_RUN；PASS 只适用于选定作者。确认 UI 仍待实现，真人播放为 NOT_RUN |
+| Docker 打包 | 0077 仅静态合格了构建契约：`MEDIA_SYNC_SOURCE_REVISION` 构建参数记录进 `/opt/BUILD-MANIFEST.txt` 与 OCI revision 标签，缺失/畸形溯源 fail-closed，`.git` 不入镜像。2026-09-09 线上观察证明正在运行的镜像早于 0077（无 source-revision/迁移/续跑三行），因此当前精确完整镜像构建/运行仍为 `NOT_RUN`，XHS 金丝雀不得对未识别镜像开跑 |
+| 运维文档 / 安全审查 / 发布清单 | 已交付（0045、0046）；双语浓缩操作者速查清单见 [`handoff-checklist.zh.md`](handoff-checklist.zh.md) |
+| 真人验收（最终门） | 仍开放——执行 0047 继续作为操作者门；0077 部署交接（带溯源重建 → 迁移 `0015` → API/supervisor 一致 → 一次有界 XHS 金丝雀）是唯一授权的下一步链。全部真人登录/采集/下载/CDN/历史/增量行为 `NOT_RUN` |
 
 ## 验证矩阵
 
 | 维度 | 状态 | 证据 / 阻塞 |
 | --- | --- | --- |
 | 实现（离线形状） | 七平台 15+ 冻结形状 | 执行 0013–0039 记录 |
-| 离线完整套件 | 当前 0075 Python 完整套件以 `7067 passed, 43 skipped, 108 warnings in 1638.69s` 通过；Web 完整套件以 `27 files / 818 tests` 通过。跳过项均为明确记录的 OS/PostgreSQL/`uv` 资格分支，warning 为既有依赖弃用提示 | [0075 验证](executions/0075-paused-subscription-policy-editor/verification.zh.md) |
+| 离线完整套件 | 0077 最终本地门：Python 完整套件 `7140 passed, 42 skipped, 1 warning`、Web `28 files / 825 tests`（0075 的 `7067 passed, 43 skipped` / `27 files / 818 tests` 已被取代）。跳过项均为明确记录的 OS/PostgreSQL/`uv` 资格分支 | [0077 验证](executions/0077-deployment-provenance-preflight/verification.zh.md) | [0075 验证](executions/0075-paused-subscription-policy-editor/verification.zh.md) |
 | API/控制台测试 | 0075 策略/API/CLI/鉴权联合为 `40 passed, 2 skipped`；两项真实 PostgreSQL 策略检查仍为 `NOT_RUN`。合成 Chrome 证明 B 站与 XHS 保存后仍暂停、平台 scope 保持隔离，浏览器/页面/请求错误数均为 0 | [0075 验证](executions/0075-paused-subscription-policy-editor/verification.zh.md) |
 | 静态与制品门 | 0075 对 406 个文件的 Ruff lint/format、Web Prettier、156 个源码文件 strict mypy、compileall、62 包锁文件、两个上游及 wheel/sdist 构建通过；收尾重跑文档链接与 `git diff --check`。0072 加固后的生产依赖审计继续为 0，全构建依赖图仍有 8 个仅开发/构建期发现 | [0075 验证](executions/0075-paused-subscription-policy-editor/verification.zh.md) |
 | 锁定上游 WebUI 依赖审计 | 生产 `PASS`／全构建依赖图 `FAIL`（仅开发依赖残余）——安全补丁后的构建副本生产漏洞为 0，全依赖图为 8 条：6 high、2 low、0 moderate、0 critical；对应 package 不会复制进最终运行镜像。未加固上游原始基线的 11 条（8 high、1 moderate、2 low）仅作为历史发现保留；版本化 checkout／lockfile 保持不变 | [0072 验证](executions/0072-mediacrawler-webui-integration/verification.zh.md) |
-| Docker 镜像构建 | 独立的补丁后上游 React 构建继续通过，但本工作站没有 Docker，精确 0075 完整镜像构建/运行仍为 `NOT_RUN`；操作者历史线上门观察不能确认本 revision 或赋予镜像资格 | [0075 验证](executions/0075-paused-subscription-policy-editor/verification.zh.md)；执行 0050/0047 |
+| Docker 镜像构建 | 0077 已静态合格构建契约（source-revision 构建参数记录进 manifest 与 OCI 标签、fail-closed、`.git` 排除）。2026-09-09 线上观察证明运行中镜像早于 0077，当前精确镜像构建/运行仍为 `NOT_RUN`；部署交接重建是阻塞项 | [0077 验证](executions/0077-deployment-provenance-preflight/verification.zh.md)；[线上观察](executions/0077-deployment-provenance-preflight/online-observation-2026-09-09.md) | [0075 验证](executions/0075-paused-subscription-policy-editor/verification.zh.md)；执行 0050/0047 |
 | 容器就绪 / 重启持久性 / 备份恢复演练 | 历史线上 API 曾通过关闭的许可证门返回响应，但精确 0075 身份、就绪与持久性未经验证；重启和备份恢复继续为 `NOT_RUN`。旧镜像深度预检仅为历史 `PASS` | [0075 验证](executions/0075-paused-subscription-policy-editor/verification.zh.md)；执行 0047；docs/operations.zh.md |
 | 真人登录（任一平台） | 精确 0075 revision 的真人原生 QR/Cookie 登录与 Account profile 认领仍为 `NOT_RUN`；离线 saved-session 探针不等于登录资格。此前 B 站成功观察与其他失败保留为历史，新证明/复用仍开放 | [0075 验证](executions/0075-paused-subscription-policy-editor/verification.zh.md)；[历史 B 站跟进](executions/0055-operator-auth-playback-evidence/bili-success-followup/verification.zh.md) |
 | 真人抓取 / 下载 / 增量性 | 七平台真人作者采集/下载/CDN/历史完整性及后续增量仍为 `NOT_RUN`。0074 只对 B 站确定性路径取得资格；XHS 及其他平台仍需各自源码驱动的耐久契约。历史首次 B 站金丝雀仍为失败 | [0074 验证](executions/0074-bili-backfill-incremental-delivery/verification.zh.md)；[0075 验证](executions/0075-paused-subscription-policy-editor/verification.zh.md) |
@@ -214,10 +214,10 @@ B站和微博资料已离线实现，其他五平台资料、抖音/快手/贴�
 
 ## 发布阻塞项（v0.1.0-rc1）
 
-0075 暂停态策略编辑器已在 `aec3eac` 实现，建立在 0074 已取得交付资格的 B 站路径之上。Python/Web 专项与完整套件、合成浏览器渲染交互、静态/制品门及继承的加固后 0 漏洞生产依赖审计通过。精确镜像、修正配置后的 `/crawler/`、profile 认领及真人流水线均未取得资格。WebUI 全构建依赖图仍有 8 个仅开发/构建期发现。
+0076（耐久小红书创作者笔记投递）与 0077（构建溯源 + 深度就绪预检）已在 0074/0075 之上实现。`3c31dce` 处 Python/Web、静态与制品门全部通过。2026-09-09 的线上观察证明正在运行的服务器镜像早于 0077，0075 之后的内容从未在部署上运行；0077 [部署交接](executions/0077-deployment-provenance-preflight/deployment-handoff.zh.md)（浓缩双语速查清单：[handoff-checklist](handoff-checklist.zh.md)）是唯一授权的解阻塞链。WebUI 全构建依赖图仍有 8 个仅开发/构建期发现。
 
-1. P0：当前精确镜像的 Linux 基线未完成（运行用户 secret 可读性、迁移边界、宿主机端口、`/crawler/` 启动、重启持久性、备份恢复与进程基线）；旧镜像通过不能替代。
+1. P0：以 `MEDIA_SYNC_SOURCE_REVISION` 溯源重建当前精确镜像、证明 OCI 标签、应用迁移 `0015`、比对 API/supervisor 深度预检；随后一次有界 XHS 金丝雀。旧镜像通过不能替代；金丝雀不得对未识别镜像开跑。
 2. 发布前跟踪、缓解或显式接受锁定上游 WebUI 全构建依赖图的 8 个仅开发／构建期发现。生产审计为零；未加固上游原始基线的 11 条仅作为历史发现。
-3. 精确 0075 的真人原生登录/profile 认领及七平台采集/下载/CDN/历史/增量行均为 `NOT_RUN`；任何 Supported 声明前须运行受控金丝雀，通用策略编辑不等于平台交付资格。
+3. 精确 revision 的真人原生登录/profile 认领及七平台采集/下载/CDN/历史/增量行均为 `NOT_RUN`；任何 Supported 声明前须运行受控金丝雀，通用策略编辑不等于平台交付资格，抖音投递设计以 XHS 金丝雀结果为门槛。
 
 0.1 最低发布条件：至少两个金丝雀平台达到 **Supported**（登录、同步、下载、真实增量、Emby 重扫 + 抽样播放），其余平台如实分级（Experimental / Metadata-only / Blocked External / Unsupported），且项目自我表述为“七平台适配框架；实际资格状态见状态矩阵”，而非“支持七个平台”。

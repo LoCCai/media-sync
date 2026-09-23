@@ -27,6 +27,7 @@
 - [`executions/`](executions/)：每个里程碑的四件套记录。
 - [`templates/`](templates/)：后续执行模板。
 - [`deployment.zh.md`](deployment.zh.md)：Docker 部署与 Web 后台验证指南。
+- [`handoff-checklist.zh.md`](handoff-checklist.zh.md)：浓缩操作者重建/金丝雀速查清单。
 - [`operations.zh.md`](operations.zh.md)：备份、恢复与升级流程。
 - [`security-review.zh.md`](security-review.zh.md)：已实现的安全/隐私姿态与残余风险。
 - [`release-checklist.zh.md`](release-checklist.zh.md)：发布前检查清单。
@@ -36,6 +37,8 @@
 | ID | 里程碑 | 状态 | 提交 |
 | --- | --- | --- | --- |
 | 0077 | 部署来源身份与 XHS 金丝雀预检 | 本地完成：封闭镜像源码身份、安全 migration/续跑证据、经认证诊断页与共享 deep CLI 报告通过确定性门；Docker 部署/真人验收仍为 `NOT_RUN`；[验证](executions/0077-deployment-provenance-preflight/verification.zh.md) | 计划 `dadd198`；实现 `d6db86a`；收尾为包含本行的提交 |
+| 0078 | 操作者控制台体验 | 本地完成：内嵌原生二维码面板（只读中继查看器，带平台指引）、crawler 日志行桥接进私有滚动日志中心、产物分层总览卡与文档债清理（status 刷新到 0077 边界、索引回填 0059–0068、双语交接速查清单）；0077 的 XHS/抖音冻结未被触碰；新门禁：Python `7145 passed, 42 skipped`、Web `30 files / 833 tests` | 实现与收尾为包含记录的提交 |
+| 0078 | 操作者控制台体验 | 本地完成：内嵌原生二维码面板（只读中继查看器，带平台指引）、crawler 日志行桥接进私有滚动日志中心、产物分层总览卡与文档债清理（status 刷新到 0077 边界、索引回填 0059–0068、双语交接速查清单）；0077 的 XHS/抖音冻结未被触碰；新门禁：Python `7145 passed, 42 skipped`、Web `30 files / 833 tests` | 实现与收尾为包含记录的提交 |
 | 0076 | XHS 创作者笔记耐久交付 | 本地完成：以来源为依据的不透明 cursor 与页尾保留、新 token 详情门禁、精确 Run 内容发布、独立阻塞/部分状态、稳定头部对账、增量检查及本地目录/NFO 交付通过确定性门；部署/真人验收仍为 `NOT_RUN`；[验证](executions/0076-xhs-creator-notes-delivery/verification.zh.md) | 计划 `295fa2c`；实现 `47ca107`；收尾为包含本行的提交 |
 | 0075 | 暂停态订阅策略编辑器 | 本地完成：共享应用服务、严格 REST/CLI、七平台通用 Web 控制与 B 站 scope 隔离、修订/空闲栅栏、精确保留及 B 站/XHS 渲染 QA；真实 PostgreSQL、Docker/Linux 和真人平台仍为 `NOT_RUN`；[验证](executions/0075-paused-subscription-policy-editor/verification.zh.md) | 计划 `32d1a3e`；实现 `aec3eac`；收尾为包含本行的提交 |
 | 0074 | B 站投稿耐久回填 → 增量本地交付 | 本地完成：有界按节奏历史批次、源末尾/头部对账、有时点边界的基线状态、重叠增量及完整 Content 部分发布通过确定性门；部署/真人金丝雀仍为 `NOT_RUN`；[验证](executions/0074-bili-backfill-incremental-delivery/verification.zh.md) | 计划 `3fa5139`；实现 `9c81c4b`；收尾 `7c4743a` |
@@ -45,6 +48,16 @@
 | 0070 | 安全进程输出诊断 | 扫码及通用作者采集 child 诊断已实现有界、脱敏、精确关联并在既有日志中心展示；其他独立 runner 与真人验收仍开放；[验证](executions/0070-process-output-diagnostics/verification.zh.md) | 计划 `523fa88`；实现/收尾为包含本行的提交 |
 | 0069 | 精确订阅交付 | 精确耐久订阅到目录执行、receipt 恢复、重复链栅栏、扫描证据、迁移护栏及 Windows 目录 pin 已完成离线验证；[验证](executions/0069-exact-subscription-delivery/verification.zh.md) | 计划 `4620291`；实现/收尾为包含本行的提交 |
 | 0058 | Cookie校验、私密保存与复用 | 四平台验证器及B站Cookie资料已实现，三平台验证器/真人门仍开放；[验证](executions/0058-cookie-login/verification.zh.md) | 计划 `f94d557`；实现 `3dc8905` |
+| 0059 | B 站有界可续传投稿采集 | 本地完成：真实调度管线上的 cursor/覆盖交接、有界详情抓取与未消费条目保留；不声明已证明线上金丝雀 schema_invalid 根因 | 记录见[执行 0059](executions/0059-bili-bounded-capture/) |
+| 0060 | 微博创作者昵称/头像查询 | 本地完成：固定登录配置 API + 单创作者 API 查询与头像白名单；绝不调用全历史路径 | 记录见[执行 0060](executions/0060-weibo-creator-profile/) |
+| 0061 | B 站动态权限与归属完整性 | 本地完成（阶段 A）：内容归属冲突拒绝与动态权限地基，先于任何动态生产者 | 记录见[执行 0061](executions/0061-bili-dynamic-authority/) |
+| 0062 | B 站动态捕获与范围选项 | 本地完成：基于公开协议证据的动态详情/完整 OPUS；投稿/动态/两者范围与暂停切换语义 | 记录见[执行 0062](executions/0062-bili-dynamic-workflow/) |
+| 0063 | 贴吧接入与快手/知乎创作者昵称 | 本地完成：贴吧 self 端点、KS visionProfile 与知乎 urlToken 查询，缺头像门如实保留 | 记录见[执行 0063](executions/0063-platform-access-and-profiles/) |
+| 0064 | 抖音/贴吧创作者资料与贴吧头像 | 本地完成（离线验证）：DY sec_user_id 与贴吧 portrait 查询（锁定 JS 签名）；贴吧固定 CDN 头像带回退 | 记录见[执行 0064](executions/0064-douyin-tieba-profiles/) |
+| 0065 | 抖音/快手 Cookie 自校验与知乎头像 | 本地完成：七平台粘贴 Cookie 校验器（抖音创作者中心 GET、快手无目标 GraphQL）与单一形状知乎头像 | 记录见[执行 0065](executions/0065-cookie-auth-and-avatar/) |
+| 0066 | 登录失败分类与工作流 | 本地完成：QR 阶段证据、B 站有界扫描续跑；抖音/快手/贴吧/微博 QR 超时按只读观察记录 | 记录见[执行 0066](executions/0066-login-failure-and-workflow/) |
+| 0067 | 共享可编辑输出目录 | 本地完成：跨 API/CLI/Web 的暂存/预览/应用输出目录设置 | 记录见[执行 0067](executions/0067-output-directories/) |
+| 0068 | 持久日志中心与登录证据 | 本地完成：私有滚动 JSONL 日志分段、QR 阶段诊断通道与有界支持包 | 记录见[执行 0068](executions/0068-log-center/) |
 | 0057 | 单作者资料 | B站saved-session资料、本地备注、凭单绑定订阅；[验证](executions/0057-creator-profile-lookup/verification.zh.md) | `141f7c4`、`68c4004` |
 | 0056 | 订阅可用性与本地交付 | 删除/暂停恢复、本地输出说明和精确 Job 报告已实现；自动作者资料仍必做；[进度](executions/0056-subscription-usability/progress.zh.md)、[验证](executions/0056-subscription-usability/verification.zh.md) | 计划 `fe54aba`；实现为包含本行的提交 |
 | 0001 | 初始化并锁定上游 | 已完成 | `59da120` |
@@ -183,6 +196,8 @@
 执行 0052 以 lease-fenced 持久状态机及事务提交有序事件替换账户登录、资产下载、scheduler run、pipeline run 与 Emby export 的进程内 API Operation 历史。有界 REST/SSE、五类领域交接前的跨 coordinator 协作取消、非阻塞单飞启动/读取协调、Jobs 路由任务中心及仅聚合且经二次脱敏扫描的 JSON 支持响应均已实现。新 SSE ready 帧携带 `initial_cursor`，重连会在提交事件补发前保留调用方 cursor，并发取消 observer 保持 `requested → observed → cancelled` 且不破坏有界 shutdown。冻结完整套件为 `2315 passed, 3 skipped, 1 warning in 555.05s`；全部静态、打包、Web、上游与 tracked-output 门通过。原始幂等键、requester 来源、lease、revision 与指纹继续保持私有；不声明通用文件日志、独立 Logs 页面、统一 supervisor 接入、后端 retry 或订阅 pause/resume/delete 审计。全部 Linux/真人/媒体服务器资格行继续在 Execution 0047 下保持 `NOT_RUN`。详见 [`executions/0052-persistent-operations-observability/`](executions/0052-persistent-operations-observability/)。
 
 执行 0053 已基于推送的 `be26cc7` 基线与计划 `66e18ff` 交付。它保留既有内容/资产数组 API，同时增加有界服务端筛选与安全精确详情，再通过同一个已打开描述符只服务经过验证的内容寻址归档字节。单 Range 只用于完整表示验证后的 GET；HEAD 忽略 Range，且 `If-Range` 只有精确匹配当前强 ETag 才成立。字节缺失或无效时，只能复用既有持久 `asset-download` Operation 恢复。Contents、Assets 与 Library 现提供安全目录下钻，且不暴露 raw、locator、签名源 URL 或宿主路径；canonical 链接被限制在各平台官方域名边界。冻结完整套件通过 2456 项、跳过 3 项 Windows 不适用测试，本地浏览器 smoke 覆盖同路由筛选同步与弹窗焦点约束/恢复。媒体服务器树/控制仍归 0054，鉴权/保留归 0055，全部真人资格行继续保持 `NOT_RUN`。详见 [`executions/0053-content-asset-explorer/`](executions/0053-content-asset-explorer/)。
+
+执行 0078 弥合驱动原生登录流程时暴露的操作者体验缺口。账户页内嵌只读二维码面板，轮询既有鉴权中继、区分等待/过期/选择器失败状态并把抖音指向 Cookie 粘贴路径；crawler 运行行被有界、查形状、已脱敏地镜像进私有日志中心；设置页新卡用实际配置根解释三层产物；日志重新说真话——状态矩阵与发布阻塞刷新到 0077 边界、回填缺失的 0059–0068 索引行、双语交接速查清单浓缩了授权的重建→金丝雀链。未改动任何 XHS/抖音投递逻辑。详见 [`executions/0078-operator-console-experience/`](executions/0078-operator-console-experience/) 与 [`handoff-checklist.zh.md`](handoff-checklist.zh.md)。
 
 ## 文档规则
 
