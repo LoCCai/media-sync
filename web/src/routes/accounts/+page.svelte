@@ -12,6 +12,7 @@
 
   import { api, apiMessage } from '$lib/api/client';
   import EmptyState from '$lib/components/EmptyState.svelte';
+  import NativeQrPanel from '$lib/components/NativeQrPanel.svelte';
   import PageHeader from '$lib/components/PageHeader.svelte';
   import Panel from '$lib/components/Panel.svelte';
   import PlatformMark from '$lib/components/PlatformMark.svelte';
@@ -137,6 +138,9 @@
         <div>
           <strong>在原生界面完成登录</strong>
           <p>选择平台，通过二维码或 Cookie 登录；确认登录成功后停止爬虫任务。</p>
+        </div>
+        <div class="step-qr">
+          <NativeQrPanel />
         </div>
       </li>
       <li class="step-card">
@@ -311,6 +315,12 @@
 
   .step-card .button {
     flex: 0 0 auto;
+  }
+
+  .step-qr {
+    flex: 0 0 auto;
+    width: 280px;
+    max-width: 100%;
   }
 
   .adoption-success {

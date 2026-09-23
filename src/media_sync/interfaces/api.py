@@ -1785,6 +1785,7 @@ def create_api_app(
             "archive_dir": str(resolved.archive_dir),
             "export_dir": str(resolved.export_dir),
             "job_dir": str(resolved.job_dir),
+            "mediacrawler_runtime_dir": str(resolved.resolved_mediacrawler_runtime_dir),
             "api_bind": f"{resolved.api_host}:{resolved.api_port}",
             "bili_scan_continuation_delay_seconds": resolved.bili_scan_continuation_delay_seconds,
             "xhs_scan_continuation_delay_seconds": resolved.xhs_scan_continuation_delay_seconds,

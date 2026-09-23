@@ -12,6 +12,7 @@
   import { toast } from '$lib/stores/toast';
   import type { Qualifications, Settings } from '$lib/types/api';
   import { PLATFORM_META, shortId } from '$lib/utils/format';
+  import { artifactLayers } from '$lib/utils/artifact-layers';
 
   let settings: Settings | null = null;
   let qualifications: Qualifications | null = null;
@@ -90,6 +91,18 @@
   {/if}
 
   <OutputDirectorySettings />
+
+  <Panel title="产物分层速览" description="三层产物的区别与实际位置；路径来自当前运行配置。">
+    <ul class="artifact-layers">
+      {#each artifactLayers(settings) as layer}
+        <li class="artifact-layer" data-key={layer.key}>
+          <strong>{layer.title}</strong>
+          <span class="mono">{layer.path}</span>
+          <span class="artifact-description">{layer.description}</span>
+        </li>
+      {/each}
+    </ul>
+  </Panel>
 
   <Panel title="持久日志" description="各组件使用同一私有日志目录；无需连接媒体服务器。">
     {#if settings?.logging}
@@ -486,5 +499,38 @@
     .capability-grid {
       grid-template-columns: 1fr;
     }
+  }
+
+  .artifact-layers {
+    display: grid;
+    gap: 10px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .artifact-layer {
+    display: grid;
+    gap: 4px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 10px 12px;
+    background: var(--surface-subtle);
+  }
+
+  .artifact-layer strong {
+    font-size: 12px;
+    color: var(--text);
+  }
+
+  .artifact-layer .mono {
+    font-size: 11px;
+    color: var(--text-secondary);
+    word-break: break-all;
+  }
+
+  .artifact-description {
+    font-size: 11px;
+    color: var(--text-secondary);
   }
 </style>

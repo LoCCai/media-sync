@@ -25,11 +25,13 @@ from fastapi.responses import JSONResponse
 from starlette.middleware.cors import CORSMiddleware
 
 from media_sync.config import Settings
+from media_sync.infrastructure.observability.output_capture import log_store_from_environment
 from media_sync.security import redact_text
 
 from .browser_environment import browser_child_environment
 from .checkout import CheckoutValidationError, verify_mediacrawler_checkout, verify_mediacrawler_python
 from .runner import _close_process_tree, _WindowsJob
+from .webui_log_bridge import crawler_log_bridge
 
 _MAX_COOKIE_BYTES = 64 * 1024
 _MAX_LOG_MESSAGE_CHARACTERS = 8 * 1024
@@ -174,6 +176,7 @@ def _configure_manager(
     manager._media_sync_qr_path = qr_path
     manager._media_sync_active_run = None
     manager._log_queue = asyncio.Queue(maxsize=_MAX_LOG_QUEUE_ITEMS)
+    manager._media_sync_log_publish = crawler_log_bridge(log_store_from_environment(os.environ))
 
     original_create_log_entry = manager._create_log_entry
 
@@ -272,6 +275,10 @@ def _configure_manager(
             known_secrets=known_secrets,
             max_length=_MAX_LOG_MESSAGE_CHARACTERS,
         )
+        publish = getattr(self, "_media_sync_log_publish", None)
+        if publish is not None:
+            with contextlib.suppress(Exception):
+                publish(safe_message, level)
         entry = self._create_log_entry(safe_message, level)
         await self._push_log(entry)
 

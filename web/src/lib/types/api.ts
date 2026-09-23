@@ -122,6 +122,7 @@ export interface Settings {
   archive_dir: string;
   export_dir: string;
   job_dir: string;
+  mediacrawler_runtime_dir?: string;
   api_bind: string;
   bili_scan_continuation_delay_seconds?: number;
   xhs_scan_continuation_delay_seconds?: number;
