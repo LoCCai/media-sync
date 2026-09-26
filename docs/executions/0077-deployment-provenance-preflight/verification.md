@@ -29,5 +29,6 @@ Implementation revision: `d6db86a`. Planning revision: `dadd198`.
 ## Qualification boundary
 
 - The post-push [online observation](online-observation-2026-09-09.md) found a healthy pinned checkout/runtime but an authenticated UI without any 0077 source/migration/continuation field. It does not identify the running application commit or current database migration, so no live state is upgraded.
-- A valid source SHA identifies build input; it does not prove a clean checkout, correct persistent mounts, a current database, a qualified upstream runtime or successful platform traffic. Those remain separate checks.
-- `live_qualification` remains `NOT_RUN`. Follow the [deployment handoff](deployment-handoff.md) with the supervisor stopped before any XHS canary.
+- The 2026-09-12 [deployment record](deployment-2026-09-12.md) supersedes that limitation on the server: the rebuilt deployment proves SHA `3c31dce`, current `0015_xhs_creator_notes`, equal continuations and a passing pinned checkout/runtime under both service definitions. Identity/build/deep-comparison stages are complete; rollback backup and image are retained.
+- A valid source SHA identifies build input; it does not prove successful platform traffic. Real XHS login/CDN/delivery evidence and one resident-supervisor cycle remain unclaimed.
+- `live_qualification` remains `NOT_RUN`. The XHS canary is unlocked by the deployment record and remains operator-gated per the [deployment handoff](deployment-handoff.md).

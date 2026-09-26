@@ -14,7 +14,7 @@
 | 账户与作者 | MediaCrawler 原生 QR/Cookie 登录可显式认领给 Account，形成已验证、隔离的 saved-session profile；作者身份补全与所有真人平台结果仍待验收 |
 | 订阅与任务 | B 站和 XHS 现已有各自来源语义的耐久有界回填/对账/增量交付路径。全部 MediaCrawler 平台共用带修订栅栏的暂停态编辑；只有 B 站有采集范围，编辑不会启动或恢复任务 |
 | 验证 | 当前精确测试/构建/打包、已修正问题与未跑环境见[0077 验证](docs/executions/0077-deployment-provenance-preflight/verification.zh.md)，不继承旧测试数 |
-| 待实现/验收 | 拉取已发布 SHA，以该精确来源身份构建并比较 API/supervisor deep readiness，再用一个获授权 XHS 作者验证真人 CDN、宿主最终目录/NFO、重启和 supervisor。此后才从钉定抖音源码推导下一个耐久平台契约；历史 B 站采集失败仍未解决 |
+| 待实现/验收 | 部署身份已完成端到端验证（2026-09-12 记录：精确 SHA `3c31dce` 重建、当前 migration `0015`、API/supervisor 深度报告一致）。剩余：用一个获授权 XHS 作者验证真人 CDN、宿主最终目录/NFO、重启和 supervisor。此后才从钉定抖音源码推导下一个耐久平台契约；历史 B 站采集失败仍未解决 |
 
 逐执行细节、证据与准确命令都在 [`docs/executions/`](docs/README.zh.md)——本 README 有意不堆叠执行叙事。
 

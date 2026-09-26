@@ -10,7 +10,9 @@
 
 最终本地门禁通过：Python 完整套件 `7140 passed, 42 skipped, 1 warning`；Web 完整套件 `28 files / 825 tests`；Svelte 检查/构建、Prettier、Ruff lint/format、160 个源码文件 strict mypy、compileall、62 包锁文件、两个钉定上游、制品构建及文档检查均通过。准确修正与命令见[0077 验证](executions/0077-deployment-provenance-preflight/verification.zh.md)。
 
-当前 Windows 工作站没有 Docker，未构建/检查 Linux 镜像，也未修改服务器。真实 Docker/OCI 证据、migration `0015`、API/supervisor 比较、XHS 登录/采集/CDN/目录/重启金丝雀、驻留 supervisor、PostgreSQL 与可选媒体服务器读取仍为 `NOT_RUN`。后续遵循[部署交接](executions/0077-deployment-provenance-preflight/deployment-handoff.zh.md)；XHS 结果形成记录前不得开始抖音交付。
+0077 收尾的 Windows 工作站没有 Docker，因此 2026-09-12 由 Linux 服务器执行[部署交接](executions/0077-deployment-provenance-preflight/deployment-handoff.zh.md)：完整备份后 fast-forward 到 `3c31dce`，向私有 Compose 合并唯一的源码 revision 构建参数，无缓存重建并证明 OCI 标签与 `/opt/BUILD-MANIFEST.txt` 均等于 `3c31dce`，重建出健康的 API 容器且 migration 为当前的 `0015_xhs_creator_notes`，并在 API 与 supervisor 双服务定义下取得完全一致的 `doctor --deep` 报告。证据与明确的 PASS/WARN/NOT_RUN 行见[部署记录](executions/0077-deployment-provenance-preflight/deployment-2026-09-12.zh.md)；0077 前旧镜像与备份保留用于回滚。
+
+有界 XHS 金丝雀（授权原生登录、Account 认领、一次带 CDN 字节的精确创作者投递、宿主目录/NFO、重启及一次驻留 supervisor 周期）、真实 PostgreSQL 与可选媒体服务器读取仍为 `NOT_RUN`。金丝雀现已解锁并受操作员门槛约束；XHS 结果形成记录前不得开始抖音交付。
 
 ## 上阶段：XHS 创作者笔记耐久交付（0076）
 

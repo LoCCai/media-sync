@@ -29,5 +29,6 @@
 ## 资格边界
 
 - 推送后的[线上观察](online-observation-2026-09-09.zh.md)发现钉定 checkout/runtime 健康，但已认证 UI 没有任何 0077 来源/migration/续跑字段。它不能识别运行应用提交或当前数据库 migration，因此不提升任何真人状态。
-- 有效源码 SHA 只识别构建输入；它不证明 checkout 干净、持久挂载正确、数据库当前、上游 runtime 合格或平台流量成功。这些仍是独立检查。
-- `live_qualification` 继续为 `NOT_RUN`。任何 XHS 金丝雀前，先在 supervisor 停止状态按[部署交接](deployment-handoff.zh.md)执行。
+- 2026-09-12 的[部署记录](deployment-2026-09-12.zh.md)在服务器上解除该限制：重建后的部署证明 SHA `3c31dce`、当前 `0015_xhs_creator_notes`、续跑值一致，且双服务定义下钉定 checkout/runtime 通过。身份/构建/深度对比阶段完成；回滚备份与镜像已保留。
+- 有效源码 SHA 只识别构建输入；它不证明平台流量成功。真人 XHS 登录/CDN/投递证据与一次驻留 supervisor 周期仍未主张。
+- `live_qualification` 继续为 `NOT_RUN`。XHS 金丝雀已由部署记录解锁，仍按[部署交接](deployment-handoff.zh.md)受操作员门槛约束。
