@@ -8,7 +8,7 @@
 
 修复分三类：跨平台门禁缺陷（strict mypy 此前只能在 Windows 通过，39 个错误）；测试可移植性缺陷（venv 启动器符号链接在 POSIX 上被夹具解引用导致 80 个既有失败、一个从未在 Windows 运行过的 POSIX 专属测试泄漏 subprocess mock、一处负载敏感断言过紧）；一个真实生产缺陷——Emby 导出失败记录在并发 worker 提交使 WAL 读快照失效时把 `stale_publish` 错误分类为 `export_failure_finalize_failed`，现以 BEGIN IMMEDIATE 加有界重试修复（镜像 operation coordinator 既有模式）。另清理 0078 收尾文档债（重复索引行、过期的"进行中"状态）。
 
-0077 冻结未被触碰：无任何 XHS/抖音投递逻辑变化；有界 XHS 金丝雀、真实 PostgreSQL 与可选媒体服务器读取仍为 `NOT_RUN` 且受操作者门槛约束。重建镜像与本机升级按 0077 交接在同一会话执行。
+0077 冻结未被触碰：无任何 XHS/抖音投递逻辑变化；有界 XHS 金丝雀、真实 PostgreSQL 与可选媒体服务器读取仍为 `NOT_RUN` 且受操作者门槛约束。同会话已完成本机升级：备份后无缓存重建并把容器升级到 `5622f4db…26fa`，health/doctor --deep/UI 门控验证通过，细节见 0079 收尾部署记录。
 
 ## 上阶段：部署来源身份与 XHS 金丝雀预检（0077）
 

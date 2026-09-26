@@ -2,7 +2,7 @@
 
 # Execution 0079 progress
 
-- Status: Complete — all local gates pass on the Linux deployment host; deployment upgrade follows the 0077 handoff
+- Status: Complete — all local gates pass on the Linux deployment host; the image was rebuilt and upgraded in place to `5622f4d` per the 0077 handoff and verified healthy
 - Date: 2026-09-26
 - Environment: Linux deployment server (the host running the production container), uv + Python 3.13, Node 22 with pnpm 11.19.0, both `.upstream` checkouts present
 
@@ -24,6 +24,10 @@
 - The 0077 freeze is untouched: no XHS/Douyin delivery logic changed; the only production edits are platform guard expressions, paired ignores and the failure-recording transaction pattern.
 - The paired-ignore form is used only where a runtime platform guard would break tests that deliberately exercise Windows helpers on POSIX through mocked native contracts.
 
-## Remaining
+## Closeout deployment (same session)
 
-- Deployment of the rebuilt image, health/doctor verification and the upgrade evidence record follow the 0077 handoff on this host in the same session.
+- Pre-upgrade backup under `/root/media-sync-backups/2026-09-26-pre-upgrade/`: online SQLite backup (`sqlite3.Connection.backup`, 639 KB), full `/data` volume tar (118 MB) and copies of the private Compose/.env; the supervisor profile stayed stopped throughout.
+- `docker-compose build --no-cache media-sync` with `MEDIA_SYNC_SOURCE_REVISION=5622f4db4539f97194fec1befb2cf504589826fa` succeeded, including the in-build Web gates (`pnpm check && pnpm test && pnpm build`); the image OCI `org.opencontainers.image.revision` label equals that SHA.
+- After `up -d --no-deps --force-recreate` the container is healthy; `GET /api/v1/health` (with the allowed Host) returns `{"status":"ok"}`; unauthenticated `/crawler/` returns 401; a health request with a wrong Origin returns 403.
+- In-container `media-sync doctor --deep --accept-mediacrawler-license --json`: `ok:true / status:"ready"`, `build_manifest.source_revision` equals `5622f4db…26fa`, database migration `0015_xhs_creator_notes` is current, all 10 pinned MediaCrawler checks pass, `live_qualification: NOT_RUN` (expected).
+- Rollback path: the pre-0077 image is retained and the pre-upgrade backup can restore the whole volume; live rows remain operator-gated per the 0077 handoff.

@@ -2,7 +2,7 @@
 
 # 执行 0079 推进结果
 
-- 状态：已完成——全部本地门禁在 Linux 部署主机通过；部署升级按 0077 交接执行
+- 状态：已完成——全部本地门禁在 Linux 部署主机通过；镜像已按 0077 交接在本机重建升级到 `5622f4d` 并验证健康
 - 日期：2026-09-26
 - 环境：Linux 部署服务器（即运行生产容器的主机），uv + Python 3.13、Node 22 与 pnpm 11.19.0，两个 `.upstream` checkout 就绪
 
@@ -24,6 +24,10 @@
 - 0077 冻结未被触碰：未改任何 XHS/抖音投递逻辑；生产代码仅有平台守卫表达式、成对 ignore 与失败记录事务模式三处改动。
 - 成对 ignore 只用于运行时平台守卫会破坏"有意通过 mock 原生契约在 POSIX 上演练 Windows 辅助函数"测试的地方。
 
-## 待完成
+## 收尾部署（同会话执行）
 
-- 重建镜像的部署、健康/doctor 验证与升级证据记录在同一会话内按 0077 交接在本主机执行。
+- 升级前备份到 `/root/media-sync-backups/2026-09-26-pre-upgrade/`：SQLite 在线备份（`sqlite3.Connection.backup`，639 KB）+ 整卷 `/data` tar 归档（118 MB）+ 私有 Compose/.env 副本；supervisor profile 全程保持停止。
+- `MEDIA_SYNC_SOURCE_REVISION=5622f4db4539f97194fec1befb2cf504589826fa` 下 `docker-compose build --no-cache media-sync` 成功，构建内 Web 门禁（`pnpm check && pnpm test && pnpm build`）通过；镜像 OCI `org.opencontainers.image.revision` 标签等于该 SHA。
+- `up -d --no-deps --force-recreate` 后容器 healthy；`GET /api/v1/health`（带允许 Host）返回 `{"status":"ok"}`；无凭据访问 `/crawler/` 返回 401；错误 Origin 的 health 请求返回 403。
+- 容器内 `media-sync doctor --deep --accept-mediacrawler-license --json`：`ok:true / status:"ready"`，`build_manifest.source_revision` 等于 `5622f4db…26fa`，数据库 migration `0015_xhs_creator_notes` 为 current，10 项钉定 MediaCrawler 检查全部 pass，`live_qualification: NOT_RUN`（预期）。
+- 回滚路径：0077 前旧镜像仍保留，升级前备份可整卷恢复；真人行继续按 0077 交接受操作者门槛约束。

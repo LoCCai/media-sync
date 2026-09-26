@@ -8,7 +8,7 @@
 
 The fixes fall into three classes: cross-platform gate defects (strict mypy previously passed only on Windows, with 39 errors); test-portability defects (fixtures dereferencing POSIX venv launcher symlinks caused the 80 pre-existing failures, one POSIX-only test never run on Windows leaked its subprocess mock into real git verification, and one load-sensitive bound was too tight); and one real production defect — Emby export failure recording misclassified `stale_publish` as `export_failure_finalize_failed` when a concurrent worker's commit invalidated a WAL read snapshot, now fixed with BEGIN IMMEDIATE plus a bounded retry mirroring the operation coordinator's existing pattern. The 0078 closeout documentation debt (duplicated index rows, stale "in progress" status) is also cleared.
 
-The 0077 freeze is untouched: no XHS or Douyin delivery logic changed; the bounded XHS canary, real PostgreSQL and optional media-server reading remain `NOT_RUN` and operator-gated. The image rebuild and host upgrade follow the 0077 handoff in the same session.
+The 0077 freeze is untouched: no XHS or Douyin delivery logic changed; the bounded XHS canary, real PostgreSQL and optional media-server reading remain `NOT_RUN` and operator-gated. The host upgrade completed in the same session: after a backup, a no-cache rebuild upgraded the running container to `5622f4db…26fa` with health/doctor --deep/UI gate verification passing; see the 0079 closeout deployment record.
 
 ## Previous: deployment provenance and XHS canary preflight (0077)
 
