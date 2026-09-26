@@ -52,7 +52,7 @@ from media_sync.integrations.mediacrawler.bridge import (
     RunnerManifest,
     SavedSessionUnavailableError,
 )
-from media_sync.integrations.mediacrawler.checkout import VerifiedPython
+from media_sync.integrations.mediacrawler.checkout import VerifiedPython, normalize_python_executable
 from media_sync.integrations.mediacrawler.login import (
     MediaCrawlerLoginRequest,
     MediaCrawlerLoginResult,
@@ -400,7 +400,9 @@ def _protocol_handler(
         secret_resolver=_Resolver(),
         enabled=True,
         license_acknowledged=True,
-        bridge=MediaCrawlerBridge(lambda executable: VerifiedPython(executable.expanduser().resolve())),
+        bridge=MediaCrawlerBridge(
+            lambda executable: VerifiedPython(normalize_python_executable(executable.expanduser()))
+        ),
         runner=runner,
         clock=clock,
         normalizer=normalizer,  # type: ignore[arg-type]

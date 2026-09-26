@@ -195,7 +195,7 @@ def _open_windows_archive_file(path: Path, *, root: Path) -> BinaryIO:
     # native OPEN_REPARSE_POINT flag then prevents a final-component swap from
     # turning this check into a followed link.
     assert_existing_regular_file(path, root=root)
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined, unused-ignore]
     kernel32.CreateFileW.argtypes = (
         wintypes.LPCWSTR,
         wintypes.DWORD,
@@ -220,12 +220,12 @@ def _open_windows_archive_file(path: Path, *, root: Path) -> BinaryIO:
     )
     invalid_handle = ctypes.c_void_p(-1).value
     if native is None or int(native) == invalid_handle:
-        error_number = ctypes.get_last_error()
+        error_number = ctypes.get_last_error()  # type: ignore[attr-defined, unused-ignore]
         raise PathSecurityError from OSError(error_number, "archive file open failed")
 
     native_value = int(native)
     try:
-        descriptor = msvcrt.open_osfhandle(
+        descriptor = msvcrt.open_osfhandle(  # type: ignore[attr-defined, unused-ignore]
             native_value,
             os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOINHERIT", 0),
         )

@@ -234,7 +234,9 @@ def _verify_bound_directory(directory: _BoundDirectory, *, error_code: str) -> N
 def _open_windows_directory_handle(path: Path) -> int:
     """Pin a Windows directory without granting a concurrent delete/rename share."""
 
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    # The mocked native contract deliberately runs on POSIX too, so the helper
+    # body cannot early-return by platform; the paired ignore covers per-view attrs.
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined, unused-ignore]
     create_file = kernel32.CreateFileW
     create_file.argtypes = (
         ctypes.c_wchar_p,
@@ -265,12 +267,12 @@ def _open_windows_directory_handle(path: Path) -> int:
     )
     invalid_handle = ctypes.c_void_p(-1).value
     if raw_handle is None or raw_handle == invalid_handle:
-        raise OSError(ctypes.get_last_error(), "could not bind existing directory")
+        raise OSError(ctypes.get_last_error(), "could not bind existing directory")  # type: ignore[attr-defined, unused-ignore]
     return int(raw_handle)
 
 
 def _close_windows_handle(handle: int) -> None:
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined, unused-ignore]
     close_handle = kernel32.CloseHandle
     close_handle.argtypes = (ctypes.c_void_p,)
     close_handle.restype = ctypes.c_int
@@ -2159,7 +2161,7 @@ def _open_existing_lock_file(path: Path, *, parent: _BoundDirectory) -> BinaryIO
 
 
 def _try_os_lock(handle: BinaryIO) -> bool:
-    if os.name == "nt":
+    if sys.platform == "win32":
         import msvcrt
 
         handle.seek(0)
@@ -2171,14 +2173,14 @@ def _try_os_lock(handle: BinaryIO) -> bool:
     import fcntl
 
     try:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)  # type: ignore[attr-defined]
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
         return False
     return True
 
 
 def _unlock_os(handle: BinaryIO) -> None:
-    if os.name == "nt":
+    if sys.platform == "win32":
         import msvcrt
 
         handle.seek(0)
@@ -2186,7 +2188,7 @@ def _unlock_os(handle: BinaryIO) -> None:
         return
     import fcntl
 
-    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)  # type: ignore[attr-defined]
+    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
 @contextlib.contextmanager

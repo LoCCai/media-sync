@@ -43,11 +43,14 @@ from media_sync.infrastructure.db import (
     RepositoryError,
     utc_now,
 )
+from media_sync.infrastructure.db.database import SQLITE_IMMEDIATE_OPTION
 
 from .operations import DurableSubjectHook, DurableSubjectRef
 
 EMBY_EXPORTER_NAME = "emby"
 EMBY_EXPORT_JOB_TYPE = "export.emby"
+
+_RECORD_WRITE_ATTEMPTS = 3
 
 _RETRYABLE_EXPORT_CODES = frozenset(
     {
@@ -1361,34 +1364,54 @@ class EmbyExportService:
             )
 
     def _record_failure(self, prepared: _PreparedAttempt, code: str) -> None:
+        # A deferred SQLite session can read a snapshot that a concurrent
+        # worker's commit invalidates before the write upgrade; WAL calls that
+        # busy-snapshot conflict immediately, ignoring the busy timeout. BEGIN
+        # IMMEDIATE plus a bounded retry removes that window, mirroring the
+        # durable-write pattern used by the operation coordinator.
+        for attempt in range(_RECORD_WRITE_ATTEMPTS):
+            try:
+                with self._database.session() as session:
+                    if session.get_bind().dialect.name == "sqlite" and not session.in_transaction():
+                        session.connection(
+                            execution_options={SQLITE_IMMEDIATE_OPTION: True},  # type: ignore[misc]
+                        )
+                    self._record_failure_in_session(session, prepared, code)
+                return
+            except LeaseLostError:
+                raise
+            except Exception:
+                if attempt + 1 >= _RECORD_WRITE_ATTEMPTS:
+                    raise
+
+    def _record_failure_in_session(self, session: Session, prepared: _PreparedAttempt, code: str) -> None:
         now = self._clock()
-        with self._database.session() as session:
-            jobs = JobRepository(session)
-            job = jobs.get(prepared.job_id)
-            if job is None:
-                raise LeaseLostError(f"export job is no longer owned: {prepared.job_id}")
-            retryable = export_error_is_retryable(code) and job.attempts < job.max_attempts
-            records = ExportRecordRepository(session)
-            for item in prepared.records:
-                if item.status == "succeeded":
-                    continue
-                records.fail(
-                    item.record_id,
-                    expected_source_fingerprint=item.source_fingerprint,
-                    expected_output_path=prepared.snapshot.output_path,
-                    retryable=retryable,
-                    error_code=code,
-                    at=now,
-                )
-            jobs.fail(
-                prepared.job_id,
-                worker_id=prepared.worker_id,
-                lease_token=prepared.lease_token,
+        jobs = JobRepository(session)
+        job = jobs.get(prepared.job_id)
+        if job is None:
+            raise LeaseLostError(f"export job is no longer owned: {prepared.job_id}")
+        retryable = export_error_is_retryable(code) and job.attempts < job.max_attempts
+        records = ExportRecordRepository(session)
+        for item in prepared.records:
+            if item.status == "succeeded":
+                continue
+            records.fail(
+                item.record_id,
+                expected_source_fingerprint=item.source_fingerprint,
+                expected_output_path=prepared.snapshot.output_path,
                 retryable=retryable,
                 error_code=code,
-                error_message=f"Classified Emby export failure: {code}",
-                now=now,
+                at=now,
             )
+        jobs.fail(
+            prepared.job_id,
+            worker_id=prepared.worker_id,
+            lease_token=prepared.lease_token,
+            retryable=retryable,
+            error_code=code,
+            error_message=f"Classified Emby export failure: {code}",
+            now=now,
+        )
 
     def _raise_attempt_failure(self, prepared: _PreparedAttempt, code: str) -> NoReturn:
         try:

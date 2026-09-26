@@ -40,6 +40,7 @@ from media_sync.integrations.mediacrawler.checkout import (
     LicenseAcknowledgementRequired,
     VerifiedPython,
     _qualified_license_sha256,
+    normalize_python_executable,
     verify_mediacrawler_browser,
     verify_mediacrawler_checkout,
     verify_mediacrawler_python,
@@ -620,7 +621,9 @@ def fake_project(tmp_path_factory: pytest.TempPathFactory) -> FakeProject:
 
 
 def _bridge() -> MediaCrawlerBridge:
-    return MediaCrawlerBridge(lambda path: VerifiedPython(path.expanduser().resolve()))
+    # Mirror production verification: a venv symlink must stay un-resolved so
+    # the spawned child keeps the same launch path as the request manifest.
+    return MediaCrawlerBridge(lambda path: VerifiedPython(normalize_python_executable(path.expanduser())))
 
 
 def _request(
@@ -747,8 +750,13 @@ def test_runtime_preserves_posix_venv_launcher_symlink(
     launcher.symlink_to(base_python)
     launch_path = launcher.absolute()
     commands: list[tuple[str, ...]] = []
+    real_run = subprocess.run
 
-    def completed(command: tuple[str, ...], **_kwargs: object) -> SimpleNamespace:
+    def completed(command: tuple[str, ...], **kwargs: object) -> SimpleNamespace:
+        # Only the launcher probes are faked; prepare() must still run the real
+        # git verification that shares this subprocess module.
+        if not command or command[0] != str(launch_path):
+            return real_run(command, **kwargs)
         commands.append(command)
         return SimpleNamespace(returncode=0, stdout="151.0.7922.34\n")
 
@@ -773,7 +781,7 @@ def test_seven_platform_dry_run_is_shell_free_and_checkout_relative(
 ) -> None:
     spec = _bridge().prepare(_request(fake_project, tmp_path / "runs", platform=platform))
     assert spec.cwd == fake_project.checkout
-    assert spec.command[:4] == (str(Path(sys.executable).resolve()), "-I", "-u", "-B")
+    assert spec.command[:4] == (str(normalize_python_executable(Path(sys.executable))), "-I", "-u", "-B")
     assert "--cookies" not in spec.command
     assert "--creator_id" not in spec.command
     assert spec.command[-2] == "--manifest"

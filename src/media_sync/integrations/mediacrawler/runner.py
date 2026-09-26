@@ -261,7 +261,7 @@ class _WindowsJob:
 
     @classmethod
     def attach(cls, process: subprocess.Popen[bytes]) -> _WindowsJob | None:
-        if os.name != "nt":
+        if sys.platform != "win32":
             return None
         try:
             import ctypes
@@ -341,7 +341,7 @@ class _WindowsJob:
     def attach_current_process(cls) -> _WindowsJob | None:
         """Create a child-owned nested Job inherited by future descendants."""
 
-        if os.name != "nt":
+        if sys.platform != "win32":
             return None
         try:
             import ctypes
@@ -360,7 +360,7 @@ class _WindowsJob:
         """Terminate all active Job members without first closing the handle."""
 
         handle = self._handle
-        if not handle or os.name != "nt":
+        if not handle or sys.platform != "win32":
             return False
         try:
             import ctypes
@@ -376,7 +376,7 @@ class _WindowsJob:
     def close(self) -> None:
         handle = self._handle
         self._handle = 0
-        if not handle:
+        if not handle or sys.platform != "win32":
             return
         with contextlib.suppress(AttributeError, OSError):
             import ctypes
@@ -396,7 +396,7 @@ class _WindowsJob:
         """Terminate every Job member and confirm that the Job became empty."""
 
         handle = self._handle
-        if not handle:
+        if not handle or sys.platform != "win32":
             return process.poll() is not None
         stopped = False
         deadline = time.monotonic() + timeout
@@ -538,7 +538,7 @@ def _spawn_supervised_child(
 ) -> subprocess.Popen[bytes]:
     """Spawn with the account-lock handle inherited until this child exits."""
 
-    if os.name != "nt":
+    if sys.platform != "win32":
         return subprocess.Popen(
             spec.command,
             cwd=spec.cwd,
@@ -1673,7 +1673,7 @@ def _read_control_chunk(maximum: int) -> bytes | None:
 
     if type(maximum) is not int or maximum < 1:
         raise ValueError("control read maximum must be a positive integer")
-    if os.name != "nt":
+    if sys.platform != "win32":
         try:
             value = os.read(0, maximum)
         except OSError:

@@ -2,7 +2,15 @@
 
 # Unified project status (single source of truth)
 
-## Latest: deployment provenance and XHS canary preflight (0077)
+## Latest: Linux deployment-host gate parity (0079)
+
+[Execution 0079](executions/0079-linux-host-gate-parity/progress.md), delivered 2026-09-26 on the Linux server that runs the production container: after syncing `main` to `764f46b` and pushing the 2026-09-12 deployment record (`ec67097`), the complete local gate ran and passed on that host for the first time — the Python suite moved from a `81 failed / 7052 passed` baseline to `7132 passed, 54 skipped`; Web `30 files / 833 tests`; Ruff lint/format, dual-view (linux and win32) strict mypy over 161 source files, compileall, the 62-package lock, upstream and documentation checks all pass. Commands and exit codes are in [0079 verification](executions/0079-linux-host-gate-parity/verification.md).
+
+The fixes fall into three classes: cross-platform gate defects (strict mypy previously passed only on Windows, with 39 errors); test-portability defects (fixtures dereferencing POSIX venv launcher symlinks caused the 80 pre-existing failures, one POSIX-only test never run on Windows leaked its subprocess mock into real git verification, and one load-sensitive bound was too tight); and one real production defect — Emby export failure recording misclassified `stale_publish` as `export_failure_finalize_failed` when a concurrent worker's commit invalidated a WAL read snapshot, now fixed with BEGIN IMMEDIATE plus a bounded retry mirroring the operation coordinator's existing pattern. The 0078 closeout documentation debt (duplicated index rows, stale "in progress" status) is also cleared.
+
+The 0077 freeze is untouched: no XHS or Douyin delivery logic changed; the bounded XHS canary, real PostgreSQL and optional media-server reading remain `NOT_RUN` and operator-gated. The image rebuild and host upgrade follow the 0077 handoff in the same session.
+
+## Previous: deployment provenance and XHS canary preflight (0077)
 
 [Execution 0077](executions/0077-deployment-provenance-preflight/progress.md), implemented in `d6db86a`, closes the evidence gap that prevented identifying the application code inside the current Docker deployment. A qualifying build accepts only a full lowercase source SHA, records it in `/opt/BUILD-MANIFEST.txt` and the OCI revision label, and continues to exclude the project `.git` directory. Missing provenance is explicitly `not_run`; malformed or duplicate values fail closed without being reflected.
 

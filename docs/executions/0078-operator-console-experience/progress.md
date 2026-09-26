@@ -2,7 +2,7 @@
 
 # Execution 0078 progress
 
-- Status: In progress — implementation complete, closeout gates running
+- Status: Complete — implementation `2d9e961`, closeout gates and bilingual verification in [verification](verification.md), closeout commit `764f46b`
 - Date: 2026-09-23
 
 ## Completed
@@ -18,6 +18,6 @@
 - The 0077 freeze is untouched: no XHS or Douyin delivery logic changed; the QR panel and log bridge only read existing authenticated surfaces.
 - The bridge deliberately persists fewer lines than the `/crawler/` panel shows: shapeless or forbidden-shaped lines are dropped rather than widened, matching the log center's conservative contract.
 
-## Remaining
+## Closeout
 
-- Closeout: complete-suite numbers, bilingual verification records, three-commit series, push and reconcile.
+- Complete-suite numbers, bilingual verification records and the three-commit series (`e624d66` plan / `2d9e961` implementation / `764f46b` closeout) are pushed; deployment and live rows remain operator items per the 0077 handoff.

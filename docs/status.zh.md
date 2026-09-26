@@ -2,7 +2,15 @@
 
 # 项目统一状态（单一事实来源）
 
-## 最新：部署来源身份与 XHS 金丝雀预检（0077）
+## 最新：Linux 部署主机门禁对齐（0079）
+
+[执行 0079](executions/0079-linux-host-gate-parity/progress.zh.md)于 2026-09-26 在运行生产容器的 Linux 服务器上交付：把 `main` 同步到 `764f46b` 并推送 2026-09-12 部署记录（`ec67097`）后，全套本地门禁首次在该主机复现并通过——Python 完整套件从基线 `81 failed / 7052 passed` 修复到 `7132 passed, 54 skipped`；Web `30 files / 833 tests`；Ruff lint/format、双视角（linux 与 win32）strict mypy 161 个源文件、compileall、62 包锁、上游与文档检查全部通过。命令与退出码见[0079 验证](executions/0079-linux-host-gate-parity/verification.zh.md)。
+
+修复分三类：跨平台门禁缺陷（strict mypy 此前只能在 Windows 通过，39 个错误）；测试可移植性缺陷（venv 启动器符号链接在 POSIX 上被夹具解引用导致 80 个既有失败、一个从未在 Windows 运行过的 POSIX 专属测试泄漏 subprocess mock、一处负载敏感断言过紧）；一个真实生产缺陷——Emby 导出失败记录在并发 worker 提交使 WAL 读快照失效时把 `stale_publish` 错误分类为 `export_failure_finalize_failed`，现以 BEGIN IMMEDIATE 加有界重试修复（镜像 operation coordinator 既有模式）。另清理 0078 收尾文档债（重复索引行、过期的"进行中"状态）。
+
+0077 冻结未被触碰：无任何 XHS/抖音投递逻辑变化；有界 XHS 金丝雀、真实 PostgreSQL 与可选媒体服务器读取仍为 `NOT_RUN` 且受操作者门槛约束。重建镜像与本机升级按 0077 交接在同一会话执行。
+
+## 上阶段：部署来源身份与 XHS 金丝雀预检（0077）
 
 [执行 0077](executions/0077-deployment-provenance-preflight/progress.zh.md)已在 `d6db86a` 实现，关闭了当前 Docker 部署无法识别镜像内应用代码的证据缺口。合格构建只接受完整小写源码 SHA，把它写入 `/opt/BUILD-MANIFEST.txt` 与 OCI revision 标签，并继续排除项目自身 `.git`。缺少来源身份显式为 `not_run`；畸形或重复值安全失败且不反射原值。
 

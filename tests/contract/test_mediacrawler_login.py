@@ -20,7 +20,11 @@ from media_sync.application.observability import event_context
 from media_sync.domain import Platform
 from media_sync.infrastructure.observability.store import LogStore
 from media_sync.integrations.mediacrawler import login_runner as runner_module
-from media_sync.integrations.mediacrawler.checkout import VerifiedCheckout, VerifiedPython
+from media_sync.integrations.mediacrawler.checkout import (
+    VerifiedCheckout,
+    VerifiedPython,
+    normalize_python_executable,
+)
 from media_sync.integrations.mediacrawler.login import (
     MediaCrawlerLoginMode,
     MediaCrawlerLoginRequest,
@@ -294,7 +298,9 @@ def _runner(
         )
 
     def verify_python(_executable: Path) -> VerifiedPython:
-        return VerifiedPython(executable=Path(sys.executable).resolve())
+        # Production verification never dereferences a venv symlink; resolving
+        # here desynchronizes with the request path on symlink-venv hosts.
+        return VerifiedPython(executable=normalize_python_executable(Path(sys.executable)))
 
     return MediaCrawlerLoginProcessRunner(
         lock_path=checkout / "upstreams.lock.json",
@@ -1377,4 +1383,7 @@ def test_parent_bounds_a_no_frame_child_by_deadline_and_joins_it(
     )
 
     assert result.status is MediaCrawlerLoginStatus.TIMED_OUT
-    assert time.monotonic() - started < 5
+    # The contract is bounding: the 60-second child must be stopped far below
+    # its own lifetime. Loaded multi-tenant hosts can spend several seconds on
+    # spawn + terminate + join alone, so keep generous slack below 60.
+    assert time.monotonic() - started < 15

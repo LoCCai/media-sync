@@ -532,7 +532,7 @@ def _spawn_login_child(
         "stderr": subprocess.PIPE,
         "close_fds": True,
     }
-    if os.name != "nt":
+    if sys.platform != "win32":
         return subprocess.Popen(command, start_new_session=True, pass_fds=(lock_descriptor,), **common)
 
     import msvcrt

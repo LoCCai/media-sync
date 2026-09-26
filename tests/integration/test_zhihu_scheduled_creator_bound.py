@@ -17,6 +17,7 @@ from media_sync.integrations.mediacrawler import bridge as bridge_module
 from media_sync.integrations.mediacrawler import browser_policy
 from media_sync.integrations.mediacrawler import runner as runner_module
 from media_sync.integrations.mediacrawler.bridge import MediaCrawlerRunMode, RunnerManifest
+from media_sync.integrations.mediacrawler.checkout import normalize_python_executable
 from media_sync.integrations.mediacrawler.policies import WatchdogLimits
 
 
@@ -31,7 +32,7 @@ def _manifest(tmp_path: Path, checkout_root: Path) -> RunnerManifest:
     return RunnerManifest(
         checkout_root=checkout_root,
         lock_path=(tmp_path / "upstreams.lock.json").absolute(),
-        python_executable=Path(sys.executable).resolve(),
+        python_executable=normalize_python_executable(Path(sys.executable)),
         integration_root=integration_root,
         account_id=uuid4(),
         subscription_id=uuid4(),

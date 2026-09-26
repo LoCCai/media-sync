@@ -454,7 +454,8 @@ def _configure_manager(
                     "close_fds": True,
                 }
                 if os.name == "nt":
-                    popen_options["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+                    # The unit test fakes this branch through a module-level os proxy.
+                    popen_options["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP  # type: ignore[attr-defined, unused-ignore]
                 else:
                     popen_options["start_new_session"] = True
                 process = subprocess.Popen(prepared, **popen_options)

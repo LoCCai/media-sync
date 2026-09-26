@@ -16,7 +16,11 @@ from media_sync.integrations.mediacrawler.bilibili_media import (
     BILIBILI_PROGRESSIVE_FORMAT_FIELD,
     BILIBILI_PROGRESSIVE_SEGMENTS_FIELD,
 )
-from media_sync.integrations.mediacrawler.checkout import VerifiedCheckout, VerifiedPython
+from media_sync.integrations.mediacrawler.checkout import (
+    VerifiedCheckout,
+    VerifiedPython,
+    normalize_python_executable,
+)
 from media_sync.integrations.mediacrawler.detail_runner import (
     MediaCrawlerDetailProcessRunner,
     MediaCrawlerDetailRequest,
@@ -1629,7 +1633,7 @@ def test_detail_process_runner_uses_detail_mode_and_cleans_signed_jsonl(tmp_path
         )
 
     def verify_python(path: Path) -> VerifiedPython:
-        assert path == Path(sys.executable).resolve()
+        assert path == normalize_python_executable(Path(sys.executable))
         return VerifiedPython(path)
 
     runner = MediaCrawlerDetailProcessRunner(

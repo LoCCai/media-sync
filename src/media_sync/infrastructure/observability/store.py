@@ -18,6 +18,7 @@ import queue
 import re
 import secrets
 import stat
+import sys
 import threading
 import time
 from collections.abc import Iterator, Mapping
@@ -94,7 +95,7 @@ def _identity(details: os.stat_result) -> tuple[int, int]:
 
 
 def _windows_pin(path: Path) -> int:
-    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined, unused-ignore]
     create = kernel.CreateFileW
     create.argtypes = (
         ctypes.c_wchar_p,
@@ -113,7 +114,7 @@ def _windows_pin(path: Path) -> int:
 
 
 def _windows_close(handle: int) -> None:
-    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined, unused-ignore]
     close = kernel.CloseHandle
     close.argtypes = (ctypes.c_void_p,)
     close.restype = ctypes.c_int
@@ -279,7 +280,7 @@ def _locked(root: _Root) -> Iterator[None]:
                 raise LogStoreError("log_lock_busy")
             if os.fstat(handle.fileno()).st_size != 1:
                 raise LogStoreError
-            if os.name == "nt":
+            if sys.platform == "win32":
                 import msvcrt
 
                 try:
@@ -290,17 +291,17 @@ def _locked(root: _Root) -> Iterator[None]:
                 import fcntl
 
                 try:
-                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)  # type: ignore[attr-defined]
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
                 except OSError:
                     raise LogStoreError("log_lock_busy") from None
             try:
                 yield
             finally:
-                if os.name == "nt":
+                if sys.platform == "win32":
                     handle.seek(0)
                     msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
                 else:
-                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)  # type: ignore[attr-defined]
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
     finally:
         local.release()
 

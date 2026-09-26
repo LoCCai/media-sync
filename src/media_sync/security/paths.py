@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import os
 import stat
+import sys
 import threading
 from collections.abc import Iterator
 from pathlib import Path, PurePath
@@ -47,7 +48,7 @@ def _local_file_lock(path: Path) -> threading.Lock:
 
 
 def _try_os_file_lock(handle: BinaryIO) -> bool:
-    if os.name == "nt":
+    if sys.platform == "win32":
         import msvcrt
 
         handle.seek(0)
@@ -59,14 +60,14 @@ def _try_os_file_lock(handle: BinaryIO) -> bool:
     import fcntl
 
     try:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)  # type: ignore[attr-defined]
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
     except (BlockingIOError, OSError):
         return False
     return True
 
 
 def _unlock_os_file(handle: BinaryIO) -> None:
-    if os.name == "nt":
+    if sys.platform == "win32":
         import msvcrt
 
         handle.seek(0)
@@ -74,7 +75,7 @@ def _unlock_os_file(handle: BinaryIO) -> None:
         return
     import fcntl
 
-    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)  # type: ignore[attr-defined]
+    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
 def _validate_relative(relative: str | PurePath) -> Path:

@@ -15,6 +15,7 @@ import pytest
 
 from media_sync.domain import LoginMethod, Platform
 from media_sync.integrations.mediacrawler import detail_runner, login_runner, runner
+from media_sync.integrations.mediacrawler.checkout import normalize_python_executable
 from media_sync.integrations.mediacrawler.detail_runner import _ChildRequest
 from media_sync.integrations.mediacrawler.detail_runner import (
     _configure_upstream as configure_detail,
@@ -225,7 +226,7 @@ def test_forward_maps_only_qr_fence_to_auth_expired_and_system_exit_cannot_succe
         Any,
         SimpleNamespace(
             request_delay_seconds=1.0,
-            python_executable=Path(sys.executable).resolve(),
+            python_executable=normalize_python_executable(Path(sys.executable)),
             checkout_root=checkout,
             account_root=paths.account_root,
             profile_root=paths.profile_root,
@@ -337,7 +338,7 @@ def test_forward_child_missing_saved_profile_is_auth_expired(
         Any,
         SimpleNamespace(
             request_delay_seconds=1.0,
-            python_executable=Path(sys.executable).resolve(),
+            python_executable=normalize_python_executable(Path(sys.executable)),
             checkout_root=checkout.resolve(),
             output_root=paths.output_root,
             profile_root=paths.profile_root,
