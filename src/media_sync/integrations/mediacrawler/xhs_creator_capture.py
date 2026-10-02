@@ -11,7 +11,7 @@ import re
 from collections.abc import Iterator
 from contextvars import ContextVar
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PurePath
 from typing import TYPE_CHECKING, Any, cast
 
 from media_sync.domain import Platform
@@ -150,11 +150,22 @@ def _suppress_upstream_logging(module: Any) -> Iterator[None]:
             setattr(logger, name, value)
 
 
-def install_xhs_creator_capture_shim(manifest: RunnerManifest, checkout_root: Path) -> None:
-    """Replace only the XHS creator method with one replayable page-bound unit."""
+def install_xhs_creator_capture_shim(manifest: RunnerManifest) -> None:
+    """Replace only the XHS creator method with one replayable page-bound unit.
+
+    The child process has already validated the checkout and changed its
+    working directory into it, so the shim anchors every filesystem access
+    on the process working directory and never re-derives a root from
+    manifest fields.
+    """
 
     state = manifest.xhs_scan
     if state is None or manifest.platform.value != "xhs":
+        raise _failure()
+    # Manifest-borne workspace paths must not carry traversal segments; the
+    # shim only ever touches files under the working directory and the
+    # output root.
+    if ".." in PurePath(manifest.output_root).parts:
         raise _failure()
     state.require_binding(
         account_id=manifest.account_id,
@@ -162,7 +173,7 @@ def install_xhs_creator_capture_shim(manifest: RunnerManifest, checkout_root: Pa
         creator_fingerprint_sha256=manifest.creator_fingerprint_sha256,
         upstream_sha=manifest.upstream_sha,
     )
-    root = Path(checkout_root)
+    root = Path.cwd()
     core = _checkout_module("media_platform.xhs.core", root)
     client_module = _checkout_module("media_platform.xhs.client", root)
     store = _checkout_module("store.xhs", root)

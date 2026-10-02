@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
 import sys
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -262,7 +263,12 @@ def test_installed_shim_uses_page_tokens_and_seals_coverage(
         detail_failure=2,
     )
     manifest = _manifest(output_root)
-    install_xhs_creator_capture_shim(manifest, tmp_path / "checkout")  # type: ignore[arg-type]
+    previous = os.getcwd()
+    os.chdir(tmp_path / "checkout")
+    try:
+        install_xhs_creator_capture_shim(manifest)  # type: ignore[arg-type]
+    finally:
+        os.chdir(previous)
     asyncio.run(crawler_type().get_creators_and_notes())
 
     assert [item["note_id"] for item in stored] == [f"{1:024x}", f"{3:024x}"]
@@ -296,7 +302,12 @@ def test_one_unsupported_normalized_note_does_not_hide_unrelated_notes(
         normalization_failure=2,
     )
     manifest = _manifest(output_root)
-    install_xhs_creator_capture_shim(manifest, tmp_path / "checkout")  # type: ignore[arg-type]
+    previous = os.getcwd()
+    os.chdir(tmp_path / "checkout")
+    try:
+        install_xhs_creator_capture_shim(manifest)  # type: ignore[arg-type]
+    finally:
+        os.chdir(previous)
     asyncio.run(crawler_type().get_creators_and_notes())
 
     assert [item["note_id"] for item in stored] == [f"{1:024x}", f"{3:024x}"]
@@ -323,7 +334,12 @@ def test_list_access_restriction_is_not_source_end(
         list_result=IPBlockError(),
     )
     manifest = _manifest(output_root)
-    install_xhs_creator_capture_shim(manifest, tmp_path / "checkout")  # type: ignore[arg-type]
+    previous = os.getcwd()
+    os.chdir(tmp_path / "checkout")
+    try:
+        install_xhs_creator_capture_shim(manifest)  # type: ignore[arg-type]
+    finally:
+        os.chdir(previous)
     asyncio.run(crawler_type().get_creators_and_notes())
     coverage = XhsScanCoverage.from_json_line((output_root / XHS_SCAN_COVERAGE_FILENAME).read_text(encoding="utf-8"))
     assert stored == []

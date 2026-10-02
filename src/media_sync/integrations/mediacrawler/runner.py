@@ -1555,7 +1555,7 @@ async def _execute_child(
             if manifest.bili_scan is not None:
                 from media_sync.integrations.mediacrawler.bilibili_capture import install_bilibili_capture_shim
 
-                install_bilibili_capture_shim(manifest, verified.root)
+                install_bilibili_capture_shim(manifest)
         elif manifest.platform.value == "wb":
             from media_sync.integrations.mediacrawler.weibo_media import (
                 install_weibo_media_capture,
@@ -1597,7 +1597,7 @@ async def _execute_child(
                     install_xhs_creator_capture_shim,
                 )
 
-                install_xhs_creator_capture_shim(manifest, verified.root)
+                install_xhs_creator_capture_shim(manifest)
         config.__dict__["COOKIES"] = cookie or ""
         if manifest.login_method.value == "cookie":
             from media_sync.integrations.mediacrawler.cookie_reuse import install_cookie_reuse

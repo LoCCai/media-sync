@@ -324,7 +324,7 @@ async def test_real_creator_entry_installs_policy_before_pinned_main_dispatch(
         monkeypatch.setattr(
             bilibili_capture,
             "install_bilibili_capture_shim",
-            lambda manifest, checkout_root: fixture.events.append("bounded-capture"),
+            lambda manifest: fixture.events.append("bounded-capture"),
         )
     output = tmp_path / "output"
     output.mkdir()

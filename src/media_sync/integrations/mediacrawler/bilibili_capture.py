@@ -6,7 +6,7 @@ import asyncio
 import hashlib
 import importlib
 from contextvars import ContextVar
-from pathlib import Path
+from pathlib import Path, PurePath
 from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import parse_qs, urlsplit
 
@@ -101,22 +101,28 @@ def _checkout_module(name: str, root: Path) -> Any:
     return module
 
 
-def install_bilibili_capture_shim(manifest: RunnerManifest, checkout_root: Path) -> None:
+def install_bilibili_capture_shim(manifest: RunnerManifest) -> None:
     """Install once after the page-identity shim, before upstream ``main.start``.
 
-    ``checkout_root`` must be the checkout root already validated by
-    ``verify_manifest_checkout`` in the caller; the shim never trusts the raw
-    manifest field for filesystem access.
+    The child process has already validated the checkout and changed its
+    working directory into it, so the shim anchors every filesystem access
+    on the process working directory and never re-derives a root from
+    manifest fields.
     """
     state = manifest.bili_scan
     if state is None or manifest.platform.value != "bili":
+        raise _failure()
+    # Manifest-borne workspace paths must not carry traversal segments; the
+    # shim only ever touches files under the working directory and the
+    # output root.
+    if ".." in PurePath(manifest.output_root).parts:
         raise _failure()
     state.require_binding(
         account_id=manifest.account_id,
         author_fingerprint_sha256=manifest.author_remote_id_fingerprint_sha256,
         upstream_sha=manifest.upstream_sha,
     )
-    root = Path(checkout_root)
+    root = Path.cwd()
     core = _checkout_module("media_platform.bilibili.core", root)
     client_module = _checkout_module("media_platform.bilibili.client", root)
     store = _checkout_module("store.bilibili", root)

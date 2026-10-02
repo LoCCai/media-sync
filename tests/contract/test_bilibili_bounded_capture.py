@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import os
 import sys
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -39,6 +40,17 @@ def load(monkeypatch: pytest.MonkeyPatch, name: str, path: Path) -> Any:
     monkeypatch.setitem(sys.modules, name, module)
     spec.loader.exec_module(module)
     return module
+
+
+def _install_shim(manifest: Any) -> None:
+    """Install the shim with the working directory anchored at the checkout."""
+
+    previous = os.getcwd()
+    os.chdir(manifest.checkout_root)
+    try:
+        bilibili_capture.install_bilibili_capture_shim(manifest)
+    finally:
+        os.chdir(previous)
 
 
 @pytest.fixture(scope="module")
@@ -313,7 +325,7 @@ def runtime(checkout: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> A
 @pytest.mark.parametrize("cached", [False, True])
 async def test_real_locked_signed_transport_and_store_are_bounded(runtime: Any, cached: bool) -> None:
     runtime.behavior["cached_wbi"] = cached
-    bilibili_capture.install_bilibili_capture_shim(runtime.manifest, runtime.manifest.checkout_root)
+    _install_shim(runtime.manifest)
     await runtime.crawler.get_creator_videos(42)
     paths = [request.url.path for request in runtime.requests]
     assert paths == ([] if cached else ["/x/web-interface/nav"]) + [
@@ -339,7 +351,7 @@ async def test_real_locked_signed_transport_and_store_are_bounded(runtime: Any, 
 @pytest.mark.parametrize("failure", ["list", "redirect", "detail", "aid", "bvid", "pubdate", "owner", "pages"])
 async def test_http_or_detail_failure_never_retries_or_emits_coverage(runtime: Any, failure: str) -> None:
     runtime.behavior["failure"] = failure
-    bilibili_capture.install_bilibili_capture_shim(runtime.manifest, runtime.manifest.checkout_root)
+    _install_shim(runtime.manifest)
     with pytest.raises((RuntimeError, sys.modules["media_platform.bilibili.exception"].DataFetchError)):
         await runtime.crawler.get_creator_videos(42)
     assert not runtime.rows
@@ -349,7 +361,7 @@ async def test_http_or_detail_failure_never_retries_or_emits_coverage(runtime: A
 
 
 async def test_wrong_creator_rejected_before_any_http(runtime: Any) -> None:
-    bilibili_capture.install_bilibili_capture_shim(runtime.manifest, runtime.manifest.checkout_root)
+    _install_shim(runtime.manifest)
     with pytest.raises(RuntimeError):
         await runtime.crawler.get_creator_videos(43)
     assert not runtime.requests
@@ -358,7 +370,7 @@ async def test_wrong_creator_rejected_before_any_http(runtime: Any) -> None:
 @pytest.mark.parametrize("maximum", [30, 100])
 async def test_detail_hard_cap_thirty_on_large_requested_unit(runtime: Any, maximum: int) -> None:
     runtime.manifest.max_items = maximum
-    bilibili_capture.install_bilibili_capture_shim(runtime.manifest, runtime.manifest.checkout_root)
+    _install_shim(runtime.manifest)
     await runtime.crawler.get_creator_videos(42)
     assert len(runtime.rows) == 30
     assert sum(request.url.path == "/x/web-interface/view/detail" for request in runtime.requests) == 30
