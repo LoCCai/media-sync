@@ -19,6 +19,12 @@ from media_sync.integrations.mediacrawler.bilibili_multifeed import (
 )
 from media_sync.integrations.mediacrawler.bilibili_scan import BiliIdentity, BiliScanCoverage
 from media_sync.integrations.mediacrawler.bridge import RunnerManifest
+from media_sync.integrations.mediacrawler.douyin_creator_work import (
+    DOUYIN_SCAN_COVERAGE_FILENAME,
+    DOUYIN_SCAN_IDENTITY_FIELD,
+    DouyinScanCoverage,
+    DouyinWorkIdentity,
+)
 from media_sync.integrations.mediacrawler.normalizers import (
     NormalizationContext,
     NormalizedMediaRecord,
@@ -46,6 +52,7 @@ class NormalizedMediaCrawlerOutput:
     input_records: int
     bili_coverage: BiliScanCoverage | BiliMultiFeedCoverage | None = field(default=None, repr=False)
     xhs_coverage: XhsScanCoverage | None = field(default=None, repr=False)
+    douyin_coverage: DouyinScanCoverage | None = field(default=None, repr=False)
 
 
 def validate_bili_record_keys(
@@ -143,6 +150,35 @@ def _xhs_content_identities(payload: bytes, *, creator_fingerprint_sha256: str) 
     return tuple(identities)
 
 
+def _douyin_content_identities(payload: bytes, *, creator_fingerprint_sha256: str) -> tuple[DouyinWorkIdentity, ...]:
+    identities: list[DouyinWorkIdentity] = []
+    for line in payload.splitlines():
+        if not line.strip():
+            continue
+        raw = json.loads(line, object_pairs_hook=_closed_object)
+        identity = raw.get(DOUYIN_SCAN_IDENTITY_FIELD) if isinstance(raw, Mapping) else None
+        if not isinstance(identity, Mapping) or set(identity) != {
+            "aweme_id",
+            "listing_sha256",
+            "creator_fingerprint_sha256",
+        }:
+            raise MediaCrawlerOutputRejected("bounded Douyin content identity is missing")
+        if identity["creator_fingerprint_sha256"] != creator_fingerprint_sha256:
+            raise MediaCrawlerOutputRejected("bounded Douyin creator reference differs")
+        if not isinstance(raw, Mapping) or raw.get("aweme_id") != identity["aweme_id"]:
+            raise MediaCrawlerOutputRejected("bounded Douyin work identity differs")
+        try:
+            identities.append(
+                DouyinWorkIdentity(
+                    aweme_id=identity["aweme_id"],
+                    listing_sha256=identity["listing_sha256"],
+                )
+            )
+        except (TypeError, ValueError):
+            raise MediaCrawlerOutputRejected("bounded Douyin content identity is invalid") from None
+    return tuple(identities)
+
+
 def load_normalized_output(
     manifest: RunnerManifest,
     *,
@@ -169,8 +205,10 @@ def load_normalized_output(
     records_seen = 0
     bili_coverage = None
     xhs_coverage = None
+    douyin_coverage = None
     bili_identities: list[BiliIdentity] = []
     xhs_identities: list[XhsNoteIdentity] = []
+    douyin_identities: list[DouyinWorkIdentity] = []
     dynamic_payloads: dict[str, BiliDynamicPayload] = {}
     for jsonl_file in snapshot.files:
         if PurePosixPath(jsonl_file.relative_path).name == "_media_sync_bili_coverage.jsonl":
@@ -190,6 +228,15 @@ def load_normalized_output(
             ):
                 raise MediaCrawlerOutputRejected("unexpected XHS coverage sidecar")
             xhs_coverage = XhsScanCoverage.from_json_line(jsonl_file.payload.decode("utf-8"))
+            continue
+        if PurePosixPath(jsonl_file.relative_path).name == DOUYIN_SCAN_COVERAGE_FILENAME:
+            if (
+                manifest.douyin_scan is None
+                or jsonl_file.relative_path != DOUYIN_SCAN_COVERAGE_FILENAME
+                or douyin_coverage is not None
+            ):
+                raise MediaCrawlerOutputRejected("unexpected Douyin coverage sidecar")
+            douyin_coverage = DouyinScanCoverage.from_json_line(jsonl_file.payload.decode("utf-8"))
             continue
         if manifest.bili_scan is not None:
             upload_lines: list[bytes] = []
@@ -214,6 +261,13 @@ def load_normalized_output(
         if manifest.xhs_scan is not None:
             xhs_identities.extend(
                 _xhs_content_identities(
+                    jsonl_file.payload,
+                    creator_fingerprint_sha256=manifest.creator_fingerprint_sha256,
+                )
+            )
+        if manifest.douyin_scan is not None:
+            douyin_identities.extend(
+                _douyin_content_identities(
                     jsonl_file.payload,
                     creator_fingerprint_sha256=manifest.creator_fingerprint_sha256,
                 )
@@ -346,6 +400,36 @@ def load_normalized_output(
                 or record.content.remote_id not in {identity.note_id for identity in xhs_coverage.successful}
             ):
                 raise MediaCrawlerOutputRejected("bounded XHS normalized identity differs")
+    if manifest.douyin_scan is not None:
+        if douyin_coverage is None:
+            raise MediaCrawlerOutputRejected("bounded Douyin coverage is missing")
+        if (
+            hashlib.sha256(creator_remote_id.encode("utf-8")).hexdigest()
+            != manifest.author_remote_id_fingerprint_sha256
+        ):
+            raise MediaCrawlerOutputRejected("bounded Douyin creator scope differs")
+        try:
+            douyin_coverage.validate(
+                manifest.douyin_scan,
+                manifest.max_items,
+                normalized_remote_ids=tuple(record.content.remote_id for record in records),
+            )
+        except ValueError:
+            raise MediaCrawlerOutputRejected("bounded Douyin coverage and content differ") from None
+        if (
+            len(records) != records_seen
+            or len(douyin_identities) != len(douyin_coverage.successful)
+            or tuple(douyin_identities) != douyin_coverage.successful
+        ):
+            raise MediaCrawlerOutputRejected("bounded Douyin coverage and content differ")
+        for record in records:
+            if (
+                record.content.platform is not Platform.DY
+                or record.content.remote_type != "content"
+                or record.author.remote_id != creator_remote_id
+                or record.content.remote_id not in {identity.aweme_id for identity in douyin_coverage.successful}
+            ):
+                raise MediaCrawlerOutputRejected("bounded Douyin normalized identity differs")
     fingerprint = hashlib.sha256(
         json.dumps(
             snapshot.receipt.as_payload(),

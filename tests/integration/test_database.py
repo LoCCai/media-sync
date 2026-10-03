@@ -78,6 +78,7 @@ DOMAIN_TABLES = {
     "authors",
     "bili_subscription_progress",
     "contents",
+    "douyin_subscription_progress",
     "export_records",
     "jobs",
     "library_output_policy",

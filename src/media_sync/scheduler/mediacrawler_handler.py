@@ -55,6 +55,7 @@ from media_sync.integrations.mediacrawler.checkout import (
     load_mediacrawler_lock,
     normalize_python_executable,
 )
+from media_sync.integrations.mediacrawler.douyin_creator_work import DouyinScanCoverage
 from media_sync.integrations.mediacrawler.normalizers import NormalizedMediaRecord
 from media_sync.integrations.mediacrawler.policies import (
     FullHistoryAcknowledgementRequired,
@@ -85,6 +86,7 @@ from media_sync.integrations.mediacrawler.subscription_policy import (
 )
 from media_sync.integrations.mediacrawler.xhs_creator_notes import XhsScanCoverage
 from media_sync.scheduler.bili_delivery_progress import bili_policy_fingerprint
+from media_sync.scheduler.douyin_delivery_progress import DouyinDeliveryProgressRepository, douyin_policy_fingerprint
 from media_sync.scheduler.handlers import (
     SubscriptionHandlerResult,
     SubscriptionJobContext,
@@ -216,6 +218,20 @@ class _IngestionService(Protocol):
         crawl_revision_before: int | None = None,
         ownership_guard: Callable[[Session], None] | None = None,
         coverage: XhsScanCoverage,
+    ) -> MediaCrawlerIngestionResult: ...
+
+    def ingest_douyin_bounded(
+        self,
+        records: tuple[NormalizedMediaRecord, ...],
+        *,
+        subscription_id: str | UUID,
+        run_id: str | UUID,
+        expected_revision: int,
+        input_cursor: str | None,
+        next_cursor: str,
+        crawl_revision_before: int | None = None,
+        ownership_guard: Callable[[Session], None] | None = None,
+        coverage: DouyinScanCoverage,
     ) -> MediaCrawlerIngestionResult: ...
 
     def ingest(
@@ -503,6 +519,8 @@ class MediaCrawlerScheduledHandler:
                 return bili_policy_fingerprint(context.subscription_policy, context.max_items)
             if context.account.platform is Platform.XHS:
                 return xhs_policy_fingerprint(context.subscription_policy, context.max_items)
+            if context.account.platform is Platform.DY:
+                return douyin_policy_fingerprint(context.subscription_policy, context.max_items)
             return None
         except ValueError:
             return None
@@ -537,6 +555,44 @@ class MediaCrawlerScheduledHandler:
             if progress is None:
                 raise RepositoryError("scheduled XHS progress is unavailable")
             XhsDeliveryProgressRepository(session).ensure_creator_binding(
+                subscription,
+                upstream_sha=upstream_sha,
+                creator_fingerprint_sha256=creator_fingerprint,
+                now=self._now(),
+            )
+            self._guard(context, session)
+        return self._load_scope(context)
+
+    def _ensure_douyin_creator_binding(
+        self,
+        context: SubscriptionJobContext,
+        creator_reference: str | SecretValue,
+    ) -> _ScopeSnapshot:
+        raw_reference = creator_reference.reveal() if isinstance(creator_reference, SecretValue) else creator_reference
+        normalized = normalize_creator_reference(Platform.DY, raw_reference)
+        creator_fingerprint = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+        upstream_sha = load_mediacrawler_lock(self.lock_path).commit
+        with self.database.session() as session:
+            self._guard(context, session)
+            subscription = SubscriptionRepository(session).require_active(str(context.subscription_id), lock=True)
+            if (
+                subscription.account_id != str(context.account.account_id)
+                or subscription.account.auth_revision != context.auth_revision
+                or subscription.schedule_revision != context.schedule_revision + 1
+                or subscription.policy != dict(context.subscription_policy)
+                or subscription.max_items != context.max_items
+            ):
+                raise RepositoryError("scheduled Douyin scope changed")
+            progress = DouyinDeliveryProgressRepository(session).ensure_for_materialization(
+                subscription,
+                upstream_sha=upstream_sha,
+                schedule_revision=context.schedule_revision,
+                now=self._now(),
+                resume_blocked=True,
+            )
+            if progress is None:
+                raise RepositoryError("scheduled Douyin progress is unavailable")
+            DouyinDeliveryProgressRepository(session).ensure_creator_binding(
                 subscription,
                 upstream_sha=upstream_sha,
                 creator_fingerprint_sha256=creator_fingerprint,
@@ -1039,15 +1095,20 @@ class MediaCrawlerScheduledHandler:
     ) -> SubscriptionHandlerResult:
         manifest_bili_scan = getattr(manifest, "bili_scan", None)
         manifest_xhs_scan = getattr(manifest, "xhs_scan", None)
+        manifest_douyin_scan = getattr(manifest, "douyin_scan", None)
         output_bili_coverage = getattr(output, "bili_coverage", None)
         output_xhs_coverage = getattr(output, "xhs_coverage", None)
+        output_douyin_coverage = getattr(output, "douyin_coverage", None)
         if (
             not isinstance(output, NormalizedMediaCrawlerOutput)
             or isinstance(output.input_records, bool)
             or output.input_records < len(output.records)
             or (manifest_bili_scan is None) != (output_bili_coverage is None)
             or (manifest_xhs_scan is None) != (output_xhs_coverage is None)
+            or (manifest_douyin_scan is None) != (output_douyin_coverage is None)
             or (manifest_bili_scan is not None and manifest_xhs_scan is not None)
+            or (manifest_bili_scan is not None and manifest_douyin_scan is not None)
+            or (manifest_xhs_scan is not None and manifest_douyin_scan is not None)
         ):
             error_code = await self._cleanup_failure_code(attempt_paths, "output_security_failed")
             self._set_run_failure(context, prepared.run_id, error_code)
@@ -1123,6 +1184,27 @@ class MediaCrawlerScheduledHandler:
                 coverage=output_xhs_coverage,
                 ownership_guard=guarded,
             )
+        elif manifest_douyin_scan is not None and output_douyin_coverage is not None:
+            try:
+                output_douyin_coverage.validate(
+                    manifest_douyin_scan,
+                    manifest.max_items,
+                    normalized_remote_ids=tuple(record.content.remote_id for record in output.records),
+                )
+            except ValueError:
+                return await self._fail_attempt(context, prepared, attempt_paths, "output_security_failed")
+            ingest_call = asyncio.to_thread(
+                service.ingest_douyin_bounded,
+                output.records,
+                subscription_id=context.subscription_id,
+                run_id=prepared.run_id,
+                expected_revision=prepared.checkpoint_revision,
+                crawl_revision_before=manifest.checkpoint_revision_before,
+                input_cursor=manifest.douyin_scan_input_cursor,
+                next_cursor=output_douyin_coverage.next_state.to_cursor(),
+                coverage=output_douyin_coverage,
+                ownership_guard=guarded,
+            )
         else:
             ingest_call = asyncio.to_thread(
                 service.ingest,
@@ -1154,7 +1236,7 @@ class MediaCrawlerScheduledHandler:
             ingestion_error_code = "unexpected_handler_failure"
 
         try:
-            bounded_coverage = output_bili_coverage or output_xhs_coverage
+            bounded_coverage = output_bili_coverage or output_xhs_coverage or output_douyin_coverage
             if bounded_coverage is not None:
                 truth = self._read_ingestion_truth(
                     context,
@@ -1271,6 +1353,8 @@ class MediaCrawlerScheduledHandler:
             or getattr(manifest.bili_scan, "scope", None) != policy.bili_scope
             or (context.account.platform is Platform.XHS and policy.creator_secret_ref is not None)
             != (getattr(manifest, "xhs_scan", None) is not None)
+            or (context.account.platform is Platform.DY and policy.creator_secret_ref is not None)
+            != (getattr(manifest, "douyin_scan", None) is not None)
             or manifest.headless is not policy.headless
             or manifest.request_delay_seconds != policy.request_delay_seconds
             or manifest.watchdogs != self.watchdogs
@@ -1439,6 +1523,13 @@ class MediaCrawlerScheduledHandler:
                 raise
             except Exception:
                 return SubscriptionHandlerResult.failure("configuration_invalid")
+        if context.account.platform is Platform.DY and policy.creator_secret_ref is not None:
+            try:
+                scope = self._ensure_douyin_creator_binding(context, creator_reference)
+            except LeaseLostError:
+                raise
+            except Exception:
+                return SubscriptionHandlerResult.failure("configuration_invalid")
 
         recovery_rejected = False
         try:
@@ -1523,6 +1614,12 @@ class MediaCrawlerScheduledHandler:
             xhs_scan_cursor_before=(
                 prepared.cursor_before
                 if context.account.platform is Platform.XHS and policy.creator_secret_ref is not None
+                else None
+            ),
+            douyin_bounded_capture=(context.account.platform is Platform.DY and policy.creator_secret_ref is not None),
+            douyin_scan_cursor_before=(
+                prepared.cursor_before
+                if context.account.platform is Platform.DY and policy.creator_secret_ref is not None
                 else None
             ),
         )

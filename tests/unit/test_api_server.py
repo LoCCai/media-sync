@@ -90,7 +90,11 @@ def test_deep_readiness_reports_license_gate_without_exposing_paths(tmp_path: Pa
         "source_revision_status": "not_run",
         "facts": {},
     }
-    assert body["continuations"] == {"bili_delay_seconds": 300, "xhs_delay_seconds": 300}
+    assert body["continuations"] == {
+        "bili_delay_seconds": 300,
+        "xhs_delay_seconds": 300,
+        "douyin_delay_seconds": 300,
+    }
     assert body["security"] == {
         "status": "pass",
         "code": None,

@@ -1598,6 +1598,13 @@ async def _execute_child(
                 )
 
                 install_xhs_creator_capture_shim(manifest)
+        elif manifest.platform.value == "dy":
+            if getattr(manifest, "douyin_scan", None) is not None:
+                from media_sync.integrations.mediacrawler.douyin_creator_capture import (
+                    install_douyin_creator_capture_shim,
+                )
+
+                install_douyin_creator_capture_shim(manifest)
         config.__dict__["COOKIES"] = cookie or ""
         if manifest.login_method.value == "cookie":
             from media_sync.integrations.mediacrawler.cookie_reuse import install_cookie_reuse

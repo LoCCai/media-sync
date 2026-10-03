@@ -22,6 +22,8 @@ from media_sync.infrastructure.db.models import Job
 
 from .bili_delivery_progress import BiliDeliveryProgressRepository
 from .bili_scan_continuation import BiliScanContinuationPolicy
+from .douyin_delivery_progress import DouyinDeliveryProgressRepository
+from .douyin_scan_continuation import DouyinScanContinuationPolicy
 from .pipeline import (
     PIPELINE_SUBSCRIPTION_JOB_TYPE,
     PipelineJobRepository,
@@ -280,6 +282,7 @@ class PipelineSubscriptionWorker:
         event_sink: EventSink | None = None,
         bili_delivery_policy: BiliScanContinuationPolicy | None = None,
         xhs_delivery_policy: XhsScanContinuationPolicy | None = None,
+        douyin_delivery_policy: DouyinScanContinuationPolicy | None = None,
     ) -> None:
         if not callable(handler):
             raise TypeError("pipeline handler must be callable")
@@ -294,6 +297,7 @@ class PipelineSubscriptionWorker:
         self.retry_delay_seconds = retry_delay_seconds
         self.bili_delivery_policy = bili_delivery_policy or BiliScanContinuationPolicy(delay_seconds=0)
         self.xhs_delivery_policy = xhs_delivery_policy or XhsScanContinuationPolicy(delay_seconds=0)
+        self.douyin_delivery_policy = douyin_delivery_policy or DouyinScanContinuationPolicy(delay_seconds=0)
 
     @staticmethod
     def _heartbeat_interval(value: float | None, *, lease_seconds: int) -> float:
@@ -519,6 +523,13 @@ class PipelineSubscriptionWorker:
                         continuation_delay_seconds=self.xhs_delivery_policy.delay_seconds,
                         now=current,
                     )
+                    DouyinDeliveryProgressRepository(session).publish_success(
+                        job,
+                        result.receipt,
+                        upstream_sha=self.douyin_delivery_policy.upstream_sha,
+                        continuation_delay_seconds=self.douyin_delivery_policy.delay_seconds,
+                        now=current,
+                    )
             else:
                 classification = classify_pipeline_failure(result.error_code or "")
                 retry_at = current + timedelta(seconds=self.retry_delay_seconds) if classification.retryable else None
@@ -543,6 +554,12 @@ class PipelineSubscriptionWorker:
                         job,
                         error_code=classification.code,
                         upstream_sha=self.xhs_delivery_policy.upstream_sha,
+                        now=current,
+                    )
+                    DouyinDeliveryProgressRepository(session).publish_terminal_failure(
+                        job,
+                        error_code=classification.code,
+                        upstream_sha=self.douyin_delivery_policy.upstream_sha,
                         now=current,
                     )
             if job.job_type != PIPELINE_SUBSCRIPTION_JOB_TYPE:
