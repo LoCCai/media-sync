@@ -2,7 +2,7 @@
 
 # Goal: durable Douyin creator-work delivery with source-backed cursors
 
-Status: **PLANNED ONLY**. No 0080 application code, migration, deployment or live crawl has started.
+Status: **IMPLEMENTED AND OFFLINE-VERIFIED**. Deployment, Linux qualification and any live crawl remain pending.
 
 Execution 0080 extends the durable subscription delivery delivered for Bilibili (0074) and Xiaohongshu creator notes (0076) to Douyin creator works. It follows the mandated source-first posture: every pacing, end-detection, reconciliation and incremental rule below is derived from the pinned MediaCrawler's Douyin code and response shapes, not copied from the Bilibili or XHS implementations.
 
