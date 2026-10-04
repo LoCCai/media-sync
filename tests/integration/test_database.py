@@ -81,6 +81,7 @@ DOMAIN_TABLES = {
     "douyin_subscription_progress",
     "export_records",
     "jobs",
+    "kuaishou_subscription_progress",
     "library_output_policy",
     "login_sessions",
     "operation_event_stream_state",

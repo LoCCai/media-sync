@@ -251,10 +251,19 @@ export interface SubscriptionDeliveryResult {
   partial?: boolean;
 }
 
+/** 有界创作者交付共用的阶段语义：回填 → 头部对账 → 增量；阻塞需要人工处理。 */
+export type CursorDeliveryPhase = 'backfill' | 'reconciling' | 'incremental' | 'blocked';
+/** 不透明游标型平台（XHS 笔记、抖音作品、后续快手作品）共用的封闭停止原因。 */
+export type CursorDeliveryStopReason =
+  | 'has_more_false'
+  | 'empty_page_stalled'
+  | 'access_restricted'
+  | 'unit_cap_reached';
+
 export interface BiliDeliveryProgress {
   schema_version: 1;
   initialized: boolean;
-  phase: 'backfill' | 'reconciling' | 'incremental' | 'blocked';
+  phase: CursorDeliveryPhase;
   baseline_snapshot_complete: boolean;
   generation_id: string | null;
   batch_count: number;
@@ -279,7 +288,7 @@ export interface BiliDeliveryProgress {
 export interface XhsDeliveryProgress {
   schema_version: 1;
   initialized: boolean;
-  phase: 'backfill' | 'reconciling' | 'incremental' | 'blocked';
+  phase: CursorDeliveryPhase;
   baseline_snapshot_complete: boolean;
   generation_id: string | null;
   batch_count: number;
@@ -290,7 +299,33 @@ export interface XhsDeliveryProgress {
   incremental_batch_count: number;
   partial_batch_count: number;
   failed_note_count: number;
-  last_stop_reason: 'has_more_false' | 'empty_page_stalled' | 'access_restricted' | 'unit_cap_reached' | null;
+  last_stop_reason: CursorDeliveryStopReason | null;
+  last_delivery_at: string | null;
+  source_end_observed_at: string | null;
+  source_end_run_id: string | null;
+  reconciled_at: string | null;
+  reconciliation_run_id: string | null;
+  baseline_snapshot_at: string | null;
+  next_eligible_at: string | null;
+  blocked_code: string | null;
+}
+
+/** 与 XhsDeliveryProgress 同构：仅观察/失败计数字段名不同（对应抖音创作者作品）。 */
+export interface DouyinDeliveryProgress {
+  schema_version: 1;
+  initialized: boolean;
+  phase: CursorDeliveryPhase;
+  baseline_snapshot_complete: boolean;
+  generation_id: string | null;
+  batch_count: number;
+  work_observation_count: number;
+  cursor_step_count: number;
+  backfill_batch_count: number;
+  reconciliation_batch_count: number;
+  incremental_batch_count: number;
+  partial_batch_count: number;
+  failed_work_count: number;
+  last_stop_reason: CursorDeliveryStopReason | null;
   last_delivery_at: string | null;
   source_end_observed_at: string | null;
   source_end_run_id: string | null;
@@ -304,6 +339,7 @@ export interface XhsDeliveryProgress {
 export interface SubscriptionDetail extends Subscription {
   bili_delivery?: BiliDeliveryProgress;
   xhs_delivery?: XhsDeliveryProgress;
+  douyin_delivery?: DouyinDeliveryProgress;
   schedule: {
     subscription_id: string;
     status: string;

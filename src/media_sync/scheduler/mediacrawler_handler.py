@@ -56,6 +56,7 @@ from media_sync.integrations.mediacrawler.checkout import (
     normalize_python_executable,
 )
 from media_sync.integrations.mediacrawler.douyin_creator_work import DouyinScanCoverage
+from media_sync.integrations.mediacrawler.kuaishou_creator_work import KuaishouScanCoverage
 from media_sync.integrations.mediacrawler.normalizers import NormalizedMediaRecord
 from media_sync.integrations.mediacrawler.policies import (
     FullHistoryAcknowledgementRequired,
@@ -90,6 +91,10 @@ from media_sync.scheduler.douyin_delivery_progress import DouyinDeliveryProgress
 from media_sync.scheduler.handlers import (
     SubscriptionHandlerResult,
     SubscriptionJobContext,
+)
+from media_sync.scheduler.kuaishou_delivery_progress import (
+    KuaishouDeliveryProgressRepository,
+    kuaishou_policy_fingerprint,
 )
 from media_sync.scheduler.policy import FailureDisposition, classify_failure
 from media_sync.scheduler.repository import SchedulerLeaseLostError
@@ -232,6 +237,20 @@ class _IngestionService(Protocol):
         crawl_revision_before: int | None = None,
         ownership_guard: Callable[[Session], None] | None = None,
         coverage: DouyinScanCoverage,
+    ) -> MediaCrawlerIngestionResult: ...
+
+    def ingest_kuaishou_bounded(
+        self,
+        records: tuple[NormalizedMediaRecord, ...],
+        *,
+        subscription_id: str | UUID,
+        run_id: str | UUID,
+        expected_revision: int,
+        input_cursor: str | None,
+        next_cursor: str,
+        crawl_revision_before: int | None = None,
+        ownership_guard: Callable[[Session], None] | None = None,
+        coverage: KuaishouScanCoverage,
     ) -> MediaCrawlerIngestionResult: ...
 
     def ingest(
@@ -521,6 +540,8 @@ class MediaCrawlerScheduledHandler:
                 return xhs_policy_fingerprint(context.subscription_policy, context.max_items)
             if context.account.platform is Platform.DY:
                 return douyin_policy_fingerprint(context.subscription_policy, context.max_items)
+            if context.account.platform is Platform.KS:
+                return kuaishou_policy_fingerprint(context.subscription_policy, context.max_items)
             return None
         except ValueError:
             return None
@@ -593,6 +614,44 @@ class MediaCrawlerScheduledHandler:
             if progress is None:
                 raise RepositoryError("scheduled Douyin progress is unavailable")
             DouyinDeliveryProgressRepository(session).ensure_creator_binding(
+                subscription,
+                upstream_sha=upstream_sha,
+                creator_fingerprint_sha256=creator_fingerprint,
+                now=self._now(),
+            )
+            self._guard(context, session)
+        return self._load_scope(context)
+
+    def _ensure_kuaishou_creator_binding(
+        self,
+        context: SubscriptionJobContext,
+        creator_reference: str | SecretValue,
+    ) -> _ScopeSnapshot:
+        raw_reference = creator_reference.reveal() if isinstance(creator_reference, SecretValue) else creator_reference
+        normalized = normalize_creator_reference(Platform.KS, raw_reference)
+        creator_fingerprint = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+        upstream_sha = load_mediacrawler_lock(self.lock_path).commit
+        with self.database.session() as session:
+            self._guard(context, session)
+            subscription = SubscriptionRepository(session).require_active(str(context.subscription_id), lock=True)
+            if (
+                subscription.account_id != str(context.account.account_id)
+                or subscription.account.auth_revision != context.auth_revision
+                or subscription.schedule_revision != context.schedule_revision + 1
+                or subscription.policy != dict(context.subscription_policy)
+                or subscription.max_items != context.max_items
+            ):
+                raise RepositoryError("scheduled Kuaishou scope changed")
+            progress = KuaishouDeliveryProgressRepository(session).ensure_for_materialization(
+                subscription,
+                upstream_sha=upstream_sha,
+                schedule_revision=context.schedule_revision,
+                now=self._now(),
+                resume_blocked=True,
+            )
+            if progress is None:
+                raise RepositoryError("scheduled Kuaishou progress is unavailable")
+            KuaishouDeliveryProgressRepository(session).ensure_creator_binding(
                 subscription,
                 upstream_sha=upstream_sha,
                 creator_fingerprint_sha256=creator_fingerprint,
@@ -1096,9 +1155,17 @@ class MediaCrawlerScheduledHandler:
         manifest_bili_scan = getattr(manifest, "bili_scan", None)
         manifest_xhs_scan = getattr(manifest, "xhs_scan", None)
         manifest_douyin_scan = getattr(manifest, "douyin_scan", None)
+        manifest_kuaishou_scan = getattr(manifest, "kuaishou_scan", None)
         output_bili_coverage = getattr(output, "bili_coverage", None)
         output_xhs_coverage = getattr(output, "xhs_coverage", None)
         output_douyin_coverage = getattr(output, "douyin_coverage", None)
+        output_kuaishou_coverage = getattr(output, "kuaishou_coverage", None)
+        bounded_manifest_scans = (
+            manifest_bili_scan,
+            manifest_xhs_scan,
+            manifest_douyin_scan,
+            manifest_kuaishou_scan,
+        )
         if (
             not isinstance(output, NormalizedMediaCrawlerOutput)
             or isinstance(output.input_records, bool)
@@ -1106,9 +1173,8 @@ class MediaCrawlerScheduledHandler:
             or (manifest_bili_scan is None) != (output_bili_coverage is None)
             or (manifest_xhs_scan is None) != (output_xhs_coverage is None)
             or (manifest_douyin_scan is None) != (output_douyin_coverage is None)
-            or (manifest_bili_scan is not None and manifest_xhs_scan is not None)
-            or (manifest_bili_scan is not None and manifest_douyin_scan is not None)
-            or (manifest_xhs_scan is not None and manifest_douyin_scan is not None)
+            or (manifest_kuaishou_scan is None) != (output_kuaishou_coverage is None)
+            or sum(scan is not None for scan in bounded_manifest_scans) > 1
         ):
             error_code = await self._cleanup_failure_code(attempt_paths, "output_security_failed")
             self._set_run_failure(context, prepared.run_id, error_code)
@@ -1205,6 +1271,27 @@ class MediaCrawlerScheduledHandler:
                 coverage=output_douyin_coverage,
                 ownership_guard=guarded,
             )
+        elif manifest_kuaishou_scan is not None and output_kuaishou_coverage is not None:
+            try:
+                output_kuaishou_coverage.validate(
+                    manifest_kuaishou_scan,
+                    manifest.max_items,
+                    normalized_remote_ids=tuple(record.content.remote_id for record in output.records),
+                )
+            except ValueError:
+                return await self._fail_attempt(context, prepared, attempt_paths, "output_security_failed")
+            ingest_call = asyncio.to_thread(
+                service.ingest_kuaishou_bounded,
+                output.records,
+                subscription_id=context.subscription_id,
+                run_id=prepared.run_id,
+                expected_revision=prepared.checkpoint_revision,
+                crawl_revision_before=manifest.checkpoint_revision_before,
+                input_cursor=manifest.kuaishou_scan_input_cursor,
+                next_cursor=output_kuaishou_coverage.next_state.to_cursor(),
+                coverage=output_kuaishou_coverage,
+                ownership_guard=guarded,
+            )
         else:
             ingest_call = asyncio.to_thread(
                 service.ingest,
@@ -1236,7 +1323,9 @@ class MediaCrawlerScheduledHandler:
             ingestion_error_code = "unexpected_handler_failure"
 
         try:
-            bounded_coverage = output_bili_coverage or output_xhs_coverage or output_douyin_coverage
+            bounded_coverage = (
+                output_bili_coverage or output_xhs_coverage or output_douyin_coverage or output_kuaishou_coverage
+            )
             if bounded_coverage is not None:
                 truth = self._read_ingestion_truth(
                     context,
@@ -1355,6 +1444,8 @@ class MediaCrawlerScheduledHandler:
             != (getattr(manifest, "xhs_scan", None) is not None)
             or (context.account.platform is Platform.DY and policy.creator_secret_ref is not None)
             != (getattr(manifest, "douyin_scan", None) is not None)
+            or (context.account.platform is Platform.KS and policy.creator_secret_ref is not None)
+            != (getattr(manifest, "kuaishou_scan", None) is not None)
             or manifest.headless is not policy.headless
             or manifest.request_delay_seconds != policy.request_delay_seconds
             or manifest.watchdogs != self.watchdogs
@@ -1530,6 +1621,13 @@ class MediaCrawlerScheduledHandler:
                 raise
             except Exception:
                 return SubscriptionHandlerResult.failure("configuration_invalid")
+        if context.account.platform is Platform.KS and policy.creator_secret_ref is not None:
+            try:
+                scope = self._ensure_kuaishou_creator_binding(context, creator_reference)
+            except LeaseLostError:
+                raise
+            except Exception:
+                return SubscriptionHandlerResult.failure("configuration_invalid")
 
         recovery_rejected = False
         try:
@@ -1620,6 +1718,14 @@ class MediaCrawlerScheduledHandler:
             douyin_scan_cursor_before=(
                 prepared.cursor_before
                 if context.account.platform is Platform.DY and policy.creator_secret_ref is not None
+                else None
+            ),
+            kuaishou_bounded_capture=(
+                context.account.platform is Platform.KS and policy.creator_secret_ref is not None
+            ),
+            kuaishou_scan_cursor_before=(
+                prepared.cursor_before
+                if context.account.platform is Platform.KS and policy.creator_secret_ref is not None
                 else None
             ),
         )

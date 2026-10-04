@@ -31,6 +31,7 @@ from .handlers import (
     SubscriptionHandlerResult,
     SubscriptionJobContext,
 )
+from .kuaishou_scan_continuation import KuaishouScanContinuationPolicy
 from .policy import FailureDisposition, RetryPolicy, classify_failure
 from .policy import retry_at as calculate_retry_at
 from .repository import (
@@ -101,12 +102,14 @@ class DurableSchedulerService:
         bili_scan_continuation: BiliScanContinuationPolicy | None = None,
         xhs_scan_continuation: XhsScanContinuationPolicy | None = None,
         douyin_scan_continuation: DouyinScanContinuationPolicy | None = None,
+        kuaishou_scan_continuation: KuaishouScanContinuationPolicy | None = None,
     ) -> None:
         self.database = database
         self.clock = clock
         self.bili_scan_continuation = bili_scan_continuation
         self.xhs_scan_continuation = xhs_scan_continuation
         self.douyin_scan_continuation = douyin_scan_continuation
+        self.kuaishou_scan_continuation = kuaishou_scan_continuation
 
     def _repository(self, session: Session) -> SchedulerRepository:
         return SchedulerRepository(
@@ -114,6 +117,7 @@ class DurableSchedulerService:
             bili_scan_continuation=self.bili_scan_continuation,
             xhs_scan_continuation=self.xhs_scan_continuation,
             douyin_scan_continuation=self.douyin_scan_continuation,
+            kuaishou_scan_continuation=self.kuaishou_scan_continuation,
         )
 
     def tick(self, *, limit: int = 100, retry_policy: RetryPolicy | None = None) -> SchedulerTickResult:
@@ -220,6 +224,7 @@ class SubscriptionWorker:
         bili_scan_continuation: BiliScanContinuationPolicy | None = None,
         xhs_scan_continuation: XhsScanContinuationPolicy | None = None,
         douyin_scan_continuation: DouyinScanContinuationPolicy | None = None,
+        kuaishou_scan_continuation: KuaishouScanContinuationPolicy | None = None,
         event_sink: EventSink | None = None,
     ) -> None:
         if type(claim_registered_only) is not bool:
@@ -233,6 +238,7 @@ class SubscriptionWorker:
         self.bili_scan_continuation = bili_scan_continuation
         self.xhs_scan_continuation = xhs_scan_continuation
         self.douyin_scan_continuation = douyin_scan_continuation
+        self.kuaishou_scan_continuation = kuaishou_scan_continuation
 
     def _repository(self, session: Session) -> SchedulerRepository:
         return SchedulerRepository(
@@ -240,6 +246,7 @@ class SubscriptionWorker:
             bili_scan_continuation=self.bili_scan_continuation,
             xhs_scan_continuation=self.xhs_scan_continuation,
             douyin_scan_continuation=self.douyin_scan_continuation,
+            kuaishou_scan_continuation=self.kuaishou_scan_continuation,
         )
 
     @staticmethod

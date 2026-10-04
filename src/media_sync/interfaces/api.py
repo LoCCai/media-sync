@@ -193,6 +193,8 @@ from media_sync.scheduler.bili_delivery_progress import bili_delivery_progress_p
 from media_sync.scheduler.bili_scan_continuation import BiliScanContinuationPolicy
 from media_sync.scheduler.douyin_delivery_progress import douyin_delivery_progress_payload
 from media_sync.scheduler.douyin_scan_continuation import DouyinScanContinuationPolicy
+from media_sync.scheduler.kuaishou_delivery_progress import kuaishou_delivery_progress_payload
+from media_sync.scheduler.kuaishou_scan_continuation import KuaishouScanContinuationPolicy
 from media_sync.scheduler.xhs_delivery_progress import xhs_delivery_progress_payload
 from media_sync.scheduler.xhs_scan_continuation import XhsScanContinuationPolicy
 from media_sync.security import (
@@ -861,6 +863,18 @@ def _subscription_douyin_delivery_payload(
     except (CheckoutValidationError, OSError, ValueError):
         upstream_sha = None
     return douyin_delivery_progress_payload(subscription, upstream_sha=upstream_sha)
+
+
+def _subscription_kuaishou_delivery_payload(
+    subscription: Subscription,
+    *,
+    lock_path: Path,
+) -> dict[str, object] | None:
+    try:
+        upstream_sha = load_mediacrawler_lock(lock_path).commit
+    except (CheckoutValidationError, OSError, ValueError):
+        upstream_sha = None
+    return kuaishou_delivery_progress_payload(subscription, upstream_sha=upstream_sha)
 
 
 def _xhs_delivery_failure_code(
@@ -1804,6 +1818,7 @@ def create_api_app(
             "bili_scan_continuation_delay_seconds": resolved.bili_scan_continuation_delay_seconds,
             "xhs_scan_continuation_delay_seconds": resolved.xhs_scan_continuation_delay_seconds,
             "douyin_scan_continuation_delay_seconds": resolved.douyin_scan_continuation_delay_seconds,
+            "kuaishou_scan_continuation_delay_seconds": resolved.kuaishou_scan_continuation_delay_seconds,
             "mediacrawler_python_executable": (
                 str(resolved.mediacrawler_python_executable)
                 if resolved.mediacrawler_python_executable is not None
@@ -3016,6 +3031,10 @@ def create_api_app(
                     resolved.mediacrawler_lock_path,
                     delay_seconds=resolved.douyin_scan_continuation_delay_seconds,
                 ),
+                kuaishou_scan_continuation=KuaishouScanContinuationPolicy.from_lock(
+                    resolved.mediacrawler_lock_path,
+                    delay_seconds=resolved.kuaishou_scan_continuation_delay_seconds,
+                ),
             )
             schedule = {
                 "pause": service.pause_subscription,
@@ -3065,6 +3084,12 @@ def create_api_app(
                 )
                 if douyin_delivery is not None:
                     payload["douyin_delivery"] = douyin_delivery
+                kuaishou_delivery = _subscription_kuaishou_delivery_payload(
+                    subscription,
+                    lock_path=resolved.mediacrawler_lock_path,
+                )
+                if kuaishou_delivery is not None:
+                    payload["kuaishou_delivery"] = kuaishou_delivery
                 payload["schedule"] = _scheduler_schedule_payload(
                     SchedulerRepository(session).get_subscription_schedule(str(subscription_id))
                 )
@@ -3105,6 +3130,10 @@ def create_api_app(
                     douyin_scan_continuation=DouyinScanContinuationPolicy.from_lock(
                         resolved.mediacrawler_lock_path,
                         delay_seconds=resolved.douyin_scan_continuation_delay_seconds,
+                    ),
+                    kuaishou_scan_continuation=KuaishouScanContinuationPolicy.from_lock(
+                        resolved.mediacrawler_lock_path,
+                        delay_seconds=resolved.kuaishou_scan_continuation_delay_seconds,
                     ),
                 ).list_jobs(subscription_id=str(subscription_id), limit=5)
             ]
@@ -3407,6 +3436,10 @@ def create_api_app(
                             resolved.mediacrawler_lock_path,
                             delay_seconds=resolved.douyin_scan_continuation_delay_seconds,
                         ),
+                        kuaishou_scan_continuation=KuaishouScanContinuationPolicy.from_lock(
+                            resolved.mediacrawler_lock_path,
+                            delay_seconds=resolved.kuaishou_scan_continuation_delay_seconds,
+                        ),
                     ).materialize_one(target_id, expected_schedule_revision=body.expected_schedule_revision)
                     context.subject_hook(session, DurableSubjectRef("job", cycle.job_id, role="execution"))
                     return cycle
@@ -3668,6 +3701,10 @@ def create_api_app(
                     resolved.mediacrawler_lock_path,
                     delay_seconds=resolved.douyin_scan_continuation_delay_seconds,
                 ),
+                kuaishou_scan_continuation=KuaishouScanContinuationPolicy.from_lock(
+                    resolved.mediacrawler_lock_path,
+                    delay_seconds=resolved.kuaishou_scan_continuation_delay_seconds,
+                ),
             ).tick(limit=body.limit)
             return {
                 "materialized_count": result.materialized_count,
@@ -3850,6 +3887,10 @@ def create_api_app(
                 douyin_scan_continuation=DouyinScanContinuationPolicy.from_lock(
                     resolved.mediacrawler_lock_path,
                     delay_seconds=resolved.douyin_scan_continuation_delay_seconds,
+                ),
+                kuaishou_scan_continuation=KuaishouScanContinuationPolicy.from_lock(
+                    resolved.mediacrawler_lock_path,
+                    delay_seconds=resolved.kuaishou_scan_continuation_delay_seconds,
                 ),
             ).list_jobs(
                 status=status.value if status is not None else None,

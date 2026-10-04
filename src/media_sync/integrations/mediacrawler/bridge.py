@@ -33,6 +33,7 @@ from .checkout import (
     verify_mediacrawler_python,
 )
 from .douyin_creator_work import DouyinScanState
+from .kuaishou_creator_work import KuaishouScanState
 from .policies import (
     MAX_PRIVATE_INPUT_BYTES,
     PRIVATE_INPUT_ENV,
@@ -121,6 +122,8 @@ class BridgeRequest:
     xhs_scan_cursor_before: str | None = field(default=None, repr=False)
     douyin_bounded_capture: bool = False
     douyin_scan_cursor_before: str | None = field(default=None, repr=False)
+    kuaishou_bounded_capture: bool = False
+    kuaishou_scan_cursor_before: str | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         if self.bili_scope is not None and (
@@ -173,6 +176,33 @@ class BridgeRequest:
             or not self.douyin_scan_cursor_before.strip()
         ):
             raise BridgeConfigurationError("bounded Douyin input cursor is invalid")
+        if type(self.kuaishou_bounded_capture) is not bool or (
+            self.kuaishou_bounded_capture
+            and (self.platform is not Platform.KS or self.intended_mode != MediaCrawlerRunMode.FORWARD)
+        ):
+            raise BridgeConfigurationError("bounded Kuaishou capture requires a forward Kuaishou request")
+        if (
+            len(
+                [
+                    flag
+                    for flag in (
+                        self.bili_bounded_capture,
+                        self.xhs_bounded_capture,
+                        self.douyin_bounded_capture,
+                        self.kuaishou_bounded_capture,
+                    )
+                    if flag
+                ]
+            )
+            > 1
+        ):
+            raise BridgeConfigurationError("one request cannot carry multiple bounded scan contracts")
+        if self.kuaishou_scan_cursor_before is not None and (
+            not self.kuaishou_bounded_capture
+            or type(self.kuaishou_scan_cursor_before) is not str
+            or not self.kuaishou_scan_cursor_before.strip()
+        ):
+            raise BridgeConfigurationError("bounded Kuaishou input cursor is invalid")
         try:
             intended_mode = MediaCrawlerRunMode(self.intended_mode)
         except (TypeError, ValueError) as error:
@@ -259,6 +289,8 @@ class RunnerManifest:
     xhs_scan_input_cursor: str | None = field(default=None, repr=False)
     douyin_scan: DouyinScanState | None = field(default=None, repr=False)
     douyin_scan_input_cursor: str | None = field(default=None, repr=False)
+    kuaishou_scan: KuaishouScanState | None = field(default=None, repr=False)
+    kuaishou_scan_input_cursor: str | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         if self.bili_scan_input_cursor is not None and (
@@ -310,6 +342,7 @@ class RunnerManifest:
                 or self.intended_mode != MediaCrawlerRunMode.FORWARD
                 or self.bili_scan is not None
                 or self.douyin_scan is not None
+                or self.kuaishou_scan is not None
             ):
                 raise BridgeConfigurationError("bounded XHS manifest scope is invalid")
             try:
@@ -344,6 +377,7 @@ class RunnerManifest:
                 or self.intended_mode != MediaCrawlerRunMode.FORWARD
                 or self.bili_scan is not None
                 or self.xhs_scan is not None
+                or self.kuaishou_scan is not None
             ):
                 raise BridgeConfigurationError("bounded Douyin manifest scope is invalid")
             try:
@@ -366,6 +400,41 @@ class RunnerManifest:
                 raise BridgeConfigurationError("bounded Douyin manifest state is invalid") from None
         elif self.douyin_scan_input_cursor is not None:
             raise BridgeConfigurationError("Douyin cursor requires a bounded scan contract")
+        if self.kuaishou_scan_input_cursor is not None and (
+            type(self.kuaishou_scan_input_cursor) is not str or not self.kuaishou_scan_input_cursor.strip()
+        ):
+            raise BridgeConfigurationError("bounded Kuaishou manifest input cursor is invalid")
+        if self.kuaishou_scan is not None:
+            if (
+                type(self.kuaishou_scan) is not KuaishouScanState
+                or self.platform is not Platform.KS
+                or self.schema_version != MANIFEST_SCHEMA_VERSION
+                or self.intended_mode != MediaCrawlerRunMode.FORWARD
+                or self.bili_scan is not None
+                or self.xhs_scan is not None
+                or self.douyin_scan is not None
+            ):
+                raise BridgeConfigurationError("bounded Kuaishou manifest scope is invalid")
+            try:
+                self.kuaishou_scan.require_binding(
+                    account_id=self.account_id,
+                    author_fingerprint_sha256=self.author_remote_id_fingerprint_sha256,
+                    creator_fingerprint_sha256=self.creator_fingerprint_sha256,
+                    upstream_sha=self.upstream_sha,
+                )
+                expected_kuaishou = KuaishouScanState.for_cursor(
+                    self.kuaishou_scan_input_cursor,
+                    account_id=self.account_id,
+                    author_fingerprint_sha256=self.author_remote_id_fingerprint_sha256,
+                    creator_fingerprint_sha256=self.creator_fingerprint_sha256,
+                    upstream_sha=self.upstream_sha,
+                )
+                if self.kuaishou_scan != expected_kuaishou:
+                    raise ValueError("scan input mismatch")
+            except ValueError:
+                raise BridgeConfigurationError("bounded Kuaishou manifest state is invalid") from None
+        elif self.kuaishou_scan_input_cursor is not None:
+            raise BridgeConfigurationError("Kuaishou cursor requires a bounded scan contract")
         if type(self.schema_version) is not int or self.schema_version not in {
             LEGACY_MANIFEST_SCHEMA_VERSION,
             MANIFEST_SCHEMA_VERSION,
@@ -517,6 +586,12 @@ class RunnerManifest:
                 "input_cursor": self.douyin_scan_input_cursor,
                 "state": self.douyin_scan.to_cursor(),
             }
+        if self.kuaishou_scan is not None:
+            payload["kuaishou_scan"] = {
+                "schema_version": 1,
+                "input_cursor": self.kuaishou_scan_input_cursor,
+                "state": self.kuaishou_scan.to_cursor(),
+            }
         return payload
 
     @classmethod
@@ -584,6 +659,8 @@ class RunnerManifest:
             expected_keys = expected_keys | {"xhs_scan"}
         if schema_version == MANIFEST_SCHEMA_VERSION and "douyin_scan" in raw:
             expected_keys = expected_keys | {"douyin_scan"}
+        if schema_version == MANIFEST_SCHEMA_VERSION and "kuaishou_scan" in raw:
+            expected_keys = expected_keys | {"kuaishou_scan"}
         if set(raw) != expected_keys:
             raise BridgeConfigurationError("runner manifest contains unsupported fields")
 
@@ -780,6 +857,26 @@ class RunnerManifest:
             except ValueError:
                 raise BridgeConfigurationError("bounded Douyin manifest state is invalid") from None
             douyin_scan_input_cursor = scan_contract["input_cursor"]
+        kuaishou_scan = None
+        kuaishou_scan_input_cursor = None
+        if "kuaishou_scan" in raw:
+            scan_contract = raw["kuaishou_scan"]
+            if (
+                not isinstance(scan_contract, Mapping)
+                or set(scan_contract) != {"schema_version", "input_cursor", "state"}
+                or type(scan_contract.get("schema_version")) is not int
+                or scan_contract["schema_version"] != 1
+                or type(scan_contract.get("state")) is not str
+                or (
+                    scan_contract.get("input_cursor") is not None and type(scan_contract.get("input_cursor")) is not str
+                )
+            ):
+                raise BridgeConfigurationError("bounded Kuaishou manifest contract is invalid")
+            try:
+                kuaishou_scan = KuaishouScanState.from_cursor(scan_contract["state"])
+            except ValueError:
+                raise BridgeConfigurationError("bounded Kuaishou manifest state is invalid") from None
+            kuaishou_scan_input_cursor = scan_contract["input_cursor"]
         if bili_scan is None:
             require_full_history_acknowledgement(platform, allow_full_history)
         upstream_login_type(login_method)
@@ -829,6 +926,8 @@ class RunnerManifest:
             xhs_scan_input_cursor=xhs_scan_input_cursor,
             douyin_scan=douyin_scan,
             douyin_scan_input_cursor=douyin_scan_input_cursor,
+            kuaishou_scan=kuaishou_scan,
+            kuaishou_scan_input_cursor=kuaishou_scan_input_cursor,
         )
 
 
@@ -1063,6 +1162,18 @@ class MediaCrawlerBridge:
                 )
             except ValueError:
                 raise BridgeConfigurationError("bounded XHS input state is invalid") from None
+        kuaishou_scan = None
+        if request.kuaishou_bounded_capture:
+            try:
+                kuaishou_scan = KuaishouScanState.for_cursor(
+                    request.kuaishou_scan_cursor_before,
+                    account_id=request.account_id,
+                    author_fingerprint_sha256=hashlib.sha256(request.author_remote_id.encode("utf-8")).hexdigest(),
+                    creator_fingerprint_sha256=creator_fingerprint,
+                    upstream_sha=checkout.commit,
+                )
+            except ValueError:
+                raise BridgeConfigurationError("bounded Kuaishou input state is invalid") from None
 
         scheduler_job_id = request.scheduler_job_id
         execution_id = request.execution_id
@@ -1133,6 +1244,8 @@ class MediaCrawlerBridge:
             xhs_scan_input_cursor=request.xhs_scan_cursor_before,
             douyin_scan=douyin_scan,
             douyin_scan_input_cursor=request.douyin_scan_cursor_before,
+            kuaishou_scan=kuaishou_scan,
+            kuaishou_scan_input_cursor=request.kuaishou_scan_cursor_before,
         )
         environment, known_secrets = _child_environment(
             creator_reference,

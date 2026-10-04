@@ -25,6 +25,12 @@ from media_sync.integrations.mediacrawler.douyin_creator_work import (
     DouyinScanCoverage,
     DouyinWorkIdentity,
 )
+from media_sync.integrations.mediacrawler.kuaishou_creator_work import (
+    KUAISHOU_SCAN_COVERAGE_FILENAME,
+    KUAISHOU_SCAN_IDENTITY_FIELD,
+    KuaishouScanCoverage,
+    KuaishouWorkIdentity,
+)
 from media_sync.integrations.mediacrawler.normalizers import (
     NormalizationContext,
     NormalizedMediaRecord,
@@ -53,6 +59,7 @@ class NormalizedMediaCrawlerOutput:
     bili_coverage: BiliScanCoverage | BiliMultiFeedCoverage | None = field(default=None, repr=False)
     xhs_coverage: XhsScanCoverage | None = field(default=None, repr=False)
     douyin_coverage: DouyinScanCoverage | None = field(default=None, repr=False)
+    kuaishou_coverage: KuaishouScanCoverage | None = field(default=None, repr=False)
 
 
 def validate_bili_record_keys(
@@ -179,6 +186,39 @@ def _douyin_content_identities(payload: bytes, *, creator_fingerprint_sha256: st
     return tuple(identities)
 
 
+def _kuaishou_content_identities(
+    payload: bytes,
+    *,
+    creator_fingerprint_sha256: str,
+) -> tuple[KuaishouWorkIdentity, ...]:
+    identities: list[KuaishouWorkIdentity] = []
+    for line in payload.splitlines():
+        if not line.strip():
+            continue
+        raw = json.loads(line, object_pairs_hook=_closed_object)
+        identity = raw.get(KUAISHOU_SCAN_IDENTITY_FIELD) if isinstance(raw, Mapping) else None
+        if not isinstance(identity, Mapping) or set(identity) != {
+            "photo_id",
+            "listing_sha256",
+            "creator_fingerprint_sha256",
+        }:
+            raise MediaCrawlerOutputRejected("bounded Kuaishou content identity is missing")
+        if identity["creator_fingerprint_sha256"] != creator_fingerprint_sha256:
+            raise MediaCrawlerOutputRejected("bounded Kuaishou creator reference differs")
+        if not isinstance(raw, Mapping) or raw.get("video_id") != identity["photo_id"]:
+            raise MediaCrawlerOutputRejected("bounded Kuaishou work identity differs")
+        try:
+            identities.append(
+                KuaishouWorkIdentity(
+                    photo_id=identity["photo_id"],
+                    listing_sha256=identity["listing_sha256"],
+                )
+            )
+        except (TypeError, ValueError):
+            raise MediaCrawlerOutputRejected("bounded Kuaishou content identity is invalid") from None
+    return tuple(identities)
+
+
 def load_normalized_output(
     manifest: RunnerManifest,
     *,
@@ -206,9 +246,11 @@ def load_normalized_output(
     bili_coverage = None
     xhs_coverage = None
     douyin_coverage = None
+    kuaishou_coverage = None
     bili_identities: list[BiliIdentity] = []
     xhs_identities: list[XhsNoteIdentity] = []
     douyin_identities: list[DouyinWorkIdentity] = []
+    kuaishou_identities: list[KuaishouWorkIdentity] = []
     dynamic_payloads: dict[str, BiliDynamicPayload] = {}
     for jsonl_file in snapshot.files:
         if PurePosixPath(jsonl_file.relative_path).name == "_media_sync_bili_coverage.jsonl":
@@ -237,6 +279,15 @@ def load_normalized_output(
             ):
                 raise MediaCrawlerOutputRejected("unexpected Douyin coverage sidecar")
             douyin_coverage = DouyinScanCoverage.from_json_line(jsonl_file.payload.decode("utf-8"))
+            continue
+        if PurePosixPath(jsonl_file.relative_path).name == KUAISHOU_SCAN_COVERAGE_FILENAME:
+            if (
+                manifest.kuaishou_scan is None
+                or jsonl_file.relative_path != KUAISHOU_SCAN_COVERAGE_FILENAME
+                or kuaishou_coverage is not None
+            ):
+                raise MediaCrawlerOutputRejected("unexpected Kuaishou coverage sidecar")
+            kuaishou_coverage = KuaishouScanCoverage.from_json_line(jsonl_file.payload.decode("utf-8"))
             continue
         if manifest.bili_scan is not None:
             upload_lines: list[bytes] = []
@@ -268,6 +319,13 @@ def load_normalized_output(
         if manifest.douyin_scan is not None:
             douyin_identities.extend(
                 _douyin_content_identities(
+                    jsonl_file.payload,
+                    creator_fingerprint_sha256=manifest.creator_fingerprint_sha256,
+                )
+            )
+        if manifest.kuaishou_scan is not None:
+            kuaishou_identities.extend(
+                _kuaishou_content_identities(
                     jsonl_file.payload,
                     creator_fingerprint_sha256=manifest.creator_fingerprint_sha256,
                 )
@@ -430,6 +488,36 @@ def load_normalized_output(
                 or record.content.remote_id not in {identity.aweme_id for identity in douyin_coverage.successful}
             ):
                 raise MediaCrawlerOutputRejected("bounded Douyin normalized identity differs")
+    if manifest.kuaishou_scan is not None:
+        if kuaishou_coverage is None:
+            raise MediaCrawlerOutputRejected("bounded Kuaishou coverage is missing")
+        if (
+            hashlib.sha256(creator_remote_id.encode("utf-8")).hexdigest()
+            != manifest.author_remote_id_fingerprint_sha256
+        ):
+            raise MediaCrawlerOutputRejected("bounded Kuaishou creator scope differs")
+        try:
+            kuaishou_coverage.validate(
+                manifest.kuaishou_scan,
+                manifest.max_items,
+                normalized_remote_ids=tuple(record.content.remote_id for record in records),
+            )
+        except ValueError:
+            raise MediaCrawlerOutputRejected("bounded Kuaishou coverage and content differ") from None
+        if (
+            len(records) != records_seen
+            or len(kuaishou_identities) != len(kuaishou_coverage.successful)
+            or tuple(kuaishou_identities) != kuaishou_coverage.successful
+        ):
+            raise MediaCrawlerOutputRejected("bounded Kuaishou coverage and content differ")
+        for record in records:
+            if (
+                record.content.platform is not Platform.KS
+                or record.content.remote_type != "content"
+                or record.author.remote_id != creator_remote_id
+                or record.content.remote_id not in {identity.photo_id for identity in kuaishou_coverage.successful}
+            ):
+                raise MediaCrawlerOutputRejected("bounded Kuaishou normalized identity differs")
     fingerprint = hashlib.sha256(
         json.dumps(
             snapshot.receipt.as_payload(),
@@ -444,6 +532,8 @@ def load_normalized_output(
         input_records=records_seen,
         bili_coverage=bili_coverage,
         xhs_coverage=xhs_coverage,
+        douyin_coverage=douyin_coverage,
+        kuaishou_coverage=kuaishou_coverage,
     )
 
 

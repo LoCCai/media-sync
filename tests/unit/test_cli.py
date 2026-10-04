@@ -352,7 +352,8 @@ def test_db_init_runs_packaged_migrations_idempotently(tmp_path: Path, monkeypat
         try:
             assert "alembic_version" in inspect(database.engine).get_table_names()
             with database.engine.connect() as connection:
-                assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0016_douyin_creator_work"
+                version_num = connection.scalar(text("SELECT version_num FROM alembic_version"))
+                assert version_num == "0017_kuaishou_creator_work"
         finally:
             database.dispose()
     finally:
@@ -401,18 +402,18 @@ def test_db_status_reports_current_complete_schema_without_exposing_target(
         "ok": True,
         "database_driver": "sqlite+pysqlite",
         "reachable": True,
-        "revision": "0016_douyin_creator_work",
-        "expected_revision": "0016_douyin_creator_work",
+        "revision": "0017_kuaishou_creator_work",
+        "expected_revision": "0017_kuaishou_creator_work",
         "revision_current": True,
-        "required_table_count": 26,
-        "present_table_count": 26,
+        "required_table_count": 27,
+        "present_table_count": 27,
         "missing_tables": [],
         "reason": None,
     }
     assert text_result.exit_code == 0
     assert "Database ready:" in text_result.output
-    assert "revision=0016_douyin_creator_work" in text_result.output
-    assert "tables=26/26" in text_result.output
+    assert "revision=0017_kuaishou_creator_work" in text_result.output
+    assert "tables=27/27" in text_result.output
     for output in (json_result.output, text_result.output):
         assert initialized_cli_database not in output
         assert "cli.sqlite3" not in output
@@ -438,7 +439,7 @@ def test_db_status_uninitialized_is_nonzero_read_only_and_redacted(
         assert payload["revision"] is None
         assert payload["revision_current"] is False
         assert payload["present_table_count"] == 0
-        assert len(payload["missing_tables"]) == payload["required_table_count"] == 26
+        assert len(payload["missing_tables"]) == payload["required_table_count"] == 27
         assert payload["reason"] == "database file does not exist"
         assert "sentinel-secret" not in result.output
         assert "Traceback" not in result.output
@@ -490,7 +491,7 @@ def test_db_status_rejects_incomplete_required_table_set(
     payload = json.loads(result.output)
     assert payload["reachable"] is True
     assert payload["revision_current"] is True
-    assert payload["present_table_count"] == 25
+    assert payload["present_table_count"] == 26
     assert payload["missing_tables"] == ["export_records"]
     assert payload["reason"] == "database schema is incomplete"
     assert "Traceback" not in result.output
@@ -1366,6 +1367,7 @@ def test_pipeline_worker_cli_wires_bounded_runtime_and_fixed_output(
             bili_delivery_policy: object,
             xhs_delivery_policy: object,
             douyin_delivery_policy: object = None,
+            kuaishou_delivery_policy: object = None,
         ) -> None:
             assert callable(event_sink)
             captured.update(

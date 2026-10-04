@@ -8,9 +8,11 @@ import {
   DELIVERY_UNAVAILABLE,
   EXACT_DELIVERY_NOTICE,
   parseBiliDeliveryProgress,
+  parseDouyinDeliveryProgress,
   parseXhsDeliveryProgress,
   parseSubscriptionDeliveryOperation,
   safeBiliDeliveryProgressCard,
+  safeDouyinDeliveryProgressCard,
   safeXhsDeliveryProgressCard,
   safeScanProgressCards,
   SCAN_PROGRESS_NOTICE,
@@ -436,6 +438,20 @@ describe('delivery-qualified Bili baseline display', () => {
       expect(JSON.stringify(safeBiliDeliveryProgressCard(value))).not.toContain(sentinel);
     }
   });
+
+  it('maps blocked phases to the shared warning tone and surfaces the blocked code', () => {
+    const card = safeBiliDeliveryProgressCard({
+      ...progress,
+      phase: 'blocked',
+      baseline_snapshot_complete: false,
+      blocked_code: 'bili_login_expired',
+      last_lane: 'history',
+      last_stop_reason: 'item_limit'
+    });
+    expect(card.phase).toBe('需要处理');
+    expect(card.status).toBe('warning');
+    expect(JSON.stringify(card.rows)).toContain('bili_login_expired');
+  });
 });
 
 describe('delivery-qualified XHS creator-note display', () => {
@@ -476,6 +492,7 @@ describe('delivery-qualified XHS creator-note display', () => {
   it('rejects unknown fields, false completion and inconsistent source-end evidence', () => {
     for (const value of [
       { ...progress, opaque_cursor: sentinel },
+      { ...progress, work_observation_count: 3 },
       { ...progress, baseline_snapshot_complete: false },
       { ...progress, cursor_step_count: 6 },
       { ...progress, source_end_run_id: null },
@@ -484,6 +501,115 @@ describe('delivery-qualified XHS creator-note display', () => {
       expect(parseXhsDeliveryProgress(value)).toBeNull();
       expect(JSON.stringify(safeXhsDeliveryProgressCard(value))).not.toContain(sentinel);
     }
+  });
+
+  it('maps blocked phases to the shared warning tone and surfaces the blocked code', () => {
+    const card = safeXhsDeliveryProgressCard({
+      ...progress,
+      phase: 'blocked',
+      baseline_snapshot_complete: false,
+      blocked_code: 'xhs_access_restricted'
+    });
+    expect(card.phase).toBe('需要处理');
+    expect(card.status).toBe('warning');
+    expect(JSON.stringify(card.rows)).toContain('xhs_access_restricted');
+  });
+});
+
+describe('delivery-qualified Douyin creator-work display', () => {
+  const progress = {
+    schema_version: 1,
+    initialized: true,
+    phase: 'incremental',
+    baseline_snapshot_complete: true,
+    generation_id: otherId,
+    batch_count: 6,
+    work_observation_count: 71,
+    cursor_step_count: 5,
+    backfill_batch_count: 4,
+    reconciliation_batch_count: 2,
+    incremental_batch_count: 0,
+    partial_batch_count: 1,
+    failed_work_count: 1,
+    last_stop_reason: 'unit_cap_reached',
+    last_delivery_at: '2026-09-09T12:00:00+00:00',
+    source_end_observed_at: '2026-09-09T11:00:00+00:00',
+    source_end_run_id: runId,
+    reconciled_at: '2026-09-09T12:00:00+00:00',
+    reconciliation_run_id: requestId,
+    baseline_snapshot_at: '2026-09-09T12:00:00+00:00',
+    next_eligible_at: '2026-09-09T18:00:00+00:00',
+    blocked_code: null
+  };
+
+  it('shows cursor-step and work counters aligned with the XHS panel', () => {
+    expect(parseDouyinDeliveryProgress(progress)?.phase).toBe('incremental');
+    const card = safeDouyinDeliveryProgressCard(progress);
+    expect(card.phase).toBe('增量作品检查');
+    expect(JSON.stringify(card.rows)).toContain('5 步');
+    expect(JSON.stringify(card.rows)).toContain('71 条');
+    expect(card.status).toBe('succeeded');
+    expect(card.notice).toContain('不表示平台历史永久不变');
+    expect(JSON.stringify(card)).not.toContain(sentinel);
+  });
+
+  it('rejects unknown fields, the XHS-shaped payload and inconsistent source-end evidence', () => {
+    for (const value of [
+      { ...progress, opaque_cursor: sentinel },
+      { ...progress, note_observation_count: 3 },
+      { ...progress, baseline_snapshot_complete: false },
+      { ...progress, cursor_step_count: 7 },
+      { ...progress, source_end_run_id: null },
+      { ...progress, last_stop_reason: 'source_end' }
+    ]) {
+      expect(parseDouyinDeliveryProgress(value)).toBeNull();
+      expect(JSON.stringify(safeDouyinDeliveryProgressCard(value))).not.toContain(sentinel);
+    }
+  });
+
+  it('maps blocked phases to the shared warning tone and surfaces the blocked code', () => {
+    const card = safeDouyinDeliveryProgressCard({
+      ...progress,
+      phase: 'blocked',
+      baseline_snapshot_complete: false,
+      blocked_code: 'douyin_access_restricted'
+    });
+    expect(card.phase).toBe('需要处理');
+    expect(card.status).toBe('warning');
+    expect(JSON.stringify(card.rows)).toContain('douyin_access_restricted');
+  });
+
+  it('keeps the uninitialized fallback closed on zero counters and no evidence claims', () => {
+    const fallback = {
+      schema_version: 1,
+      initialized: false,
+      phase: 'backfill',
+      baseline_snapshot_complete: false,
+      generation_id: null,
+      batch_count: 0,
+      work_observation_count: 0,
+      cursor_step_count: 0,
+      backfill_batch_count: 0,
+      reconciliation_batch_count: 0,
+      incremental_batch_count: 0,
+      partial_batch_count: 0,
+      failed_work_count: 0,
+      last_stop_reason: null,
+      last_delivery_at: null,
+      source_end_observed_at: null,
+      source_end_run_id: null,
+      reconciled_at: null,
+      reconciliation_run_id: null,
+      baseline_snapshot_at: null,
+      next_eligible_at: '2026-09-09T18:00:00+00:00',
+      blocked_code: null
+    };
+    const card = safeDouyinDeliveryProgressCard(fallback);
+    expect(card.phase).toBe('历史作品回填');
+    expect(card.status).toBe('queued');
+    expect(JSON.stringify(card.rows)).toContain('尚未产生');
+    expect(JSON.stringify(card.rows)).not.toContain('已声明完成');
+    expect(parseDouyinDeliveryProgress({ ...fallback, batch_count: 1 })).toBeNull();
   });
 });
 
@@ -499,6 +625,8 @@ describe('subscriptions route wiring', () => {
     expect(source).toContain('safeScanProgressCards');
     expect(source).toContain('safeBiliDeliveryProgressCard');
     expect(source).toContain('safeXhsDeliveryProgressCard');
+    expect(source).toContain('safeDouyinDeliveryProgressCard');
+    expect(source).toContain('deliveryBaselinePanelsFor');
     expect(source).not.toContain('已安排同步任务；完成状态请到任务页面核对。');
   });
 });

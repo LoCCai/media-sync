@@ -1,6 +1,9 @@
 import { ApiError } from '../api/client';
 import type {
   BiliDeliveryProgress,
+  CursorDeliveryPhase,
+  CursorDeliveryStopReason,
+  DouyinDeliveryProgress,
   OperationState,
   Platform,
   SubscriptionDeliveryResult,
@@ -90,20 +93,20 @@ const STOP_REASONS: Record<string, string> = {
 const SHA1 = /^[0-9a-f]{40}$/;
 const CODE = /^[a-z][a-z0-9_]{0,127}$/;
 const BILI_DELIVERY_PHASES = new Set(['backfill', 'reconciling', 'incremental', 'blocked']);
-const BILI_DELIVERY_PHASE_LABELS: Record<BiliDeliveryProgress['phase'], string> = {
+const BILI_DELIVERY_PHASE_LABELS: Record<CursorDeliveryPhase, string> = {
   backfill: '历史回填',
   reconciling: '头部对账',
   incremental: '增量检查',
   blocked: '需要处理'
 };
-const XHS_DELIVERY_PHASES = new Set(['backfill', 'reconciling', 'incremental', 'blocked']);
-const XHS_DELIVERY_PHASE_LABELS: Record<XhsDeliveryProgress['phase'], string> = {
-  backfill: '历史笔记回填',
-  reconciling: '头部笔记对账',
-  incremental: '增量笔记检查',
-  blocked: '需要处理'
+/** 三个面板共用的阶段→状态语义：增量=稳定，回填/对账=进行中，阻塞=警示。 */
+const DELIVERY_PHASE_STATUS: Record<CursorDeliveryPhase, string> = {
+  backfill: 'queued',
+  reconciling: 'running',
+  incremental: 'succeeded',
+  blocked: 'warning'
 };
-const XHS_STOP_REASONS: Record<Exclude<XhsDeliveryProgress['last_stop_reason'], null>, string> = {
+const CURSOR_DELIVERY_STOP_REASONS: Record<Exclude<CursorDeliveryStopReason, null>, string> = {
   has_more_false: '列表明确返回没有下一页',
   empty_page_stalled: '空页面且游标没有推进',
   access_restricted: '平台访问受限',
@@ -120,6 +123,8 @@ export const BILI_DELIVERY_PROGRESS_NOTICE =
   '“增量检查”表示最近一个有界快照已完成源末尾与头部对账，不表示平台历史永久完整；认证、作者、策略或锁定上游变化会使该证明失效。';
 export const XHS_DELIVERY_PROGRESS_NOTICE =
   '“增量笔记检查”只表示不透明游标历史到达明确末页，并以新 token 稳定重列过头部；不会显示游标或 token，也不表示平台历史永久不变。';
+export const DOUYIN_DELIVERY_PROGRESS_NOTICE =
+  '“增量作品检查”只表示不透明游标历史到达明确末页，并按头部边界稳定重列过作品；游标、作者指纹与边界摘要不会显示，也不表示平台历史永久不变。';
 export const DELIVERY_UNAVAILABLE =
   '暂时无法安全确认本次交付结果；没有自动重试，也不会据此宣称媒体已经写入目录。';
 export const DELIVERY_OBSERVATION_ENDED =
@@ -673,7 +678,7 @@ export function parseBiliDeliveryProgress(value: unknown): BiliDeliveryProgress 
   };
 }
 
-export interface BiliDeliveryProgressCard {
+export interface DeliveryProgressCard {
   phase: string;
   status: string;
   notice: string;
@@ -684,7 +689,7 @@ function displayTime(value: string | null): string {
   return value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '—';
 }
 
-export function safeBiliDeliveryProgressCard(value: unknown): BiliDeliveryProgressCard {
+export function safeBiliDeliveryProgressCard(value: unknown): DeliveryProgressCard {
   const progress = parseBiliDeliveryProgress(value);
   if (!progress) {
     return {
@@ -724,21 +729,44 @@ export function safeBiliDeliveryProgressCard(value: unknown): BiliDeliveryProgre
   if (progress.blocked_code) rows.push({ label: '阻塞代码', value: progress.blocked_code });
   return {
     phase: BILI_DELIVERY_PHASE_LABELS[progress.phase],
-    status:
-      progress.phase === 'incremental'
-        ? 'succeeded'
-        : progress.phase === 'blocked'
-          ? 'failed_terminal'
-          : progress.phase === 'reconciling'
-            ? 'running'
-            : 'queued',
+    status: DELIVERY_PHASE_STATUS[progress.phase],
     notice: BILI_DELIVERY_PROGRESS_NOTICE,
     rows
   };
 }
 
-export function parseXhsDeliveryProgress(value: unknown): XhsDeliveryProgress | null {
+/**
+ * 不透明游标型创作者交付（XHS 笔记、抖音作品，0081 起含快手作品）共用一个封闭载荷形状：
+ * 仅「观察计数」与「失败计数」两个字段名不同，其余 20 个字段完全一致。
+ * 新平台接入时只需提供一组 CursorDeliverySpec，不必复制解析与面板映射。
+ */
+interface CursorDeliverySpec {
+  observationField: 'note_observation_count' | 'work_observation_count';
+  failedField: 'failed_note_count' | 'failed_work_count';
+}
+
+const XHS_DELIVERY_SPEC: CursorDeliverySpec = {
+  observationField: 'note_observation_count',
+  failedField: 'failed_note_count'
+};
+
+const DOUYIN_DELIVERY_SPEC: CursorDeliverySpec = {
+  observationField: 'work_observation_count',
+  failedField: 'failed_work_count'
+};
+
+const CURSOR_DELIVERY_PHASES = new Set<CursorDeliveryPhase>([
+  'backfill',
+  'reconciling',
+  'incremental',
+  'blocked'
+]);
+
+/** 解析封闭的游标型交付载荷；任何未知字段、假完成声明或不一致证据都会整体拒绝。 */
+export function parseCursorDeliveryProgress<T>(value: unknown, spec: CursorDeliverySpec): T | null {
   const source = record(value);
+  const observationCount = source?.[spec.observationField];
+  const failedCount = source?.[spec.failedField];
   const fields = [
     'schema_version',
     'initialized',
@@ -746,13 +774,13 @@ export function parseXhsDeliveryProgress(value: unknown): XhsDeliveryProgress | 
     'baseline_snapshot_complete',
     'generation_id',
     'batch_count',
-    'note_observation_count',
+    spec.observationField,
     'cursor_step_count',
     'backfill_batch_count',
     'reconciliation_batch_count',
     'incremental_batch_count',
     'partial_batch_count',
-    'failed_note_count',
+    spec.failedField,
     'last_stop_reason',
     'last_delivery_at',
     'source_end_observed_at',
@@ -769,21 +797,21 @@ export function parseXhsDeliveryProgress(value: unknown): XhsDeliveryProgress | 
     source.schema_version !== 1 ||
     typeof source.initialized !== 'boolean' ||
     typeof source.phase !== 'string' ||
-    !XHS_DELIVERY_PHASES.has(source.phase) ||
+    !CURSOR_DELIVERY_PHASES.has(source.phase as CursorDeliveryPhase) ||
     typeof source.baseline_snapshot_complete !== 'boolean' ||
     !(source.generation_id === null || uuid(source.generation_id)) ||
     !count(source.batch_count) ||
-    !count(source.note_observation_count) ||
+    !count(observationCount) ||
     !count(source.cursor_step_count) ||
     !count(source.backfill_batch_count) ||
     !count(source.reconciliation_batch_count) ||
     !count(source.incremental_batch_count) ||
     !count(source.partial_batch_count) ||
-    !count(source.failed_note_count) ||
+    !count(failedCount) ||
     !(
       source.last_stop_reason === null ||
       (typeof source.last_stop_reason === 'string' &&
-        Object.hasOwn(XHS_STOP_REASONS, source.last_stop_reason))
+        Object.hasOwn(CURSOR_DELIVERY_STOP_REASONS, source.last_stop_reason))
     ) ||
     !optionalIso(source.last_delivery_at) ||
     !optionalIso(source.source_end_observed_at) ||
@@ -798,7 +826,7 @@ export function parseXhsDeliveryProgress(value: unknown): XhsDeliveryProgress | 
     )
   )
     return null;
-  const phase = source.phase as XhsDeliveryProgress['phase'];
+  const phase = source.phase as CursorDeliveryPhase;
   const batchTotal =
     source.backfill_batch_count + source.reconciliation_batch_count + source.incremental_batch_count;
   if (
@@ -816,10 +844,10 @@ export function parseXhsDeliveryProgress(value: unknown): XhsDeliveryProgress | 
     (!source.initialized &&
       (phase !== 'backfill' ||
         source.batch_count !== 0 ||
-        source.note_observation_count !== 0 ||
+        observationCount !== 0 ||
         source.cursor_step_count !== 0 ||
         source.partial_batch_count !== 0 ||
-        source.failed_note_count !== 0 ||
+        failedCount !== 0 ||
         source.last_stop_reason !== null ||
         source.last_delivery_at !== null ||
         source.source_end_observed_at !== null ||
@@ -835,14 +863,14 @@ export function parseXhsDeliveryProgress(value: unknown): XhsDeliveryProgress | 
     baseline_snapshot_complete: source.baseline_snapshot_complete,
     generation_id: source.generation_id,
     batch_count: source.batch_count,
-    note_observation_count: source.note_observation_count,
+    [spec.observationField]: observationCount,
     cursor_step_count: source.cursor_step_count,
     backfill_batch_count: source.backfill_batch_count,
     reconciliation_batch_count: source.reconciliation_batch_count,
     incremental_batch_count: source.incremental_batch_count,
     partial_batch_count: source.partial_batch_count,
-    failed_note_count: source.failed_note_count,
-    last_stop_reason: source.last_stop_reason as XhsDeliveryProgress['last_stop_reason'],
+    [spec.failedField]: failedCount,
+    last_stop_reason: source.last_stop_reason as CursorDeliveryStopReason | null,
     last_delivery_at: source.last_delivery_at,
     source_end_observed_at: source.source_end_observed_at,
     source_end_run_id: source.source_end_run_id,
@@ -851,34 +879,88 @@ export function parseXhsDeliveryProgress(value: unknown): XhsDeliveryProgress | 
     baseline_snapshot_at: source.baseline_snapshot_at,
     next_eligible_at: source.next_eligible_at,
     blocked_code: source.blocked_code
-  };
+  } as T;
 }
 
-export function safeXhsDeliveryProgressCard(value: unknown): BiliDeliveryProgressCard {
-  const progress = parseXhsDeliveryProgress(value);
+export function parseXhsDeliveryProgress(value: unknown): XhsDeliveryProgress | null {
+  return parseCursorDeliveryProgress<XhsDeliveryProgress>(value, XHS_DELIVERY_SPEC);
+}
+
+export function parseDouyinDeliveryProgress(value: unknown): DouyinDeliveryProgress | null {
+  return parseCursorDeliveryProgress<DouyinDeliveryProgress>(value, DOUYIN_DELIVERY_SPEC);
+}
+
+interface CursorDeliveryCardSpec extends CursorDeliverySpec {
+  /** 面板文案中的内容名词：笔记 / 作品 */
+  contentNoun: string;
+  phaseLabels: Record<CursorDeliveryPhase, string>;
+  unavailableNotice: string;
+  notice: string;
+}
+
+const XHS_DELIVERY_CARD_SPEC: CursorDeliveryCardSpec = {
+  ...XHS_DELIVERY_SPEC,
+  contentNoun: '笔记',
+  phaseLabels: {
+    backfill: '历史笔记回填',
+    reconciling: '头部笔记对账',
+    incremental: '增量笔记检查',
+    blocked: '需要处理'
+  },
+  unavailableNotice: '服务端 XHS 投影未通过封闭格式校验；请刷新详情并核对任务日志。',
+  notice: XHS_DELIVERY_PROGRESS_NOTICE
+};
+
+const DOUYIN_DELIVERY_CARD_SPEC: CursorDeliveryCardSpec = {
+  ...DOUYIN_DELIVERY_SPEC,
+  contentNoun: '作品',
+  phaseLabels: {
+    backfill: '历史作品回填',
+    reconciling: '头部作品对账',
+    incremental: '增量作品检查',
+    blocked: '需要处理'
+  },
+  unavailableNotice: '服务端抖音投影未通过封闭格式校验；请刷新详情并核对任务日志。',
+  notice: DOUYIN_DELIVERY_PROGRESS_NOTICE
+};
+
+/** 生成游标型交付面板；行结构与 B 站面板对齐，供订阅详情页循环渲染。 */
+export function safeCursorDeliveryProgressCard(
+  value: unknown,
+  spec: CursorDeliveryCardSpec
+): DeliveryProgressCard {
+  const progress = parseCursorDeliveryProgress<XhsDeliveryProgress | DouyinDeliveryProgress>(value, spec);
   if (!progress) {
     return {
       phase: '证据不可用',
       status: 'unknown',
-      notice: '服务端 XHS 投影未通过封闭格式校验；请刷新详情并核对任务日志。',
+      notice: spec.unavailableNotice,
       rows: [{ label: '增量基线', value: '未声明完成' }]
     };
   }
+  // XHS 与抖音载荷仅这两个计数字段名不同，由 spec 决定读取哪一个。
+  const counters = progress as unknown as Record<
+    'note_observation_count' | 'work_observation_count' | 'failed_note_count' | 'failed_work_count',
+    number
+  >;
+  const observationCount = counters[spec.observationField];
+  const failedCount = counters[spec.failedField];
   const rows = progress.initialized
     ? [
         {
           label: '已交付批次',
           value: `${progress.batch_count} 轮（回填 ${progress.backfill_batch_count} / 对账 ${progress.reconciliation_batch_count} / 增量 ${progress.incremental_batch_count}）`
         },
+        { label: '增量基线', value: progress.baseline_snapshot_complete ? '已声明完成' : '未声明完成' },
         { label: '已推进游标页', value: `${progress.cursor_step_count} 步` },
-        { label: '已交付笔记观察', value: `${progress.note_observation_count} 条` },
+        { label: `已交付${spec.contentNoun}观察`, value: `${observationCount} 条` },
         {
-          label: '部分批次 / 最近失败笔记',
-          value: `${progress.partial_batch_count} 轮 / ${progress.failed_note_count} 条`
+          label: `部分批次 / 最近失败${spec.contentNoun}`,
+          value: `${progress.partial_batch_count} 轮 / ${failedCount} 条`
         },
         {
           label: '最近停止原因',
-          value: progress.last_stop_reason ? XHS_STOP_REASONS[progress.last_stop_reason] : '—'
+          value: progress.last_stop_reason ? CURSOR_DELIVERY_STOP_REASONS[progress.last_stop_reason] : '—'
         },
         { label: '最近交付', value: displayTime(progress.last_delivery_at) },
         { label: '明确源末页', value: displayTime(progress.source_end_observed_at) },
@@ -892,18 +974,19 @@ export function safeXhsDeliveryProgressCard(value: unknown): BiliDeliveryProgres
       ];
   if (progress.blocked_code) rows.push({ label: '阻塞代码', value: progress.blocked_code });
   return {
-    phase: XHS_DELIVERY_PHASE_LABELS[progress.phase],
-    status:
-      progress.phase === 'incremental'
-        ? 'succeeded'
-        : progress.phase === 'blocked'
-          ? 'failed_retryable'
-          : progress.phase === 'reconciling'
-            ? 'running'
-            : 'queued',
-    notice: XHS_DELIVERY_PROGRESS_NOTICE,
+    phase: spec.phaseLabels[progress.phase],
+    status: DELIVERY_PHASE_STATUS[progress.phase],
+    notice: spec.notice,
     rows
   };
+}
+
+export function safeXhsDeliveryProgressCard(value: unknown): DeliveryProgressCard {
+  return safeCursorDeliveryProgressCard(value, XHS_DELIVERY_CARD_SPEC);
+}
+
+export function safeDouyinDeliveryProgressCard(value: unknown): DeliveryProgressCard {
+  return safeCursorDeliveryProgressCard(value, DOUYIN_DELIVERY_CARD_SPEC);
 }
 
 function newUuid(): string {

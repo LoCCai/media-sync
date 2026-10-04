@@ -30,6 +30,7 @@
   import { operatorAuth } from '$lib/stores/operator-auth';
   import type {
     Account,
+    Platform,
     PlatformCapabilities,
     PlatformCapability,
     Subscription,
@@ -87,6 +88,7 @@
     EXACT_DELIVERY_NOTICE,
     initialSubscriptionDeliveryView,
     safeBiliDeliveryProgressCard,
+    safeDouyinDeliveryProgressCard,
     safeXhsDeliveryProgressCard,
     safeScanProgressCards,
     SCAN_PROGRESS_NOTICE,
@@ -94,7 +96,8 @@
     subscriptionDeliveryRequest,
     subscriptionDeliveryResultRows,
     subscriptionDeliveryUpstreamNotice,
-    SubscriptionDeliveryController
+    SubscriptionDeliveryController,
+    type DeliveryProgressCard
   } from '$lib/utils/subscription-delivery';
 
   let subscriptions: Subscription[] = [];
@@ -203,14 +206,7 @@
 
   $: enabledCount = subscriptions.filter((item) => item.enabled).length;
   $: deliveryActive = deliveryView.phase === 'submitting' || deliveryView.phase === 'waiting';
-  $: biliDeliveryCard =
-    detail?.platform === 'bili' && detail.bili_delivery
-      ? safeBiliDeliveryProgressCard(detail.bili_delivery)
-      : null;
-  $: xhsDeliveryCard =
-    detail?.platform === 'xhs' && detail.xhs_delivery
-      ? safeXhsDeliveryProgressCard(detail.xhs_delivery)
-      : null;
+  $: deliveryBaselinePanels = detail ? deliveryBaselinePanelsFor(detail) : [];
   $: policyRequestPayload = detail ? subscriptionPolicyRequest(detail, policyDraft) : null;
   $: policyChanged = detail ? subscriptionPolicyChanged(detail, policyDraft) : false;
   $: if (!detailOpen) {
@@ -243,6 +239,49 @@
     preview,
     fullHistoryAcknowledged: fullHistory
   });
+
+  interface DeliveryBaselinePanel {
+    key: Platform;
+    eyebrow: string;
+    card: DeliveryProgressCard;
+  }
+
+  /**
+   * 订阅详情的本地交付基线面板共用一份映射：B 站有界批次、XHS 笔记与抖音作品
+   * （以及后续 0081 的快手作品，形状与抖音同构）都只在此处接入，页面循环渲染。
+   */
+  function deliveryBaselinePanelsFor(source: SubscriptionDetail): DeliveryBaselinePanel[] {
+    const panels: DeliveryBaselinePanel[] = [];
+    if (source.platform === 'bili' && source.bili_delivery) {
+      panels.push({
+        key: 'bili',
+        eyebrow: 'B站投稿 · 本地交付基线',
+        card: safeBiliDeliveryProgressCard(source.bili_delivery)
+      });
+    }
+    if (source.platform === 'xhs' && source.xhs_delivery) {
+      panels.push({
+        key: 'xhs',
+        eyebrow: 'XHS 创作者笔记 · 本地交付基线',
+        card: safeXhsDeliveryProgressCard(source.xhs_delivery)
+      });
+    }
+    if (source.platform === 'dy' && source.douyin_delivery) {
+      panels.push({
+        key: 'dy',
+        eyebrow: '抖音创作者作品 · 本地交付基线',
+        card: safeDouyinDeliveryProgressCard(source.douyin_delivery)
+      });
+    }
+    return panels;
+  }
+
+  /** 状态色语义三档统一：增量=稳定（绿）、回填/对账=进行（蓝）、阻塞或证据不可用=警示（琥珀）。 */
+  function deliveryBaselineTone(card: DeliveryProgressCard): 'stable' | 'progress' | 'attention' {
+    if (card.status === 'succeeded') return 'stable';
+    if (card.status === 'warning' || card.status === 'unknown') return 'attention';
+    return 'progress';
+  }
 
   function draftPayload(): Record<string, unknown> | null {
     if (!selectedAccount) return null;
@@ -1792,18 +1831,18 @@
         </dl>
       </section>
     {/if}
-    {#if biliDeliveryCard}
-      <section class="delivery-baseline" aria-label="B站本地交付基线">
+    {#each deliveryBaselinePanels as panel (panel.key)}
+      <section class="delivery-baseline {deliveryBaselineTone(panel.card)}" aria-label={panel.eyebrow}>
         <div class="delivery-status-heading">
           <div>
-            <span class="eyebrow">B站投稿 · 本地交付基线</span>
-            <h3>{biliDeliveryCard.phase}</h3>
+            <span class="eyebrow">{panel.eyebrow}</span>
+            <h3>{panel.card.phase}</h3>
           </div>
-          <StatusBadge status={biliDeliveryCard.status} label={biliDeliveryCard.phase} />
+          <StatusBadge status={panel.card.status} label={panel.card.phase} />
         </div>
-        <p>{biliDeliveryCard.notice}</p>
+        <p>{panel.card.notice}</p>
         <dl>
-          {#each biliDeliveryCard.rows as row}
+          {#each panel.card.rows as row}
             <div>
               <dt>{row.label}</dt>
               <dd>{row.value}</dd>
@@ -1811,27 +1850,7 @@
           {/each}
         </dl>
       </section>
-    {/if}
-    {#if xhsDeliveryCard}
-      <section class="delivery-baseline" aria-label="XHS 笔记本地交付基线">
-        <div class="delivery-status-heading">
-          <div>
-            <span class="eyebrow">XHS 创作者笔记 · 本地交付基线</span>
-            <h3>{xhsDeliveryCard.phase}</h3>
-          </div>
-          <StatusBadge status={xhsDeliveryCard.status} label={xhsDeliveryCard.phase} />
-        </div>
-        <p>{xhsDeliveryCard.notice}</p>
-        <dl>
-          {#each xhsDeliveryCard.rows as row}
-            <div>
-              <dt>{row.label}</dt>
-              <dd>{row.value}</dd>
-            </div>
-          {/each}
-        </dl>
-      </section>
-    {/if}
+    {/each}
     {#if detail.policy_summary || detail.checkpoint_summary}
       <p class="redaction-note">
         仅展示服务端白名单摘要；secret reference、原始 cursor、签名 URL 与本地路径均不返回。
@@ -2203,6 +2222,7 @@
     margin-top: 0;
   }
 
+  /* 交付基线面板：三个平台共用同一间距与层级；左侧色条 + 底色表达状态语义。 */
   .delivery-baseline {
     display: grid;
     gap: 10px;
@@ -2211,6 +2231,19 @@
     border-radius: var(--radius);
     padding: 14px;
     background: linear-gradient(145deg, #f7faff, #eef4ff);
+    box-shadow: inset 3px 0 0 #7ea6ed;
+  }
+
+  .delivery-baseline.is-stable {
+    border-color: #bfe3cd;
+    background: linear-gradient(145deg, #f7fcf9, #ecf9f1);
+    box-shadow: inset 3px 0 0 var(--success);
+  }
+
+  .delivery-baseline.is-attention {
+    border-color: #ecd9ac;
+    background: linear-gradient(145deg, #fffcf4, #fbf3dd);
+    box-shadow: inset 3px 0 0 var(--warning);
   }
 
   .delivery-baseline p {

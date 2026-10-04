@@ -23,6 +23,8 @@ from .mediacrawler_ingestion import (
 from .migration import upgrade_database
 from .models import (
     ACTIVE_OPERATION_STATES,
+    KUAISHOU_DELIVERY_PHASES,
+    KUAISHOU_DELIVERY_STOP_REASONS,
     OPERATION_EVENT_CODES,
     OPERATION_EVENT_LEVELS,
     OPERATION_FAILURE_STATES,
@@ -43,6 +45,7 @@ from .models import (
     DouyinSubscriptionProgress,
     ExportRecord,
     Job,
+    KuaishouSubscriptionProgress,
     LibraryOutputPolicy,
     LoginSession,
     Operation,
@@ -119,6 +122,8 @@ from .sync_repository import SQLAlchemySyncRepository
 __all__ = [
     "ACTIVE_OPERATION_STATES",
     "ASSET_IDENTITY_VERSION",
+    "KUAISHOU_DELIVERY_PHASES",
+    "KUAISHOU_DELIVERY_STOP_REASONS",
     "OPERATION_EVENT_CODES",
     "OPERATION_EVENT_LEVELS",
     "OPERATION_FAILURE_STATES",
@@ -162,6 +167,7 @@ __all__ = [
     "IngestionMode",
     "Job",
     "JobRepository",
+    "KuaishouSubscriptionProgress",
     "LeaseLostError",
     "LibraryOutputPolicy",
     "LoginSession",

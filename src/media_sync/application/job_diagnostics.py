@@ -83,6 +83,7 @@ _REVISIONS = frozenset(
         "0014_bili_delivery_baseline",
         "0015_xhs_creator_notes",
         "0016_douyin_creator_work",
+        "0017_kuaishou_creator_work",
     }
 )
 

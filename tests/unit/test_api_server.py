@@ -94,6 +94,7 @@ def test_deep_readiness_reports_license_gate_without_exposing_paths(tmp_path: Pa
         "bili_delay_seconds": 300,
         "xhs_delay_seconds": 300,
         "douyin_delay_seconds": 300,
+        "ks_delay_seconds": 300,
     }
     assert body["security"] == {
         "status": "pass",

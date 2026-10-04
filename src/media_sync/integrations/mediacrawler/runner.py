@@ -1586,6 +1586,12 @@ async def _execute_child(
             )
 
             install_kuaishou_media_capture(verified.root)
+            if getattr(manifest, "kuaishou_scan", None) is not None:
+                from media_sync.integrations.mediacrawler.kuaishou_creator_capture import (
+                    install_kuaishou_creator_capture_shim,
+                )
+
+                install_kuaishou_creator_capture_shim(manifest)
         elif manifest.platform.value == "xhs":
             from media_sync.integrations.mediacrawler.xhs_live import (
                 install_xhs_live_capture,

@@ -46,6 +46,8 @@ from .bili_delivery_progress import BiliDeliveryProgressRepository, binding_for_
 from .bili_scan_continuation import BiliScanContinuationPolicy
 from .douyin_delivery_progress import DouyinDeliveryProgressRepository
 from .douyin_scan_continuation import DouyinScanContinuationPolicy
+from .kuaishou_delivery_progress import KuaishouDeliveryProgressRepository
+from .kuaishou_scan_continuation import KuaishouScanContinuationPolicy
 from .policy import FailureDisposition, RetryPolicy, classify_failure
 from .xhs_delivery_progress import XhsDeliveryProgressRepository
 from .xhs_scan_continuation import XhsScanContinuationPolicy
@@ -429,11 +431,13 @@ class SchedulerRepository:
         bili_scan_continuation: BiliScanContinuationPolicy | None = None,
         xhs_scan_continuation: XhsScanContinuationPolicy | None = None,
         douyin_scan_continuation: DouyinScanContinuationPolicy | None = None,
+        kuaishou_scan_continuation: KuaishouScanContinuationPolicy | None = None,
     ) -> None:
         self.session = session
         self.bili_scan_continuation = bili_scan_continuation or BiliScanContinuationPolicy()
         self.xhs_scan_continuation = xhs_scan_continuation or XhsScanContinuationPolicy()
         self.douyin_scan_continuation = douyin_scan_continuation or DouyinScanContinuationPolicy()
+        self.kuaishou_scan_continuation = kuaishou_scan_continuation or KuaishouScanContinuationPolicy()
 
     def _serialize_sqlite_writer(self) -> None:
         """Acquire SQLite's writer slot before making a read/decide/CAS choice."""
@@ -808,9 +812,16 @@ class SchedulerRepository:
             now=now,
             resume_blocked=resume_blocked or platform == "dy",
         )
-        if sum(flag is not None for flag in (bili_progress, xhs_progress, douyin_progress)) > 1:
+        kuaishou_progress = KuaishouDeliveryProgressRepository(self.session).ensure_for_materialization(
+            subscription,
+            upstream_sha=self.kuaishou_scan_continuation.upstream_sha,
+            schedule_revision=schedule_revision,
+            now=now,
+            resume_blocked=resume_blocked or platform == "ks",
+        )
+        if sum(flag is not None for flag in (bili_progress, xhs_progress, douyin_progress, kuaishou_progress)) > 1:
             raise SchedulerRepositoryError("multiple delivery progress contracts selected one subscription")
-        progress = bili_progress or xhs_progress or douyin_progress
+        progress = bili_progress or xhs_progress or douyin_progress or kuaishou_progress
         if progress is not None and progress.phase == "blocked":
             return None
 

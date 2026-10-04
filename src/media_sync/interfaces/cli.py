@@ -169,6 +169,7 @@ from media_sync.scheduler import (
 )
 from media_sync.scheduler.bili_scan_continuation import BiliScanContinuationPolicy
 from media_sync.scheduler.douyin_scan_continuation import DouyinScanContinuationPolicy
+from media_sync.scheduler.kuaishou_scan_continuation import KuaishouScanContinuationPolicy
 from media_sync.scheduler.policy import classify_failure
 from media_sync.scheduler.xhs_scan_continuation import XhsScanContinuationPolicy
 from media_sync.security import (
@@ -209,7 +210,7 @@ app.add_typer(asset_app, name="asset")
 app.add_typer(emby_app, name="emby")
 app.add_typer(pipeline_app, name="pipeline")
 
-_EXPECTED_DATABASE_REVISION = "0016_douyin_creator_work"
+_EXPECTED_DATABASE_REVISION = "0017_kuaishou_creator_work"
 _KNOWN_DATABASE_REVISIONS = frozenset(
     {
         "0001_initial_schema",
@@ -227,6 +228,7 @@ _KNOWN_DATABASE_REVISIONS = frozenset(
         "0013_exact_subscription_delivery",
         "0014_bili_delivery_baseline",
         "0015_xhs_creator_notes",
+        "0016_douyin_creator_work",
         _EXPECTED_DATABASE_REVISION,
     }
 )
@@ -670,6 +672,7 @@ def collect_deep_readiness_report(
             "bili_delay_seconds": settings.bili_scan_continuation_delay_seconds,
             "xhs_delay_seconds": settings.xhs_scan_continuation_delay_seconds,
             "douyin_delay_seconds": settings.douyin_scan_continuation_delay_seconds,
+            "ks_delay_seconds": settings.kuaishou_scan_continuation_delay_seconds,
         },
         "security": security,
         "live_qualification": "NOT_RUN",
@@ -1042,6 +1045,10 @@ def _scheduler_runtime() -> Iterator[tuple[Database, DurableSchedulerService]]:
                     settings.mediacrawler_lock_path,
                     delay_seconds=settings.douyin_scan_continuation_delay_seconds,
                 ),
+                kuaishou_scan_continuation=KuaishouScanContinuationPolicy.from_lock(
+                    settings.mediacrawler_lock_path,
+                    delay_seconds=settings.kuaishou_scan_continuation_delay_seconds,
+                ),
             ),
         )
     except StaleLaneError:
@@ -1107,6 +1114,10 @@ def _build_subscription_worker(
         douyin_scan_continuation=DouyinScanContinuationPolicy.from_lock(
             settings.mediacrawler_lock_path,
             delay_seconds=settings.douyin_scan_continuation_delay_seconds,
+        ),
+        kuaishou_scan_continuation=KuaishouScanContinuationPolicy.from_lock(
+            settings.mediacrawler_lock_path,
+            delay_seconds=settings.kuaishou_scan_continuation_delay_seconds,
         ),
     )
 
@@ -1206,6 +1217,10 @@ def _build_pipeline_worker(
         douyin_delivery_policy=DouyinScanContinuationPolicy.from_lock(
             settings.mediacrawler_lock_path,
             delay_seconds=settings.douyin_scan_continuation_delay_seconds,
+        ),
+        kuaishou_delivery_policy=KuaishouScanContinuationPolicy.from_lock(
+            settings.mediacrawler_lock_path,
+            delay_seconds=settings.kuaishou_scan_continuation_delay_seconds,
         ),
     )
 
@@ -2237,6 +2252,10 @@ def scheduler_supervise(
                 douyin_scan_continuation=DouyinScanContinuationPolicy.from_lock(
                     settings.mediacrawler_lock_path,
                     delay_seconds=settings.douyin_scan_continuation_delay_seconds,
+                ),
+                kuaishou_scan_continuation=KuaishouScanContinuationPolicy.from_lock(
+                    settings.mediacrawler_lock_path,
+                    delay_seconds=settings.kuaishou_scan_continuation_delay_seconds,
                 ),
             ),
             subscription_worker=subscription_worker,

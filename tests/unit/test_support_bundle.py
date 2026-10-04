@@ -32,7 +32,7 @@ from media_sync.infrastructure.db.models import (
 )
 
 NOW = datetime(2026, 9, 4, 1, 2, 3, tzinfo=UTC)
-REVISION = "0016_douyin_creator_work"
+REVISION = "0017_kuaishou_creator_work"
 
 
 def _database_url(path: Path) -> str:
