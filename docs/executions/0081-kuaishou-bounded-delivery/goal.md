@@ -2,7 +2,7 @@
 
 # Goal: durable Kuaishou creator-work delivery with source-backed cursors
 
-Status: **PLANNED ONLY**. No 0081 application code, migration, deployment or live crawl has started.
+Status: **IMPLEMENTED AND OFFLINE-VERIFIED**. Deployment, Linux qualification and any live crawl remain pending.
 
 Execution 0081 extends the durable subscription delivery delivered for Bilibili (0074), Xiaohongshu creator notes (0076) and Douyin creator works (0080) to Kuaishou creator works. It follows the mandated source-first posture: every pacing, end-detection, reconciliation and incremental rule below is derived from the pinned MediaCrawler's Kuaishou code and response shapes, not copied from the Douyin or XHS implementations.
 
