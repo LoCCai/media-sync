@@ -13,7 +13,7 @@ if (manifest.overrides !== undefined) {
 // The locked upstream source predates fixes now required by npm audit. These
 // exact build-only overrides affect the compiled browser bundle; the upstream
 // checkout itself remains byte-for-byte clean and revision-qualified.
-manifest.dependencies.axios = '1.18.0'
+manifest.dependencies.axios = '1.20.0'
 manifest.overrides = {
   'follow-redirects': '1.16.0',
   'form-data': '4.0.6',
