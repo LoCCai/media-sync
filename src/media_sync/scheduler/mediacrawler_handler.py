@@ -566,7 +566,8 @@ class MediaCrawlerScheduledHandler:
                 or subscription.max_items != context.max_items
             ):
                 raise RepositoryError("scheduled XHS scope changed")
-            progress = XhsDeliveryProgressRepository(session).ensure_for_materialization(
+            repository = XhsDeliveryProgressRepository(session)
+            progress = repository.ensure_for_materialization(
                 subscription,
                 upstream_sha=upstream_sha,
                 schedule_revision=context.schedule_revision,
@@ -575,7 +576,7 @@ class MediaCrawlerScheduledHandler:
             )
             if progress is None:
                 raise RepositoryError("scheduled XHS progress is unavailable")
-            XhsDeliveryProgressRepository(session).ensure_creator_binding(
+            repository.ensure_creator_binding(
                 subscription,
                 upstream_sha=upstream_sha,
                 creator_fingerprint_sha256=creator_fingerprint,
@@ -604,7 +605,8 @@ class MediaCrawlerScheduledHandler:
                 or subscription.max_items != context.max_items
             ):
                 raise RepositoryError("scheduled Douyin scope changed")
-            progress = DouyinDeliveryProgressRepository(session).ensure_for_materialization(
+            repository = DouyinDeliveryProgressRepository(session)
+            progress = repository.ensure_for_materialization(
                 subscription,
                 upstream_sha=upstream_sha,
                 schedule_revision=context.schedule_revision,
@@ -613,7 +615,7 @@ class MediaCrawlerScheduledHandler:
             )
             if progress is None:
                 raise RepositoryError("scheduled Douyin progress is unavailable")
-            DouyinDeliveryProgressRepository(session).ensure_creator_binding(
+            repository.ensure_creator_binding(
                 subscription,
                 upstream_sha=upstream_sha,
                 creator_fingerprint_sha256=creator_fingerprint,
@@ -642,7 +644,8 @@ class MediaCrawlerScheduledHandler:
                 or subscription.max_items != context.max_items
             ):
                 raise RepositoryError("scheduled Kuaishou scope changed")
-            progress = KuaishouDeliveryProgressRepository(session).ensure_for_materialization(
+            repository = KuaishouDeliveryProgressRepository(session)
+            progress = repository.ensure_for_materialization(
                 subscription,
                 upstream_sha=upstream_sha,
                 schedule_revision=context.schedule_revision,
@@ -651,7 +654,7 @@ class MediaCrawlerScheduledHandler:
             )
             if progress is None:
                 raise RepositoryError("scheduled Kuaishou progress is unavailable")
-            KuaishouDeliveryProgressRepository(session).ensure_creator_binding(
+            repository.ensure_creator_binding(
                 subscription,
                 upstream_sha=upstream_sha,
                 creator_fingerprint_sha256=creator_fingerprint,

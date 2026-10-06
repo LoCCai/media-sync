@@ -4,6 +4,7 @@ import type {
   CursorDeliveryPhase,
   CursorDeliveryStopReason,
   DouyinDeliveryProgress,
+  KuaishouDeliveryProgress,
   OperationState,
   Platform,
   SubscriptionDeliveryResult,
@@ -125,6 +126,11 @@ export const XHS_DELIVERY_PROGRESS_NOTICE =
   '“增量笔记检查”只表示不透明游标历史到达明确末页，并以新 token 稳定重列过头部；不会显示游标或 token，也不表示平台历史永久不变。';
 export const DOUYIN_DELIVERY_PROGRESS_NOTICE =
   '“增量作品检查”只表示不透明游标历史到达明确末页，并按头部边界稳定重列过作品；游标、作者指纹与边界摘要不会显示，也不表示平台历史永久不变。';
+export const KUAISHOU_DELIVERY_PROGRESS_NOTICE =
+  '“增量作品检查”只表示不透明游标历史到达明确末页，并按头部边界稳定重列过作品；游标、作者指纹与边界摘要不会显示，也不表示平台历史永久不变。';
+/** 四个交付面板共用的阻塞态可操作提示：指向日志中心与暂停态策略编辑器。 */
+export const DELIVERY_BLOCKED_ADVICE =
+  '本轮被阻塞，不会自动恢复：请先暂停订阅并等待任务结束，到日志中心核对阻塞代码对应的任务日志；如需调整同步策略，请使用本详情中的「同步策略」编辑器（保存后仍保持暂停）。';
 export const DELIVERY_UNAVAILABLE =
   '暂时无法安全确认本次交付结果；没有自动重试，也不会据此宣称媒体已经写入目录。';
 export const DELIVERY_OBSERVATION_ENDED =
@@ -683,6 +689,8 @@ export interface DeliveryProgressCard {
   status: string;
   notice: string;
   rows: Array<{ label: string; value: string }>;
+  /** 仅阻塞态（phase === 'blocked'）设置：可操作提示，页面据此渲染日志中心入口。 */
+  blockedAdvice?: string;
 }
 
 function displayTime(value: string | null): string {
@@ -731,12 +739,13 @@ export function safeBiliDeliveryProgressCard(value: unknown): DeliveryProgressCa
     phase: BILI_DELIVERY_PHASE_LABELS[progress.phase],
     status: DELIVERY_PHASE_STATUS[progress.phase],
     notice: BILI_DELIVERY_PROGRESS_NOTICE,
-    rows
+    rows,
+    ...(progress.phase === 'blocked' ? { blockedAdvice: DELIVERY_BLOCKED_ADVICE } : {})
   };
 }
 
 /**
- * 不透明游标型创作者交付（XHS 笔记、抖音作品，0081 起含快手作品）共用一个封闭载荷形状：
+ * 不透明游标型创作者交付（XHS 笔记、抖音作品与快手作品）共用一个封闭载荷形状：
  * 仅「观察计数」与「失败计数」两个字段名不同，其余 20 个字段完全一致。
  * 新平台接入时只需提供一组 CursorDeliverySpec，不必复制解析与面板映射。
  */
@@ -751,6 +760,12 @@ const XHS_DELIVERY_SPEC: CursorDeliverySpec = {
 };
 
 const DOUYIN_DELIVERY_SPEC: CursorDeliverySpec = {
+  observationField: 'work_observation_count',
+  failedField: 'failed_work_count'
+};
+
+/** 快手作品载荷与抖音同构：计数字段名一致，仅平台语义与提示文案不同。 */
+const KUAISHOU_DELIVERY_SPEC: CursorDeliverySpec = {
   observationField: 'work_observation_count',
   failedField: 'failed_work_count'
 };
@@ -890,6 +905,10 @@ export function parseDouyinDeliveryProgress(value: unknown): DouyinDeliveryProgr
   return parseCursorDeliveryProgress<DouyinDeliveryProgress>(value, DOUYIN_DELIVERY_SPEC);
 }
 
+export function parseKuaishouDeliveryProgress(value: unknown): KuaishouDeliveryProgress | null {
+  return parseCursorDeliveryProgress<KuaishouDeliveryProgress>(value, KUAISHOU_DELIVERY_SPEC);
+}
+
 interface CursorDeliveryCardSpec extends CursorDeliverySpec {
   /** 面板文案中的内容名词：笔记 / 作品 */
   contentNoun: string;
@@ -924,12 +943,27 @@ const DOUYIN_DELIVERY_CARD_SPEC: CursorDeliveryCardSpec = {
   notice: DOUYIN_DELIVERY_PROGRESS_NOTICE
 };
 
+const KUAISHOU_DELIVERY_CARD_SPEC: CursorDeliveryCardSpec = {
+  ...KUAISHOU_DELIVERY_SPEC,
+  contentNoun: '作品',
+  phaseLabels: {
+    backfill: '历史作品回填',
+    reconciling: '头部作品对账',
+    incremental: '增量作品检查',
+    blocked: '需要处理'
+  },
+  unavailableNotice: '服务端快手投影未通过封闭格式校验；请刷新详情并核对任务日志。',
+  notice: KUAISHOU_DELIVERY_PROGRESS_NOTICE
+};
+
 /** 生成游标型交付面板；行结构与 B 站面板对齐，供订阅详情页循环渲染。 */
 export function safeCursorDeliveryProgressCard(
   value: unknown,
   spec: CursorDeliveryCardSpec
 ): DeliveryProgressCard {
-  const progress = parseCursorDeliveryProgress<XhsDeliveryProgress | DouyinDeliveryProgress>(value, spec);
+  const progress = parseCursorDeliveryProgress<
+    XhsDeliveryProgress | DouyinDeliveryProgress | KuaishouDeliveryProgress
+  >(value, spec);
   if (!progress) {
     return {
       phase: '证据不可用',
@@ -977,7 +1011,8 @@ export function safeCursorDeliveryProgressCard(
     phase: spec.phaseLabels[progress.phase],
     status: DELIVERY_PHASE_STATUS[progress.phase],
     notice: spec.notice,
-    rows
+    rows,
+    ...(progress.phase === 'blocked' ? { blockedAdvice: DELIVERY_BLOCKED_ADVICE } : {})
   };
 }
 
@@ -987,6 +1022,10 @@ export function safeXhsDeliveryProgressCard(value: unknown): DeliveryProgressCar
 
 export function safeDouyinDeliveryProgressCard(value: unknown): DeliveryProgressCard {
   return safeCursorDeliveryProgressCard(value, DOUYIN_DELIVERY_CARD_SPEC);
+}
+
+export function safeKuaishouDeliveryProgressCard(value: unknown): DeliveryProgressCard {
+  return safeCursorDeliveryProgressCard(value, KUAISHOU_DELIVERY_CARD_SPEC);
 }
 
 function newUuid(): string {

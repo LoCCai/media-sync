@@ -310,8 +310,34 @@ export interface XhsDeliveryProgress {
   blocked_code: string | null;
 }
 
-/** 与 XhsDeliveryProgress 同构：仅观察/失败计数字段名不同（对应抖音创作者作品）。 */
+/** 与 XhsDeliveryProgress 同构：仅观察/失败计数字段名不同（对应抖音创作者作品与快手创作者作品）。 */
 export interface DouyinDeliveryProgress {
+  schema_version: 1;
+  initialized: boolean;
+  phase: CursorDeliveryPhase;
+  baseline_snapshot_complete: boolean;
+  generation_id: string | null;
+  batch_count: number;
+  work_observation_count: number;
+  cursor_step_count: number;
+  backfill_batch_count: number;
+  reconciliation_batch_count: number;
+  incremental_batch_count: number;
+  partial_batch_count: number;
+  failed_work_count: number;
+  last_stop_reason: CursorDeliveryStopReason | null;
+  last_delivery_at: string | null;
+  source_end_observed_at: string | null;
+  source_end_run_id: string | null;
+  reconciled_at: string | null;
+  reconciliation_run_id: string | null;
+  baseline_snapshot_at: string | null;
+  next_eligible_at: string | null;
+  blocked_code: string | null;
+}
+
+/** 与 DouyinDeliveryProgress 同构：仅观察/失败计数字段名相同、语义对应快手创作者作品。 */
+export interface KuaishouDeliveryProgress {
   schema_version: 1;
   initialized: boolean;
   phase: CursorDeliveryPhase;
@@ -340,6 +366,7 @@ export interface SubscriptionDetail extends Subscription {
   bili_delivery?: BiliDeliveryProgress;
   xhs_delivery?: XhsDeliveryProgress;
   douyin_delivery?: DouyinDeliveryProgress;
+  kuaishou_delivery?: KuaishouDeliveryProgress;
   schedule: {
     subscription_id: string;
     status: string;

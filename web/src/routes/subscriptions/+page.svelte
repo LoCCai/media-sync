@@ -89,6 +89,7 @@
     initialSubscriptionDeliveryView,
     safeBiliDeliveryProgressCard,
     safeDouyinDeliveryProgressCard,
+    safeKuaishouDeliveryProgressCard,
     safeXhsDeliveryProgressCard,
     safeScanProgressCards,
     SCAN_PROGRESS_NOTICE,
@@ -247,8 +248,8 @@
   }
 
   /**
-   * 订阅详情的本地交付基线面板共用一份映射：B 站有界批次、XHS 笔记与抖音作品
-   * （以及后续 0081 的快手作品，形状与抖音同构）都只在此处接入，页面循环渲染。
+   * 订阅详情的本地交付基线面板共用一份映射：B 站有界批次、XHS 笔记、抖音作品与
+   * 快手作品（载荷形状与抖音同构）都只在此处接入，页面循环渲染。
    */
   function deliveryBaselinePanelsFor(source: SubscriptionDetail): DeliveryBaselinePanel[] {
     const panels: DeliveryBaselinePanel[] = [];
@@ -271,6 +272,13 @@
         key: 'dy',
         eyebrow: '抖音创作者作品 · 本地交付基线',
         card: safeDouyinDeliveryProgressCard(source.douyin_delivery)
+      });
+    }
+    if (source.platform === 'ks' && source.kuaishou_delivery) {
+      panels.push({
+        key: 'ks',
+        eyebrow: '快手创作者作品 · 本地交付基线',
+        card: safeKuaishouDeliveryProgressCard(source.kuaishou_delivery)
       });
     }
     return panels;
@@ -1841,6 +1849,12 @@
           <StatusBadge status={panel.card.status} label={panel.card.phase} />
         </div>
         <p>{panel.card.notice}</p>
+        {#if panel.card.blockedAdvice}
+          <div class="delivery-baseline-actions">
+            <span>{panel.card.blockedAdvice}</span>
+            <a class="text-link" href="/logs">日志中心</a>
+          </div>
+        {/if}
         <dl>
           {#each panel.card.rows as row}
             <div>
@@ -2251,6 +2265,28 @@
     color: var(--text-muted);
     font-size: 10.5px;
     line-height: 1.6;
+  }
+
+  /* 阻塞态可操作提示：与面板同宽，指向日志中心；只在 blockedAdvice 存在时渲染。 */
+  .delivery-baseline-actions {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    border-top: 1px solid #ecd9ac;
+    padding-top: 8px;
+    font-size: 10.5px;
+  }
+
+  .delivery-baseline-actions span {
+    flex: 1;
+    min-width: 0;
+    color: var(--text-secondary);
+    line-height: 1.6;
+  }
+
+  .delivery-baseline-actions .text-link {
+    flex: 0 0 auto;
+    white-space: nowrap;
   }
 
   .delivery-baseline dl {
