@@ -7,7 +7,7 @@
 
 ## 背景
 
-钉定的 MediaCrawler 检出（d6f7c5bb）自带的 WebUI 在 npm 清单中声明 axios ^1.7.9。Docker 镜像构建会把该 WebUI 编译进同源的 `/crawler/` bundle，并以 `npm audit --omit=dev --audit-level=low` 作为 fail-closed 门禁。2026-10-02，npm 公告数据库发布了多条 axios 高危公告，其修复版本均落在上游 `^1.7.9` 范围之外，包括：
+钉定的 MediaCrawler 检出（d6f7c5bb）自带的 WebUI 在 npm 清单中声明 axios ^1.7.9。Docker 镜像构建会把该 WebUI 编译进同源的 `/crawler/` bundle，并以 `npm audit --omit=dev --audit-level=low` 作为 fail-closed 门禁。2026-10-02，npm 公告数据库发布了多条 axios 高危公告，波及 1.19.0 及之前的全部 axios 版本——包括钉定检出在上游 `^1.7.9` 声明下按锁文件解析安装的 axios 1.13.2——因此只有把依赖覆盖为修复版本 axios@1.20.0（该版本本身就在 `^1.7.9` 范围内），门禁才能通过。公告包括：
 
 - GHSA-44g4-m2mj-wpvx —— CIDR 形式的 NO_PROXY 条目被忽略，导致内部 IP 段的代理排除被绕过；
 - GHSA-r4gj-5m52-g5wh —— fetch adapter 未强制 `maxRedirects: 0`，允许基于重定向的 SSRF。

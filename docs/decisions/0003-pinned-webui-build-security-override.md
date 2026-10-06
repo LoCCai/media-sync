@@ -7,7 +7,7 @@
 
 ## Context
 
-The pinned MediaCrawler checkout (d6f7c5bb) ships a WebUI whose npm manifest declares axios ^1.7.9. The Docker image build compiles that WebUI into the same-origin `/crawler/` bundle and enforces `npm audit --omit=dev --audit-level=low` as a fail-closed gate. On 2026-10-02 the npm advisory database published high-severity axios advisories whose fixed versions all fall outside the upstream `^1.7.9` range, including:
+The pinned MediaCrawler checkout (d6f7c5bb) ships a WebUI whose npm manifest declares axios ^1.7.9. The Docker image build compiles that WebUI into the same-origin `/crawler/` bundle and enforces `npm audit --omit=dev --audit-level=low` as a fail-closed gate. On 2026-10-02 the npm advisory database published high-severity axios advisories affecting every axios release through 1.19.0 — including the lock-resolved axios 1.13.2 that the pinned checkout installs under the upstream `^1.7.9` declaration — so the gate only passes once the dependency is overridden to the fixed version axios@1.20.0 (which the `^1.7.9` range itself admits). The advisories include:
 
 - GHSA-44g4-m2mj-wpvx — CIDR-form NO_PROXY entries are ignored, so proxy exclusions for internal IP ranges are bypassed;
 - GHSA-r4gj-5m52-g5wh — the fetch adapter does not enforce `maxRedirects: 0`, allowing redirect-based SSRF.
