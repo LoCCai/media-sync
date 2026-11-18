@@ -2,9 +2,11 @@
 
 # 项目工作日志
 
-当前交付：[0082 SQLite 暂态凭据残留加固](executions/0082-sqlite-credential-residue/progress.zh.md)。每条引擎连接现在都启用 `PRAGMA secure_delete=ON`，因此 `0003` 历史资产表重建以及任何擦除式 `UPDATE` 都不再把签名平台媒体 URL 留在可读的空闲页里；只在长临时路径上失败的残留测试现已在各处通过。最终本地证据见 [0082 验证](executions/0082-sqlite-credential-residue/verification.zh.md)：Python `7198 passed, 63 skipped`；Web `30 files / 843 tests`；Ruff、strict mypy、文档、上游与 Web 门禁通过。部署与全部真人平台行仍为 `NOT_RUN`。
+当前交付：[0083 抖音媒体 profile 与有界选流](executions/0083-douyin-media-profile/progress.zh.md)。抖音媒体现在用封闭桌面 header 集合解析，而不是无 header 请求；声明的 `video.bit_rate[]` 流会被排序，而不是被钉定 store 压平丢弃；两项改动都留在既有"签名不落盘"规则之内。最终本地证据见 [0083 验证](executions/0083-douyin-media-profile/verification.zh.md)：Python `7228 passed, 63 skipped`；Web `30 files / 843 tests`；Ruff、strict mypy 与文档门通过。部署与全部真人平台行仍为 `NOT_RUN`。
 
-前序交付：[0077 部署来源身份与 XHS 金丝雀预检](executions/0077-deployment-provenance-preflight/progress.zh.md)，实现提交为 `d6db86a`。镜像现在可以在封闭构建清单与 OCI 标签中记录一个精确 media-sync 源码 SHA。经认证的诊断页与 `doctor --deep` 会公开经过验证的来源身份、当前/预期 migration 及 B 站/XHS 续跑间隔，以便恢复工作前比较 API 与 supervisor 服务定义。后续遵循[部署交接](executions/0077-deployment-provenance-preflight/deployment-handoff.zh.md)；该收尾不会启动 XHS 或抖音工作。
+前序交付：[0082 SQLite 暂态凭据残留加固](executions/0082-sqlite-credential-residue/progress.zh.md)。每条引擎连接都启用 `PRAGMA secure_delete=ON`，因此 `0003` 历史资产表重建与任何擦除式 `UPDATE` 都不再把签名平台媒体 URL 留在可读的空闲页里。
+
+更早：[0077 部署来源身份与 XHS 金丝雀预检](executions/0077-deployment-provenance-preflight/progress.zh.md)，实现提交为 `d6db86a`。镜像可以在封闭构建清单与 OCI 标签中记录一个精确 media-sync 源码 SHA。经认证的诊断页与 `doctor --deep` 会公开经过验证的来源身份、当前/预期 migration 及 B 站/XHS 续跑间隔，以便恢复工作前比较 API 与 supervisor 服务定义。后续遵循[部署交接](executions/0077-deployment-provenance-preflight/deployment-handoff.zh.md)；该收尾不会启动 XHS 或抖音工作。
 
 ## 历史功能检查点
 
@@ -36,6 +38,7 @@
 
 | ID | 里程碑 | 状态 | 提交 |
 | --- | --- | --- | --- |
+| 0083 | 抖音媒体 profile 与有界选流 | 本地完成：`MediaRequestProfile.DOUYIN_MEDIA` 发送抖音 CDN 期望的封闭桌面 header 集合；`douyin_media.py` 对声明的 `video.bit_rate[]` 排序（画质、码率、体积、声明顺序），并逐字节回退到钉定 `play_addr_h264`/`play_addr_256`/`play_addr` 顺序；漂移以固定码关闭失败；私有档位字段绝不进入 envelope；Python `7228 passed, 63 skipped` | 实现与收尾为包含本记录的提交；[验证](executions/0083-douyin-media-profile/verification.zh.md) |
 | 0082 | SQLite 暂态凭据残留加固 | 本地完成：每条引擎连接现在都启用 `PRAGMA secure_delete=ON`，表重建或擦除式 `UPDATE` 不再把历史签名媒体 URL 留在空闲页；此前依赖路径长度的 `0003` 残留测试现已在本机长短临时路径上同时通过；Python `7198 passed, 63 skipped` | 实现与收尾为包含本记录的提交；[验证](executions/0082-sqlite-credential-residue/verification.zh.md) |
 | 0077 | 部署来源身份与 XHS 金丝雀预检 | 本地完成：封闭镜像源码身份、安全 migration/续跑证据、经认证诊断页与共享 deep CLI 报告通过确定性门；Docker 部署/真人验收仍为 `NOT_RUN`；[验证](executions/0077-deployment-provenance-preflight/verification.zh.md) | 计划 `dadd198`；实现 `d6db86a`；收尾为包含本行的提交 |
 | 0078 | 操作者控制台体验 | 本地完成：内嵌原生二维码面板（只读中继查看器，带平台指引）、crawler 日志行桥接进私有滚动日志中心、产物分层总览卡与文档债清理（status 刷新到 0077 边界、索引回填 0059–0068、双语交接速查清单）；0077 的 XHS/抖音冻结未被触碰；新门禁：Python `7145 passed, 42 skipped`、Web `30 files / 833 tests` | 实现与收尾为包含记录的提交 |

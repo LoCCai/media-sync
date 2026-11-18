@@ -92,7 +92,9 @@ def test_bilibili_profile_is_fixed_and_survives_redirect_while_resume_headers_dr
     assert len(requests) == 2
 
 
-@pytest.mark.parametrize("name", ["Cookie", "Authorization", "User-Agent", "Referer", "Origin", "X-Arbitrary"])
+@pytest.mark.parametrize(
+    "name", ["Cookie", "Authorization", "User-Agent", "Referer", "Origin", "Accept", "X-Arbitrary"]
+)
 def test_bilibili_profile_rejects_every_caller_header_except_resume_state(name: str) -> None:
     sentinel = "caller-controlled-secret"
     client = SafeHttpClient(_Resolver({"media.test": ("8.8.8.8",)}))
@@ -109,6 +111,30 @@ def test_bilibili_profile_rejects_every_caller_header_except_resume_state(name: 
 
     assert caught.value.code == "download_range_invalid"
     assert sentinel not in str(caught.value)
+
+
+def test_douyin_profile_is_the_closed_desktop_media_header_set() -> None:
+    resolver = _Resolver({"origin.test": ("8.8.8.8",)})
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        assert request.headers["user-agent"].startswith("Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
+        assert request.headers["referer"] == "https://www.douyin.com/"
+        assert request.headers["accept"] == "*/*"
+        assert request.headers["accept-encoding"] == "identity"
+        for forbidden in ("cookie", "authorization", "origin", "x-arbitrary"):
+            assert forbidden not in request.headers
+        return httpx.Response(200, content=b"bytes")
+
+    client = SafeHttpClient(resolver, transport_factory=lambda _target: httpx.MockTransport(handler))
+    with client.stream(
+        "https://origin.test/video",
+        request_profile=MediaRequestProfile.DOUYIN_MEDIA,
+    ) as (response, _target):
+        assert response.read() == b"bytes"
+
+    assert len(requests) == 1
 
 
 def test_each_redirect_is_resolved_and_public_to_private_is_rejected() -> None:

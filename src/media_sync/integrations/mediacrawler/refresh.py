@@ -614,7 +614,7 @@ class MediaCrawlerLocatorRefresher:
         profile = (
             MediaRequestProfile.BILIBILI_MEDIA
             if context._bili_progressive_detail() or context._bili_dynamic_detail()
-            else MediaRequestProfile.DEFAULT
+            else _platform_media_profile(context.platform)
         )
         try:
             return ResolvedLocator(source_url, profile)
@@ -632,6 +632,14 @@ def _supported_kinds(platform: Platform) -> frozenset[AssetKind]:
         Platform.TIEBA: frozenset({AssetKind.IMAGE}),
         Platform.ZHIHU: frozenset({AssetKind.IMAGE}),
     }.get(platform, frozenset())
+
+
+def _platform_media_profile(platform: Platform) -> MediaRequestProfile:
+    """Closed media profile per platform; only Bilibili and Douyin differ from default."""
+
+    if platform is Platform.DY:
+        return MediaRequestProfile.DOUYIN_MEDIA
+    return MediaRequestProfile.DEFAULT
 
 
 def _is_bili_video_slot(

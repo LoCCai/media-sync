@@ -22,12 +22,22 @@ _REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
 _BILIBILI_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 )
+# Douyin media CDNs answer a default HTML-less request with 403; the desktop
+# browse shape below is the closed, non-secret header set accepted instead.
+_DOUYIN_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+)
 _PROFILE_HEADERS: Mapping[MediaRequestProfile, Mapping[str, str]] = {
     MediaRequestProfile.DEFAULT: {},
     MediaRequestProfile.BILIBILI_MEDIA: {
         "User-Agent": _BILIBILI_USER_AGENT,
         "Referer": "https://www.bilibili.com/",
         "Origin": "https://www.bilibili.com",
+    },
+    MediaRequestProfile.DOUYIN_MEDIA: {
+        "User-Agent": _DOUYIN_USER_AGENT,
+        "Referer": "https://www.douyin.com/",
+        "Accept": "*/*",
     },
 }
 SocketOption: TypeAlias = tuple[int, int, int] | tuple[int, int, bytes | bytearray] | tuple[int, int, None, int]

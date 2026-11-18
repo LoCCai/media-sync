@@ -410,12 +410,21 @@ def test_douyin_single_video_and_cover_reach_emby_without_persisting_signed_quer
 
         def handler(request: httpx.Request) -> httpx.Response:
             requests.append(request)
-            assert set(request.headers) == {"accept", "accept-encoding", "connection", "host", "user-agent"}
+            # 0083: Douyin media now carries the closed desktop DY profile.
+            assert set(request.headers) == {
+                "accept",
+                "accept-encoding",
+                "connection",
+                "host",
+                "referer",
+                "user-agent",
+            }
+            assert request.headers["accept"] == "*/*"
             assert request.headers["accept-encoding"] == "identity"
-            assert not request.headers["user-agent"].startswith("Mozilla/5.0")
+            assert request.headers["referer"] == "https://www.douyin.com/"
+            assert request.headers["user-agent"].startswith("Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
             assert "cookie" not in request.headers
             assert "authorization" not in request.headers
-            assert "referer" not in request.headers
             assert "origin" not in request.headers
             if str(request.url) == DETAIL_VIDEO_URL:
                 assert request.headers["host"] == "video.example.test"
@@ -499,7 +508,7 @@ def test_douyin_single_video_and_cover_reach_emby_without_persisting_signed_quer
         assert video_harness.refresher.results[0].url == DETAIL_VIDEO_URL
         assert cover_harness.refresher.results[0].url == DETAIL_COVER_URL
         resolved_results = video_harness.refresher.results + cover_harness.refresher.results
-        assert all(result.request_profile is MediaRequestProfile.DEFAULT for result in resolved_results)
+        assert all(result.request_profile is MediaRequestProfile.DOUYIN_MEDIA for result in resolved_results)
         assert all(DETAIL_SENTINEL not in repr(result) for result in resolved_results)
 
         assert len(_FakeDetailRunner.instances) == 2
@@ -804,11 +813,20 @@ def test_douyin_note_gallery_reaches_emby_without_persisting_signed_queries(
             requests.append(request)
             url = str(request.url)
             assert url in payloads
-            assert set(request.headers) == {"accept", "accept-encoding", "connection", "host", "user-agent"}
+            assert set(request.headers) == {
+                "accept",
+                "accept-encoding",
+                "connection",
+                "host",
+                "referer",
+                "user-agent",
+            }
+            assert request.headers["accept"] == "*/*"
             assert request.headers["accept-encoding"] == "identity"
+            assert request.headers["referer"] == "https://www.douyin.com/"
+            assert request.headers["user-agent"].startswith("Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
             assert "cookie" not in request.headers
             assert "authorization" not in request.headers
-            assert "referer" not in request.headers
             assert "origin" not in request.headers
             payload = payloads[url]
             return httpx.Response(

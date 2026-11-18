@@ -2,7 +2,17 @@
 
 # 项目统一状态（单一事实来源）
 
-## 最新：SQLite 暂态凭据残留加固（0082）
+## 最新：抖音媒体 profile 与有界选流（0083）
+
+[执行 0083](executions/0083-douyin-media-profile/progress.zh.md)回应了操作者的判断：抖音下载链路可以端到端跑通，而本产品此前还做不到。这次在没有借用任何 GPLv3 源码的前提下补上了两处具体缺口。
+
+第一是请求形状。此前所有非 B 站资产都用 `MediaRequestProfile.DEFAULT` 解析，该 profile 完全不发 `User-Agent`、`Referer`、`Accept`；抖音 CDN 常以 403 回应。`MediaRequestProfile.DOUYIN_MEDIA` 现在只发桌面 `User-Agent`、`Referer: https://www.douyin.com/` 与 `Accept: */*`，由 `refresh.py` 按平台选择。不涉及 Cookie、`Authorization`、`Origin`、调用方 header 或 TLS 指纹，B 站自身的 profile 不受影响。
+
+第二是流。钉定 store 把 `video.play_addr_h264` / `play_addr_256` / `play_addr` 压平，并丢弃更丰富的 `video.bit_rate[]` 数组，因此最高声明画质从未能被表达。新的 `douyin_media.py` 对声明项排序（先 `max(width, height)` 最高，再 `bit_rate`，再 `data_size`，最后声明顺序，上限 8 项）并给出唯一决策，任何漂移都以固定码拒绝；回退路径逐字节复现钉定扁平化规则，使当前可交付的每条作品继续交付。store shim 在子进程内以任务局部 `ContextVar` 运行，私有档位字段在组装 envelope 前被剥离，因此没有任何 URL 或 host 进入 SQLite。
+
+最终本地门禁：Python `7228 passed, 63 skipped`；Web `30 files / 843 tests`；441 个文件的 Ruff lint/format、170 个源码文件的 strict mypy 与文档链接均通过。部署、真人登录与任何真实 CDN 字节获取仍为 `NOT_RUN`；header 集合是封闭的，但 CDN 是否接受它只能由一次操作者运行的金丝雀证明。
+
+## 上阶段：SQLite 暂态凭据残留加固（0082）
 
 [执行 0082](executions/0082-sqlite-credential-residue/progress.zh.md)关闭了在本工作站重跑 0081 门禁时发现的存储层缺口。自 0003 起，历史资产迁移保证签名平台媒体 URL 被替换为只能刷新的定位器，行值确实已消失——但只要连接未启用 `secure_delete`，SQLite 会把已释放的 cell 留在文件里。`test_0003_upgrade_preserves_only_complete_verified_legacy_asset` 写入的哨兵在默认长临时路径上仍可从字节 132972 读出，而同一测试在较短路径与 Linux 主机上一直通过。
 
@@ -210,7 +220,7 @@ B站和微博资料已离线实现，其他五平台资料、抖音/快手/贴�
 | 维度 | 状态 | 证据 / 阻塞 |
 | --- | --- | --- |
 | 实现（离线形状） | 七平台 15+ 冻结形状 | 执行 0013–0039 记录 |
-| 离线完整套件 | 0082 最终本地门：Python 完整套件 `7198 passed, 63 skipped, 108 warnings`、Web `30 files / 843 tests`（0077 的 `7140 passed, 42 skipped` / `28 files / 825 tests` 已被取代）。跳过项均为明确记录的 OS/PostgreSQL 资格分支 | [0082 验证](executions/0082-sqlite-credential-residue/verification.zh.md) | [0077 验证](executions/0077-deployment-provenance-preflight/verification.zh.md) |
+| 离线完整套件 | 0083 最终本地门：Python 完整套件 `7228 passed, 63 skipped, 108 warnings`、Web `30 files / 843 tests`（0082 的 `7198 passed, 63 skipped` 已被取代）。跳过项均为明确记录的 OS/PostgreSQL 资格分支 | [0083 验证](executions/0083-douyin-media-profile/verification.zh.md) | [0082 验证](executions/0082-sqlite-credential-residue/verification.zh.md) |
 | API/控制台测试 | 0075 策略/API/CLI/鉴权联合为 `40 passed, 2 skipped`；两项真实 PostgreSQL 策略检查仍为 `NOT_RUN`。合成 Chrome 证明 B 站与 XHS 保存后仍暂停、平台 scope 保持隔离，浏览器/页面/请求错误数均为 0 | [0075 验证](executions/0075-paused-subscription-policy-editor/verification.zh.md) |
 | 静态与制品门 | 0075 对 406 个文件的 Ruff lint/format、Web Prettier、156 个源码文件 strict mypy、compileall、62 包锁文件、两个上游及 wheel/sdist 构建通过；收尾重跑文档链接与 `git diff --check`。0072 加固后的生产依赖审计继续为 0，全构建依赖图仍有 8 个仅开发/构建期发现 | [0075 验证](executions/0075-paused-subscription-policy-editor/verification.zh.md) |
 | 锁定上游 WebUI 依赖审计 | 生产 `PASS`／全构建依赖图 `FAIL`（仅开发依赖残余）——安全补丁后的构建副本生产漏洞为 0，全依赖图为 8 条：6 high、2 low、0 moderate、0 critical；对应 package 不会复制进最终运行镜像。未加固上游原始基线的 11 条（8 high、1 moderate、2 low）仅作为历史发现保留；版本化 checkout／lockfile 保持不变 | [0072 验证](executions/0072-mediacrawler-webui-integration/verification.zh.md) |

@@ -47,6 +47,8 @@ from .bilibili_media import (
     bilibili_video_remote_ids,
     parse_bilibili_page_payload,
 )
+from .douyin_creator_work import DOUYIN_SCAN_IDENTITY_FIELD
+from .douyin_media import DOUYIN_MEDIA_RANK_FIELD
 from .envelope import MediaCrawlerEnvelope
 from .jsonl import (
     DEFAULT_MAX_BYTES,
@@ -97,6 +99,8 @@ _BILI_PROGRESSIVE_FIELD = "__media_sync_bili_progressive_url"
 _PRIVATE_MEDIA_FIELDS = frozenset(
     {
         "__media_sync_bili_scan_identity",
+        DOUYIN_SCAN_IDENTITY_FIELD,
+        DOUYIN_MEDIA_RANK_FIELD,
         BILI_DYNAMIC_FIELD,
         BILI_DYNAMIC_SOURCE_FIELD,
         BILIBILI_PAGES_FIELD,

@@ -301,6 +301,7 @@ def _disable_capture_hooks(monkeypatch: pytest.MonkeyPatch) -> None:
         ("zhihu_media", "install_zhihu_media_capture"),
         ("kuaishou_media", "install_kuaishou_media_capture"),
         ("xhs_live", "install_xhs_live_capture"),
+        ("douyin_media", "install_douyin_media_capture"),
     ):
         module = importlib.import_module(f"media_sync.integrations.mediacrawler.{module_name}")
         monkeypatch.setattr(module, function, lambda *_args, **_kwargs: None)

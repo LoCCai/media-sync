@@ -192,6 +192,20 @@ class XhsJsonlStoreImplement:
         raise RuntimeError("not reached in fixtures")
 """
 
+_DY_STORE_IMPL = r"""
+class DouyinJsonlStoreImplement:
+    async def store_content(self, content_item):
+        raise RuntimeError("not reached in fixtures")
+"""
+
+_DY_STORE = r"""
+from ._store_impl import DouyinJsonlStoreImplement
+
+
+async def update_douyin_aweme(aweme_item):
+    raise RuntimeError("not reached in fixtures")
+"""
+
 _XHS_STORE = r"""
 from ._store_impl import XhsJsonlStoreImplement
 
@@ -921,6 +935,13 @@ def _fake_checkout(root: Path) -> Path:
     checkout = root / "fake-mediacrawler"
     (checkout / "config").mkdir(parents=True)
     (checkout / "config" / "__init__.py").write_text(textwrap.dedent(_CONFIG).lstrip(), encoding="utf-8")
+    # 0083 installs the Douyin stream-selection shim for every Douyin child, so
+    # the fake checkout must carry the same store modules the pinned checkout
+    # has.  The fixture writes its JSONL directly and never calls them.
+    (checkout / "store" / "douyin").mkdir(parents=True)
+    (checkout / "store" / "__init__.py").write_text("", encoding="utf-8")
+    (checkout / "store" / "douyin" / "__init__.py").write_text(_DY_STORE, encoding="utf-8")
+    (checkout / "store" / "douyin" / "_store_impl.py").write_text(_DY_STORE_IMPL, encoding="utf-8")
     main_source = textwrap.dedent(_MAIN).lstrip().replace("__DY_COVER_URL__", repr(DY_COVER_URL))
     (checkout / "main.py").write_text(main_source, encoding="utf-8")
     return checkout.resolve()
@@ -1663,8 +1684,8 @@ def test_detail_process_runner_uses_detail_mode_and_cleans_signed_jsonl(tmp_path
 
     assert video.url == DY_VIDEO_URL
     assert cover.url == DY_COVER_URL
-    assert video.request_profile is MediaRequestProfile.DEFAULT
-    assert cover.request_profile is MediaRequestProfile.DEFAULT
+    assert video.request_profile is MediaRequestProfile.DOUYIN_MEDIA
+    assert cover.request_profile is MediaRequestProfile.DOUYIN_MEDIA
     assert len(requests) == len(results) == 2
     for value in (video_context, cover_context, *requests, *results, video, cover):
         assert COOKIE_SENTINEL not in repr(value)

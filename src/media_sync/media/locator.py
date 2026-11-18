@@ -135,6 +135,7 @@ class MediaRequestProfile(StrEnum):
 
     DEFAULT = "default"
     BILIBILI_MEDIA = "bilibili_media"
+    DOUYIN_MEDIA = "douyin_media"
 
 
 @dataclass(frozen=True, slots=True)

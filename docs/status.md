@@ -2,7 +2,17 @@
 
 # Unified project status (single source of truth)
 
-## Latest: SQLite scratch-credential residue hardening (0082)
+## Latest: Douyin media profile and bounded stream selection (0083)
+
+[Execution 0083](executions/0083-douyin-media-profile/progress.md) addressed the operator's finding that a Douyin download can succeed end to end while this product still cannot. Two concrete gaps were closed without borrowing any GPLv3 source.
+
+First, the request shape. Every non-Bilibili asset was resolved with `MediaRequestProfile.DEFAULT`, which sends no `User-Agent`, `Referer` or `Accept` at all; Douyin CDNs routinely answer that with 403. `MediaRequestProfile.DOUYIN_MEDIA` now sends exactly a desktop `User-Agent`, `Referer: https://www.douyin.com/` and `Accept: */*`, selected by platform inside `refresh.py`. No Cookie, `Authorization`, `Origin`, caller header or TLS impersonation is involved, and Bilibili's own profile is untouched.
+
+Second, the stream. The pinned store flattens `video.play_addr_h264` / `play_addr_256` / `play_addr` and discards the richer `video.bit_rate[]` array, so the highest declared quality could never be expressed. The new `douyin_media.py` ranks the declared entries (highest `max(width, height)`, then `bit_rate`, then `data_size`, then declaration order, bounded at 8) and returns one decision, refusing any drift with a fixed code; the fallback path reproduces the pinned flattening rule byte for byte, so every currently deliverable work keeps delivering. The store shim runs inside the child with a task-local `ContextVar`, and the private rank field is stripped before the envelope, so no URL or host reaches SQLite.
+
+Final local gates: Python `7228 passed, 63 skipped`; Web `30 files / 843 tests`; Ruff lint/format over 441 files, strict mypy over 170 source files and the documentation links pass. Deployment, real login and any live CDN byte fetch remain `NOT_RUN`; the header set is closed but whether the CDN accepts it can only be shown by one operator-run canary.
+
+## Previous: SQLite scratch-credential residue hardening (0082)
 
 [Execution 0082](executions/0082-sqlite-credential-residue/progress.md) closed a storage-level gap found while re-running the 0081 gates on this workstation. Since 0003 the legacy-asset migration guarantees that a signed platform media URL is replaced by a refresh-only locator, and the row value is indeed gone — but SQLite keeps freed cells in the file unless the connection enables `secure_delete`. The sentinel written by `test_0003_upgrade_preserves_only_complete_verified_legacy_asset` was still readable at byte 132972 on the default long temporary path, while the same test passed on shorter paths and on the Linux host.
 
@@ -210,7 +220,7 @@ Under frozen plan `714c849`, safe console and startup preflight are implemented 
 | Dimension | State | Evidence / blocker |
 | --- | --- | --- |
 | Implementation (offline shapes) | 15+ frozen shapes across seven platforms | Executions 0013–0039 records |
-| Offline complete suite | The 0082 final local gates pass `7198 passed, 63 skipped, 108 warnings` for the complete Python suite and `30 files / 843 tests` for Web (0077's `7140 passed, 42 skipped` / `28 files / 825 tests` are superseded). Skips are recorded OS/PostgreSQL qualification branches| [0082 verification](executions/0082-sqlite-credential-residue/verification.md)| [0077 verification](executions/0077-deployment-provenance-preflight/verification.md)|
+| Offline complete suite | The 0083 final local gates pass `7228 passed, 63 skipped, 108 warnings` for the complete Python suite and `30 files / 843 tests` for Web (0082's `7198 passed, 63 skipped` are superseded). Skips are recorded OS/PostgreSQL qualification branches| [0083 verification](executions/0083-douyin-media-profile/verification.md)| [0082 verification](executions/0082-sqlite-credential-residue/verification.md)|
 | API/console tests | The 0075 policy/API/CLI/auth union passes `40 passed, 2 skipped`; the two real PostgreSQL policy checks remain `NOT_RUN`. Synthetic Chrome proves Bilibili and XHS saves remain paused, platform scope stays isolated and browser/page/request error counts remain zero | [0075 verification](executions/0075-paused-subscription-policy-editor/verification.md) |
 | Static and distribution gates | 0075 Ruff lint/format over 406 files, Web Prettier, strict mypy over 156 source files, compileall, 62-package lock, both locked upstreams and wheel/sdist builds pass. Documentation links and `git diff --check` are rerun for closeout. The hardened 0072 production dependency audit remains zero; the full build graph retains eight development/build-only findings | [0075 verification](executions/0075-paused-subscription-policy-editor/verification.md) |
 | Pinned upstream WebUI dependency audits | Production `PASS` / full build graph `FAIL` (development-only residual) — the security-patched build copy reports 0 production vulnerabilities, while its full graph reports 8 entries: 6 high, 2 low, 0 moderate, 0 critical. Their packages are not copied into the final runtime image. The untouched raw upstream baseline's 11 entries (8 high, 1 moderate, 2 low) remain historical discovery evidence | [0072 verification](executions/0072-mediacrawler-webui-integration/verification.md) |

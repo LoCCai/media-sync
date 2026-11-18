@@ -289,7 +289,10 @@ def test_bound_refresher_selects_exact_normalized_asset_in_memory(
     assert len(runner.calls) == 1
     assert runner.calls[0].platform is platform
     assert runner.calls[0].content_remote_id == content_id
-    assert resolved.request_profile is MediaRequestProfile.DEFAULT
+    # 0083: Douyin media is fetched with the browser-shaped DY profile; every
+    # other platform keeps the header-less default profile.
+    expected_profile = MediaRequestProfile.DOUYIN_MEDIA if platform is Platform.DY else MediaRequestProfile.DEFAULT
+    assert resolved.request_profile is expected_profile
     assert "sentinel" not in repr(resolved)
     assert "sentinel" not in repr(context)
 
@@ -2260,7 +2263,7 @@ def test_douyin_note_gallery_refresh_resolves_each_position(position: int) -> No
     resolved = MediaCrawlerLocatorRefresher(context, runner, clock=lambda: NOW).resolve(context.locator)
 
     assert resolved.url == signed_url
-    assert resolved.request_profile is MediaRequestProfile.DEFAULT
+    assert resolved.request_profile is MediaRequestProfile.DOUYIN_MEDIA
     assert "sentinel" not in repr(resolved)
 
 

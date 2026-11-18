@@ -1605,6 +1605,11 @@ async def _execute_child(
 
                 install_xhs_creator_capture_shim(manifest)
         elif manifest.platform.value == "dy":
+            from media_sync.integrations.mediacrawler.douyin_media import (
+                install_douyin_media_capture,
+            )
+
+            install_douyin_media_capture(verified.root)
             if getattr(manifest, "douyin_scan", None) is not None:
                 from media_sync.integrations.mediacrawler.douyin_creator_capture import (
                     install_douyin_creator_capture_shim,
