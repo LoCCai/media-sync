@@ -8,6 +8,12 @@
 
 ## 阶段
 
+优先级更新（0083）：[抖音媒体请求 profile 与有界选流](executions/0083-douyin-media-profile/progress.zh.md)已实现并通过离线验证。抖音媒体现在以封闭桌面 header 集合（`User-Agent`、`Referer: https://www.douyin.com/`、`Accept: */*`）解析，而不是无 header 的 `DEFAULT`；钉定 store 压平丢弃的 `video.bit_rate[]` 现在按画质 → 码率 → 体积 → 声明顺序排序后取最高可用档，回退路径逐字节复现钉定扁平化顺序。漂移以固定码关闭失败，私有档位字段绝不进入 envelope 或 SQLite。这是行为与协议形状的对齐，不是 TLS 指纹或签名能力；真实 CDN 是否接受该 header 集合，仍需一次操作者金丝雀。
+
+下一优先级：[0083 下一交付](executions/0083-douyin-media-profile/next-delivery.zh.md)顺序已冻结——微博（0084，`since_id` + 10 条页 + `total` 推断源末）、贴吧（0085，页码 + `has_more`）、知乎（0086，整数 offset + `is_end`）依次补齐耐久创作者作品交付，再由操作者执行逐平台有界金丝雀（0087）。每个执行必须从钉定上游重新推导语义，不得复制其它平台的游标契约。
+
+优先级更新（0082）：[SQLite 暂态凭据残留加固](executions/0082-sqlite-credential-residue/progress.zh.md)已实现并通过离线验证。每条 SQLite 连接启用了 `secure_delete`，使 `0003` 表重建或擦除式 `UPDATE` 不再把签名媒体 URL 留在空闲页里。这是存储层保证，不是新的功能形状。
+
 优先级更新（0077）：[部署来源身份与 XHS 金丝雀预检](executions/0077-deployment-provenance-preflight/progress.zh.md)已在 `d6db86a` 实现并通过本地验证。合格镜像会在清单与 OCI 标签中记录一个封闭的完整应用 SHA；经认证的诊断页与共享 deep CLI 报告公开该身份、当前/预期 migration 及 B 站/XHS 续跑间隔。缺失或无效证据始终显式。Docker/Linux 与全部真人行仍为 `NOT_RUN`。
 
 下一优先级：按 [0077 部署交接](executions/0077-deployment-provenance-preflight/deployment-handoff.zh.md)执行。拉取已发布 SHA，备份 `/data`，把该精确 SHA 绑定进镜像，应用 migration `0015`，在 supervisor 停止状态比较 API/supervisor deep readiness，再执行一个由操作者控制的低流量 XHS 金丝雀。推进前必须验收页尾保留、重启续跑、真实下载/归档/目录输出和一次调度续跑。形成文档后，才从钉定抖音源码语义推导独立契约；当前尚未授权抖音实现。
