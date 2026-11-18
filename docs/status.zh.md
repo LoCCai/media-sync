@@ -2,7 +2,13 @@
 
 # 项目统一状态（单一事实来源）
 
-## 最新：Linux 部署主机门禁对齐（0079）
+## 最新：SQLite 暂态凭据残留加固（0082）
+
+[执行 0082](executions/0082-sqlite-credential-residue/progress.zh.md)关闭了在本工作站重跑 0081 门禁时发现的存储层缺口。自 0003 起，历史资产迁移保证签名平台媒体 URL 被替换为只能刷新的定位器，行值确实已消失——但只要连接未启用 `secure_delete`，SQLite 会把已释放的 cell 留在文件里。`test_0003_upgrade_preserves_only_complete_verified_legacy_asset` 写入的哨兵在默认长临时路径上仍可从字节 132972 读出，而同一测试在较短路径与 Linux 主机上一直通过。
+
+`media_sync.infrastructure.db` 拥有的每条连接现在都在 `foreign_keys`、`journal_mode`、`busy_timeout` 之侧启用 `PRAGMA secure_delete=ON`；pragma 测试断言它，`0003` 结果测试现已在长短临时路径上同时通过。没有改动任何迁移、schema 修订号、事务策略或降级护栏。Python 完整套件 `7198 passed, 63 skipped`；Ruff lint/format、169 个源码文件的 strict mypy、文档、上游与 Web 门禁均通过。一个进程树取消测试在首次完整运行中失败一次，随后三次单测重跑与最终套件均通过；如实记录为抖动，未修复。清除 0082 之前的部署已释放的页需要操作者显式执行 `VACUUM`；已记录但未自动化。部署与全部真人平台行仍为 `NOT_RUN`。
+
+## 上阶段：Linux 部署主机门禁对齐（0079）
 
 [执行 0079](executions/0079-linux-host-gate-parity/progress.zh.md)于 2026-09-26 在运行生产容器的 Linux 服务器上交付：把 `main` 同步到 `764f46b` 并推送 2026-09-12 部署记录（`ec67097`）后，全套本地门禁首次在该主机复现并通过——Python 完整套件从基线 `81 failed / 7052 passed` 修复到 `7132 passed, 54 skipped`；Web `30 files / 833 tests`；Ruff lint/format、双视角（linux 与 win32）strict mypy 161 个源文件、compileall、62 包锁、上游与文档检查全部通过。命令与退出码见[0079 验证](executions/0079-linux-host-gate-parity/verification.zh.md)。
 
@@ -204,7 +210,7 @@ B站和微博资料已离线实现，其他五平台资料、抖音/快手/贴�
 | 维度 | 状态 | 证据 / 阻塞 |
 | --- | --- | --- |
 | 实现（离线形状） | 七平台 15+ 冻结形状 | 执行 0013–0039 记录 |
-| 离线完整套件 | 0077 最终本地门：Python 完整套件 `7140 passed, 42 skipped, 1 warning`、Web `28 files / 825 tests`（0075 的 `7067 passed, 43 skipped` / `27 files / 818 tests` 已被取代）。跳过项均为明确记录的 OS/PostgreSQL/`uv` 资格分支 | [0077 验证](executions/0077-deployment-provenance-preflight/verification.zh.md) | [0075 验证](executions/0075-paused-subscription-policy-editor/verification.zh.md) |
+| 离线完整套件 | 0082 最终本地门：Python 完整套件 `7198 passed, 63 skipped, 108 warnings`、Web `30 files / 843 tests`（0077 的 `7140 passed, 42 skipped` / `28 files / 825 tests` 已被取代）。跳过项均为明确记录的 OS/PostgreSQL 资格分支 | [0082 验证](executions/0082-sqlite-credential-residue/verification.zh.md) | [0077 验证](executions/0077-deployment-provenance-preflight/verification.zh.md) |
 | API/控制台测试 | 0075 策略/API/CLI/鉴权联合为 `40 passed, 2 skipped`；两项真实 PostgreSQL 策略检查仍为 `NOT_RUN`。合成 Chrome 证明 B 站与 XHS 保存后仍暂停、平台 scope 保持隔离，浏览器/页面/请求错误数均为 0 | [0075 验证](executions/0075-paused-subscription-policy-editor/verification.zh.md) |
 | 静态与制品门 | 0075 对 406 个文件的 Ruff lint/format、Web Prettier、156 个源码文件 strict mypy、compileall、62 包锁文件、两个上游及 wheel/sdist 构建通过；收尾重跑文档链接与 `git diff --check`。0072 加固后的生产依赖审计继续为 0，全构建依赖图仍有 8 个仅开发/构建期发现 | [0075 验证](executions/0075-paused-subscription-policy-editor/verification.zh.md) |
 | 锁定上游 WebUI 依赖审计 | 生产 `PASS`／全构建依赖图 `FAIL`（仅开发依赖残余）——安全补丁后的构建副本生产漏洞为 0，全依赖图为 8 条：6 high、2 low、0 moderate、0 critical；对应 package 不会复制进最终运行镜像。未加固上游原始基线的 11 条（8 high、1 moderate、2 low）仅作为历史发现保留；版本化 checkout／lockfile 保持不变 | [0072 验证](executions/0072-mediacrawler-webui-integration/verification.zh.md) |

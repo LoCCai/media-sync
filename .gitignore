@@ -63,3 +63,9 @@ compose.override.yml
 # Local test-run artifacts (junit XML etc.); commit sanitized ones explicitly
 artifacts/
 !artifacts/README.md
+
+# Agent scratch space; never source or package input
+.tmp/
+# Pytest falls back to a directory inside the workspace when the OS temp
+# directory is not writable for this account.
+pytest-of-*/

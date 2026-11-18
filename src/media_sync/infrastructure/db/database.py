@@ -16,6 +16,10 @@ from .base import Base
 
 SQLITE_BUSY_TIMEOUT_MS = 5_000
 SQLITE_IMMEDIATE_OPTION = "media_sync_sqlite_begin_immediate"
+# Scratch credentials (for example a legacy signed media URL) must not survive in
+# freed SQLite pages after a schema rebuild or a scrubbing UPDATE.  The pragma is
+# per-connection and does not change the on-disk format.
+SQLITE_SECURE_DELETE_PRAGMA = "PRAGMA secure_delete=ON"
 
 
 def _ensure_sqlite_parent(database_url: str) -> None:
@@ -35,6 +39,7 @@ def _configure_sqlite_connection(dbapi_connection: Any, connection_record: Any) 
     try:
         cursor.execute("PRAGMA foreign_keys=ON")
         cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute(SQLITE_SECURE_DELETE_PRAGMA)
         if SQLITE_BUSY_TIMEOUT_MS == 5_000:
             cursor.execute("PRAGMA busy_timeout=5000")
         else:
@@ -118,6 +123,7 @@ class Database:
 __all__ = [
     "SQLITE_BUSY_TIMEOUT_MS",
     "SQLITE_IMMEDIATE_OPTION",
+    "SQLITE_SECURE_DELETE_PRAGMA",
     "Database",
     "create_database_engine",
 ]

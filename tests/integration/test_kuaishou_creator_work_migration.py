@@ -77,9 +77,7 @@ def test_upgrade_is_empty_matches_metadata_and_empty_roundtrip(tmp_path: Path) -
             assert connection.scalar(text("SELECT COUNT(*) FROM kuaishou_subscription_progress")) == 0
             assert connection.scalar(text("SELECT version_num FROM alembic_version")) == HEAD
         metadata.create_schema()
-        assert _shape(migrated, "kuaishou_subscription_progress") == _shape(
-            metadata, "kuaishou_subscription_progress"
-        )
+        assert _shape(migrated, "kuaishou_subscription_progress") == _shape(metadata, "kuaishou_subscription_progress")
 
         _downgrade(migrated, exclusive=True)
         assert set(inspect(migrated.engine).get_table_names()) == parent_tables

@@ -171,9 +171,7 @@ def _run_unit(
                 "creator_fingerprint_sha256": CREATOR_SHA,
                 "upstream_sha": UPSTREAM_SHA,
                 "account_revision": 0,
-                "policy_fingerprint_sha256": kuaishou_policy_fingerprint(
-                    subscription.policy, subscription.max_items
-                ),
+                "policy_fingerprint_sha256": kuaishou_policy_fingerprint(subscription.policy, subscription.max_items),
             },
         )
         runs = SyncRunRepository(session)
@@ -386,9 +384,7 @@ def _run_unit_restricted(database: Database, subscription_id: str) -> SyncRun:
                 "creator_fingerprint_sha256": CREATOR_SHA,
                 "upstream_sha": UPSTREAM_SHA,
                 "account_revision": 0,
-                "policy_fingerprint_sha256": kuaishou_policy_fingerprint(
-                    subscription.policy, subscription.max_items
-                ),
+                "policy_fingerprint_sha256": kuaishou_policy_fingerprint(subscription.policy, subscription.max_items),
             },
         )
         runs = SyncRunRepository(session)

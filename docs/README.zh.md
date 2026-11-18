@@ -2,9 +2,9 @@
 
 # 项目工作日志
 
-当前交付：[0077 部署来源身份与 XHS 金丝雀预检](executions/0077-deployment-provenance-preflight/progress.zh.md)，实现提交为 `d6db86a`。镜像现在可以在封闭构建清单与 OCI 标签中记录一个精确 media-sync 源码 SHA。经认证的诊断页与 `doctor --deep` 会公开经过验证的来源身份、当前/预期 migration 及 B 站/XHS 续跑间隔，以便恢复工作前比较 API 与 supervisor 服务定义。
+当前交付：[0082 SQLite 暂态凭据残留加固](executions/0082-sqlite-credential-residue/progress.zh.md)。每条引擎连接现在都启用 `PRAGMA secure_delete=ON`，因此 `0003` 历史资产表重建以及任何擦除式 `UPDATE` 都不再把签名平台媒体 URL 留在可读的空闲页里；只在长临时路径上失败的残留测试现已在各处通过。最终本地证据见 [0082 验证](executions/0082-sqlite-credential-residue/verification.zh.md)：Python `7198 passed, 63 skipped`；Web `30 files / 843 tests`；Ruff、strict mypy、文档、上游与 Web 门禁通过。部署与全部真人平台行仍为 `NOT_RUN`。
 
-最终本地证据见[0077 验证](executions/0077-deployment-provenance-preflight/verification.zh.md)：Python 完整套件 `7140 passed, 42 skipped, 1 warning`；media-sync Web 完整套件 `28 files / 825 tests`；Svelte/生产构建、Ruff、strict mypy、锁文件/上游、制品及文档门均通过。Docker/Linux、真实 PostgreSQL、真人 XHS 登录/API/CDN、宿主目录、重启、supervisor 与可选媒体服务器读取全部为 `NOT_RUN`。后续遵循[部署交接](executions/0077-deployment-provenance-preflight/deployment-handoff.zh.md)；本次收尾不会启动 XHS 或抖音工作。
+前序交付：[0077 部署来源身份与 XHS 金丝雀预检](executions/0077-deployment-provenance-preflight/progress.zh.md)，实现提交为 `d6db86a`。镜像现在可以在封闭构建清单与 OCI 标签中记录一个精确 media-sync 源码 SHA。经认证的诊断页与 `doctor --deep` 会公开经过验证的来源身份、当前/预期 migration 及 B 站/XHS 续跑间隔，以便恢复工作前比较 API 与 supervisor 服务定义。后续遵循[部署交接](executions/0077-deployment-provenance-preflight/deployment-handoff.zh.md)；该收尾不会启动 XHS 或抖音工作。
 
 ## 历史功能检查点
 
@@ -36,6 +36,7 @@
 
 | ID | 里程碑 | 状态 | 提交 |
 | --- | --- | --- | --- |
+| 0082 | SQLite 暂态凭据残留加固 | 本地完成：每条引擎连接现在都启用 `PRAGMA secure_delete=ON`，表重建或擦除式 `UPDATE` 不再把历史签名媒体 URL 留在空闲页；此前依赖路径长度的 `0003` 残留测试现已在本机长短临时路径上同时通过；Python `7198 passed, 63 skipped` | 实现与收尾为包含本记录的提交；[验证](executions/0082-sqlite-credential-residue/verification.zh.md) |
 | 0077 | 部署来源身份与 XHS 金丝雀预检 | 本地完成：封闭镜像源码身份、安全 migration/续跑证据、经认证诊断页与共享 deep CLI 报告通过确定性门；Docker 部署/真人验收仍为 `NOT_RUN`；[验证](executions/0077-deployment-provenance-preflight/verification.zh.md) | 计划 `dadd198`；实现 `d6db86a`；收尾为包含本行的提交 |
 | 0078 | 操作者控制台体验 | 本地完成：内嵌原生二维码面板（只读中继查看器，带平台指引）、crawler 日志行桥接进私有滚动日志中心、产物分层总览卡与文档债清理（status 刷新到 0077 边界、索引回填 0059–0068、双语交接速查清单）；0077 的 XHS/抖音冻结未被触碰；新门禁：Python `7145 passed, 42 skipped`、Web `30 files / 833 tests` | 实现与收尾为包含记录的提交 |
 | 0079 | Linux 部署主机门禁对齐 | 已在 Linux 部署主机完成：容器实际运行的宿主上全套本地门禁（Ruff、双视角 strict mypy、完整 pytest、docs/upstreams、Web 测试/检查/构建）通过；修复 39 错误的跨平台 mypy 门禁、venv 启动器符号链接测试类、一个 POSIX 专属测试泄漏的 subprocess mock、一处负载敏感断言、0078 重复索引行，以及 Emby 失败记录的 WAL busy-snapshot 竞态（BEGIN IMMEDIATE + 有界重试） | 实现与收尾为包含记录的提交；[验证](executions/0079-linux-host-gate-parity/verification.zh.md) |

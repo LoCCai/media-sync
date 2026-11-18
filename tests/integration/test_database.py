@@ -225,6 +225,9 @@ def test_sqlite_pragmas_and_nested_work_rollback(database: Database) -> None:
         assert connection.scalar(text("PRAGMA foreign_keys")) == 1
         assert str(connection.scalar(text("PRAGMA journal_mode"))).lower() == "wal"
         assert connection.scalar(text("PRAGMA busy_timeout")) == 5_000
+        # Freed pages must not keep scratch credentials such as a legacy signed
+        # media URL after the schema rebuild or a scrubbing UPDATE.
+        assert connection.scalar(text("PRAGMA secure_delete")) == 1
 
     with pytest.raises(RuntimeError, match="outer rollback"), database.session() as session:
         AuthorRepository(session).upsert_with_contents(
