@@ -2,7 +2,17 @@
 
 # Unified project status (single source of truth)
 
-## Latest: durable Weibo creator-note delivery (0084)
+## Latest: durable Tieba creator-work delivery (0085)
+
+[Execution 0085](executions/0085-tieba-creator-notes/progress.md) extends the same durable creator chain to Tieba, re-deriving every rule from the pinned Tieba source.
+
+Tieba differs from the other platforms in a way that changes the guard: pagination is a **1-based page number** on the signed PC feed endpoint (`pn`, `rn=20`), so the cursor always increments and a server that keeps serving the same page is invisible to it. Upstream also breaks the loop for reasons that are not an end — an empty thread list, a falsy `has_more`, a non-zero `error_code`, or a malformed body. `tieba_creator_work.py` therefore keeps `has_more_false` as a **server-declared** end that still only opens reconciliation, distinguishes `empty_page_end`, maps `error_code`/malformed bodies/`DataFetchError`/transport failures to `access_restricted`, and compares page identity tuples so a repeated page accrues stalls and blocks with `tieba_page_stalled`.
+
+Migration `0019_tieba_creator_notes` adds `tieba_subscription_progress` under the 0015–0018 constraint discipline. `tieba_creator_capture.py` replaces only `get_all_notes_by_creator_url`, keeps the 0020–0022 first-floor media shapes, and rejects rather than coerces drift. `tieba_delivery_progress.py` advances state only from a closed pipeline receipt, and `ingest_tieba_bounded` publishes page, cursor, Run and Content in one transaction.
+
+Final local gates: Python `7281 passed, 63 skipped`; Web `30 files / 843 tests`; Ruff lint/format, strict mypy over 178 source files, documentation and upstream checks pass. Deployment, real Tieba login and any live request remain `NOT_RUN`.
+
+## Previous: durable Weibo creator-note delivery (0084)
 
 [Execution 0084](executions/0084-weibo-creator-notes/progress.md) gives Weibo the same durable creator chain the other four platforms already carry, with every rule re-derived from the pinned Weibo source.
 
@@ -230,7 +240,7 @@ Under frozen plan `714c849`, safe console and startup preflight are implemented 
 | Dimension | State | Evidence / blocker |
 | --- | --- | --- |
 | Implementation (offline shapes) | 15+ frozen shapes across seven platforms | Executions 0013–0039 records |
-| Offline complete suite | The 0084 final local gates pass `7257 passed, 63 skipped, 108 warnings` for the complete Python suite and `30 files / 843 tests` for Web (0083's `7228 passed, 63 skipped` are superseded). Skips are recorded OS/PostgreSQL qualification branches| [0084 verification](executions/0084-weibo-creator-notes/verification.md)| [0083 verification](executions/0083-douyin-media-profile/verification.md)|
+| Offline complete suite | The 0085 final local gates pass `7281 passed, 63 skipped, 108 warnings` for the complete Python suite and `30 files / 843 tests` for Web (0084's `7257 passed, 63 skipped` are superseded). Skips are recorded OS/PostgreSQL qualification branches| [0085 verification](executions/0085-tieba-creator-notes/verification.md)| [0084 verification](executions/0084-weibo-creator-notes/verification.md)|
 | API/console tests | The 0075 policy/API/CLI/auth union passes `40 passed, 2 skipped`; the two real PostgreSQL policy checks remain `NOT_RUN`. Synthetic Chrome proves Bilibili and XHS saves remain paused, platform scope stays isolated and browser/page/request error counts remain zero | [0075 verification](executions/0075-paused-subscription-policy-editor/verification.md) |
 | Static and distribution gates | 0075 Ruff lint/format over 406 files, Web Prettier, strict mypy over 156 source files, compileall, 62-package lock, both locked upstreams and wheel/sdist builds pass. Documentation links and `git diff --check` are rerun for closeout. The hardened 0072 production dependency audit remains zero; the full build graph retains eight development/build-only findings | [0075 verification](executions/0075-paused-subscription-policy-editor/verification.md) |
 | Pinned upstream WebUI dependency audits | Production `PASS` / full build graph `FAIL` (development-only residual) — the security-patched build copy reports 0 production vulnerabilities, while its full graph reports 8 entries: 6 high, 2 low, 0 moderate, 0 critical. Their packages are not copied into the final runtime image. The untouched raw upstream baseline's 11 entries (8 high, 1 moderate, 2 low) remain historical discovery evidence | [0072 verification](executions/0072-mediacrawler-webui-integration/verification.md) |

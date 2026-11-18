@@ -85,6 +85,7 @@ _REVISIONS = frozenset(
         "0016_douyin_creator_work",
         "0017_kuaishou_creator_work",
         "0018_weibo_creator_notes",
+        "0019_tieba_creator_notes",
     }
 )
 

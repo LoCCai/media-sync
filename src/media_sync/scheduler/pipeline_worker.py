@@ -32,6 +32,8 @@ from .pipeline import (
     PipelineSubscriptionClaim,
 )
 from .pipeline_receipt import PipelineDeliveryReceipt
+from .tieba_delivery_progress import TiebaDeliveryProgressRepository
+from .tieba_scan_continuation import TiebaScanContinuationPolicy
 from .weibo_delivery_progress import WeiboDeliveryProgressRepository
 from .weibo_scan_continuation import WeiboScanContinuationPolicy
 from .xhs_delivery_progress import XhsDeliveryProgressRepository
@@ -289,6 +291,7 @@ class PipelineSubscriptionWorker:
         douyin_delivery_policy: DouyinScanContinuationPolicy | None = None,
         kuaishou_delivery_policy: KuaishouScanContinuationPolicy | None = None,
         weibo_delivery_policy: WeiboScanContinuationPolicy | None = None,
+        tieba_delivery_policy: TiebaScanContinuationPolicy | None = None,
     ) -> None:
         if not callable(handler):
             raise TypeError("pipeline handler must be callable")
@@ -306,6 +309,7 @@ class PipelineSubscriptionWorker:
         self.douyin_delivery_policy = douyin_delivery_policy or DouyinScanContinuationPolicy(delay_seconds=0)
         self.kuaishou_delivery_policy = kuaishou_delivery_policy or KuaishouScanContinuationPolicy(delay_seconds=0)
         self.weibo_delivery_policy = weibo_delivery_policy or WeiboScanContinuationPolicy(delay_seconds=0)
+        self.tieba_delivery_policy = tieba_delivery_policy or TiebaScanContinuationPolicy(delay_seconds=0)
 
     @staticmethod
     def _heartbeat_interval(value: float | None, *, lease_seconds: int) -> float:
@@ -552,6 +556,13 @@ class PipelineSubscriptionWorker:
                         continuation_delay_seconds=self.weibo_delivery_policy.delay_seconds,
                         now=current,
                     )
+                    TiebaDeliveryProgressRepository(session).publish_success(
+                        job,
+                        result.receipt,
+                        upstream_sha=self.tieba_delivery_policy.upstream_sha,
+                        continuation_delay_seconds=self.tieba_delivery_policy.delay_seconds,
+                        now=current,
+                    )
             else:
                 classification = classify_pipeline_failure(result.error_code or "")
                 retry_at = current + timedelta(seconds=self.retry_delay_seconds) if classification.retryable else None
@@ -594,6 +605,12 @@ class PipelineSubscriptionWorker:
                         job,
                         error_code=classification.code,
                         upstream_sha=self.weibo_delivery_policy.upstream_sha,
+                        now=current,
+                    )
+                    TiebaDeliveryProgressRepository(session).publish_terminal_failure(
+                        job,
+                        error_code=classification.code,
+                        upstream_sha=self.tieba_delivery_policy.upstream_sha,
                         now=current,
                     )
             if job.job_type != PIPELINE_SUBSCRIPTION_JOB_TYPE:

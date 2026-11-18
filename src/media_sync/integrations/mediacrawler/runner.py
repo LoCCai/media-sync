@@ -1577,6 +1577,12 @@ async def _execute_child(
                 verified.root,
                 creator_max_items=manifest.max_items,
             )
+            if getattr(manifest, "tieba_scan", None) is not None:
+                from media_sync.integrations.mediacrawler.tieba_creator_capture import (
+                    install_tieba_creator_capture_shim,
+                )
+
+                install_tieba_creator_capture_shim(manifest)
         elif manifest.platform.value == "zhihu":
             from media_sync.integrations.mediacrawler.zhihu_media import (
                 install_zhihu_media_capture,

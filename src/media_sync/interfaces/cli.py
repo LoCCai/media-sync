@@ -171,6 +171,7 @@ from media_sync.scheduler.bili_scan_continuation import BiliScanContinuationPoli
 from media_sync.scheduler.douyin_scan_continuation import DouyinScanContinuationPolicy
 from media_sync.scheduler.kuaishou_scan_continuation import KuaishouScanContinuationPolicy
 from media_sync.scheduler.policy import classify_failure
+from media_sync.scheduler.tieba_scan_continuation import TiebaScanContinuationPolicy
 from media_sync.scheduler.xhs_scan_continuation import XhsScanContinuationPolicy
 from media_sync.security import (
     InvalidSecretReferenceError,
@@ -210,7 +211,7 @@ app.add_typer(asset_app, name="asset")
 app.add_typer(emby_app, name="emby")
 app.add_typer(pipeline_app, name="pipeline")
 
-_EXPECTED_DATABASE_REVISION = "0018_weibo_creator_notes"
+_EXPECTED_DATABASE_REVISION = "0019_tieba_creator_notes"
 _KNOWN_DATABASE_REVISIONS = frozenset(
     {
         "0001_initial_schema",
@@ -230,6 +231,7 @@ _KNOWN_DATABASE_REVISIONS = frozenset(
         "0015_xhs_creator_notes",
         "0016_douyin_creator_work",
         "0017_kuaishou_creator_work",
+        "0018_weibo_creator_notes",
         _EXPECTED_DATABASE_REVISION,
     }
 )
@@ -1049,6 +1051,10 @@ def _scheduler_runtime() -> Iterator[tuple[Database, DurableSchedulerService]]:
                 kuaishou_scan_continuation=KuaishouScanContinuationPolicy.from_lock(
                     settings.mediacrawler_lock_path,
                     delay_seconds=settings.kuaishou_scan_continuation_delay_seconds,
+                ),
+                tieba_scan_continuation=TiebaScanContinuationPolicy.from_lock(
+                    settings.mediacrawler_lock_path,
+                    delay_seconds=settings.tieba_scan_continuation_delay_seconds,
                 ),
             ),
         )
@@ -2257,6 +2263,10 @@ def scheduler_supervise(
                 kuaishou_scan_continuation=KuaishouScanContinuationPolicy.from_lock(
                     settings.mediacrawler_lock_path,
                     delay_seconds=settings.kuaishou_scan_continuation_delay_seconds,
+                ),
+                tieba_scan_continuation=TiebaScanContinuationPolicy.from_lock(
+                    settings.mediacrawler_lock_path,
+                    delay_seconds=settings.tieba_scan_continuation_delay_seconds,
                 ),
             ),
             subscription_worker=subscription_worker,

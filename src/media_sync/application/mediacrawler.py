@@ -37,6 +37,12 @@ from media_sync.integrations.mediacrawler.normalizers import (
     normalize_jsonl_bytes,
 )
 from media_sync.integrations.mediacrawler.receipt import load_validated_output_snapshot
+from media_sync.integrations.mediacrawler.tieba_creator_work import (
+    TB_SCAN_COVERAGE_FILENAME,
+    TB_SCAN_IDENTITY_FIELD,
+    TiebaScanCoverage,
+    TiebaWorkIdentity,
+)
 from media_sync.integrations.mediacrawler.weibo_creator_work import (
     WB_SCAN_COVERAGE_FILENAME,
     WB_SCAN_IDENTITY_FIELD,
@@ -67,6 +73,7 @@ class NormalizedMediaCrawlerOutput:
     douyin_coverage: DouyinScanCoverage | None = field(default=None, repr=False)
     kuaishou_coverage: KuaishouScanCoverage | None = field(default=None, repr=False)
     weibo_coverage: WeiboScanCoverage | None = field(default=None, repr=False)
+    tieba_coverage: TiebaScanCoverage | None = field(default=None, repr=False)
 
 
 def validate_bili_record_keys(
@@ -193,6 +200,39 @@ def _douyin_content_identities(payload: bytes, *, creator_fingerprint_sha256: st
     return tuple(identities)
 
 
+def _tieba_content_identities(
+    payload: bytes,
+    *,
+    creator_fingerprint_sha256: str,
+) -> tuple[TiebaWorkIdentity, ...]:
+    identities: list[TiebaWorkIdentity] = []
+    for line in payload.splitlines():
+        if not line.strip():
+            continue
+        raw = json.loads(line, object_pairs_hook=_closed_object)
+        identity = raw.get(TB_SCAN_IDENTITY_FIELD) if isinstance(raw, Mapping) else None
+        if not isinstance(identity, Mapping) or set(identity) != {
+            "thread_id",
+            "listing_sha256",
+            "creator_fingerprint_sha256",
+        }:
+            raise MediaCrawlerOutputRejected("bounded Tieba content identity is missing")
+        if identity["creator_fingerprint_sha256"] != creator_fingerprint_sha256:
+            raise MediaCrawlerOutputRejected("bounded Tieba creator reference differs")
+        if not isinstance(raw, Mapping) or str(raw.get("note_id")) != identity["thread_id"]:
+            raise MediaCrawlerOutputRejected("bounded Tieba thread identity differs")
+        try:
+            identities.append(
+                TiebaWorkIdentity(
+                    thread_id=identity["thread_id"],
+                    listing_sha256=identity["listing_sha256"],
+                )
+            )
+        except (TypeError, ValueError):
+            raise MediaCrawlerOutputRejected("bounded Tieba content identity is invalid") from None
+    return tuple(identities)
+
+
 def _weibo_content_identities(
     payload: bytes,
     *,
@@ -288,11 +328,13 @@ def load_normalized_output(
     douyin_coverage = None
     kuaishou_coverage = None
     weibo_coverage = None
+    tieba_coverage = None
     bili_identities: list[BiliIdentity] = []
     xhs_identities: list[XhsNoteIdentity] = []
     douyin_identities: list[DouyinWorkIdentity] = []
     kuaishou_identities: list[KuaishouWorkIdentity] = []
     weibo_identities: list[WeiboWorkIdentity] = []
+    tieba_identities: list[TiebaWorkIdentity] = []
     dynamic_payloads: dict[str, BiliDynamicPayload] = {}
     for jsonl_file in snapshot.files:
         if PurePosixPath(jsonl_file.relative_path).name == "_media_sync_bili_coverage.jsonl":
@@ -340,6 +382,15 @@ def load_normalized_output(
                 raise MediaCrawlerOutputRejected("unexpected Weibo coverage sidecar")
             weibo_coverage = WeiboScanCoverage.from_json_line(jsonl_file.payload.decode("utf-8"))
             continue
+        if PurePosixPath(jsonl_file.relative_path).name == TB_SCAN_COVERAGE_FILENAME:
+            if (
+                manifest.tieba_scan is None
+                or jsonl_file.relative_path != TB_SCAN_COVERAGE_FILENAME
+                or tieba_coverage is not None
+            ):
+                raise MediaCrawlerOutputRejected("unexpected Tieba coverage sidecar")
+            tieba_coverage = TiebaScanCoverage.from_json_line(jsonl_file.payload.decode("utf-8"))
+            continue
         if manifest.bili_scan is not None:
             upload_lines: list[bytes] = []
             for line in jsonl_file.payload.splitlines():
@@ -384,6 +435,13 @@ def load_normalized_output(
         if manifest.weibo_scan is not None:
             weibo_identities.extend(
                 _weibo_content_identities(
+                    jsonl_file.payload,
+                    creator_fingerprint_sha256=manifest.creator_fingerprint_sha256,
+                )
+            )
+        if manifest.tieba_scan is not None:
+            tieba_identities.extend(
+                _tieba_content_identities(
                     jsonl_file.payload,
                     creator_fingerprint_sha256=manifest.creator_fingerprint_sha256,
                 )
@@ -606,6 +664,36 @@ def load_normalized_output(
                 or record.content.remote_id not in {identity.note_id for identity in weibo_coverage.successful}
             ):
                 raise MediaCrawlerOutputRejected("bounded Weibo normalized identity differs")
+    if manifest.tieba_scan is not None:
+        if tieba_coverage is None:
+            raise MediaCrawlerOutputRejected("bounded Tieba coverage is missing")
+        if (
+            hashlib.sha256(creator_remote_id.encode("utf-8")).hexdigest()
+            != manifest.author_remote_id_fingerprint_sha256
+        ):
+            raise MediaCrawlerOutputRejected("bounded Tieba creator scope differs")
+        try:
+            tieba_coverage.validate(
+                manifest.tieba_scan,
+                manifest.max_items,
+                normalized_remote_ids=tuple(record.content.remote_id for record in records),
+            )
+        except ValueError:
+            raise MediaCrawlerOutputRejected("bounded Tieba coverage and content differ") from None
+        if (
+            len(records) != records_seen
+            or len(tieba_identities) != len(tieba_coverage.successful)
+            or tuple(tieba_identities) != tieba_coverage.successful
+        ):
+            raise MediaCrawlerOutputRejected("bounded Tieba coverage and content differ")
+        for record in records:
+            if (
+                record.content.platform is not Platform.TIEBA
+                or record.content.remote_type != "content"
+                or record.author.remote_id != creator_remote_id
+                or record.content.remote_id not in {identity.thread_id for identity in tieba_coverage.successful}
+            ):
+                raise MediaCrawlerOutputRejected("bounded Tieba normalized identity differs")
     fingerprint = hashlib.sha256(
         json.dumps(
             snapshot.receipt.as_payload(),

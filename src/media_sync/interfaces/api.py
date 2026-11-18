@@ -195,6 +195,7 @@ from media_sync.scheduler.douyin_delivery_progress import douyin_delivery_progre
 from media_sync.scheduler.douyin_scan_continuation import DouyinScanContinuationPolicy
 from media_sync.scheduler.kuaishou_delivery_progress import kuaishou_delivery_progress_payload
 from media_sync.scheduler.kuaishou_scan_continuation import KuaishouScanContinuationPolicy
+from media_sync.scheduler.tieba_delivery_progress import tieba_delivery_progress_payload
 from media_sync.scheduler.weibo_delivery_progress import weibo_delivery_progress_payload
 from media_sync.scheduler.xhs_delivery_progress import xhs_delivery_progress_payload
 from media_sync.scheduler.xhs_scan_continuation import XhsScanContinuationPolicy
@@ -888,6 +889,18 @@ def _subscription_weibo_delivery_payload(
     except (CheckoutValidationError, OSError, ValueError):
         upstream_sha = None
     return weibo_delivery_progress_payload(subscription, upstream_sha=upstream_sha)
+
+
+def _subscription_tieba_delivery_payload(
+    subscription: Subscription,
+    *,
+    lock_path: Path,
+) -> dict[str, object] | None:
+    try:
+        upstream_sha = load_mediacrawler_lock(lock_path).commit
+    except (CheckoutValidationError, OSError, ValueError):
+        upstream_sha = None
+    return tieba_delivery_progress_payload(subscription, upstream_sha=upstream_sha)
 
 
 def _xhs_delivery_failure_code(
@@ -3109,6 +3122,12 @@ def create_api_app(
                 )
                 if weibo_delivery is not None:
                     payload["weibo_delivery"] = weibo_delivery
+                tieba_delivery = _subscription_tieba_delivery_payload(
+                    subscription,
+                    lock_path=resolved.mediacrawler_lock_path,
+                )
+                if tieba_delivery is not None:
+                    payload["tieba_delivery"] = tieba_delivery
                 payload["schedule"] = _scheduler_schedule_payload(
                     SchedulerRepository(session).get_subscription_schedule(str(subscription_id))
                 )

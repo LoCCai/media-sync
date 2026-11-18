@@ -96,6 +96,7 @@ DOMAIN_TABLES = {
     "sync_run_contents",
     "sync_runs",
     "weibo_subscription_progress",
+    "tieba_subscription_progress",
     "xhs_subscription_progress",
 }
 

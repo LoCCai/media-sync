@@ -45,6 +45,7 @@ from .repository import (
     SchedulerRepository,
     SubscriptionSchedule,
 )
+from .tieba_scan_continuation import TiebaScanContinuationPolicy
 from .weibo_scan_continuation import WeiboScanContinuationPolicy
 from .xhs_scan_continuation import XhsScanContinuationPolicy
 
@@ -105,6 +106,7 @@ class DurableSchedulerService:
         douyin_scan_continuation: DouyinScanContinuationPolicy | None = None,
         kuaishou_scan_continuation: KuaishouScanContinuationPolicy | None = None,
         weibo_scan_continuation: WeiboScanContinuationPolicy | None = None,
+        tieba_scan_continuation: TiebaScanContinuationPolicy | None = None,
     ) -> None:
         self.database = database
         self.clock = clock
@@ -113,6 +115,7 @@ class DurableSchedulerService:
         self.douyin_scan_continuation = douyin_scan_continuation
         self.kuaishou_scan_continuation = kuaishou_scan_continuation
         self.weibo_scan_continuation = weibo_scan_continuation
+        self.tieba_scan_continuation = tieba_scan_continuation
 
     def _repository(self, session: Session) -> SchedulerRepository:
         return SchedulerRepository(
@@ -122,6 +125,7 @@ class DurableSchedulerService:
             douyin_scan_continuation=self.douyin_scan_continuation,
             kuaishou_scan_continuation=self.kuaishou_scan_continuation,
             weibo_scan_continuation=self.weibo_scan_continuation,
+            tieba_scan_continuation=self.tieba_scan_continuation,
         )
 
     def tick(self, *, limit: int = 100, retry_policy: RetryPolicy | None = None) -> SchedulerTickResult:
@@ -230,6 +234,7 @@ class SubscriptionWorker:
         douyin_scan_continuation: DouyinScanContinuationPolicy | None = None,
         kuaishou_scan_continuation: KuaishouScanContinuationPolicy | None = None,
         weibo_scan_continuation: WeiboScanContinuationPolicy | None = None,
+        tieba_scan_continuation: TiebaScanContinuationPolicy | None = None,
         event_sink: EventSink | None = None,
     ) -> None:
         if type(claim_registered_only) is not bool:
@@ -245,6 +250,7 @@ class SubscriptionWorker:
         self.douyin_scan_continuation = douyin_scan_continuation
         self.kuaishou_scan_continuation = kuaishou_scan_continuation
         self.weibo_scan_continuation = weibo_scan_continuation
+        self.tieba_scan_continuation = tieba_scan_continuation
 
     def _repository(self, session: Session) -> SchedulerRepository:
         return SchedulerRepository(
@@ -254,6 +260,7 @@ class SubscriptionWorker:
             douyin_scan_continuation=self.douyin_scan_continuation,
             kuaishou_scan_continuation=self.kuaishou_scan_continuation,
             weibo_scan_continuation=self.weibo_scan_continuation,
+            tieba_scan_continuation=self.tieba_scan_continuation,
         )
 
     @staticmethod

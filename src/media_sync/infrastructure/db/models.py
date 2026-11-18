@@ -359,6 +359,9 @@ class Subscription(TimestampMixin, Base):
     weibo_delivery_progress: Mapped[WeiboSubscriptionProgress | None] = relationship(
         back_populates="subscription", cascade="all, delete-orphan", passive_deletes=True, uselist=False
     )
+    tieba_delivery_progress: Mapped[TiebaSubscriptionProgress | None] = relationship(
+        back_populates="subscription", cascade="all, delete-orphan", passive_deletes=True, uselist=False
+    )
     sync_runs: Mapped[list[SyncRun]] = relationship(
         back_populates="subscription",
         cascade="all, delete-orphan",
@@ -1540,6 +1543,137 @@ class WeiboSubscriptionProgress(TimestampMixin, Base):
     blocked_code: Mapped[str | None] = mapped_column(String(128))
 
     subscription: Mapped[Subscription] = relationship(back_populates="weibo_delivery_progress")
+
+
+TIEBA_DELIVERY_PHASES = frozenset({"backfill", "reconciling", "incremental", "blocked"})
+TIEBA_DELIVERY_STOP_REASONS = frozenset({"has_more_false", "empty_page_end", "access_restricted", "unit_cap_reached"})
+
+
+class TiebaSubscriptionProgress(TimestampMixin, Base):
+    """Delivery-qualified Tieba creator-thread baseline state.
+
+    ``last_page_number`` keeps the 1-based page the last unit consumed, so an
+    operator can see where a stalled or restricted feed stopped.
+    """
+
+    __tablename__ = "tieba_subscription_progress"
+    __table_args__ = (
+        CheckConstraint("schema_version = 1", name="schema_version"),
+        CheckConstraint(f"phase IN ({_quoted_values(TIEBA_DELIVERY_PHASES)})", name="phase"),
+        CheckConstraint(_canonical_uuid_check("generation_id"), name="generation_id"),
+        CheckConstraint("auth_revision >= 0", name="auth_revision_nonnegative"),
+        CheckConstraint("scope = 'profile'", name="scope"),
+        CheckConstraint(_sha256_check("author_fingerprint_sha256"), name="author_fingerprint"),
+        CheckConstraint(
+            f"creator_fingerprint_sha256 IS NULL OR {_sha256_check('creator_fingerprint_sha256')}",
+            name="creator_fingerprint",
+        ),
+        CheckConstraint(_sha256_check("policy_fingerprint_sha256"), name="policy_fingerprint"),
+        CheckConstraint(f"length(upstream_sha) = 40 AND {_lower_hex_only('upstream_sha')}", name="upstream_sha"),
+        CheckConstraint(
+            f"source_end_boundary_sha256 IS NULL OR {_sha256_check('source_end_boundary_sha256')}",
+            name="source_end_boundary",
+        ),
+        *(
+            CheckConstraint(f"{column} >= 0 AND {column} <= 9007199254740991", name=f"{column}_range")
+            for column in (
+                "checkpoint_revision",
+                "schedule_revision",
+                "batch_count",
+                "thread_observation_count",
+                "cursor_step_count",
+                "backfill_batch_count",
+                "reconciliation_batch_count",
+                "incremental_batch_count",
+                "partial_batch_count",
+                "failed_thread_count",
+            )
+        ),
+        CheckConstraint(
+            "backfill_batch_count + reconciliation_batch_count + incremental_batch_count = batch_count",
+            name="phase_batch_counts",
+        ),
+        CheckConstraint("partial_batch_count <= batch_count", name="partial_batch_count"),
+        CheckConstraint(
+            "last_page_number IS NULL OR (last_page_number >= 1 AND last_page_number <= 1000000)",
+            name="last_page_number_range",
+        ),
+        CheckConstraint(
+            f"last_stop_reason IS NULL OR last_stop_reason IN ({_quoted_values(TIEBA_DELIVERY_STOP_REASONS)})",
+            name="last_stop_reason",
+        ),
+        CheckConstraint(
+            "(last_sync_job_id IS NULL AND last_run_id IS NULL AND last_pipeline_job_id IS NULL "
+            "AND last_delivery_at IS NULL) OR "
+            "(last_sync_job_id IS NOT NULL AND last_run_id IS NOT NULL AND last_pipeline_job_id IS NOT NULL "
+            "AND last_delivery_at IS NOT NULL)",
+            name="last_delivery_evidence",
+        ),
+        CheckConstraint(
+            "(source_end_observed_at IS NULL AND source_end_run_id IS NULL "
+            "AND source_end_boundary_sha256 IS NULL) OR "
+            "(source_end_observed_at IS NOT NULL AND source_end_run_id IS NOT NULL "
+            "AND source_end_boundary_sha256 IS NOT NULL)",
+            name="source_end_evidence",
+        ),
+        CheckConstraint(
+            "(reconciled_at IS NULL AND reconciliation_run_id IS NULL AND baseline_snapshot_at IS NULL) OR "
+            "(reconciled_at IS NOT NULL AND reconciliation_run_id IS NOT NULL "
+            "AND baseline_snapshot_at IS NOT NULL)",
+            name="reconciliation_evidence",
+        ),
+        CheckConstraint(
+            "phase != 'incremental' OR baseline_snapshot_at IS NOT NULL",
+            name="incremental_requires_snapshot",
+        ),
+        CheckConstraint(
+            "(phase = 'blocked' AND blocked_code IS NOT NULL) OR (phase != 'blocked' AND blocked_code IS NULL)",
+            name="blocked_code",
+        ),
+    )
+
+    subscription_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("subscriptions.id", ondelete="CASCADE"), primary_key=True
+    )
+    schema_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
+    phase: Mapped[str] = mapped_column(String(32), nullable=False, default="backfill", server_default="backfill")
+    generation_id: Mapped[str] = mapped_column(String(36), nullable=False, default=new_uuid)
+    account_id: Mapped[str] = mapped_column(String(36), ForeignKey("accounts.id", ondelete="RESTRICT"), nullable=False)
+    auth_revision: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    author_id: Mapped[str] = mapped_column(String(36), ForeignKey("authors.id", ondelete="RESTRICT"), nullable=False)
+    author_fingerprint_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    creator_fingerprint_sha256: Mapped[str | None] = mapped_column(String(64))
+    scope: Mapped[str] = mapped_column(String(16), nullable=False, default="profile", server_default="profile")
+    policy_fingerprint_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    upstream_sha: Mapped[str] = mapped_column(String(40), nullable=False)
+    checkpoint_revision: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    schedule_revision: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    batch_count: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0, server_default="0")
+    thread_observation_count: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0, server_default="0")
+    cursor_step_count: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0, server_default="0")
+    backfill_batch_count: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0, server_default="0")
+    reconciliation_batch_count: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0, server_default="0")
+    incremental_batch_count: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0, server_default="0")
+    partial_batch_count: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0, server_default="0")
+    failed_thread_count: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0, server_default="0")
+    last_stop_reason: Mapped[str | None] = mapped_column(String(32))
+    last_page_number: Mapped[int | None] = mapped_column(BigInteger)
+    last_sync_job_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("jobs.id", ondelete="RESTRICT"))
+    last_run_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("sync_runs.id", ondelete="RESTRICT"))
+    last_pipeline_job_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("jobs.id", ondelete="RESTRICT"))
+    last_delivery_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    source_end_observed_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    source_end_run_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("sync_runs.id", ondelete="RESTRICT"))
+    source_end_boundary_sha256: Mapped[str | None] = mapped_column(String(64))
+    reconciled_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    reconciliation_run_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("sync_runs.id", ondelete="RESTRICT")
+    )
+    baseline_snapshot_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    next_eligible_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    blocked_code: Mapped[str | None] = mapped_column(String(128))
+
+    subscription: Mapped[Subscription] = relationship(back_populates="tieba_delivery_progress")
 
 
 class OperationEventStreamState(Base):

@@ -49,6 +49,8 @@ from .douyin_scan_continuation import DouyinScanContinuationPolicy
 from .kuaishou_delivery_progress import KuaishouDeliveryProgressRepository
 from .kuaishou_scan_continuation import KuaishouScanContinuationPolicy
 from .policy import FailureDisposition, RetryPolicy, classify_failure
+from .tieba_delivery_progress import TiebaDeliveryProgressRepository
+from .tieba_scan_continuation import TiebaScanContinuationPolicy
 from .weibo_delivery_progress import WeiboDeliveryProgressRepository
 from .weibo_scan_continuation import WeiboScanContinuationPolicy
 from .xhs_delivery_progress import XhsDeliveryProgressRepository
@@ -435,6 +437,7 @@ class SchedulerRepository:
         douyin_scan_continuation: DouyinScanContinuationPolicy | None = None,
         kuaishou_scan_continuation: KuaishouScanContinuationPolicy | None = None,
         weibo_scan_continuation: WeiboScanContinuationPolicy | None = None,
+        tieba_scan_continuation: TiebaScanContinuationPolicy | None = None,
     ) -> None:
         self.session = session
         self.bili_scan_continuation = bili_scan_continuation or BiliScanContinuationPolicy()
@@ -442,6 +445,7 @@ class SchedulerRepository:
         self.douyin_scan_continuation = douyin_scan_continuation or DouyinScanContinuationPolicy()
         self.kuaishou_scan_continuation = kuaishou_scan_continuation or KuaishouScanContinuationPolicy()
         self.weibo_scan_continuation = weibo_scan_continuation or WeiboScanContinuationPolicy()
+        self.tieba_scan_continuation = tieba_scan_continuation or TiebaScanContinuationPolicy()
 
     def _serialize_sqlite_writer(self) -> None:
         """Acquire SQLite's writer slot before making a read/decide/CAS choice."""
@@ -830,15 +834,31 @@ class SchedulerRepository:
             now=now,
             resume_blocked=resume_blocked or platform == "wb",
         )
+        tieba_progress = TiebaDeliveryProgressRepository(self.session).ensure_for_materialization(
+            subscription,
+            upstream_sha=self.tieba_scan_continuation.upstream_sha,
+            schedule_revision=schedule_revision,
+            now=now,
+            resume_blocked=resume_blocked or platform == "tieba",
+        )
         if (
             sum(
                 flag is not None
-                for flag in (bili_progress, xhs_progress, douyin_progress, kuaishou_progress, weibo_progress)
+                for flag in (
+                    bili_progress,
+                    xhs_progress,
+                    douyin_progress,
+                    kuaishou_progress,
+                    weibo_progress,
+                    tieba_progress,
+                )
             )
             > 1
         ):
             raise SchedulerRepositoryError("multiple delivery progress contracts selected one subscription")
-        progress = bili_progress or xhs_progress or douyin_progress or kuaishou_progress or weibo_progress
+        progress = (
+            bili_progress or xhs_progress or douyin_progress or kuaishou_progress or weibo_progress or tieba_progress
+        )
         if progress is not None and progress.phase == "blocked":
             return None
 
