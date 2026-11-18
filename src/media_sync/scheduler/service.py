@@ -45,6 +45,7 @@ from .repository import (
     SchedulerRepository,
     SubscriptionSchedule,
 )
+from .weibo_scan_continuation import WeiboScanContinuationPolicy
 from .xhs_scan_continuation import XhsScanContinuationPolicy
 
 
@@ -103,6 +104,7 @@ class DurableSchedulerService:
         xhs_scan_continuation: XhsScanContinuationPolicy | None = None,
         douyin_scan_continuation: DouyinScanContinuationPolicy | None = None,
         kuaishou_scan_continuation: KuaishouScanContinuationPolicy | None = None,
+        weibo_scan_continuation: WeiboScanContinuationPolicy | None = None,
     ) -> None:
         self.database = database
         self.clock = clock
@@ -110,6 +112,7 @@ class DurableSchedulerService:
         self.xhs_scan_continuation = xhs_scan_continuation
         self.douyin_scan_continuation = douyin_scan_continuation
         self.kuaishou_scan_continuation = kuaishou_scan_continuation
+        self.weibo_scan_continuation = weibo_scan_continuation
 
     def _repository(self, session: Session) -> SchedulerRepository:
         return SchedulerRepository(
@@ -118,6 +121,7 @@ class DurableSchedulerService:
             xhs_scan_continuation=self.xhs_scan_continuation,
             douyin_scan_continuation=self.douyin_scan_continuation,
             kuaishou_scan_continuation=self.kuaishou_scan_continuation,
+            weibo_scan_continuation=self.weibo_scan_continuation,
         )
 
     def tick(self, *, limit: int = 100, retry_policy: RetryPolicy | None = None) -> SchedulerTickResult:
@@ -225,6 +229,7 @@ class SubscriptionWorker:
         xhs_scan_continuation: XhsScanContinuationPolicy | None = None,
         douyin_scan_continuation: DouyinScanContinuationPolicy | None = None,
         kuaishou_scan_continuation: KuaishouScanContinuationPolicy | None = None,
+        weibo_scan_continuation: WeiboScanContinuationPolicy | None = None,
         event_sink: EventSink | None = None,
     ) -> None:
         if type(claim_registered_only) is not bool:
@@ -239,6 +244,7 @@ class SubscriptionWorker:
         self.xhs_scan_continuation = xhs_scan_continuation
         self.douyin_scan_continuation = douyin_scan_continuation
         self.kuaishou_scan_continuation = kuaishou_scan_continuation
+        self.weibo_scan_continuation = weibo_scan_continuation
 
     def _repository(self, session: Session) -> SchedulerRepository:
         return SchedulerRepository(
@@ -247,6 +253,7 @@ class SubscriptionWorker:
             xhs_scan_continuation=self.xhs_scan_continuation,
             douyin_scan_continuation=self.douyin_scan_continuation,
             kuaishou_scan_continuation=self.kuaishou_scan_continuation,
+            weibo_scan_continuation=self.weibo_scan_continuation,
         )
 
     @staticmethod

@@ -2,7 +2,17 @@
 
 # 项目统一状态（单一事实来源）
 
-## 最新：抖音媒体 profile 与有界选流（0083）
+## 最新：微博创作者笔记耐久交付（0084）
+
+[执行 0084](executions/0084-weibo-creator-notes/progress.zh.md)让微博获得与其他四个平台相同的耐久创作者链，且每条规则都从钉定微博源码重新推导。
+
+微博形状拒绝照抄。分页是经 `/api/container/getIndex` 回显的 `since_id`；页大小不是请求参数而是硬编码算术常量 10，上游以 `cardlistInfo.total > 10 * pages` 终止——这是推断，每当 `card_type == 9` 过滤丢卡时就与观察到的内容不一致。假值响应体或缺失 `cards` 键会中断循环，但那不是源末。因此 `weibo_creator_work.py` 把 `total_inferred_end` 记录为**候选**，保留声明的 total、已消耗页数与首页见证，只有稳定的头部对账才能进入增量。`empty_page_end`、`access_restricted` 与 `unit_cap_reached` 保持独立；重复回显的游标累计停滞并以 `weibo_cursor_stalled` 阻塞。
+
+迁移 `0018_weibo_creator_notes` 在 0015–0017 相同的约束纪律下新增 `weibo_subscription_progress`。`weibo_creator_capture.py` 只替换 `get_creators_and_notes`，保留 0016/0031/0035/0036 媒体形状，并对漂移拒绝而非强转。`weibo_delivery_progress.py` 只凭封闭管线回执推进状态，`ingest_weibo_bounded` 在单个事务中发布页、游标、Run 与 Content。
+
+最终本地门禁：Python `7257 passed, 63 skipped`；Web `30 files / 843 tests`；Ruff lint/format、174 个源码文件的 strict mypy、文档与上游检查均通过。部署、真人微博登录与任何真实请求仍为 `NOT_RUN`；算术结束按要求记录为推断，绝不当作历史完整的证明。
+
+## 上阶段：抖音媒体 profile 与有界选流（0083）
 
 [执行 0083](executions/0083-douyin-media-profile/progress.zh.md)回应了操作者的判断：抖音下载链路可以端到端跑通，而本产品此前还做不到。这次在没有借用任何 GPLv3 源码的前提下补上了两处具体缺口。
 
@@ -220,7 +230,7 @@ B站和微博资料已离线实现，其他五平台资料、抖音/快手/贴�
 | 维度 | 状态 | 证据 / 阻塞 |
 | --- | --- | --- |
 | 实现（离线形状） | 七平台 15+ 冻结形状 | 执行 0013–0039 记录 |
-| 离线完整套件 | 0083 最终本地门：Python 完整套件 `7228 passed, 63 skipped, 108 warnings`、Web `30 files / 843 tests`（0082 的 `7198 passed, 63 skipped` 已被取代）。跳过项均为明确记录的 OS/PostgreSQL 资格分支 | [0083 验证](executions/0083-douyin-media-profile/verification.zh.md) | [0082 验证](executions/0082-sqlite-credential-residue/verification.zh.md) |
+| 离线完整套件 | 0084 最终本地门：Python 完整套件 `7257 passed, 63 skipped, 108 warnings`、Web `30 files / 843 tests`（0083 的 `7228 passed, 63 skipped` 已被取代）。跳过项均为明确记录的 OS/PostgreSQL 资格分支 | [0084 验证](executions/0084-weibo-creator-notes/verification.zh.md) | [0083 验证](executions/0083-douyin-media-profile/verification.zh.md) |
 | API/控制台测试 | 0075 策略/API/CLI/鉴权联合为 `40 passed, 2 skipped`；两项真实 PostgreSQL 策略检查仍为 `NOT_RUN`。合成 Chrome 证明 B 站与 XHS 保存后仍暂停、平台 scope 保持隔离，浏览器/页面/请求错误数均为 0 | [0075 验证](executions/0075-paused-subscription-policy-editor/verification.zh.md) |
 | 静态与制品门 | 0075 对 406 个文件的 Ruff lint/format、Web Prettier、156 个源码文件 strict mypy、compileall、62 包锁文件、两个上游及 wheel/sdist 构建通过；收尾重跑文档链接与 `git diff --check`。0072 加固后的生产依赖审计继续为 0，全构建依赖图仍有 8 个仅开发/构建期发现 | [0075 验证](executions/0075-paused-subscription-policy-editor/verification.zh.md) |
 | 锁定上游 WebUI 依赖审计 | 生产 `PASS`／全构建依赖图 `FAIL`（仅开发依赖残余）——安全补丁后的构建副本生产漏洞为 0，全依赖图为 8 条：6 high、2 low、0 moderate、0 critical；对应 package 不会复制进最终运行镜像。未加固上游原始基线的 11 条（8 high、1 moderate、2 low）仅作为历史发现保留；版本化 checkout／lockfile 保持不变 | [0072 验证](executions/0072-mediacrawler-webui-integration/verification.zh.md) |

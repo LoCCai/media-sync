@@ -8,6 +8,10 @@
 
 ## 阶段
 
+优先级更新（0084）：[微博创作者笔记耐久交付](executions/0084-weibo-creator-notes/progress.zh.md)已实现并通过离线验证。微博创作者笔记现在有 `since_id` 追踪的耐久单元，`cardlistInfo.total` 的算术结束只作为开启对账的**推断**保留（连同声明的 total、已消耗页数与首页见证），页尾保留、停滞防护、受限≠源末，以及只有封闭管线回执才能推进的 backfill → reconciling → incremental。这是确定性本地证据，不是真人微博资格。
+
+下一优先级：按 [0083 下一交付](executions/0083-douyin-media-profile/next-delivery.zh.md)继续——贴吧（0085，页码 + `has_more`）与知乎（0086，整数 offset + `is_end`）各自从钉定上游重新推导，再由操作者执行逐平台有界金丝雀（0087）。
+
 优先级更新（0083）：[抖音媒体请求 profile 与有界选流](executions/0083-douyin-media-profile/progress.zh.md)已实现并通过离线验证。抖音媒体现在以封闭桌面 header 集合（`User-Agent`、`Referer: https://www.douyin.com/`、`Accept: */*`）解析，而不是无 header 的 `DEFAULT`；钉定 store 压平丢弃的 `video.bit_rate[]` 现在按画质 → 码率 → 体积 → 声明顺序排序后取最高可用档，回退路径逐字节复现钉定扁平化顺序。漂移以固定码关闭失败，私有档位字段绝不进入 envelope 或 SQLite。这是行为与协议形状的对齐，不是 TLS 指纹或签名能力；真实 CDN 是否接受该 header 集合，仍需一次操作者金丝雀。
 
 下一优先级：[0083 下一交付](executions/0083-douyin-media-profile/next-delivery.zh.md)顺序已冻结——微博（0084，`since_id` + 10 条页 + `total` 推断源末）、贴吧（0085，页码 + `has_more`）、知乎（0086，整数 offset + `is_end`）依次补齐耐久创作者作品交付，再由操作者执行逐平台有界金丝雀（0087）。每个执行必须从钉定上游重新推导语义，不得复制其它平台的游标契约。

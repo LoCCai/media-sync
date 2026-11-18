@@ -210,7 +210,7 @@ app.add_typer(asset_app, name="asset")
 app.add_typer(emby_app, name="emby")
 app.add_typer(pipeline_app, name="pipeline")
 
-_EXPECTED_DATABASE_REVISION = "0017_kuaishou_creator_work"
+_EXPECTED_DATABASE_REVISION = "0018_weibo_creator_notes"
 _KNOWN_DATABASE_REVISIONS = frozenset(
     {
         "0001_initial_schema",
@@ -229,6 +229,7 @@ _KNOWN_DATABASE_REVISIONS = frozenset(
         "0014_bili_delivery_baseline",
         "0015_xhs_creator_notes",
         "0016_douyin_creator_work",
+        "0017_kuaishou_creator_work",
         _EXPECTED_DATABASE_REVISION,
     }
 )

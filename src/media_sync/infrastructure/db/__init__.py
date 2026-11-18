@@ -33,6 +33,8 @@ from .models import (
     OPERATION_SUBJECT_ROLES,
     OPERATION_SUBJECT_TYPES,
     TERMINAL_OPERATION_STATES,
+    WEIBO_DELIVERY_PHASES,
+    WEIBO_DELIVERY_STOP_REASONS,
     Account,
     Asset,
     AssetRefreshSource,
@@ -59,6 +61,7 @@ from .models import (
     SubscriptionScanProgress,
     SyncRun,
     SyncRunContent,
+    WeiboSubscriptionProgress,
     XhsSubscriptionProgress,
 )
 from .operation_repository import (
@@ -134,6 +137,8 @@ __all__ = [
     "PLAYBACK_EVIDENCE_SCHEMA_VERSION",
     "PROFILE_ADOPTION_ACCOUNT_ERROR_CODES",
     "TERMINAL_OPERATION_STATES",
+    "WEIBO_DELIVERY_PHASES",
+    "WEIBO_DELIVERY_STOP_REASONS",
     "Account",
     "AccountLoginConflictError",
     "AccountRepository",
@@ -220,6 +225,7 @@ __all__ = [
     "SyncRunContent",
     "SyncRunRepository",
     "UTCDateTime",
+    "WeiboSubscriptionProgress",
     "XhsSubscriptionProgress",
     "asset_fingerprints",
     "create_database_engine",

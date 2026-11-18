@@ -25,6 +25,7 @@ from media_sync.integrations.mediacrawler.douyin_creator_work import DOUYIN_CREA
 from media_sync.integrations.mediacrawler.kuaishou_creator_work import KuaishouScanCoverage
 from media_sync.integrations.mediacrawler.normalizers import NormalizedMediaRecord
 from media_sync.integrations.mediacrawler.subscription_policy import from_subscription_policy
+from media_sync.integrations.mediacrawler.weibo_creator_work import WeiboScanCoverage
 from media_sync.integrations.mediacrawler.xhs_creator_notes import XHS_CREATOR_PAGE_SIZE, XhsScanCoverage
 from media_sync.media.locator import AdapterRefreshLocator
 
@@ -56,6 +57,9 @@ MAX_DOUYIN_BOUNDED_INGESTION_ITEMS = DOUYIN_CREATOR_PAGE_SIZE
 # field): the server alone decides each page's size, so the bounded unit cap
 # is the subscription's max_items bound alone.
 MAX_KUAISHOU_BOUNDED_INGESTION_ITEMS = 1_000
+# Weibo's page size is a hard-coded arithmetic constant upstream
+# (client.py:411-412), so the bounded unit cap is max_items alone.
+MAX_WEIBO_BOUNDED_INGESTION_ITEMS = 1_000
 _EXISTING_KEY_QUERY_BATCH_SIZE = 400
 
 
@@ -1049,6 +1053,172 @@ class MediaCrawlerIngestionService:
                 or run.asset_count != 0
             ):
                 raise RepositoryError("bounded Kuaishou run is not an unpublished ingestion unit")
+
+            discovered_count, asset_count = _upsert_batch(session, unique_records)
+            _record_run_contents(
+                session,
+                unique_records,
+                subscription_id=database_subscription_id,
+                run_id=database_run_id,
+            )
+            _record_refresh_observations(
+                session,
+                unique_records,
+                subscription_id=database_subscription_id,
+                run_id=database_run_id,
+            )
+            if ownership_guard is not None:
+                ownership_guard(session)
+            published = subscriptions.publish_checkpoint(
+                database_subscription_id,
+                expected_revision=expected_revision,
+                cursor=after,
+                succeeded_at=utc_now(),
+            )
+            run = runs.record_checkpoint_publication(
+                database_run_id,
+                expected_revision=expected_revision,
+                published_revision=published.checkpoint_revision,
+                expected_status=RunStatus.INGESTING.value,
+            )
+            run.discovered_count = discovered_count
+            run.asset_count = asset_count
+            run.cursor_after = after
+            session.flush()
+            runs.set_status(database_run_id, RunStatus.SUCCEEDED.value, expected_status=RunStatus.INGESTING.value)
+            if ownership_guard is not None:
+                ownership_guard(session)
+            return MediaCrawlerIngestionResult(
+                mode=IngestionMode.FORWARD,
+                input_count=len(materialized),
+                accepted_count=len(unique_records),
+                skipped_count=0,
+                discovered_count=discovered_count,
+                asset_count=asset_count,
+                committed_batches=1,
+                checkpoint_revision=published.checkpoint_revision,
+                watermarked_at=published.watermarked_at,
+                watermark_remote_ids=tuple(published.watermark_remote_ids),
+            )
+
+    def ingest_weibo_bounded(
+        self,
+        records: Iterable[NormalizedMediaRecord],
+        *,
+        subscription_id: str | UUID,
+        run_id: str | UUID,
+        expected_revision: int,
+        input_cursor: str | None,
+        next_cursor: str,
+        coverage: WeiboScanCoverage,
+        crawl_revision_before: int | None = None,
+        ownership_guard: Callable[[Session], None] | None = None,
+    ) -> MediaCrawlerIngestionResult:
+        """Publish one source-backed Weibo page unit and its opaque cursor atomically."""
+
+        if type(expected_revision) is not int or expected_revision < 0:
+            raise ValueError("expected_revision must be nonnegative")
+        origin_revision = expected_revision if crawl_revision_before is None else crawl_revision_before
+        if type(origin_revision) is not int or not 0 <= origin_revision <= expected_revision:
+            raise ValueError("crawl_revision_before must be between zero and expected_revision")
+        if input_cursor is not None and (type(input_cursor) is not str or not input_cursor):
+            raise ValueError("input_cursor must be an opaque nonempty string or None")
+        if type(next_cursor) is not str or not next_cursor:
+            raise ValueError("next_cursor must be an opaque nonempty string")
+        if type(coverage) is not WeiboScanCoverage:
+            raise TypeError("coverage must be WeiboScanCoverage")
+
+        materialized = tuple(islice(records, MAX_WEIBO_BOUNDED_INGESTION_ITEMS + 1))
+        if len(materialized) > MAX_WEIBO_BOUNDED_INGESTION_ITEMS:
+            raise ValueError("bounded Weibo ingestion accepts at most 1000 records")
+        unique_records = _deduplicate(materialized)
+        if len(unique_records) != len(materialized):
+            raise RepositoryError("bounded Weibo ingestion contains duplicate content identities")
+        if coverage.input_state.to_cursor() != (input_cursor or coverage.input_state.to_cursor()):
+            raise RepositoryError("bounded Weibo input cursor differs from its coverage")
+        if coverage.next_state.to_cursor() != next_cursor:
+            raise RepositoryError("bounded Weibo output cursor differs from its coverage")
+
+        before = None if input_cursor is None else {"value": input_cursor}
+        after = {"value": next_cursor}
+        database_subscription_id = _database_id(subscription_id)
+        database_run_id = _database_id(run_id)
+
+        with self.database.session() as session:
+            if session.get_bind().dialect.name == "sqlite":
+                session.connection().exec_driver_sql("UPDATE subscriptions SET updated_at = updated_at WHERE 0")
+            if ownership_guard is not None:
+                ownership_guard(session)
+            subscriptions = SubscriptionRepository(session)
+            subscription = subscriptions.require_active(database_subscription_id, lock=True)
+            runs = SyncRunRepository(session)
+            run = runs.require(database_run_id)
+            if (
+                subscription.account.adapter != "mediacrawler"
+                or subscription.account.platform != Platform.WB.value
+                or subscription.author.platform != Platform.WB.value
+                or run.subscription_id != database_subscription_id
+                or run.cursor_before != before
+                or run.checkpoint_revision_before != origin_revision
+            ):
+                raise RepositoryError("bounded Weibo ingestion scope does not match its input")
+            if run.status == RunStatus.SUCCEEDED.value:
+                if (
+                    run.checkpoint_revision_after != origin_revision + 1
+                    or run.cursor_after != after
+                    or subscription.checkpoint_revision < origin_revision + 1
+                    or (subscription.checkpoint_revision == origin_revision + 1 and subscription.cursor != after)
+                ):
+                    raise RepositoryError("completed Weibo unit does not match the requested continuation")
+                return MediaCrawlerIngestionResult(
+                    mode=IngestionMode.FORWARD,
+                    input_count=len(materialized),
+                    accepted_count=0,
+                    skipped_count=len(materialized),
+                    discovered_count=0,
+                    asset_count=0,
+                    committed_batches=0,
+                    checkpoint_revision=run.checkpoint_revision_after,
+                    watermarked_at=subscription.watermarked_at,
+                    watermark_remote_ids=tuple(subscription.watermark_remote_ids),
+                )
+            try:
+                policy = from_subscription_policy(subscription.policy)
+            except ValueError:
+                raise RepositoryError("bounded Weibo subscription policy is invalid") from None
+            if policy.creator_secret_ref is None:
+                raise RepositoryError("bounded Weibo subscription requires creator authority")
+            try:
+                coverage.validate(
+                    coverage.input_state,
+                    subscription.max_items,
+                    normalized_remote_ids=tuple(record.content.remote_id for record in unique_records),
+                )
+            except ValueError:
+                raise RepositoryError("bounded Weibo scan evidence is invalid") from None
+            if len(materialized) > min(subscription.max_items, MAX_WEIBO_BOUNDED_INGESTION_ITEMS):
+                raise RepositoryError("bounded Weibo ingestion exceeds the subscription item limit")
+            for record in unique_records:
+                if (
+                    record.author.platform is not Platform.WB
+                    or record.author.remote_id != subscription.author.remote_id
+                    or record.content.remote_type != "content"
+                ):
+                    raise RepositoryError("bounded Weibo record does not belong to the subscription feed")
+
+            if origin_revision != expected_revision or subscription.checkpoint_revision != expected_revision:
+                raise StaleCheckpointError(database_subscription_id, origin_revision, subscription.checkpoint_revision)
+            if subscription.cursor != before:
+                raise RepositoryError("bounded Weibo subscription cursor changed")
+            if (
+                run.status != RunStatus.INGESTING.value
+                or run.checkpoint_revision_after is not None
+                or run.cursor_after is not None
+                or run.discovered_count != 0
+                or run.updated_count != 0
+                or run.asset_count != 0
+            ):
+                raise RepositoryError("bounded Weibo run is not an unpublished ingestion unit")
 
             discovered_count, asset_count = _upsert_batch(session, unique_records)
             _record_run_contents(

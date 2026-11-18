@@ -1562,6 +1562,12 @@ async def _execute_child(
             )
 
             install_weibo_media_capture(verified.root)
+            if getattr(manifest, "weibo_scan", None) is not None:
+                from media_sync.integrations.mediacrawler.weibo_creator_capture import (
+                    install_weibo_creator_capture_shim,
+                )
+
+                install_weibo_creator_capture_shim(manifest)
         elif manifest.platform.value == "tieba":
             from media_sync.integrations.mediacrawler.tieba_media import (
                 install_tieba_media_capture,

@@ -435,6 +435,7 @@ class Settings(BaseSettings):
     xhs_scan_continuation_delay_seconds: int = Field(default=300, ge=0, le=604_800)
     douyin_scan_continuation_delay_seconds: int = Field(default=300, ge=0, le=604_800)
     kuaishou_scan_continuation_delay_seconds: int = Field(default=300, ge=0, le=604_800)
+    weibo_scan_continuation_delay_seconds: int = Field(default=300, ge=0, le=604_800)
     default_max_items: int = Field(default=30, ge=1, le=1_000)
     max_crawl_seconds: int = Field(default=1_800, ge=30, le=86_400)
     media_server_provider: MediaServerProvider | None = None
@@ -485,6 +486,15 @@ class Settings(BaseSettings):
             value = int(value)
         if type(value) is not int or (value != 0 and not 60 <= value <= 604_800):
             raise ValueError("kuaishou_scan_continuation_delay_seconds must be 0 or an integer between 60 and 604800")
+        return value
+
+    @field_validator("weibo_scan_continuation_delay_seconds", mode="before")
+    @classmethod
+    def normalize_weibo_scan_continuation_delay(cls, value: object) -> int:
+        if type(value) is str and re.fullmatch(r"0|[1-9][0-9]{0,5}", value) is not None:
+            value = int(value)
+        if type(value) is not int or (value != 0 and not 60 <= value <= 604_800):
+            raise ValueError("weibo_scan_continuation_delay_seconds must be 0 or an integer between 60 and 604800")
         return value
 
     @field_validator("mediacrawler_license_acknowledged", mode="before")

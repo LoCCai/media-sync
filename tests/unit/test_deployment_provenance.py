@@ -105,7 +105,7 @@ def test_known_older_database_revision_is_visible_without_accepting_it(tmp_path:
 
     assert report["reachable"] is True
     assert report["revision"] == "0014_bili_delivery_baseline"
-    assert report["expected_revision"] == "0017_kuaishou_creator_work"
+    assert report["expected_revision"] == "0018_weibo_creator_notes"
     assert report["revision_current"] is False
     assert report["ok"] is False
 

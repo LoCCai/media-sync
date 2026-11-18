@@ -2,7 +2,17 @@
 
 # Unified project status (single source of truth)
 
-## Latest: Douyin media profile and bounded stream selection (0083)
+## Latest: durable Weibo creator-note delivery (0084)
+
+[Execution 0084](executions/0084-weibo-creator-notes/progress.md) gives Weibo the same durable creator chain the other four platforms already carry, with every rule re-derived from the pinned Weibo source.
+
+The Weibo shape resists copying. Pagination is `since_id` echoed through `/api/container/getIndex`; the page size is not a request parameter but a hard-coded arithmetic constant of 10, and upstream terminates on `cardlistInfo.total > 10 * pages` — an inference that disagrees with observed content whenever the `card_type == 9` filter drops cards. A falsy body or a missing `cards` key breaks the loop for reasons that are not a source end. `weibo_creator_work.py` therefore records `total_inferred_end` as a *candidate*, keeps the declared total, pages consumed and first-page witness, and lets only a stable head reconciliation advance to incremental. `empty_page_end`, `access_restricted` and `unit_cap_reached` stay distinct; a repeated echoed cursor accumulates stalls and blocks with `weibo_cursor_stalled`.
+
+Migration `0018_weibo_creator_notes` adds `weibo_subscription_progress` under the same constraint discipline as 0015–0017. `weibo_creator_capture.py` replaces only `get_creators_and_notes`, keeps the 0016/0031/0035/0036 media shapes, and rejects rather than coerces drift. `weibo_delivery_progress.py` advances state only from a closed pipeline receipt, and `ingest_weibo_bounded` publishes page, cursor, Run and Content in one transaction.
+
+Final local gates: Python `7257 passed, 63 skipped`; Web `30 files / 843 tests`; Ruff lint/format, strict mypy over 174 source files, documentation and upstream checks pass. Deployment, real Weibo login and any live request remain `NOT_RUN`; the arithmetic end is documented as an inference, never as proof of a complete history.
+
+## Previous: Douyin media profile and bounded stream selection (0083)
 
 [Execution 0083](executions/0083-douyin-media-profile/progress.md) addressed the operator's finding that a Douyin download can succeed end to end while this product still cannot. Two concrete gaps were closed without borrowing any GPLv3 source.
 
@@ -220,7 +230,7 @@ Under frozen plan `714c849`, safe console and startup preflight are implemented 
 | Dimension | State | Evidence / blocker |
 | --- | --- | --- |
 | Implementation (offline shapes) | 15+ frozen shapes across seven platforms | Executions 0013–0039 records |
-| Offline complete suite | The 0083 final local gates pass `7228 passed, 63 skipped, 108 warnings` for the complete Python suite and `30 files / 843 tests` for Web (0082's `7198 passed, 63 skipped` are superseded). Skips are recorded OS/PostgreSQL qualification branches| [0083 verification](executions/0083-douyin-media-profile/verification.md)| [0082 verification](executions/0082-sqlite-credential-residue/verification.md)|
+| Offline complete suite | The 0084 final local gates pass `7257 passed, 63 skipped, 108 warnings` for the complete Python suite and `30 files / 843 tests` for Web (0083's `7228 passed, 63 skipped` are superseded). Skips are recorded OS/PostgreSQL qualification branches| [0084 verification](executions/0084-weibo-creator-notes/verification.md)| [0083 verification](executions/0083-douyin-media-profile/verification.md)|
 | API/console tests | The 0075 policy/API/CLI/auth union passes `40 passed, 2 skipped`; the two real PostgreSQL policy checks remain `NOT_RUN`. Synthetic Chrome proves Bilibili and XHS saves remain paused, platform scope stays isolated and browser/page/request error counts remain zero | [0075 verification](executions/0075-paused-subscription-policy-editor/verification.md) |
 | Static and distribution gates | 0075 Ruff lint/format over 406 files, Web Prettier, strict mypy over 156 source files, compileall, 62-package lock, both locked upstreams and wheel/sdist builds pass. Documentation links and `git diff --check` are rerun for closeout. The hardened 0072 production dependency audit remains zero; the full build graph retains eight development/build-only findings | [0075 verification](executions/0075-paused-subscription-policy-editor/verification.md) |
 | Pinned upstream WebUI dependency audits | Production `PASS` / full build graph `FAIL` (development-only residual) — the security-patched build copy reports 0 production vulnerabilities, while its full graph reports 8 entries: 6 high, 2 low, 0 moderate, 0 critical. Their packages are not copied into the final runtime image. The untouched raw upstream baseline's 11 entries (8 high, 1 moderate, 2 low) remain historical discovery evidence | [0072 verification](executions/0072-mediacrawler-webui-integration/verification.md) |
