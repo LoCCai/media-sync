@@ -253,7 +253,7 @@ B站和微博资料已离线实现，其他五平台资料、抖音/快手/贴�
 | 操作者鉴权 + 播放证据 | 后端鉴权、不可变身份／账本、仅浏览器确认、有界投影及资格 v3 保持已实现。无精确当前证据时 playback 为 IMPLEMENTED/NOT_RUN；PASS 只适用于选定作者。确认 UI 仍待实现，真人播放为 NOT_RUN |
 | Docker 打包 | 0077 仅静态合格了构建契约：`MEDIA_SYNC_SOURCE_REVISION` 构建参数记录进 `/opt/BUILD-MANIFEST.txt` 与 OCI revision 标签，缺失/畸形溯源 fail-closed，`.git` 不入镜像。2026-09-09 线上观察证明正在运行的镜像早于 0077（无 source-revision/迁移/续跑三行），因此当前精确完整镜像构建/运行仍为 `NOT_RUN`，XHS 金丝雀不得对未识别镜像开跑 |
 | 运维文档 / 安全审查 / 发布清单 | 已交付（0045、0046）；双语浓缩操作者速查清单见 [`handoff-checklist.zh.md`](handoff-checklist.zh.md) |
-| 真人验收（最终门） | 仍开放——执行 0047 继续作为操作者门；0077 部署交接（带溯源重建 → 迁移 `0015` → API/supervisor 一致 → 一次有界 XHS 金丝雀）是唯一授权的下一步链。全部真人登录/采集/下载/CDN/历史/增量行为 `NOT_RUN` |
+| 真人验收（最终门） | 仍开放——执行 0087 现为操作者门：[资格记录](executions/0087-operator-canary/qualification.zh.md)对全部七个平台保持每一行真人工作为 `NOT_RUN`，冻结的[流程](executions/0087-operator-canary/plan.zh.md)加 0077 部署交接是唯一授权的链路。全部真人登录/采集/下载/CDN/历史/增量行为 `NOT_RUN` |
 
 ## 验证矩阵
 
