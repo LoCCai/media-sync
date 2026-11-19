@@ -2,7 +2,21 @@
 
 # Unified project status (single source of truth)
 
-## Latest: the operator gate (0087)
+## Latest: independent six-discipline code review (0088)
+
+[Execution 0088](executions/0088-code-review/progress.md) put the tree at `830b4d0` in front of six read-only reviewers with disjoint scopes and an explicit instruction not to trust the earlier closeouts. It found that 0085 and 0086 were **not deliverable as shipped**, despite green local suites:
+
+- Tieba and Zhihu never completed a single bounded unit. The Zhihu shim walked the extracted list positionally, so page-tail replay re-offered already-delivered answers and was rejected as contract drift; both shims invoked the upstream store callback, which re-runs the guarded store with the identity reset; and `NormalizedMediaCrawlerOutput` silently dropped `tieba_coverage`/`zhihu_coverage`, so the handler rejected every run as `output_security_failed`.
+- No progress row could advance even past that: the pipeline worker never published Zhihu progress, and only Bili-uploads/XHS carried a `source_run_id`, so every publisher returned `None` on a schema-1 receipt.
+- The WebUI could not reach the chain at all: nine of nine service construction sites omitted the new continuation policies.
+
+26 defects were fixed across the creator chain, the ingestion boundary, security, the console and the operator contract. Notable security findings: `secure_delete=ON` does not cover the SQLite `-wal` sidecar (reproduced — a scrubbed credential stayed readable after an abrupt exit), caller-injected Alembic connections migrated with no pragmas, and ffprobe/ffmpeg children inherited the whole environment including `env:`-resolved platform cookies.
+
+Two reviewer claims were rejected after re-verification and four real findings were deliberately deferred to their own executions (Douyin's 8-entry `bit_rate` cap, Kuaishou's missing CDN allowlist, XHS accepting plaintext `http`, animated images passing as static on five platforms) — each would silently change frozen 0076/0081/0083 behaviour.
+
+Final local gates: Python `7331 passed, 62 skipped`; Web `846 passed`; Ruff lint/format, strict mypy over 182 source files, documentation, pinned upstreams and `svelte-check` all green. Deployment, every real login and every live request remain `NOT_RUN`.
+
+## Previous: the operator gate (0087)
 
 [Execution 0087](executions/0087-operator-canary/progress.md) closes the code work and fixes what remains. All seven creator platforms now carry a durable creator-work chain — Bilibili (`0014`), XHS (`0015`), Douyin (`0016`), Kuaishou (`0017`), Weibo (`0018`), Tieba (`0019`), Zhihu (`0020`) — each with its own cursor semantics, its own fixed stop reasons, page-tail replay, restricted ≠ source end, and per-Content publication gated on a closed pipeline receipt.
 
@@ -260,7 +274,7 @@ Under frozen plan `714c849`, safe console and startup preflight are implemented 
 | Dimension | State | Evidence / blocker |
 | --- | --- | --- |
 | Implementation (offline shapes) | 15+ frozen shapes across seven platforms | Executions 0013–0039 records |
-| Offline complete suite | The 0087 local gates pass `7308 passed, 62 skipped, 108 warnings` for the complete Python suite and `30 files / 843 tests` for Web, including the packaged-wheel artifact check that now executes rather than skipping (0086's `7307 passed, 63 skipped` and 0085's `7281 passed, 63 skipped` are superseded). Skips are recorded OS/PostgreSQL qualification branches| [0087 verification](executions/0087-operator-canary/verification.md)| [0086 verification](executions/0086-zhihu-creator-answers/verification.md)|
+| Offline complete suite | The 0088 local gates pass `7331 passed, 62 skipped, 108 warnings` for the complete Python suite and `846 passed` for Web, including the packaged-wheel artifact check that executes rather than skipping (0087's `7308 passed, 62 skipped`, 0086's `7307 passed, 63 skipped` and 0085's `7281 passed, 63 skipped` are superseded). Skips are recorded OS/PostgreSQL qualification branches| [0088 verification](executions/0088-code-review/verification.md)| [0087 verification](executions/0087-operator-canary/verification.md)|
 | API/console tests | The 0075 policy/API/CLI/auth union passes `40 passed, 2 skipped`; the two real PostgreSQL policy checks remain `NOT_RUN`. Synthetic Chrome proves Bilibili and XHS saves remain paused, platform scope stays isolated and browser/page/request error counts remain zero | [0075 verification](executions/0075-paused-subscription-policy-editor/verification.md) |
 | Static and distribution gates | 0075 Ruff lint/format over 406 files, Web Prettier, strict mypy over 156 source files, compileall, 62-package lock, both locked upstreams and wheel/sdist builds pass. Documentation links and `git diff --check` are rerun for closeout. The hardened 0072 production dependency audit remains zero; the full build graph retains eight development/build-only findings | [0075 verification](executions/0075-paused-subscription-policy-editor/verification.md) |
 | Pinned upstream WebUI dependency audits | Production `PASS` / full build graph `FAIL` (development-only residual) — the security-patched build copy reports 0 production vulnerabilities, while its full graph reports 8 entries: 6 high, 2 low, 0 moderate, 0 critical. Their packages are not copied into the final runtime image. The untouched raw upstream baseline's 11 entries (8 high, 1 moderate, 2 low) remain historical discovery evidence | [0072 verification](executions/0072-mediacrawler-webui-integration/verification.md) |

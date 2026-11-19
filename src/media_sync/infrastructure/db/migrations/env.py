@@ -10,6 +10,10 @@ from sqlalchemy import Connection, Engine
 
 from media_sync.config import Settings
 from media_sync.infrastructure.db import Base, create_database_engine
+from media_sync.infrastructure.db.database import (
+    SQLITE_BUSY_TIMEOUT_MS,
+    SQLITE_SECURE_DELETE_PRAGMA,
+)
 
 config = context.config
 if config.config_file_name is not None and config.cmd_opts is not None:
@@ -26,7 +30,37 @@ def _database_url() -> str:
     return command_line_url or configured_url or Settings().resolved_database_url
 
 
+def _apply_sqlite_pragmas(connection: Connection) -> None:
+    """Install the pragmas on a caller-supplied SQLite connection.
+
+    The pragmas (secure_delete, foreign_keys, busy_timeout, WAL) are normally
+    installed by ``create_database_engine``'s connect listener. A caller that
+    hands us a raw ``Connection`` built from a plain ``create_engine()`` would
+    otherwise run 0003's table rebuild and scrubbing ``UPDATE`` with
+    ``secure_delete=OFF``, which is exactly the residue 0082 set out to remove.
+
+    The statements go through the raw DBAPI cursor rather than
+    ``Connection.exec_driver_sql``: the latter would autobegin a SQLAlchemy
+    transaction, and Alembic then refuses its own ``begin_transaction()``.
+    """
+
+    if connection.dialect.name != "sqlite":
+        return
+    dbapi_connection = connection.connection.dbapi_connection
+    if dbapi_connection is None:  # pragma: no cover - a live Connection always has one
+        return
+    cursor = dbapi_connection.cursor()
+    try:
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute(SQLITE_SECURE_DELETE_PRAGMA)
+        cursor.execute(f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS}")
+    finally:
+        cursor.close()
+
+
 def _configure(connection: Connection) -> None:
+    _apply_sqlite_pragmas(connection)
     context.configure(
         connection=connection,
         target_metadata=target_metadata,

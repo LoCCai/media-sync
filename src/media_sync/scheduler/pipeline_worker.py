@@ -38,6 +38,7 @@ from .weibo_delivery_progress import WeiboDeliveryProgressRepository
 from .weibo_scan_continuation import WeiboScanContinuationPolicy
 from .xhs_delivery_progress import XhsDeliveryProgressRepository
 from .xhs_scan_continuation import XhsScanContinuationPolicy
+from .zhihu_delivery_progress import ZhihuDeliveryProgressRepository
 from .zhihu_scan_continuation import ZhihuScanContinuationPolicy
 
 PIPELINE_RETRY_DELAY_SECONDS = 30
@@ -566,6 +567,13 @@ class PipelineSubscriptionWorker:
                         continuation_delay_seconds=self.tieba_delivery_policy.delay_seconds,
                         now=current,
                     )
+                    ZhihuDeliveryProgressRepository(session).publish_success(
+                        job,
+                        result.receipt,
+                        upstream_sha=self.zhihu_delivery_policy.upstream_sha,
+                        continuation_delay_seconds=self.zhihu_delivery_policy.delay_seconds,
+                        now=current,
+                    )
             else:
                 classification = classify_pipeline_failure(result.error_code or "")
                 retry_at = current + timedelta(seconds=self.retry_delay_seconds) if classification.retryable else None
@@ -614,6 +622,12 @@ class PipelineSubscriptionWorker:
                         job,
                         error_code=classification.code,
                         upstream_sha=self.tieba_delivery_policy.upstream_sha,
+                        now=current,
+                    )
+                    ZhihuDeliveryProgressRepository(session).publish_terminal_failure(
+                        job,
+                        error_code=classification.code,
+                        upstream_sha=self.zhihu_delivery_policy.upstream_sha,
                         now=current,
                     )
             if job.job_type != PIPELINE_SUBSCRIPTION_JOB_TYPE:

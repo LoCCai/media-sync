@@ -37,7 +37,13 @@ from media_sync.media.network import (
     ValidatedTarget,
     validate_target,
 )
-from media_sync.media.probe import FFprobeMediaProbe, MediaProbe, ProbeResult, SubprocessProbeRunner
+from media_sync.media.probe import (
+    FFprobeMediaProbe,
+    MediaProbe,
+    ProbeResult,
+    SubprocessProbeRunner,
+    media_child_environment,
+)
 
 __all__ = [
     "AdapterRefreshLocator",
@@ -75,6 +81,7 @@ __all__ = [
     "ValidatedTarget",
     "canonical_locator_json",
     "locator_fingerprint",
+    "media_child_environment",
     "parse_locator",
     "resolve_locator",
     "validate_target",

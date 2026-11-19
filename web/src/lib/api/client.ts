@@ -1,6 +1,18 @@
 import { operatorAuth, OperatorAuthError } from '../stores/operator-auth';
 
 const ERROR_MESSAGES: Record<string, string> = {
+  operation_state_conflict: '该操作已进入终态，本次变更未生效；请刷新后核对最新状态。',
+  catalog_asset_not_found: '未找到该媒体资产，请刷新媒体库后重试。',
+  log_cursor_stale: '日志游标已过期，已重置为最新位置。',
+  login_qr_gone: '二维码已失效，请重新发起登录后继续等待。',
+  login_qr_pending: '二维码尚未生成，请稍候再读取。',
+  playback_evidence_not_confirmable: '当前播放证据无法确认，请核对会话与作者范围后重试。',
+  operation_store_unavailable: '操作存储暂不可用，请稍后重试并检查数据库状态。',
+  operation_not_found: '未找到该操作记录，请刷新任务或日志页面。',
+  database_not_ready: '数据库尚未就绪，请先完成初始化或等待迁移结束。',
+  idempotency_key_reused: '该请求与先前的另一笔操作冲突，请重新发起。',
+  subscription_operation_rejected: '订阅当前状态不允许该操作，请刷新详情后重试。',
+  xhs_detail_reference_requires_mediacrawler: 'XHS 详情引用需要启用 MediaCrawler 账户。',
   operator_auth_required: '后台会话已失效，请重新登录。',
   operator_csrf_forbidden: '会话已变化，请重新核验后手动重试；未自动重放操作。',
   operator_request_forbidden: '请求必须使用同源后台会话。',
@@ -164,6 +176,12 @@ export interface ApiBlobResult {
   blob: Blob | null;
 }
 
+const SESSION_PATH_PREFIXES = ['/api/', '/crawler/api/'] as const;
+
+function isSessionPath(path: string): boolean {
+  return SESSION_PATH_PREFIXES.some((prefix) => path.startsWith(prefix));
+}
+
 async function sessionRequest<T>(
   path: string,
   init: RequestInit,
@@ -171,7 +189,7 @@ async function sessionRequest<T>(
   binary: boolean
 ): Promise<T> {
   const headers = new Headers(init.headers);
-  if (!path.startsWith('/api/') || path.includes('\\') || headers.has('authorization')) {
+  if (!isSessionPath(path) || path.includes('\\') || headers.has('authorization')) {
     throw new ApiError(400, 'operator_request_forbidden', null);
   }
   const grant = operatorAuth.beginRequest();

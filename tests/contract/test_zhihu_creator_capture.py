@@ -40,9 +40,9 @@ class DataFetchError(RuntimeError):
 
 
 class ZhihuContent:
-    def __init__(self, content_id: str) -> None:
+    def __init__(self, content_id: str, content_type: str = "answer") -> None:
         self.content_id = content_id
-        self.content_type = "answer"
+        self.content_type = content_type
         self.content_text = f"body-{content_id}"
         self.content_url = f"https://www.zhihu.com/question/1/answer/{content_id}"
 
@@ -78,6 +78,7 @@ def _install_modules(
     output_root: Path,
     *,
     page: object,
+    unmappable: str | None = None,
 ) -> tuple[list[dict[str, object]], list[int]]:
     checkout.mkdir(parents=True, exist_ok=True)
     stored: list[dict[str, object]] = []
@@ -91,7 +92,13 @@ def _install_modules(
         @staticmethod
         def extract_content_list_from_creator(value: object) -> list[ZhihuContent]:
             assert type(value) is list
-            return [ZhihuContent(str(item["id"])) for item in value if isinstance(item, dict)]
+            rows = [ZhihuContent(str(item["id"])) for item in value if isinstance(item, dict)]
+            for row in rows:
+                if row.content_id == unmappable:
+                    # A content type the pinned normalizer refuses makes the
+                    # shim record `detail_unavailable` for exactly this answer.
+                    row.content_type = "pin"
+            return rows
 
     class ZhiHuClient:
         def __init__(self) -> None:
@@ -155,12 +162,12 @@ def _install_modules(
     return stored, list_calls
 
 
-def _manifest(output_root: Path) -> SimpleNamespace:
+def _manifest(output_root: Path, *, state: ZhihuScanState | None = None) -> SimpleNamespace:
     author_sha = hashlib.sha256(URL_TOKEN.encode()).hexdigest()
     creator_sha = hashlib.sha256(CREATOR_URL.encode()).hexdigest()
-    state = ZhihuScanState.initial(ACCOUNT_ID, author_sha, creator_sha, UPSTREAM_SHA)
+    scan_state = state or ZhihuScanState.initial(ACCOUNT_ID, author_sha, creator_sha, UPSTREAM_SHA)
     return SimpleNamespace(
-        zhihu_scan=state,
+        zhihu_scan=scan_state,
         platform=Platform.ZHIHU,
         account_id=ACCOUNT_ID,
         author_remote_id_fingerprint_sha256=author_sha,
@@ -184,7 +191,6 @@ def test_page_parser_keeps_only_bounded_answer_identities() -> None:
 @pytest.mark.parametrize(
     "payload",
     [
-        {"data": [], "paging": {"is_end": False}},
         {"data": [], "paging": {"is_end": "yes"}},
         {"data": "invalid", "paging": {"is_end": True}},
         {"data": [{"id": 0}], "paging": {"is_end": True}},
@@ -261,3 +267,135 @@ def test_restricted_feed_is_not_source_end(
     assert coverage.page is None
     assert coverage.source_end_observed is False
     assert coverage.next_state.head_boundary is None
+
+
+def test_partial_page_replays_only_the_missing_answer(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A unit that stopped mid-page must resume from the same offset.
+
+    The first run delivers every listed answer except one the pinned normalizer
+    refuses; the unit therefore keeps the identical offset and witness. The
+    replay must re-fetch that offset and offer ONLY the still-missing answer.
+    A positional walk over the extracted list would re-offer an already
+    delivered answer and be rejected as contract drift, so this pins the
+    state-machine-driven loop shape.
+    """
+
+    output_root = tmp_path / "output"
+    output_root.mkdir()
+    missing = _content_id(2)
+    stored, list_calls = _install_modules(
+        monkeypatch,
+        tmp_path / "checkout",
+        output_root,
+        page=_response(1, 2, 3, is_end=False),
+        unmappable=missing,
+    )
+    manifest = _manifest(output_root)
+    previous = os.getcwd()
+    os.chdir(tmp_path / "checkout")
+    try:
+        install_zhihu_creator_capture_shim(manifest)  # type: ignore[arg-type]
+        client_class = sys.modules["media_platform.zhihu.client"].ZhiHuClient
+        first = asyncio.run(client_class().get_all_anwser_by_creator(URL_TOKEN))
+    finally:
+        os.chdir(previous)
+
+    assert [item.content_id for item in first] == [_content_id(1), _content_id(3)]
+    coverage = ZhihuScanCoverage.from_json_line((output_root / ZH_SCAN_COVERAGE_FILENAME).read_text(encoding="utf-8"))
+    assert coverage.stop_reason == "unit_cap_reached"
+    assert coverage.summary.page_complete is False
+    assert coverage.summary.failed_count == 1
+    assert [item.identity.content_id for item in coverage.failed] == [missing]
+    assert coverage.next_state.offset == 0
+    assert coverage.next_state.witness is not None
+
+    first_calls = list(list_calls)
+    (output_root / ZH_SCAN_COVERAGE_FILENAME).unlink()
+    # A resumed unit runs in a fresh child process, so re-register the pinned
+    # modules: the capture shim installs exactly once per process.
+    stored, list_calls = _install_modules(
+        monkeypatch,
+        tmp_path / "checkout",
+        output_root,
+        page=_response(1, 2, 3, is_end=False),
+    )
+    replay_manifest = _manifest(output_root, state=coverage.next_state)
+    previous = os.getcwd()
+    os.chdir(tmp_path / "checkout")
+    try:
+        install_zhihu_creator_capture_shim(replay_manifest)  # type: ignore[arg-type]
+        client_class = sys.modules["media_platform.zhihu.client"].ZhiHuClient
+        second = asyncio.run(client_class().get_all_anwser_by_creator(URL_TOKEN))
+    finally:
+        os.chdir(previous)
+
+    assert [item.content_id for item in second] == [missing]
+    assert [item["content_id"] for item in stored] == [missing]
+    # Both runs re-requested the identical offset instead of advancing it.
+    assert first_calls == [0]
+    assert list_calls == [0]
+
+
+def test_upstream_store_callback_does_not_double_store(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Upstream passes a store callback; the shim already stored those rows.
+
+    `.upstream/MediaCrawler/media_platform/zhihu/core.py:283-287` calls
+    `get_all_anwser_by_creator(..., callback=zhihu_store.batch_update_zhihu_contents)`
+    and that callback is nothing but `for content in contents: await
+    update_zhihu_content(content)` (`.upstream/.../store/zhihu/__init__.py:57-70`).
+    Invoking it would re-enter the guarded store with the identity ContextVar
+    reset, aborting the unit before the coverage witness is sealed.
+    """
+
+    output_root = tmp_path / "output"
+    output_root.mkdir()
+    stored, list_calls = _install_modules(
+        monkeypatch,
+        tmp_path / "checkout",
+        output_root,
+        page=_response(1, 2, is_end=True),
+    )
+    manifest = _manifest(output_root)
+    replayed: list[str] = []
+
+    async def upstream_callback(contents: object) -> None:
+        assert isinstance(contents, list)
+        for content in contents:
+            replayed.append(content.content_id)
+
+    previous = os.getcwd()
+    os.chdir(tmp_path / "checkout")
+    try:
+        install_zhihu_creator_capture_shim(manifest)  # type: ignore[arg-type]
+        client_class = sys.modules["media_platform.zhihu.client"].ZhiHuClient
+        contents = asyncio.run(client_class().get_all_anwser_by_creator(URL_TOKEN, 0, upstream_callback))
+    finally:
+        os.chdir(previous)
+
+    assert [item.content_id for item in contents] == [_content_id(1), _content_id(2)]
+    assert list_calls == [0]
+    assert [item["content_id"] for item in stored] == [_content_id(1), _content_id(2)]
+    assert replayed == []
+    coverage = ZhihuScanCoverage.from_json_line((output_root / ZH_SCAN_COVERAGE_FILENAME).read_text(encoding="utf-8"))
+    assert coverage.stop_reason == "is_end"
+    coverage.validate(manifest.zhihu_scan, 20)
+
+
+def test_empty_body_that_is_not_the_end_is_a_page_not_a_drift() -> None:
+    """A rate-limited body parses as `data: []` with `is_end: false`.
+
+    That is a valid page shape, and classifying it belongs to the unit (which
+    replays and counts a stall) — raising here would surface it as a hard
+    upstream fault with no bounded witness, unlike the Weibo/Tieba shims.
+    """
+
+    page = parse_zhihu_creator_page({"data": [], "paging": {"is_end": False}}, offset=20, limit=20)
+
+    assert page.identities == ()
+    assert page.is_end is False

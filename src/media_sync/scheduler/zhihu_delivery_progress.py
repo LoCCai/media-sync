@@ -33,7 +33,7 @@ from .pipeline_receipt import PipelineDeliveryReceipt
 
 ZHIHU_DELIVERY_SCHEMA_VERSION = 1
 ZHIHU_ACCESS_RESTRICTED_BLOCKED_CODE = "zhihu_access_restricted"
-ZHIHU_SHIFT_BLOCKED_CODE = "zhihu_window_shifted"
+ZHIHU_STALL_BLOCKED_CODE = "zhihu_window_stalled"
 _MAX_COUNTER = 9_007_199_254_740_991
 _SHA1 = re.compile(r"[0-9a-f]{40}\Z")
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
@@ -432,9 +432,9 @@ class ZhihuDeliveryProgressRepository:
         if reason == "access_restricted":
             row.phase = "blocked"
             row.blocked_code = ZHIHU_ACCESS_RESTRICTED_BLOCKED_CODE
-        elif after_state.shifted_units >= ZH_STALLED_UNIT_LIMIT:
+        elif after_state.stalled_units >= ZH_STALLED_UNIT_LIMIT:
             row.phase = "blocked"
-            row.blocked_code = ZHIHU_SHIFT_BLOCKED_CODE
+            row.blocked_code = ZHIHU_STALL_BLOCKED_CODE
         elif phase_before == "backfill" and reason == "is_end" and summary.page_complete:
             # The server-declared end is retained with its page witness and
             # still opens reconciliation before any incremental claim.
@@ -648,7 +648,7 @@ def zhihu_delivery_progress_payload(
 __all__ = [
     "ZHIHU_ACCESS_RESTRICTED_BLOCKED_CODE",
     "ZHIHU_DELIVERY_SCHEMA_VERSION",
-    "ZHIHU_SHIFT_BLOCKED_CODE",
+    "ZHIHU_STALL_BLOCKED_CODE",
     "ZhihuDeliveryBinding",
     "ZhihuDeliveryProgressRepository",
     "binding_for_zhihu_subscription",

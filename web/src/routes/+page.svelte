@@ -47,6 +47,8 @@
   let healthOk = false;
   let databaseReady = false;
   let loading = true;
+  let refreshing = false;
+  let loaded = false;
   let loadingDeep = false;
   let deepRequested = false;
   let action = '';
@@ -60,21 +62,16 @@
   $: authAccounts = accounts.filter((item) => item.auth_status === 'authenticated');
   $: if ($onboardingHydrated && $onboardingAccepted && !deepRequested && !loadingDeep) void loadDeep(false);
 
+  /**
+   * 概览的九个子系统彼此独立：一个接口失败不能把其余八个成功结果丢掉，也不能
+   * 把整页标成“服务连接失败”。“服务连接”只由 /health 决定。
+   */
   async function load(): Promise<void> {
-    loading = true;
-    error = '';
+    const first = !loaded;
+    if (first) loading = true;
+    else refreshing = true;
     try {
-      const [
-        health,
-        ready,
-        loadedSettings,
-        loadedAccounts,
-        loadedSubs,
-        loadedJobs,
-        loadedAssets,
-        loadedContents,
-        loadedOps
-      ] = await Promise.all([
+      const settled = await Promise.allSettled([
         api<{ status: string }>('/api/v1/health'),
         api<{ status: string }>('/api/v1/ready'),
         api<Settings>('/api/v1/settings'),
@@ -85,20 +82,44 @@
         api<ContentItem[]>('/api/v1/contents?limit=50'),
         api<Operation[]>('/api/v1/operations?limit=8')
       ]);
-      healthOk = health.status === 'ok';
-      databaseReady = ready.status === 'ready';
-      settings = loadedSettings;
-      accounts = loadedAccounts;
-      subscriptions = loadedSubs;
-      jobs = loadedJobs;
-      assets = loadedAssets;
-      contents = loadedContents;
-      operations = loadedOps;
-    } catch (caught) {
-      error = apiMessage(caught);
-      healthOk = false;
+      const failures: string[] = [];
+      const take = <T,>(index: number, apply: (value: T) => void): void => {
+        const outcome = settled[index];
+        if (outcome.status === 'fulfilled') apply(outcome.value as T);
+        else failures.push(apiMessage(outcome.reason));
+      };
+      take<{ status: string }>(0, (value) => {
+        healthOk = value.status === 'ok';
+      });
+      take<{ status: string }>(1, (value) => {
+        databaseReady = value.status === 'ready';
+      });
+      take<Settings>(2, (value) => {
+        settings = value;
+      });
+      take<Account[]>(3, (value) => {
+        accounts = value;
+      });
+      take<Subscription[]>(4, (value) => {
+        subscriptions = value;
+      });
+      take<Job[]>(5, (value) => {
+        jobs = value;
+      });
+      take<Asset[]>(6, (value) => {
+        assets = value;
+      });
+      take<ContentItem[]>(7, (value) => {
+        contents = value;
+      });
+      take<Operation[]>(8, (value) => {
+        operations = value;
+      });
+      error = failures.length ? failures[0] : '';
+      loaded = true;
     } finally {
       loading = false;
+      refreshing = false;
     }
   }
 
@@ -168,7 +189,7 @@
   <PageHeader title="运行概览" description="账户、订阅、归档与媒体库的当前状态。">
     <svelte:fragment slot="actions">
       <button class="button secondary" type="button" on:click={load} disabled={loading}>
-        <RefreshCw class={loading ? 'spin' : ''} size={15} />刷新
+        <RefreshCw class={loading || refreshing ? 'spin' : ''} size={15} />刷新
       </button>
       <button class="button" type="button" on:click={runSync} disabled={!!action || !$onboardingAccepted}>
         <Play size={15} fill="currentColor" />{action === 'sync' ? '启动中…' : '立即同步'}
@@ -194,22 +215,22 @@
   <section class="summary-grid" aria-label="关键统计">
     <div class="summary-item">
       <span class="summary-label">平台账户<CircleUserRound size={16} /></span>
-      <strong class="summary-value">{loading ? '—' : accounts.length}</strong>
+      <strong class="summary-value">{!loaded ? '—' : accounts.length}</strong>
       <span class="summary-hint">{authAccounts.length} 个已认证</span>
     </div>
     <div class="summary-item">
       <span class="summary-label">创作者订阅<UsersRound size={16} /></span>
-      <strong class="summary-value">{loading ? '—' : subscriptions.length}</strong>
+      <strong class="summary-value">{!loaded ? '—' : subscriptions.length}</strong>
       <span class="summary-hint">{subscriptions.filter((item) => item.enabled).length} 个已启用</span>
     </div>
     <div class="summary-item">
       <span class="summary-label">待处理任务<Clock3 size={16} /></span>
-      <strong class="summary-value">{loading ? '—' : activeJobs.length}</strong>
+      <strong class="summary-value">{!loaded ? '—' : activeJobs.length}</strong>
       <span class="summary-hint">{failedJobs.length} 个失败任务</span>
     </div>
     <div class="summary-item">
       <span class="summary-label">已归档资产<Archive size={16} /></span>
-      <strong class="summary-value">{loading ? '—' : verifiedAssets.length}</strong>
+      <strong class="summary-value">{!loaded ? '—' : verifiedAssets.length}</strong>
       <span class="summary-hint">共发现 {assets.length} 个资产</span>
     </div>
   </section>

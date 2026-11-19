@@ -10,7 +10,7 @@ import pytest
 from media_sync.integrations.mediacrawler.zhihu_creator_work import (
     ZH_SCAN_COVERAGE_FILENAME,
     ZH_SCAN_CURSOR_PREFIX,
-    ZH_SHIFT_BLOCKED_CODE,
+    ZH_STALL_BLOCKED_CODE,
     ZH_STALLED_UNIT_LIMIT,
     ZhihuCreatorPage,
     ZhihuScanCoverage,
@@ -94,14 +94,34 @@ def test_server_declared_end_is_a_source_end_candidate() -> None:
     assert coverage.next_state.offset == 0
 
 
-def test_empty_page_ends_with_its_own_code() -> None:
+def test_empty_page_that_is_the_declared_end_keeps_its_own_code() -> None:
     unit = ZhihuScanUnit(_state(), 20)
-    _drive(unit, _page(0, (), is_end=False))
+    _drive(unit, _page(0, (), is_end=True))
 
     coverage = unit.coverage()
 
     assert coverage.stop_reason == "empty_page_end"
     assert coverage.source_end_observed is True
+
+
+def test_empty_page_that_is_not_the_end_is_a_stall_not_an_end() -> None:
+    """`data: []` with `is_end: false` contradicts itself.
+
+    A rate-limited body parses this way; declaring an empty source end would
+    publish an empty head boundary, which reconciles equal to anything and lets
+    the row enter incremental while the whole backlog is still unfetched.
+    """
+
+    unit = ZhihuScanUnit(_state(), 20)
+    _drive(unit, _page(0, (), is_end=False))
+
+    coverage = unit.coverage()
+
+    assert coverage.stop_reason == "unit_cap_reached"
+    assert coverage.source_end_observed is False
+    assert coverage.next_state.offset == 0
+    assert coverage.next_state.stalled_units == 1
+    assert coverage.next_state.head_boundary is None
 
 
 def test_small_unit_cap_requests_and_consumes_its_own_limit() -> None:
@@ -144,26 +164,54 @@ def test_advanced_offset_is_replayed_verbatim() -> None:
     assert follow.next_action().offset == 20
 
 
-def test_shifted_window_blocks_with_its_own_code() -> None:
+def test_a_partially_shifted_window_advances_instead_of_blocking() -> None:
+    """One insertion legitimately repeats the previous page's tail.
+
+    Zhihu paginates by an integer ``offset`` product, so publishing one answer
+    moves the window by one and the next page starts with the previous page's
+    last id. Treating that partial intersection as a stall would wedge the
+    subscription on the first new answer forever, so the page must be consumed
+    normally. Re-storing an already delivered answer is idempotent.
+    """
+
     first = ZhihuScanUnit(_state(), 20)
     _drive(first, _page(0, _ids(5000, 20)))
     state = first.coverage().next_state
+    assert state.offset == 20
 
-    # A deletion shifted the window: the next page overlaps the previous one.
-    overlapping = _ids(5000, 20)
+    drifted = (_ids(5000, 20)[-1], *_ids(6000, 19))
+    unit = ZhihuScanUnit(state, 20)
+    _drive(unit, _page(20, drifted))
+    coverage = unit.coverage()
+
+    assert coverage.stop_reason == "unit_cap_reached"
+    assert coverage.source_end_observed is False
+    assert coverage.next_state.offset == 40
+    assert coverage.next_state.stalled_units == 0
+    assert coverage.blocked_code is None
+
+
+def test_an_identical_page_stalls_and_blocks_with_its_own_code() -> None:
+    """A page that repeats verbatim means the window is not moving at all."""
+
+    first = ZhihuScanUnit(_state(), 20)
+    _drive(first, _page(0, _ids(7000, 20)))
+    state = first.coverage().next_state
+
+    repeated = _ids(7000, 20)
     for _ in range(ZH_STALLED_UNIT_LIMIT):
         unit = ZhihuScanUnit(state, 20)
-        _drive(unit, _page(state.offset, overlapping))
+        _drive(unit, _page(state.offset, repeated))
         coverage = unit.coverage()
         assert coverage.stop_reason == "unit_cap_reached"
         assert coverage.source_end_observed is False
         state = coverage.next_state
 
     assert state.offset == 20
-    assert state.shifted_units == ZH_STALLED_UNIT_LIMIT
+    assert state.stalled_units == ZH_STALLED_UNIT_LIMIT
     unit = ZhihuScanUnit(state, 20)
-    _drive(unit, _page(state.offset, overlapping))
-    assert unit.coverage().blocked_code == ZH_SHIFT_BLOCKED_CODE
+    _drive(unit, _page(state.offset, repeated))
+    assert unit.coverage().blocked_code == ZH_STALL_BLOCKED_CODE
 
 
 def test_access_restriction_is_never_an_end() -> None:

@@ -87,7 +87,16 @@ const REVISIONS = [
   '0008_playback_evidence',
   '0009_subscription_removal',
   '0010_creator_profiles',
-  '0011_cookie_login'
+  '0011_cookie_login',
+  '0012_library_output_policy',
+  '0013_exact_subscription_delivery',
+  '0014_bili_delivery_baseline',
+  '0015_xhs_creator_notes',
+  '0016_douyin_creator_work',
+  '0017_kuaishou_creator_work',
+  '0018_weibo_creator_notes',
+  '0019_tieba_creator_notes',
+  '0020_zhihu_creator_answers'
 ];
 const OBSERVATIONS: Record<string, string> = {
   no_attached_run: '任务尚未关联采集运行；不能据此判断已产生内容。',

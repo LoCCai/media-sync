@@ -30,7 +30,7 @@ from uuid import UUID, uuid4
 import typer
 from pydantic import ValidationError
 from pydantic_settings import SettingsError
-from sqlalchemy import create_engine, inspect, select, text
+from sqlalchemy import inspect, select, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import IntegrityError, OperationalError, SQLAlchemyError
 from sqlalchemy.orm import Session
@@ -100,6 +100,7 @@ from media_sync.infrastructure.db import (
     Subscription,
     SubscriptionRepository,
     SyncRunRepository,
+    create_database_engine,
     upgrade_database,
 )
 from media_sync.integrations.mediacrawler.bridge import (
@@ -172,6 +173,7 @@ from media_sync.scheduler.douyin_scan_continuation import DouyinScanContinuation
 from media_sync.scheduler.kuaishou_scan_continuation import KuaishouScanContinuationPolicy
 from media_sync.scheduler.policy import classify_failure
 from media_sync.scheduler.tieba_scan_continuation import TiebaScanContinuationPolicy
+from media_sync.scheduler.weibo_scan_continuation import WeiboScanContinuationPolicy
 from media_sync.scheduler.xhs_scan_continuation import XhsScanContinuationPolicy
 from media_sync.scheduler.zhihu_scan_continuation import ZhihuScanContinuationPolicy
 from media_sync.security import (
@@ -215,8 +217,8 @@ app.add_typer(pipeline_app, name="pipeline")
 _EXPECTED_DATABASE_REVISION = "0020_zhihu_creator_answers"
 _KNOWN_DATABASE_REVISIONS = frozenset(
     {
-        "0001_initial_schema",
-        "0002_checkpoint_fencing",
+        "0001_core",
+        "0002_checkpoint",
         "0003_media_download_emby",
         "0004_scheduler_control_plane",
         "0005_asset_refresh_sources",
@@ -347,7 +349,10 @@ def collect_database_status(database_url: str) -> dict[str, object]:
         if not database_path.is_file():
             return {**base_status, "reason": "database file does not exist"}
 
-    engine = create_engine(database_url, future=True)
+    # Use the one managed factory so the read-only status probe also carries
+    # the sqlite pragmas (secure_delete, foreign_keys, busy_timeout) that every
+    # other connection has. A plain create_engine() would silently opt out.
+    engine = create_database_engine(database_url)
     try:
         with engine.connect() as connection:
             table_names = set(inspect(connection).get_table_names())
@@ -1054,13 +1059,17 @@ def _scheduler_runtime() -> Iterator[tuple[Database, DurableSchedulerService]]:
                     settings.mediacrawler_lock_path,
                     delay_seconds=settings.kuaishou_scan_continuation_delay_seconds,
                 ),
-                tieba_scan_continuation=TiebaScanContinuationPolicy.from_lock(
+                weibo_scan_continuation=WeiboScanContinuationPolicy.from_lock(
                     settings.mediacrawler_lock_path,
-                    delay_seconds=settings.tieba_scan_continuation_delay_seconds,
+                    delay_seconds=settings.weibo_scan_continuation_delay_seconds,
                 ),
                 zhihu_scan_continuation=ZhihuScanContinuationPolicy.from_lock(
                     settings.mediacrawler_lock_path,
                     delay_seconds=settings.zhihu_scan_continuation_delay_seconds,
+                ),
+                tieba_scan_continuation=TiebaScanContinuationPolicy.from_lock(
+                    settings.mediacrawler_lock_path,
+                    delay_seconds=settings.tieba_scan_continuation_delay_seconds,
                 ),
             ),
         )
@@ -1132,6 +1141,18 @@ def _build_subscription_worker(
             settings.mediacrawler_lock_path,
             delay_seconds=settings.kuaishou_scan_continuation_delay_seconds,
         ),
+        weibo_scan_continuation=WeiboScanContinuationPolicy.from_lock(
+            settings.mediacrawler_lock_path,
+            delay_seconds=settings.weibo_scan_continuation_delay_seconds,
+        ),
+        tieba_scan_continuation=TiebaScanContinuationPolicy.from_lock(
+            settings.mediacrawler_lock_path,
+            delay_seconds=settings.tieba_scan_continuation_delay_seconds,
+        ),
+        zhihu_scan_continuation=ZhihuScanContinuationPolicy.from_lock(
+            settings.mediacrawler_lock_path,
+            delay_seconds=settings.zhihu_scan_continuation_delay_seconds,
+        ),
     )
 
 
@@ -1183,8 +1204,26 @@ def _build_pipeline_worker(
                     return PipelineHandlerResult.failure("pipeline_subscription_invalid")
                 if subscription.account.adapter == "mediacrawler":
                     policy = from_subscription_policy(subscription.policy)
-                    if (subscription.account.platform == "bili" and policy.effective_bili_scope == "uploads") or (
-                        subscription.account.platform == "xhs" and policy.creator_secret_ref is not None
+                    # The delivery-progress publishers only accept a schema-2
+                    # receipt, and the receipt carries a source Run only when
+                    # the delivery was scoped to this exact Run. Every bounded
+                    # creator platform is scoped that way (its subscription
+                    # carries a creator authority and the handler runs one
+                    # bounded unit per Run), so the Run identity must be passed
+                    # for all of them — otherwise the durable progress row is
+                    # created and then never advances.
+                    bounded_platforms = {
+                        "bili",
+                        "xhs",
+                        "dy",
+                        "ks",
+                        "wb",
+                        "tieba",
+                        "zhihu",
+                    }
+                    if subscription.account.platform in bounded_platforms and (
+                        policy.creator_secret_ref is not None
+                        or (subscription.account.platform == "bili" and policy.effective_bili_scope == "uploads")
                     ):
                         source_run_id = UUID(claim.run_id)
             outcome = executor.run(
@@ -1234,6 +1273,18 @@ def _build_pipeline_worker(
         kuaishou_delivery_policy=KuaishouScanContinuationPolicy.from_lock(
             settings.mediacrawler_lock_path,
             delay_seconds=settings.kuaishou_scan_continuation_delay_seconds,
+        ),
+        weibo_delivery_policy=WeiboScanContinuationPolicy.from_lock(
+            settings.mediacrawler_lock_path,
+            delay_seconds=settings.weibo_scan_continuation_delay_seconds,
+        ),
+        tieba_delivery_policy=TiebaScanContinuationPolicy.from_lock(
+            settings.mediacrawler_lock_path,
+            delay_seconds=settings.tieba_scan_continuation_delay_seconds,
+        ),
+        zhihu_delivery_policy=ZhihuScanContinuationPolicy.from_lock(
+            settings.mediacrawler_lock_path,
+            delay_seconds=settings.zhihu_scan_continuation_delay_seconds,
         ),
     )
 
@@ -2270,13 +2321,17 @@ def scheduler_supervise(
                     settings.mediacrawler_lock_path,
                     delay_seconds=settings.kuaishou_scan_continuation_delay_seconds,
                 ),
-                tieba_scan_continuation=TiebaScanContinuationPolicy.from_lock(
+                weibo_scan_continuation=WeiboScanContinuationPolicy.from_lock(
                     settings.mediacrawler_lock_path,
-                    delay_seconds=settings.tieba_scan_continuation_delay_seconds,
+                    delay_seconds=settings.weibo_scan_continuation_delay_seconds,
                 ),
                 zhihu_scan_continuation=ZhihuScanContinuationPolicy.from_lock(
                     settings.mediacrawler_lock_path,
                     delay_seconds=settings.zhihu_scan_continuation_delay_seconds,
+                ),
+                tieba_scan_continuation=TiebaScanContinuationPolicy.from_lock(
+                    settings.mediacrawler_lock_path,
+                    delay_seconds=settings.tieba_scan_continuation_delay_seconds,
                 ),
             ),
             subscription_worker=subscription_worker,

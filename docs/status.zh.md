@@ -2,7 +2,21 @@
 
 # 项目统一状态（单一事实来源）
 
-## 最新：操作者门（0087）
+## 最新：六方向独立代码审查（0088）
+
+[0088](executions/0088-code-review/progress.zh.md)把 `830b4d0` 交给六个范围互不重叠的只读审查者，并明确要求他们不要信任此前的收尾结论。结果发现 0085 与 0086 **按已交付状态并不可用**，尽管它们的本地套件是绿的：
+
+- 贴吧与知乎从未完成过一个有界单元。知乎 shim 按位置遍历提取列表，因此页尾回放会把已交付回答再次提交并被判为契约漂移；两个 shim 都调用了上游 store 回调，而该回调会在身份已重置的情况下重跑受守卫的 store；并且 `NormalizedMediaCrawlerOutput` 静默丢弃了 `tieba_coverage`/`zhihu_coverage`，使 handler 把每次运行都判为 `output_security_failed`。
+- 即便过了这一关也没有任何进度行能推进：管线 worker 从不发布知乎进度，且只有 B 站投稿/XHS 携带 `source_run_id`，于是每个 publisher 都在 schema-1 回执上返回 `None`。
+- WebUI 根本到不了耐久链：九个服务构造点全部漏掉了新的续跑策略。
+
+共修复 26 个缺陷，横跨创作者链、摄取边界、安全、控制台与操作者契约。值得注意的安全结论：`secure_delete=ON` 并不覆盖 SQLite 的 `-wal` 旁文件（已复现——擦除后的凭据在突然退出后仍可读）、调用方注入的 Alembic 连接不执行任何 pragma、ffprobe/ffmpeg 子进程继承了整个环境含 `env:` 解析的平台 Cookie。
+
+两条审查结论经重新核实后被驳回，四条真实发现被刻意延后到各自的执行（抖音 8 项 `bit_rate` 上限、快手缺 CDN 允许列表、小红书接受明文 `http`、动画图片在五个平台上被当作静态图）——各自都会静默改变已冻结的 0076/0081/0083 行为。
+
+最终本地门禁：Python `7331 passed, 62 skipped`；Web `846 passed`；Ruff lint/format、182 个源码文件的 strict mypy、文档、钉定上游与 `svelte-check` 全绿。部署、每一次真人登录与每一次真实请求仍为 `NOT_RUN`。
+
+## 上阶段：操作者门（0087）
 
 [执行 0087](executions/0087-operator-canary/progress.zh.md)收尾代码工作并固定剩余事项。七个创作者平台现在都携带耐久创作者作品链——B 站（`0014`）、小红书（`0015`）、抖音（`0016`）、快手（`0017`）、微博（`0018`）、贴吧（`0019`）、知乎（`0020`）——各有自己的游标语义、固定停止原因、页尾回放、受限≠源末，以及以封闭管线回执为门槛的按 Content 发布。
 
@@ -260,7 +274,7 @@ B站和微博资料已离线实现，其他五平台资料、抖音/快手/贴�
 | 维度 | 状态 | 证据 / 阻塞 |
 | --- | --- | --- |
 | 实现（离线形状） | 七平台 15+ 冻结形状 | 执行 0013–0039 记录 |
-| 离线完整套件 | 0087 最终本地门：Python 完整套件 `7308 passed, 62 skipped, 108 warnings`、Web `30 files / 843 tests`，含现已真正执行的打包 wheel 制品检查（0086 的 `7307 passed, 63 skipped` 与 0085 的 `7281 passed, 63 skipped` 已被取代）。跳过项均为明确记录的 OS/PostgreSQL 资格分支 | [0087 验证](executions/0087-operator-canary/verification.zh.md) | [0086 验证](executions/0086-zhihu-creator-answers/verification.zh.md) |
+| 离线完整套件 | 0088 最终本地门：Python 完整套件 `7331 passed, 62 skipped, 108 warnings`、Web `846 passed`，含现已真正执行的打包 wheel 制品检查（0087 的 `7308 passed, 62 skipped`、0086 的 `7307 passed, 63 skipped` 与 0085 的 `7281 passed, 63 skipped` 已被取代）。跳过项均为明确记录的 OS/PostgreSQL 资格分支 | [0088 验证](executions/0088-code-review/verification.zh.md) | [0087 验证](executions/0087-operator-canary/verification.zh.md) |
 | API/控制台测试 | 0075 策略/API/CLI/鉴权联合为 `40 passed, 2 skipped`；两项真实 PostgreSQL 策略检查仍为 `NOT_RUN`。合成 Chrome 证明 B 站与 XHS 保存后仍暂停、平台 scope 保持隔离，浏览器/页面/请求错误数均为 0 | [0075 验证](executions/0075-paused-subscription-policy-editor/verification.zh.md) |
 | 静态与制品门 | 0075 对 406 个文件的 Ruff lint/format、Web Prettier、156 个源码文件 strict mypy、compileall、62 包锁文件、两个上游及 wheel/sdist 构建通过；收尾重跑文档链接与 `git diff --check`。0072 加固后的生产依赖审计继续为 0，全构建依赖图仍有 8 个仅开发/构建期发现 | [0075 验证](executions/0075-paused-subscription-policy-editor/verification.zh.md) |
 | 锁定上游 WebUI 依赖审计 | 生产 `PASS`／全构建依赖图 `FAIL`（仅开发依赖残余）——安全补丁后的构建副本生产漏洞为 0，全依赖图为 8 条：6 high、2 low、0 moderate、0 critical；对应 package 不会复制进最终运行镜像。未加固上游原始基线的 11 条（8 high、1 moderate、2 low）仅作为历史发现保留；版本化 checkout／lockfile 保持不变 | [0072 验证](executions/0072-mediacrawler-webui-integration/verification.zh.md) |

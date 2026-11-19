@@ -46,6 +46,7 @@ from media_sync.infrastructure.db import (
     RepositoryError,
     SubscriptionRepository,
     SyncRunRepository,
+    checkpoint_sqlite_wal,
 )
 from media_sync.infrastructure.db.models import (
     ASSET_KINDS,
@@ -242,6 +243,83 @@ def test_sqlite_pragmas_and_nested_work_rollback(database: Database) -> None:
     with database.session() as session:
         assert session.scalar(select(func.count()).select_from(Author)) == 0
         assert session.scalar(select(func.count()).select_from(Content)) == 0
+
+
+def test_injected_raw_connection_receives_sqlite_pragmas(tmp_path: Path) -> None:
+    """A caller-supplied plain Connection must still migrate with the pragmas.
+
+    `upgrade_database` goes through `create_database_engine`, whose `connect`
+    listener installs `secure_delete`. Embedded callers may instead inject a
+    Connection from a plain `create_engine()`, which has no listener; without
+    the env.py fallback, 0003's rebuild would scrub with `secure_delete=OFF`.
+    """
+
+    from importlib.resources import as_file, files
+
+    from alembic import command
+    from alembic.config import Config
+    from sqlalchemy import create_engine, text
+
+    from media_sync.infrastructure.db.migration import MIGRATIONS_PACKAGE
+
+    database_path = tmp_path / "injected-pragmas.sqlite3"
+    url = f"sqlite+pysqlite:///{database_path.as_posix()}"
+    engine = create_engine(url, future=True)
+    try:
+        with engine.connect() as connection:
+            assert connection.scalar(text("PRAGMA secure_delete")) == 0
+
+        resources = files(MIGRATIONS_PACKAGE)
+        with as_file(resources) as migration_path:
+            configuration = Config()
+            configuration.set_main_option("script_location", str(migration_path))
+            configuration.set_main_option("sqlalchemy.url", url)
+            with engine.connect() as connection:
+                configuration.attributes["connection"] = connection
+                command.upgrade(configuration, "head")
+
+        with engine.connect() as connection:
+            assert connection.scalar(text("PRAGMA secure_delete")) == 1
+            assert connection.scalar(text("PRAGMA foreign_keys")) == 1
+            assert connection.scalar(text("PRAGMA busy_timeout")) == 5_000
+            assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0020_zhihu_creator_answers"
+    finally:
+        engine.dispose()
+
+
+def test_sqlite_wal_checkpoint_removes_a_scrubbed_sentinel(tmp_path: Path) -> None:
+    """`secure_delete` alone leaves the pre-checkpoint image in `<db>-wal`."""
+
+    database_path = tmp_path / "wal-checkpoint.sqlite3"
+    sentinel = "SENTINEL-wal-checkpoint-credential"
+    instance = Database(f"sqlite+pysqlite:///{database_path.as_posix()}")
+    try:
+        instance.create_schema()
+        with instance.session() as session:
+            session.execute(text("CREATE TABLE IF NOT EXISTS scratch (value TEXT)"))
+        with instance.session() as session:
+            session.execute(text("INSERT INTO scratch (value) VALUES (:value)"), {"value": sentinel})
+        with instance.session() as session:
+            session.execute(text("UPDATE scratch SET value=NULL WHERE value IS NOT NULL"))
+
+        wal_path = database_path.with_name(database_path.name + "-wal")
+        assert wal_path.exists()
+        assert sentinel.encode() in wal_path.read_bytes()
+
+        checkpoint_sqlite_wal(instance.engine)
+
+        assert sentinel.encode() not in (wal_path.read_bytes() if wal_path.exists() else b"")
+        assert sentinel.encode() not in database_path.read_bytes()
+    finally:
+        instance.dispose()
+
+
+def test_sqlite_wal_checkpoint_is_a_noop_for_other_dialects() -> None:
+    """The helper must never try to checkpoint a non-SQLite engine."""
+
+    engine = SimpleNamespace(dialect=SimpleNamespace(name="postgresql"))
+
+    checkpoint_sqlite_wal(engine)  # type: ignore[arg-type]
 
 
 def test_persistence_vocabularies_match_domain_enums() -> None:

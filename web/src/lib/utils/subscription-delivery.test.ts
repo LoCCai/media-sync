@@ -16,7 +16,10 @@ import {
   safeBiliDeliveryProgressCard,
   safeDouyinDeliveryProgressCard,
   safeKuaishouDeliveryProgressCard,
+  safeTiebaDeliveryProgressCard,
+  safeWeiboDeliveryProgressCard,
   safeXhsDeliveryProgressCard,
+  safeZhihuDeliveryProgressCard,
   safeScanProgressCards,
   SCAN_PROGRESS_NOTICE,
   subscriptionDeliveryFailure,
@@ -731,8 +734,118 @@ describe('subscriptions route wiring', () => {
     expect(source).toContain('safeDouyinDeliveryProgressCard');
     expect(source).toContain('safeKuaishouDeliveryProgressCard');
     expect(source).toContain('kuaishou_delivery');
+    expect(source).toContain('safeWeiboDeliveryProgressCard');
+    expect(source).toContain('weibo_delivery');
+    expect(source).toContain('safeTiebaDeliveryProgressCard');
+    expect(source).toContain('tieba_delivery');
+    expect(source).toContain('safeZhihuDeliveryProgressCard');
+    expect(source).toContain('zhihu_delivery');
     expect(source).toContain('deliveryBaselinePanelsFor');
     expect(source).toContain('/logs">日志中心');
     expect(source).not.toContain('已安排同步任务；完成状态请到任务页面核对。');
+  });
+});
+
+describe('weibo / tieba / zhihu delivery baselines', () => {
+  const weibo = {
+    schema_version: 1,
+    initialized: true,
+    phase: 'reconciling',
+    baseline_snapshot_complete: false,
+    generation_id: '00000000-0000-0000-0000-000000000001',
+    batch_count: 2,
+    note_observation_count: 25,
+    cursor_step_count: 2,
+    backfill_batch_count: 2,
+    reconciliation_batch_count: 0,
+    incremental_batch_count: 0,
+    partial_batch_count: 0,
+    failed_note_count: 0,
+    last_stop_reason: 'total_inferred_end',
+    declared_total: 25,
+    last_delivery_at: '2026-10-20T12:00:00+00:00',
+    source_end_observed_at: '2026-10-20T12:00:00+00:00',
+    source_end_run_id: '00000000-0000-0000-0000-000000000002',
+    reconciled_at: null,
+    reconciliation_run_id: null,
+    baseline_snapshot_at: null,
+    next_eligible_at: null,
+    blocked_code: null
+  };
+  it('accepts the weibo projected total inference and renders the declared total', () => {
+    const card = safeWeiboDeliveryProgressCard(weibo);
+    expect(card.phase).toBe('头部笔记对账');
+    expect(JSON.stringify(card.rows)).toContain('声明的 total 已被算术推断为结束');
+    expect(JSON.stringify(card.rows)).toContain('25');
+    const { declared_total: _omitted, ...withoutTotal } = weibo;
+    expect(safeWeiboDeliveryProgressCard(withoutTotal)).toMatchObject({ phase: '证据不可用' });
+  });
+
+  const tieba = {
+    schema_version: 1,
+    initialized: true,
+    phase: 'reconciling',
+    baseline_snapshot_complete: false,
+    generation_id: '00000000-0000-0000-0000-000000000003',
+    batch_count: 1,
+    thread_observation_count: 20,
+    cursor_step_count: 1,
+    backfill_batch_count: 1,
+    reconciliation_batch_count: 0,
+    incremental_batch_count: 0,
+    partial_batch_count: 0,
+    failed_thread_count: 0,
+    last_stop_reason: 'has_more_false',
+    last_page_number: 1,
+    last_delivery_at: '2026-10-20T12:00:00+00:00',
+    source_end_observed_at: '2026-10-20T12:00:00+00:00',
+    source_end_run_id: '00000000-0000-0000-0000-000000000004',
+    reconciled_at: null,
+    reconciliation_run_id: null,
+    baseline_snapshot_at: null,
+    next_eligible_at: null,
+    blocked_code: null
+  };
+  it('accepts the tieba page-number stop reason and renders the last page', () => {
+    const card = safeTiebaDeliveryProgressCard(tieba);
+    expect(card.phase).toBe('头部主题对账');
+    expect(JSON.stringify(card.rows)).toContain('列表明确返回没有下一页');
+    expect(safeTiebaDeliveryProgressCard({ ...tieba, last_stop_reason: 'is_end' })).toMatchObject({
+      phase: '证据不可用'
+    });
+  });
+
+  const zhihu = {
+    schema_version: 1,
+    initialized: true,
+    phase: 'incremental',
+    baseline_snapshot_complete: true,
+    generation_id: '00000000-0000-0000-0000-000000000005',
+    batch_count: 3,
+    answer_observation_count: 20,
+    cursor_step_count: 2,
+    backfill_batch_count: 1,
+    reconciliation_batch_count: 1,
+    incremental_batch_count: 1,
+    partial_batch_count: 0,
+    failed_answer_count: 0,
+    last_stop_reason: 'is_end',
+    last_offset: 20,
+    last_delivery_at: '2026-10-20T12:00:00+00:00',
+    source_end_observed_at: '2026-10-20T12:00:00+00:00',
+    source_end_run_id: '00000000-0000-0000-0000-000000000006',
+    reconciled_at: '2026-10-20T12:00:00+00:00',
+    reconciliation_run_id: '00000000-0000-0000-0000-000000000006',
+    baseline_snapshot_at: '2026-10-20T12:00:00+00:00',
+    next_eligible_at: null,
+    blocked_code: null
+  };
+  it('accepts the zhihu declared end and renders the last offset', () => {
+    const card = safeZhihuDeliveryProgressCard(zhihu);
+    expect(card.phase).toBe('增量回答检查');
+    expect(card.status).toBe('succeeded');
+    expect(JSON.stringify(card.rows)).toContain('平台声明没有下一页');
+    const { last_offset: _omitted, ...withoutOffset } = zhihu;
+    expect(safeZhihuDeliveryProgressCard(withoutOffset)).toMatchObject({ phase: '证据不可用' });
   });
 });

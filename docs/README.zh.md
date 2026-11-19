@@ -2,7 +2,9 @@
 
 # 项目工作日志
 
-当前交付：[0087 逐平台操作者金丝雀流程](executions/0087-operator-canary/progress.zh.md)。七个创作者平台现在都携带耐久创作者作品链（0074 B 站、0076 小红书、0080 抖音、0081 快手、0084 微博、0085 贴吧、0086 知乎）。剩余工作需要 Linux 主机、真人原生登录、平台请求与真实 CDN 字节，因此每一行真人工作如实为 `NOT_RUN`；[资格记录](executions/0087-operator-canary/qualification.zh.md)是记录该事实并写明改变某行所需确切证据的唯一位置。最后一次代码交付的本地证据见 [0086 验证](executions/0086-zhihu-creator-answers/verification.zh.md)：Python `7308 passed, 62 skipped`；Web `30 files / 843 tests`；Ruff、strict mypy 与文档门通过。
+当前交付：[0088 六方向独立代码审查](executions/0088-code-review/progress.zh.md)。六个只读审查者在不信任此前收尾结论的前提下审计了 `830b4d0`，发现 0085/0086 按已交付状态连一个有界单元都完不成：捕获 shim 在封印覆盖见证之前就中止、`NormalizedMediaCrawlerOutput` 丢弃两份新覆盖载荷、管线 worker 从不发布知乎进度、回执不携带 `source_run_id`，且九个服务构造点全部漏掉新的续跑策略。共修复 26 个缺陷，横跨创作者链、摄取边界、安全（含 `secure_delete` 未覆盖 SQLite WAL 旁文件）、控制台与操作者契约；两条审查结论经重新核实后被驳回，四条真实发现被刻意延后到各自的执行。最终本地门禁：Python `7331 passed, 62 skipped`；Web `846 passed`；Ruff、strict mypy、文档、上游与 `svelte-check` 全绿。部署与全部真人平台行仍为 `NOT_RUN`。
+
+前序交付：[0087 逐平台操作者金丝雀流程](executions/0087-operator-canary/progress.zh.md)。七个创作者平台现在都携带耐久创作者作品链（0074 B 站、0076 小红书、0080 抖音、0081 快手、0084 微博、0085 贴吧、0086 知乎）。剩余工作需要 Linux 主机、真人原生登录、平台请求与真实 CDN 字节，因此每一行真人工作如实为 `NOT_RUN`；[资格记录](executions/0087-operator-canary/qualification.zh.md)是记录该事实并写明改变某行所需确切证据的唯一位置。最后一次代码交付的本地证据见 [0086 验证](executions/0086-zhihu-creator-answers/verification.zh.md)：Python `7308 passed, 62 skipped`；Web `30 files / 843 tests`；Ruff、strict mypy 与文档门通过。
 
 前序交付：[0086 知乎创作者回答耐久交付](executions/0086-zhihu-creator-answers/progress.zh.md)。知乎创作者回答携带整数 `offset` 链上的耐久单元，服务端声明的 `paging.is_end` 结束仍只开启对账，位移窗口由页身份检测。
 
@@ -40,6 +42,7 @@
 
 | ID | 里程碑 | 状态 | 提交 |
 | --- | --- | --- | --- |
+| 0088 | 六方向独立代码审查 | 本地完成：在微博/贴吧/知乎耐久链、摄取边界、`secure_delete`/WAL 与子进程环境、Svelte 控制台与操作者契约上修复 26 个已核实缺陷，每条都配“先失败”回归测试；两条结论核实后驳回，四条发现延后到独立执行；Python `7331 passed, 62 skipped` | 实现与收尾为包含本记录的提交；[验证](executions/0088-code-review/verification.zh.md) |
 | 0087 | 逐平台操作者金丝雀 | 流程与资格记录完成；**每一行真人工作都是 `NOT_RUN`**。七步操作者流程，以及记录全部七个平台在真人金丝雀、真实媒体字节、零工作重放与重启续跑上均为 `NOT_RUN` 的唯一表格，并写明每一行读到 `PASS` 前所需的确切证据；未改动产品行为 | 文档与收尾为包含本记录的提交；[资格记录](executions/0087-operator-canary/qualification.zh.md) |
 | 0086 | 知乎创作者回答耐久交付 | 本地完成：迁移 `0020_zhihu_creator_answers`、整数 `offset` 链上的耐久单元与四个固定停止原因、按同一 offset 的页尾回放、以 `zhihu_window_shifted` 阻塞的位移窗口检测、把假值/畸形响应体判为 `access_restricted` 的子进程 shim，以及由封闭回执驱动的 backfill → reconciling → incremental；Python `7308 passed, 62 skipped` | 实现与收尾为包含本记录的提交；[验证](executions/0086-zhihu-creator-answers/verification.zh.md) |
 | 0085 | 贴吧创作者主题耐久交付 | 本地完成：迁移 `0019_tieba_creator_notes`、带页见证与四个固定停止原因的 1 起页码单元、页尾回放、重复身份停滞防护、把非零 `error_code` 判为 `access_restricted` 的子进程 shim，以及由封闭回执驱动的 backfill → reconciling → incremental；Python `7281 passed, 63 skipped` | 实现与收尾为包含本记录的提交；[验证](executions/0085-tieba-creator-notes/verification.zh.md) |

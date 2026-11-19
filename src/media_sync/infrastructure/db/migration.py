@@ -7,6 +7,8 @@ from importlib.resources import as_file, files
 from alembic import command
 from alembic.config import Config
 
+from .database import checkpoint_sqlite_wal, create_database_engine
+
 MIGRATIONS_PACKAGE = "media_sync.infrastructure.db.migrations"
 
 
@@ -35,6 +37,15 @@ def upgrade_database(database_url: str, revision: str = "head") -> None:
         configuration.set_main_option("script_location", str(migration_path))
         configuration.set_main_option("sqlalchemy.url", _config_value(database_url))
         command.upgrade(configuration, revision)
+    # 0003 rebuilds the legacy asset table and scrubs signed source URLs. Under
+    # WAL the pre-checkpoint image stays in `<database>-wal` even though
+    # `secure_delete` zeroed the main pages, so fold and truncate it now while a
+    # connection still exists. Best-effort by design (see the helper).
+    engine = create_database_engine(database_url)
+    try:
+        checkpoint_sqlite_wal(engine)
+    finally:
+        engine.dispose()
 
 
 __all__ = ["MIGRATIONS_PACKAGE", "upgrade_database"]

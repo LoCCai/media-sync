@@ -79,7 +79,11 @@ def parse_zhihu_creator_page(value: object, *, offset: int, limit: int) -> Zhihu
     if type(data) is not list or not isinstance(paging, Mapping):
         raise _failure()
     is_end = paging.get("is_end")
-    if type(is_end) is not bool or len(data) > limit or (not data and not is_end):
+    # An EMPTY page is a valid shape: `is_end` decides whether it is the
+    # declared end or a contradictory response, and the unit classifies that.
+    # Raising here would turn a rate-limited body into a hard upstream fault
+    # with no bounded witness, unlike the Weibo/Tieba shims.
+    if type(is_end) is not bool or len(data) > limit:
         raise _failure()
     identities: list[ZhihuWorkIdentity] = []
     for item in data:
@@ -302,36 +306,43 @@ def install_zhihu_creator_capture_shim(manifest: RunnerManifest) -> None:
                     != [identity.content_id for identity in page.identities]
                 ):
                     raise _failure()
+                by_content_id = {str(item.content_id): item for item in contents}
                 unit.observe_page(page)
-                for content in contents:
-                    content_id = str(content.content_id)
-                    identity = ZhihuWorkIdentity(
-                        content_id,
-                        next(item.listing_sha256 for item in page.identities if item.content_id == content_id),
-                    )
-                    if unit.input_state.lane == "head" and unit.next_action().kind == "unchanged":
+                # Drive the unit's own cursor rather than walking `contents`
+                # positionally: a unit that stopped mid-page keeps the identical
+                # offset and witness, so on replay the first listed answers are
+                # already completed. `next_action()` skips those; a positional
+                # walk would offer them again and be rejected as contract drift.
+                while (pending := unit.next_action()).kind in {"detail", "unchanged"}:
+                    pending_identity = pending.identity
+                    if pending_identity is None:
+                        raise _failure()
+                    content = by_content_id.get(pending_identity.content_id)
+                    if content is None:
+                        raise _failure()
+                    if pending.kind == "unchanged":
                         collected.append(content)
-                        unit.skip_unchanged(identity)
+                        unit.skip_unchanged(pending_identity)
                         continue
-                    identity_token = _ACTIVE_IDENTITY.set(identity)
+                    identity_token = _ACTIVE_IDENTITY.set(pending_identity)
                     creator_scope = _ACTIVE_CREATOR.set(state.creator_fingerprint_sha256)
                     store_started = False
                     try:
                         with _suppress_upstream_logging(store):
                             await update_content(content)
                     except _ZhihuAnswerRejected:
-                        unit.fail(identity)
+                        unit.fail(pending_identity)
                         continue
                     except Exception:
                         if not store_started:
-                            unit.fail(identity)
+                            unit.fail(pending_identity)
                             continue
                         raise
                     finally:
                         _ACTIVE_CREATOR.reset(creator_scope)
                         _ACTIVE_IDENTITY.reset(identity_token)
                     collected.append(content)
-                    unit.store(identity)
+                    unit.store(pending_identity)
                 continue
 
             pending_identity = action.identity
@@ -339,10 +350,11 @@ def install_zhihu_creator_capture_shim(manifest: RunnerManifest) -> None:
                 raise _failure()
             unit.skip_unchanged(pending_identity)
 
-        if callback is not None and collected:
-            callback_result = cast(Any, callback)(collected)
-            if hasattr(callback_result, "__await__"):
-                await callback_result
+        # Upstream passes a store callback (`batch_update_*`), whose whole
+        # body re-runs the guarded store. Every collected row is already
+        # persisted above with its durable identity, so the callback is
+        # deliberately never invoked: that second write would run with the
+        # identity ContextVar reset, abort the unit, and leave no witness.
         coverage = unit.coverage()
         coverage.validate(state, manifest.max_items)
         output = manifest.output_root / ZH_SCAN_COVERAGE_FILENAME

@@ -42,6 +42,12 @@ _MAX_CURSOR_VALUE = 4_096
 _MAX_CURSOR_PAYLOAD = 65_536
 _MAX_COVERAGE_PAYLOAD = 131_072
 _MAX_UNIT_ITEMS = 1_000
+# Upstream's ``cardlistInfo.total`` is an unvalidated server integer. The
+# durable column accepts the same 2**53-1 bound the other counters use, so the
+# scan layer must reject anything above it BEFORE the progress row is written:
+# otherwise a single absurd total would fail the CHECK inside the pipeline
+# transaction and turn a completed unit into an endless retry.
+_MAX_DECLARED_TOTAL = 2**53 - 1
 _SHA1 = re.compile(r"[0-9a-f]{40}\Z")
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 _NOTE_ID = re.compile(r"[0-9]{10,20}\Z")
@@ -145,7 +151,7 @@ class WeiboPageWitness:
         _opaque_cursor(self.input_since_id)
         _opaque_cursor(self.next_since_id)
         if self.declared_total is not None:
-            _integer(self.declared_total)
+            _integer(self.declared_total, 0, _MAX_DECLARED_TOTAL)
         if type(self.identities) is not tuple or any(type(item) is not WeiboWorkIdentity for item in self.identities):
             raise _invalid()
         if len({item.note_id for item in self.identities}) != len(self.identities):
@@ -266,7 +272,7 @@ class WeiboUnitSummary:
         _integer(self.detail_attempts, 0, _MAX_UNIT_ITEMS)
         _integer(self.pages_consumed, 0, _MAX_UNIT_ITEMS)
         if self.declared_total is not None:
-            _integer(self.declared_total)
+            _integer(self.declared_total, 0, _MAX_DECLARED_TOTAL)
         if (
             self.detail_attempts != self.stored_count + self.failed_count
             or self.stored_count + self.unchanged_count + self.failed_count > _MAX_UNIT_ITEMS
@@ -596,7 +602,15 @@ class WeiboScanUnit:
         self.page = page
         if self.state.witness is None:
             self.state = replace(self.state, witness=page.witness)
-        if self.state.lane == "history" and self.state.since_id == "" and self.state.head_boundary is None:
+        if (
+            self.state.lane == "history"
+            and self.state.since_id == ""
+            and self.state.head_boundary is None
+            and page.witness.identities
+        ):
+            # Only a page that listed notes establishes the head boundary. An
+            # empty boundary reconciles equal to anything, so recording one here
+            # would let a falsy or contradictory response look complete.
             self.state = replace(self.state, head_boundary=page.witness.identities)
 
     def observe_access_restricted(self) -> None:
@@ -642,8 +656,11 @@ class WeiboScanUnit:
         if self.state.lane == "head":
             self._finish_head(page)
             return
-        pages_consumed = self.state.pages_consumed + 1
         stalled = page.next_since_id == page.input_since_id
+        # A replayed (non-advancing) page is the SAME request, not a page of real
+        # history: counting it would let the arithmetic `total` mirror reach the
+        # end and report a source end built from a page that never advanced.
+        pages_consumed = self.state.pages_consumed if stalled else self.state.pages_consumed + 1
         if page.declared_total is None and not page.identities:
             # Nothing listed and no total to infer from: upstream's default
             # zero ends the loop, but the evidence is weaker than a declared
@@ -658,7 +675,7 @@ class WeiboScanUnit:
                 stalled_units=0,
                 pages_consumed=0,
             )
-        elif page.ends_after(pages_consumed):
+        elif not stalled and page.ends_after(pages_consumed):
             # Arithmetic inference over cardlistInfo.total: a time-bounded end
             # candidate, never a completeness proof.
             self.reason = "total_inferred_end"

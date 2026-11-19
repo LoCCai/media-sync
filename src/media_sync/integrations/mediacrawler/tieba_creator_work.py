@@ -567,7 +567,16 @@ class TiebaScanUnit:
         self.page = page
         if self.state.witness is None:
             self.state = replace(self.state, witness=page.witness)
-        if self.state.lane == "history" and self.state.page == 1 and self.state.head_boundary is None:
+        if (
+            self.state.lane == "history"
+            and self.state.page == 1
+            and self.state.head_boundary is None
+            and page.witness.identities
+        ):
+            # Only a page that actually listed threads establishes the head
+            # boundary. An empty page must never become an empty boundary: an
+            # empty boundary reconciles equal to anything and would let the row
+            # treat a contradictory or rate-limited response as completeness.
             self.state = replace(self.state, head_boundary=page.witness.identities)
 
     def observe_access_restricted(self) -> None:
@@ -615,6 +624,38 @@ class TiebaScanUnit:
             return
         page_ids = page.witness.thread_ids
         stalled = bool(page_ids) and page_ids == self.state.previous_page_thread_ids
+        if not page_ids and page.has_more:
+            # "No threads here, but more pages follow" contradicts itself. An
+            # anti-bot/rate-limit envelope still parses as `error_code=0` with
+            # `has_more=1`, so treating it as `empty_page_end` would publish an
+            # empty head boundary and let the row reconcile into incremental,
+            # permanently skipping the creator's whole backlog. Replay the same
+            # page instead and count the stall.
+            self.reason = "unit_cap_reached"
+            self.state = replace(
+                self.state,
+                witness=None,
+                index=0,
+                completed_thread_ids=(),
+                previous_page_thread_ids=(),
+                stalled_units=self.state.stalled_units + 1,
+            )
+            return
+        if not page_ids and not page.has_more:
+            # Nothing listed and the server declared the end: that is the empty
+            # page, which keeps its own code so it is distinguishable from a
+            # declared end that still carried threads.
+            self.reason = "empty_page_end"
+            self.state = replace(
+                self.state,
+                page=1,
+                witness=None,
+                index=0,
+                completed_thread_ids=(),
+                previous_page_thread_ids=(),
+                stalled_units=0,
+            )
+            return
         if not page.has_more:
             # The server declared the end; it is retained with the page witness
             # so reconciliation can confirm or reject the boundary.
@@ -629,25 +670,15 @@ class TiebaScanUnit:
                 stalled_units=0,
             )
             return
-        if not page_ids:
-            self.reason = "empty_page_end"
-            self.state = replace(
-                self.state,
-                page=1,
-                witness=None,
-                index=0,
-                completed_thread_ids=(),
-                previous_page_thread_ids=(),
-                stalled_units=0,
-            )
-            return
         if stalled:
             # A server that keeps returning the same page cannot progress; the
             # cursor alone cannot detect this because ``pn`` always increments.
+            # The page number is deliberately NOT advanced: advancing would skip
+            # this page's threads entirely and reset the stall counter on the
+            # next good page, hiding the loss. Replay the same ``pn`` instead.
             self.reason = "unit_cap_reached"
             self.state = replace(
                 self.state,
-                page=self.state.page + 1,
                 witness=None,
                 index=0,
                 completed_thread_ids=(),

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -18,8 +19,20 @@ REVISION = "47ca1079bb5db3d1e93b172402c5edeeb04f998c"
 
 
 def test_known_database_revision_allowlist_matches_packaged_migrations() -> None:
+    """The allowlist must hold Alembic *revision ids*, not file names.
+
+    `alembic_version.version_num` stores the module's `revision` string. Two
+    entries were the 0001/0002 *file* names (`0001_initial_schema`,
+    `0002_checkpoint_fencing`) while the modules declare `0001_core` and
+    `0002_checkpoint`, so a database sitting at either head reported
+    `revision: null` instead of naming the known old revision.
+    """
+
     versions = Path(__file__).resolve().parents[2] / "src/media_sync/infrastructure/db/migrations/versions"
-    discovered = {path.stem for path in versions.glob("[0-9][0-9][0-9][0-9]_*.py")}
+    discovered = {
+        re.search(r'^revision: str = "([^"]+)"', path.read_text(encoding="utf-8"), re.MULTILINE).group(1)
+        for path in versions.glob("[0-9][0-9][0-9][0-9]_*.py")
+    }
 
     assert discovered == _KNOWN_DATABASE_REVISIONS
 

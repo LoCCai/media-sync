@@ -14,7 +14,7 @@ from .creator_profile_repository import (
     ProfileSnapshot,
     ProfileValue,
 )
-from .database import Database, create_database_engine
+from .database import Database, checkpoint_sqlite_wal, create_database_engine
 from .mediacrawler_ingestion import (
     IngestionMode,
     MediaCrawlerIngestionResult,
@@ -240,6 +240,7 @@ __all__ = [
     "XhsSubscriptionProgress",
     "ZhihuSubscriptionProgress",
     "asset_fingerprints",
+    "checkpoint_sqlite_wal",
     "create_database_engine",
     "new_uuid",
     "upgrade_database",

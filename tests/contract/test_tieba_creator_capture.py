@@ -293,3 +293,52 @@ def test_restricted_feed_is_not_source_end(
     assert coverage.page is None
     assert coverage.source_end_observed is False
     assert coverage.next_state.head_boundary is None
+
+
+def test_upstream_store_callback_does_not_double_store(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Upstream passes a store callback; the shim already stored those rows.
+
+    `.upstream/MediaCrawler/media_platform/tieba/core.py:386-393` calls
+    `get_all_notes_by_creator_url(..., callback=tieba_store.batch_update_tieba_notes)`
+    and that callback is nothing but `for note in note_list: await
+    update_tieba_note(note)` (`.upstream/.../store/tieba/__init__.py:51-63`).
+    Invoking it would re-enter the guarded store with the identity ContextVar
+    reset, aborting the unit before the coverage witness is sealed — so a run
+    that reached the callback would persist rows and then fail with no receipt.
+    """
+
+    output_root = tmp_path / "output"
+    output_root.mkdir()
+    stored, detail_calls = _install_modules(
+        monkeypatch,
+        tmp_path / "checkout",
+        output_root,
+        page=_response(1, 2, has_more=False),
+    )
+    manifest = _manifest(output_root)
+    replayed: list[str] = []
+
+    async def upstream_callback(note_list: object) -> None:
+        assert isinstance(note_list, list)
+        for note in note_list:
+            replayed.append(note.note_id)
+
+    previous = os.getcwd()
+    os.chdir(tmp_path / "checkout")
+    try:
+        install_tieba_creator_capture_shim(manifest)  # type: ignore[arg-type]
+        client_class = sys.modules["media_platform.tieba.client"].BaiduTieBaClient
+        notes = asyncio.run(client_class().get_all_notes_by_creator_url(CREATOR_URL, 0, upstream_callback, 20))
+    finally:
+        os.chdir(previous)
+
+    assert [note.note_id for note in notes] == [_thread_id(1), _thread_id(2)]
+    assert detail_calls == [_thread_id(1), _thread_id(2)]
+    assert [item["note_id"] for item in stored] == [_thread_id(1), _thread_id(2)]
+    assert replayed == []
+    coverage = TiebaScanCoverage.from_json_line((output_root / TB_SCAN_COVERAGE_FILENAME).read_text(encoding="utf-8"))
+    assert coverage.stop_reason == "has_more_false"
+    coverage.validate(manifest.tieba_scan, 20)

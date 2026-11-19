@@ -52,7 +52,7 @@ def forbid_startup(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(api_module, "create_api_app", forbidden)
     monkeypatch.setattr(api_module, "Database", forbidden)
     monkeypatch.setattr(cli_module, "Database", forbidden)
-    monkeypatch.setattr(cli_module, "create_engine", forbidden)
+    monkeypatch.setattr(cli_module, "create_database_engine", forbidden)
     monkeypatch.setattr(cli_module, "upgrade_database", forbidden)
     monkeypatch.setattr(uvicorn, "run", forbidden)
 

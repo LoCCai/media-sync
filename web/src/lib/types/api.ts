@@ -253,10 +253,18 @@ export interface SubscriptionDeliveryResult {
 
 /** 有界创作者交付共用的阶段语义：回填 → 头部对账 → 增量；阻塞需要人工处理。 */
 export type CursorDeliveryPhase = 'backfill' | 'reconciling' | 'incremental' | 'blocked';
-/** 不透明游标型平台（XHS 笔记、抖音作品、后续快手作品）共用的封闭停止原因。 */
+/**
+ * 不透明游标型平台共用的封闭停止原因并集。各平台只使用其中一部分（快手用
+ * `no_more_echoed` / `empty_page_end`，微博用 `total_inferred_end`，贴吧用
+ * `has_more_false`，知乎用 `is_end`），所以校验必须按平台进行。
+ */
 export type CursorDeliveryStopReason =
   | 'has_more_false'
   | 'empty_page_stalled'
+  | 'empty_page_end'
+  | 'no_more_echoed'
+  | 'total_inferred_end'
+  | 'is_end'
   | 'access_restricted'
   | 'unit_cap_reached';
 
@@ -362,11 +370,92 @@ export interface KuaishouDeliveryProgress {
   blocked_code: string | null;
 }
 
+export interface WeiboDeliveryProgress {
+  schema_version: 1;
+  initialized: boolean;
+  phase: CursorDeliveryPhase;
+  baseline_snapshot_complete: boolean;
+  generation_id: string | null;
+  batch_count: number;
+  note_observation_count: number;
+  cursor_step_count: number;
+  backfill_batch_count: number;
+  reconciliation_batch_count: number;
+  incremental_batch_count: number;
+  partial_batch_count: number;
+  failed_note_count: number;
+  last_stop_reason: CursorDeliveryStopReason | null;
+  declared_total: number | null;
+  last_delivery_at: string | null;
+  source_end_observed_at: string | null;
+  source_end_run_id: string | null;
+  reconciled_at: string | null;
+  reconciliation_run_id: string | null;
+  baseline_snapshot_at: string | null;
+  next_eligible_at: string | null;
+  blocked_code: string | null;
+}
+
+export interface TiebaDeliveryProgress {
+  schema_version: 1;
+  initialized: boolean;
+  phase: CursorDeliveryPhase;
+  baseline_snapshot_complete: boolean;
+  generation_id: string | null;
+  batch_count: number;
+  thread_observation_count: number;
+  cursor_step_count: number;
+  backfill_batch_count: number;
+  reconciliation_batch_count: number;
+  incremental_batch_count: number;
+  partial_batch_count: number;
+  failed_thread_count: number;
+  last_stop_reason: CursorDeliveryStopReason | null;
+  last_page_number: number | null;
+  last_delivery_at: string | null;
+  source_end_observed_at: string | null;
+  source_end_run_id: string | null;
+  reconciled_at: string | null;
+  reconciliation_run_id: string | null;
+  baseline_snapshot_at: string | null;
+  next_eligible_at: string | null;
+  blocked_code: string | null;
+}
+
+export interface ZhihuDeliveryProgress {
+  schema_version: 1;
+  initialized: boolean;
+  phase: CursorDeliveryPhase;
+  baseline_snapshot_complete: boolean;
+  generation_id: string | null;
+  batch_count: number;
+  answer_observation_count: number;
+  cursor_step_count: number;
+  backfill_batch_count: number;
+  reconciliation_batch_count: number;
+  incremental_batch_count: number;
+  partial_batch_count: number;
+  failed_answer_count: number;
+  last_stop_reason: CursorDeliveryStopReason | null;
+  last_offset: number | null;
+  last_delivery_at: string | null;
+  source_end_observed_at: string | null;
+  source_end_run_id: string | null;
+  reconciled_at: string | null;
+  reconciliation_run_id: string | null;
+  baseline_snapshot_at: string | null;
+  next_eligible_at: string | null;
+  blocked_code: string | null;
+}
+
 export interface SubscriptionDetail extends Subscription {
   bili_delivery?: BiliDeliveryProgress;
   xhs_delivery?: XhsDeliveryProgress;
   douyin_delivery?: DouyinDeliveryProgress;
   kuaishou_delivery?: KuaishouDeliveryProgress;
+  weibo_delivery?: WeiboDeliveryProgress;
+  tieba_delivery?: TiebaDeliveryProgress;
+  zhihu_delivery?: ZhihuDeliveryProgress;
   schedule: {
     subscription_id: string;
     status: string;

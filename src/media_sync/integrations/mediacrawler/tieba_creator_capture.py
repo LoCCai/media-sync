@@ -367,10 +367,11 @@ def install_tieba_creator_capture_shim(manifest: RunnerManifest) -> None:
             collected.append(validated)
             unit.store(identity)
 
-        if callback is not None and collected:
-            callback_result = cast(Any, callback)(collected)
-            if hasattr(callback_result, "__await__"):
-                await callback_result
+        # Upstream passes a store callback (`batch_update_*`), whose whole
+        # body re-runs the guarded store. Every collected row is already
+        # persisted above with its durable identity, so the callback is
+        # deliberately never invoked: that second write would run with the
+        # identity ContextVar reset, abort the unit, and leave no witness.
         coverage = unit.coverage()
         coverage.validate(state, manifest.max_items)
         output = manifest.output_root / TB_SCAN_COVERAGE_FILENAME

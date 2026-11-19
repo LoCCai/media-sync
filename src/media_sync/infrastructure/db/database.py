@@ -53,6 +53,32 @@ def _begin_sqlite_transaction(connection: Connection) -> None:
     connection.exec_driver_sql(statement)
 
 
+def checkpoint_sqlite_wal(engine: Engine) -> None:
+    """Truncate the SQLite WAL so scrubbed bytes do not linger in the sidecar.
+
+    ``PRAGMA secure_delete=ON`` zeroes freed pages in the *main* database file.
+    Under ``journal_mode=WAL`` the frames holding the pre-checkpoint image still
+    sit in ``<database>-wal`` until a checkpoint folds them in and truncates the
+    file, so a scrub followed by an abrupt process death would leave the
+    credential readable next door.  Callers that just erased a secret run this
+    once, after the scrub transaction has committed, to close that window.
+
+    The call is best-effort and never raises: a busy checkpoint (another reader
+    holding the WAL) simply leaves the frames for the next opportunity, and a
+    non-SQLite engine is a no-op.
+    """
+
+    if engine.dialect.name != "sqlite":
+        return
+    try:
+        with engine.connect() as connection:
+            connection.exec_driver_sql("PRAGMA wal_checkpoint(TRUNCATE)")
+    except Exception:
+        # A checkpoint is defence in depth, never a correctness boundary for the
+        # scrub itself: swallow and let SQLite fold the WAL on the next open.
+        return
+
+
 def create_database_engine(database_url: str, *, echo: bool = False) -> Engine:
     """Create an engine with safe SQLite defaults when applicable."""
 
@@ -125,5 +151,6 @@ __all__ = [
     "SQLITE_IMMEDIATE_OPTION",
     "SQLITE_SECURE_DELETE_PRAGMA",
     "Database",
+    "checkpoint_sqlite_wal",
     "create_database_engine",
 ]

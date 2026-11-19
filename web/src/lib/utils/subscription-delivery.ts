@@ -10,6 +10,9 @@ import type {
   SubscriptionDeliveryResult,
   SubscriptionDeliveryStart,
   SubscriptionDetail,
+  TiebaDeliveryProgress,
+  WeiboDeliveryProgress,
+  ZhihuDeliveryProgress,
   XhsDeliveryProgress
 } from '$lib/types/api';
 
@@ -107,9 +110,21 @@ const DELIVERY_PHASE_STATUS: Record<CursorDeliveryPhase, string> = {
   incremental: 'succeeded',
   blocked: 'warning'
 };
-const CURSOR_DELIVERY_STOP_REASONS: Record<Exclude<CursorDeliveryStopReason, null>, string> = {
+/**
+ * 每个平台的停止原因集合不同，必须按平台分别声明：快手用 `no_more_echoed` /
+ * `empty_page_end`，微博用 `total_inferred_end`，贴吧用 `has_more_false`，知乎用
+ * `is_end`。共用一张表会把合法证据判成"证据不可用"。
+ */
+const CURSOR_DELIVERY_STOP_REASONS: Partial<Record<CursorDeliveryStopReason, string>> = {
   has_more_false: '列表明确返回没有下一页',
   empty_page_stalled: '空页面且游标没有推进',
+  access_restricted: '平台访问受限',
+  unit_cap_reached: '本轮达到页面或条目边界'
+};
+/** 快手以回显 `no_more` 结束，并以空页面作为独立结束码。 */
+const KUAISHOU_DELIVERY_STOP_REASONS: Partial<Record<CursorDeliveryStopReason, string>> = {
+  no_more_echoed: '平台回显 no_more',
+  empty_page_end: '平台返回空页面',
   access_restricted: '平台访问受限',
   unit_cap_reached: '本轮达到页面或条目边界'
 };
@@ -126,6 +141,15 @@ export const XHS_DELIVERY_PROGRESS_NOTICE =
   '“增量笔记检查”只表示不透明游标历史到达明确末页，并以新 token 稳定重列过头部；不会显示游标或 token，也不表示平台历史永久不变。';
 export const DOUYIN_DELIVERY_PROGRESS_NOTICE =
   '“增量作品检查”只表示不透明游标历史到达明确末页，并按头部边界稳定重列过作品；游标、作者指纹与边界摘要不会显示，也不表示平台历史永久不变。';
+/** 微博交付提示：算术推断的源末只开启对账，不声明全历史完成。 */
+export const WEIBO_DELIVERY_PROGRESS_NOTICE =
+  '“增量笔记检查”只表示声明的 total 已被算术推断为结束，并以新 since_id 稳定重列过头部；推断的结束不等于全历史完成。';
+/** 贴吧交付提示：服务端声明的 has_more=false 才开启对账。 */
+export const TIEBA_DELIVERY_PROGRESS_NOTICE =
+  '“增量主题检查”只表示平台明确返回没有下一页，并按头部边界稳定重列过主题；游标、portrait 与边界摘要不会显示。';
+/** 知乎交付提示：offset 是 page*limit 乘积，位移按页身份检测。 */
+export const ZHIHU_DELIVERY_PROGRESS_NOTICE =
+  '“增量回答检查”只表示平台声明结束，并按头部边界稳定重列过回答；整数 offset 会因插入而位移，位移按页身份识别。';
 export const KUAISHOU_DELIVERY_PROGRESS_NOTICE =
   '“增量作品检查”只表示不透明游标历史到达明确末页，并按头部边界稳定重列过作品；游标、作者指纹与边界摘要不会显示，也不表示平台历史永久不变。';
 /** 四个交付面板共用的阻塞态可操作提示：指向日志中心与暂停态策略编辑器。 */
@@ -750,24 +774,37 @@ export function safeBiliDeliveryProgressCard(value: unknown): DeliveryProgressCa
  * 新平台接入时只需提供一组 CursorDeliverySpec，不必复制解析与面板映射。
  */
 interface CursorDeliverySpec {
-  observationField: 'note_observation_count' | 'work_observation_count';
-  failedField: 'failed_note_count' | 'failed_work_count';
+  observationField:
+    | 'note_observation_count'
+    | 'work_observation_count'
+    | 'thread_observation_count'
+    | 'answer_observation_count';
+  failedField: 'failed_note_count' | 'failed_work_count' | 'failed_thread_count' | 'failed_answer_count';
+  /** 该平台封闭的停止原因集合与文案；平台间不同，不能共用一张表。 */
+  stopReasons: Partial<Record<CursorDeliveryStopReason, string>>;
+  /** 平台专有的封闭字段（微博 declared_total、贴吧 last_page_number、知乎 last_offset）。 */
+  extraFields?: readonly string[];
+  /** 平台专有的游标证据行；键必须同时出现在 extraFields 中。 */
+  cursorRow?: { field: 'declared_total' | 'last_page_number' | 'last_offset'; label: string };
 }
 
 const XHS_DELIVERY_SPEC: CursorDeliverySpec = {
   observationField: 'note_observation_count',
-  failedField: 'failed_note_count'
+  failedField: 'failed_note_count',
+  stopReasons: CURSOR_DELIVERY_STOP_REASONS
 };
 
 const DOUYIN_DELIVERY_SPEC: CursorDeliverySpec = {
   observationField: 'work_observation_count',
-  failedField: 'failed_work_count'
+  failedField: 'failed_work_count',
+  stopReasons: CURSOR_DELIVERY_STOP_REASONS
 };
 
 /** 快手作品载荷与抖音同构：计数字段名一致，仅平台语义与提示文案不同。 */
 const KUAISHOU_DELIVERY_SPEC: CursorDeliverySpec = {
   observationField: 'work_observation_count',
-  failedField: 'failed_work_count'
+  failedField: 'failed_work_count',
+  stopReasons: KUAISHOU_DELIVERY_STOP_REASONS
 };
 
 const CURSOR_DELIVERY_PHASES = new Set<CursorDeliveryPhase>([
@@ -804,6 +841,7 @@ export function parseCursorDeliveryProgress<T>(value: unknown, spec: CursorDeliv
     'reconciliation_run_id',
     'baseline_snapshot_at',
     'next_eligible_at',
+    ...(spec.extraFields ?? []),
     'blocked_code'
   ];
   if (
@@ -826,7 +864,7 @@ export function parseCursorDeliveryProgress<T>(value: unknown, spec: CursorDeliv
     !(
       source.last_stop_reason === null ||
       (typeof source.last_stop_reason === 'string' &&
-        Object.hasOwn(CURSOR_DELIVERY_STOP_REASONS, source.last_stop_reason))
+        Object.hasOwn(spec.stopReasons, source.last_stop_reason))
     ) ||
     !optionalIso(source.last_delivery_at) ||
     !optionalIso(source.source_end_observed_at) ||
@@ -956,13 +994,99 @@ const KUAISHOU_DELIVERY_CARD_SPEC: CursorDeliveryCardSpec = {
   notice: KUAISHOU_DELIVERY_PROGRESS_NOTICE
 };
 
+/** 微博以 `since_id` 游标推进，停止原因包含 `total_inferred_end`，并带声明的 total。 */
+const WEIBO_DELIVERY_SPEC: CursorDeliverySpec = {
+  observationField: 'note_observation_count',
+  failedField: 'failed_note_count',
+  stopReasons: {
+    total_inferred_end: '声明的 total 已被算术推断为结束',
+    empty_page_end: '平台返回空页面',
+    access_restricted: '平台访问受限',
+    unit_cap_reached: '本轮达到页面或条目边界'
+  },
+  extraFields: ['declared_total'],
+  cursorRow: { field: 'declared_total', label: '平台声明总量' }
+};
+
+const WEIBO_DELIVERY_CARD_SPEC: CursorDeliveryCardSpec = {
+  ...WEIBO_DELIVERY_SPEC,
+  contentNoun: '笔记',
+  phaseLabels: {
+    backfill: '历史笔记回填',
+    reconciling: '头部笔记对账',
+    incremental: '增量笔记检查',
+    blocked: '需要处理'
+  },
+  unavailableNotice: '服务端微博投影未通过封闭格式校验；请刷新详情并核对任务日志。',
+  notice: WEIBO_DELIVERY_PROGRESS_NOTICE
+};
+
+/** 贴吧以 1 起页码推进，停止原因为 `has_more_false`，并带最近页码。 */
+const TIEBA_DELIVERY_SPEC: CursorDeliverySpec = {
+  observationField: 'thread_observation_count',
+  failedField: 'failed_thread_count',
+  stopReasons: {
+    has_more_false: '列表明确返回没有下一页',
+    empty_page_end: '平台返回空页面',
+    access_restricted: '平台访问受限',
+    unit_cap_reached: '本轮达到页面或条目边界'
+  },
+  extraFields: ['last_page_number'],
+  cursorRow: { field: 'last_page_number', label: '最近页码' }
+};
+
+const TIEBA_DELIVERY_CARD_SPEC: CursorDeliveryCardSpec = {
+  ...TIEBA_DELIVERY_SPEC,
+  contentNoun: '主题',
+  phaseLabels: {
+    backfill: '历史主题回填',
+    reconciling: '头部主题对账',
+    incremental: '增量主题检查',
+    blocked: '需要处理'
+  },
+  unavailableNotice: '服务端贴吧投影未通过封闭格式校验；请刷新详情并核对任务日志。',
+  notice: TIEBA_DELIVERY_PROGRESS_NOTICE
+};
+
+/** 知乎以整数 offset 推进，停止原因为 `is_end`，并带最近 offset。 */
+const ZHIHU_DELIVERY_SPEC: CursorDeliverySpec = {
+  observationField: 'answer_observation_count',
+  failedField: 'failed_answer_count',
+  stopReasons: {
+    is_end: '平台声明没有下一页',
+    empty_page_end: '平台返回空页面',
+    access_restricted: '平台访问受限',
+    unit_cap_reached: '本轮达到页面或条目边界'
+  },
+  extraFields: ['last_offset'],
+  cursorRow: { field: 'last_offset', label: '最近 offset' }
+};
+
+const ZHIHU_DELIVERY_CARD_SPEC: CursorDeliveryCardSpec = {
+  ...ZHIHU_DELIVERY_SPEC,
+  contentNoun: '回答',
+  phaseLabels: {
+    backfill: '历史回答回填',
+    reconciling: '头部回答对账',
+    incremental: '增量回答检查',
+    blocked: '需要处理'
+  },
+  unavailableNotice: '服务端知乎投影未通过封闭格式校验；请刷新详情并核对任务日志。',
+  notice: ZHIHU_DELIVERY_PROGRESS_NOTICE
+};
+
 /** 生成游标型交付面板；行结构与 B 站面板对齐，供订阅详情页循环渲染。 */
 export function safeCursorDeliveryProgressCard(
   value: unknown,
   spec: CursorDeliveryCardSpec
 ): DeliveryProgressCard {
   const progress = parseCursorDeliveryProgress<
-    XhsDeliveryProgress | DouyinDeliveryProgress | KuaishouDeliveryProgress
+    | XhsDeliveryProgress
+    | DouyinDeliveryProgress
+    | KuaishouDeliveryProgress
+    | WeiboDeliveryProgress
+    | TiebaDeliveryProgress
+    | ZhihuDeliveryProgress
   >(value, spec);
   if (!progress) {
     return {
@@ -973,10 +1097,7 @@ export function safeCursorDeliveryProgressCard(
     };
   }
   // XHS 与抖音载荷仅这两个计数字段名不同，由 spec 决定读取哪一个。
-  const counters = progress as unknown as Record<
-    'note_observation_count' | 'work_observation_count' | 'failed_note_count' | 'failed_work_count',
-    number
-  >;
+  const counters = progress as unknown as Record<string, number>;
   const observationCount = counters[spec.observationField];
   const failedCount = counters[spec.failedField];
   const rows = progress.initialized
@@ -994,7 +1115,9 @@ export function safeCursorDeliveryProgressCard(
         },
         {
           label: '最近停止原因',
-          value: progress.last_stop_reason ? CURSOR_DELIVERY_STOP_REASONS[progress.last_stop_reason] : '—'
+          value: progress.last_stop_reason
+            ? (spec.stopReasons[progress.last_stop_reason] ?? progress.last_stop_reason)
+            : '—'
         },
         { label: '最近交付', value: displayTime(progress.last_delivery_at) },
         { label: '明确源末页', value: displayTime(progress.source_end_observed_at) },
@@ -1006,6 +1129,10 @@ export function safeCursorDeliveryProgressCard(
         { label: '增量基线', value: '未声明完成' },
         { label: '下次可运行', value: displayTime(progress.next_eligible_at) }
       ];
+  if (spec.cursorRow) {
+    const cursorValue = (progress as unknown as Record<string, number | null>)[spec.cursorRow.field];
+    if (typeof cursorValue === 'number') rows.push({ label: spec.cursorRow.label, value: `${cursorValue}` });
+  }
   if (progress.blocked_code) rows.push({ label: '阻塞代码', value: progress.blocked_code });
   return {
     phase: spec.phaseLabels[progress.phase],
@@ -1026,6 +1153,18 @@ export function safeDouyinDeliveryProgressCard(value: unknown): DeliveryProgress
 
 export function safeKuaishouDeliveryProgressCard(value: unknown): DeliveryProgressCard {
   return safeCursorDeliveryProgressCard(value, KUAISHOU_DELIVERY_CARD_SPEC);
+}
+
+export function safeWeiboDeliveryProgressCard(value: unknown): DeliveryProgressCard {
+  return safeCursorDeliveryProgressCard(value, WEIBO_DELIVERY_CARD_SPEC);
+}
+
+export function safeTiebaDeliveryProgressCard(value: unknown): DeliveryProgressCard {
+  return safeCursorDeliveryProgressCard(value, TIEBA_DELIVERY_CARD_SPEC);
+}
+
+export function safeZhihuDeliveryProgressCard(value: unknown): DeliveryProgressCard {
+  return safeCursorDeliveryProgressCard(value, ZHIHU_DELIVERY_CARD_SPEC);
 }
 
 function newUuid(): string {

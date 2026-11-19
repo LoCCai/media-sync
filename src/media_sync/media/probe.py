@@ -39,6 +39,37 @@ _STATIC_IMAGE_RESULTS = frozenset(
         ("image/webp", "webp"),
     }
 )
+# ffprobe/ffmpeg only need the locale, the temp directory and the platform
+# runtime roots to start. Everything else is withheld: `Settings` resolves
+# `env:` secret references straight out of the parent environment, so an
+# inherited environment would hand a platform Cookie or a media-server API key
+# to every probe/mux child (and to any crash dump it leaves behind).
+MEDIA_CHILD_ENV_ALLOWLIST = frozenset(
+    {
+        "COMSPEC",
+        "HOME",
+        "LANG",
+        "LC_ALL",
+        "LOCALAPPDATA",
+        "PATH",
+        "PATHEXT",
+        "PROGRAMFILES",
+        "PROGRAMFILES(X86)",
+        "PROGRAMW6432",
+        "SYSTEMROOT",
+        "TEMP",
+        "TMP",
+        "TMPDIR",
+        "USERPROFILE",
+        "WINDIR",
+    }
+)
+
+
+def media_child_environment() -> dict[str, str]:
+    """Return the narrowed environment shared by every probe/mux child."""
+
+    return {name: value for name, value in os.environ.items() if name.upper() in MEDIA_CHILD_ENV_ALLOWLIST}
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,6 +121,7 @@ class SubprocessProbeRunner:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             shell=False,
+            env=media_child_environment(),
             creationflags=creation_flags,
         )
         if process.stdout is None or process.stderr is None:  # pragma: no cover - PIPE contract

@@ -378,11 +378,19 @@ def _record_run_contents(
     *,
     subscription_id: str,
     run_id: str,
+    limit: int,
 ) -> None:
-    """Persist the exact bounded Content set before checkpoint publication."""
+    """Persist the exact bounded Content set before checkpoint publication.
 
-    if len(records) > MAX_BILI_BOUNDED_INGESTION_ITEMS:
-        raise RepositoryError("bounded Bili run content observation limit exceeded")
+    ``limit`` is the caller's own bounded-unit cap. It must be passed in rather
+    than read from a shared constant: the platforms differ (Bili 30 per page,
+    XHS/Douyin one page, the cursor-based five bounded only by ``max_items``),
+    and applying one platform's page size to another turns a legal page into a
+    permanent ingestion failure.
+    """
+
+    if len(records) > limit:
+        raise RepositoryError(f"bounded run content observation limit exceeded ({limit})")
     subscription = SubscriptionRepository(session).require_active(subscription_id)
     observed_at = utc_now()
     for position, record in enumerate(records):
@@ -394,7 +402,7 @@ def _record_run_contents(
             )
         )
         if content is None or content.author_id != subscription.author_id:
-            raise RepositoryError("bounded Bili run content observation scope is invalid")
+            raise RepositoryError("bounded run content observation scope is invalid")
         session.add(
             SyncRunContent(
                 run_id=run_id,
@@ -567,6 +575,7 @@ class MediaCrawlerIngestionService:
                 unique_records,
                 subscription_id=database_subscription_id,
                 run_id=database_run_id,
+                limit=MAX_BILI_BOUNDED_INGESTION_ITEMS,
             )
             _record_refresh_observations(
                 session,
@@ -736,6 +745,7 @@ class MediaCrawlerIngestionService:
                 unique_records,
                 subscription_id=database_subscription_id,
                 run_id=database_run_id,
+                limit=MAX_XHS_BOUNDED_INGESTION_ITEMS,
             )
             _record_refresh_observations(
                 session,
@@ -902,6 +912,7 @@ class MediaCrawlerIngestionService:
                 unique_records,
                 subscription_id=database_subscription_id,
                 run_id=database_run_id,
+                limit=MAX_DOUYIN_BOUNDED_INGESTION_ITEMS,
             )
             _record_refresh_observations(
                 session,
@@ -1068,6 +1079,7 @@ class MediaCrawlerIngestionService:
                 unique_records,
                 subscription_id=database_subscription_id,
                 run_id=database_run_id,
+                limit=MAX_KUAISHOU_BOUNDED_INGESTION_ITEMS,
             )
             _record_refresh_observations(
                 session,
@@ -1234,6 +1246,7 @@ class MediaCrawlerIngestionService:
                 unique_records,
                 subscription_id=database_subscription_id,
                 run_id=database_run_id,
+                limit=MAX_WEIBO_BOUNDED_INGESTION_ITEMS,
             )
             _record_refresh_observations(
                 session,
@@ -1400,6 +1413,7 @@ class MediaCrawlerIngestionService:
                 unique_records,
                 subscription_id=database_subscription_id,
                 run_id=database_run_id,
+                limit=MAX_TIEBA_BOUNDED_INGESTION_ITEMS,
             )
             _record_refresh_observations(
                 session,
@@ -1566,6 +1580,7 @@ class MediaCrawlerIngestionService:
                 unique_records,
                 subscription_id=database_subscription_id,
                 run_id=database_run_id,
+                limit=MAX_ZHIHU_BOUNDED_INGESTION_ITEMS,
             )
             _record_refresh_observations(
                 session,

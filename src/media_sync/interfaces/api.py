@@ -196,10 +196,13 @@ from media_sync.scheduler.douyin_scan_continuation import DouyinScanContinuation
 from media_sync.scheduler.kuaishou_delivery_progress import kuaishou_delivery_progress_payload
 from media_sync.scheduler.kuaishou_scan_continuation import KuaishouScanContinuationPolicy
 from media_sync.scheduler.tieba_delivery_progress import tieba_delivery_progress_payload
+from media_sync.scheduler.tieba_scan_continuation import TiebaScanContinuationPolicy
 from media_sync.scheduler.weibo_delivery_progress import weibo_delivery_progress_payload
+from media_sync.scheduler.weibo_scan_continuation import WeiboScanContinuationPolicy
 from media_sync.scheduler.xhs_delivery_progress import xhs_delivery_progress_payload
 from media_sync.scheduler.xhs_scan_continuation import XhsScanContinuationPolicy
 from media_sync.scheduler.zhihu_delivery_progress import zhihu_delivery_progress_payload
+from media_sync.scheduler.zhihu_scan_continuation import ZhihuScanContinuationPolicy
 from media_sync.security import (
     OPERATOR_SESSION_COOKIE_NAME,
     OperatorAuthConfigurationError,
@@ -3074,6 +3077,18 @@ def create_api_app(
                     resolved.mediacrawler_lock_path,
                     delay_seconds=resolved.kuaishou_scan_continuation_delay_seconds,
                 ),
+                weibo_scan_continuation=WeiboScanContinuationPolicy.from_lock(
+                    resolved.mediacrawler_lock_path,
+                    delay_seconds=resolved.weibo_scan_continuation_delay_seconds,
+                ),
+                tieba_scan_continuation=TiebaScanContinuationPolicy.from_lock(
+                    resolved.mediacrawler_lock_path,
+                    delay_seconds=resolved.tieba_scan_continuation_delay_seconds,
+                ),
+                zhihu_scan_continuation=ZhihuScanContinuationPolicy.from_lock(
+                    resolved.mediacrawler_lock_path,
+                    delay_seconds=resolved.zhihu_scan_continuation_delay_seconds,
+                ),
             )
             schedule = {
                 "pause": service.pause_subscription,
@@ -3191,6 +3206,18 @@ def create_api_app(
                     kuaishou_scan_continuation=KuaishouScanContinuationPolicy.from_lock(
                         resolved.mediacrawler_lock_path,
                         delay_seconds=resolved.kuaishou_scan_continuation_delay_seconds,
+                    ),
+                    weibo_scan_continuation=WeiboScanContinuationPolicy.from_lock(
+                        resolved.mediacrawler_lock_path,
+                        delay_seconds=resolved.weibo_scan_continuation_delay_seconds,
+                    ),
+                    tieba_scan_continuation=TiebaScanContinuationPolicy.from_lock(
+                        resolved.mediacrawler_lock_path,
+                        delay_seconds=resolved.tieba_scan_continuation_delay_seconds,
+                    ),
+                    zhihu_scan_continuation=ZhihuScanContinuationPolicy.from_lock(
+                        resolved.mediacrawler_lock_path,
+                        delay_seconds=resolved.zhihu_scan_continuation_delay_seconds,
                     ),
                 ).list_jobs(subscription_id=str(subscription_id), limit=5)
             ]
@@ -3497,6 +3524,18 @@ def create_api_app(
                             resolved.mediacrawler_lock_path,
                             delay_seconds=resolved.kuaishou_scan_continuation_delay_seconds,
                         ),
+                        weibo_scan_continuation=WeiboScanContinuationPolicy.from_lock(
+                            resolved.mediacrawler_lock_path,
+                            delay_seconds=resolved.weibo_scan_continuation_delay_seconds,
+                        ),
+                        tieba_scan_continuation=TiebaScanContinuationPolicy.from_lock(
+                            resolved.mediacrawler_lock_path,
+                            delay_seconds=resolved.tieba_scan_continuation_delay_seconds,
+                        ),
+                        zhihu_scan_continuation=ZhihuScanContinuationPolicy.from_lock(
+                            resolved.mediacrawler_lock_path,
+                            delay_seconds=resolved.zhihu_scan_continuation_delay_seconds,
+                        ),
                     ).materialize_one(target_id, expected_schedule_revision=body.expected_schedule_revision)
                     context.subject_hook(session, DurableSubjectRef("job", cycle.job_id, role="execution"))
                     return cycle
@@ -3762,6 +3801,18 @@ def create_api_app(
                     resolved.mediacrawler_lock_path,
                     delay_seconds=resolved.kuaishou_scan_continuation_delay_seconds,
                 ),
+                weibo_scan_continuation=WeiboScanContinuationPolicy.from_lock(
+                    resolved.mediacrawler_lock_path,
+                    delay_seconds=resolved.weibo_scan_continuation_delay_seconds,
+                ),
+                tieba_scan_continuation=TiebaScanContinuationPolicy.from_lock(
+                    resolved.mediacrawler_lock_path,
+                    delay_seconds=resolved.tieba_scan_continuation_delay_seconds,
+                ),
+                zhihu_scan_continuation=ZhihuScanContinuationPolicy.from_lock(
+                    resolved.mediacrawler_lock_path,
+                    delay_seconds=resolved.zhihu_scan_continuation_delay_seconds,
+                ),
             ).tick(limit=body.limit)
             return {
                 "materialized_count": result.materialized_count,
@@ -3948,6 +3999,18 @@ def create_api_app(
                 kuaishou_scan_continuation=KuaishouScanContinuationPolicy.from_lock(
                     resolved.mediacrawler_lock_path,
                     delay_seconds=resolved.kuaishou_scan_continuation_delay_seconds,
+                ),
+                weibo_scan_continuation=WeiboScanContinuationPolicy.from_lock(
+                    resolved.mediacrawler_lock_path,
+                    delay_seconds=resolved.weibo_scan_continuation_delay_seconds,
+                ),
+                tieba_scan_continuation=TiebaScanContinuationPolicy.from_lock(
+                    resolved.mediacrawler_lock_path,
+                    delay_seconds=resolved.tieba_scan_continuation_delay_seconds,
+                ),
+                zhihu_scan_continuation=ZhihuScanContinuationPolicy.from_lock(
+                    resolved.mediacrawler_lock_path,
+                    delay_seconds=resolved.zhihu_scan_continuation_delay_seconds,
                 ),
             ).list_jobs(
                 status=status.value if status is not None else None,

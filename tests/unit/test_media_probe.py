@@ -80,3 +80,37 @@ def test_subprocess_probe_runner_enforces_timeout_and_combined_output_cap() -> N
             timeout_seconds=2.0,
             max_output_bytes=128,
         )
+
+
+def test_media_child_environment_withholds_secrets(monkeypatch: pytest.MonkeyPatch) -> None:
+    """ffprobe/ffmpeg children must not inherit an `env:`-resolved secret."""
+
+    from media_sync.media.probe import media_child_environment
+
+    monkeypatch.setenv("MEDIA_SYNC_OPERATOR_CREDENTIAL_SECRET", "SENTINEL-operator-secret")
+    monkeypatch.setenv("MEDIA_SYNC_MEDIA_SERVER_API_KEY", "SENTINEL-media-server-key")
+    monkeypatch.setenv("SOME_PLATFORM_COOKIE", "SENTINEL-cookie")
+    monkeypatch.setenv("PATH", "/usr/bin")
+
+    environment = media_child_environment()
+
+    assert environment["PATH"] == "/usr/bin"
+    assert not any("SENTINEL" in value for value in environment.values())
+    assert set(environment) <= {
+        "COMSPEC",
+        "HOME",
+        "LANG",
+        "LC_ALL",
+        "LOCALAPPDATA",
+        "PATH",
+        "PATHEXT",
+        "PROGRAMFILES",
+        "PROGRAMFILES(X86)",
+        "PROGRAMW6432",
+        "SYSTEMROOT",
+        "TEMP",
+        "TMP",
+        "TMPDIR",
+        "USERPROFILE",
+        "WINDIR",
+    }

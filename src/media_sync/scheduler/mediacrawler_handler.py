@@ -1354,6 +1354,9 @@ class MediaCrawlerScheduledHandler:
             manifest_xhs_scan,
             manifest_douyin_scan,
             manifest_kuaishou_scan,
+            manifest_weibo_scan,
+            manifest_tieba_scan,
+            manifest_zhihu_scan,
         )
         if (
             not isinstance(output, NormalizedMediaCrawlerOutput)
@@ -1707,6 +1710,12 @@ class MediaCrawlerScheduledHandler:
             != (getattr(manifest, "douyin_scan", None) is not None)
             or (context.account.platform is Platform.KS and policy.creator_secret_ref is not None)
             != (getattr(manifest, "kuaishou_scan", None) is not None)
+            or (context.account.platform is Platform.WB and policy.creator_secret_ref is not None)
+            != (getattr(manifest, "weibo_scan", None) is not None)
+            or (context.account.platform is Platform.TIEBA and policy.creator_secret_ref is not None)
+            != (getattr(manifest, "tieba_scan", None) is not None)
+            or (context.account.platform is Platform.ZHIHU and policy.creator_secret_ref is not None)
+            != (getattr(manifest, "zhihu_scan", None) is not None)
             or manifest.headless is not policy.headless
             or manifest.request_delay_seconds != policy.request_delay_seconds
             or manifest.watchdogs != self.watchdogs

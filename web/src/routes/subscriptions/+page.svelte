@@ -90,6 +90,9 @@
     safeBiliDeliveryProgressCard,
     safeDouyinDeliveryProgressCard,
     safeKuaishouDeliveryProgressCard,
+    safeTiebaDeliveryProgressCard,
+    safeWeiboDeliveryProgressCard,
+    safeZhihuDeliveryProgressCard,
     safeXhsDeliveryProgressCard,
     safeScanProgressCards,
     SCAN_PROGRESS_NOTICE,
@@ -279,6 +282,27 @@
         key: 'ks',
         eyebrow: '快手创作者作品 · 本地交付基线',
         card: safeKuaishouDeliveryProgressCard(source.kuaishou_delivery)
+      });
+    }
+    if (source.platform === 'wb' && source.weibo_delivery) {
+      panels.push({
+        key: 'wb',
+        eyebrow: '微博创作者笔记 · 本地交付基线',
+        card: safeWeiboDeliveryProgressCard(source.weibo_delivery)
+      });
+    }
+    if (source.platform === 'tieba' && source.tieba_delivery) {
+      panels.push({
+        key: 'tieba',
+        eyebrow: '贴吧创作者主题 · 本地交付基线',
+        card: safeTiebaDeliveryProgressCard(source.tieba_delivery)
+      });
+    }
+    if (source.platform === 'zhihu' && source.zhihu_delivery) {
+      panels.push({
+        key: 'zhihu',
+        eyebrow: '知乎创作者回答 · 本地交付基线',
+        card: safeZhihuDeliveryProgressCard(source.zhihu_delivery)
       });
     }
     return panels;

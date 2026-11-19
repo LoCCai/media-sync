@@ -799,6 +799,8 @@ def load_normalized_output(
         douyin_coverage=douyin_coverage,
         kuaishou_coverage=kuaishou_coverage,
         weibo_coverage=weibo_coverage,
+        tieba_coverage=tieba_coverage,
+        zhihu_coverage=zhihu_coverage,
     )
 
 

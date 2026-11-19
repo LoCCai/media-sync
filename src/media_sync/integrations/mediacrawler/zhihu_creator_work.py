@@ -593,7 +593,15 @@ class ZhihuScanUnit:
         self.page = page
         if self.state.witness is None:
             self.state = replace(self.state, witness=page.witness)
-        if self.state.lane == "history" and self.state.offset == 0 and self.state.head_boundary is None:
+        if (
+            self.state.lane == "history"
+            and self.state.offset == 0
+            and self.state.head_boundary is None
+            and page.witness.identities
+        ):
+            # Only a page that listed answers establishes the head boundary. An
+            # empty boundary reconciles equal to anything, so recording one here
+            # would let a contradictory or rate-limited response look complete.
             self.state = replace(self.state, head_boundary=page.witness.identities)
 
     def observe_access_restricted(self) -> None:
@@ -640,20 +648,26 @@ class ZhihuScanUnit:
             self._finish_head(page)
             return
         page_ids = page.witness.content_ids
-        overlap = bool(page_ids) and bool(set(page_ids) & set(self.state.previous_page_content_ids))
-        if page.is_end:
-            # The server declared the end; it is retained with the page witness
-            # so reconciliation can confirm or reject the boundary.
-            self.reason = "is_end"
+        # The offset is a page*limit product, so ONE insertion or deletion
+        # shifts the window by one and the next page legitimately repeats the
+        # previous page's tail. A partial intersection is therefore normal
+        # drift, not a stall: the repeated answers are already delivered and
+        # re-storing them is idempotent, so the page is consumed normally.
+        # Only a page that is IDENTICAL to the previous one shows that the
+        # window is not moving at all, which is the sole blocking condition.
+        stalled = bool(page_ids) and page_ids == self.state.previous_page_content_ids
+        if not page_ids and not page.is_end:
+            # "No answers here, but this is not the end" contradicts itself. A
+            # rate-limited body parses this way, so replay the same offset and
+            # count the stall instead of declaring an empty source end.
+            self.reason = "unit_cap_reached"
             self.state = replace(
                 self.state,
-                offset=0,
                 witness=None,
                 index=0,
                 completed_content_ids=(),
                 previous_page_content_ids=(),
-                stalled_units=0,
-                shifted_units=0,
+                stalled_units=self.state.stalled_units + 1,
             )
             return
         if not page_ids:
@@ -669,10 +683,25 @@ class ZhihuScanUnit:
                 shifted_units=0,
             )
             return
-        if overlap:
-            # An integer offset product shifted under us: a deletion or an
-            # insertion moved the window, so the next page would silently skip
-            # or repeat answers.  Keep the offset for replay and count the shift.
+        if page.is_end:
+            # The server declared the end; it is retained with the page witness
+            # so reconciliation can confirm or reject the boundary.
+            self.reason = "is_end"
+            self.state = replace(
+                self.state,
+                offset=0,
+                witness=None,
+                index=0,
+                completed_content_ids=(),
+                previous_page_content_ids=(),
+                stalled_units=0,
+                shifted_units=0,
+            )
+            return
+        if stalled:
+            # The identical page came back twice: the window is not advancing.
+            # Keep the offset so the request is replayed, and count the stall
+            # toward the bounded blocked transition.
             self.reason = "unit_cap_reached"
             self.state = replace(
                 self.state,
@@ -680,7 +709,8 @@ class ZhihuScanUnit:
                 index=0,
                 completed_content_ids=(),
                 previous_page_content_ids=page_ids,
-                shifted_units=self.state.shifted_units + 1,
+                stalled_units=self.state.stalled_units + 1,
+                shifted_units=0,
             )
             return
         self.reason = "unit_cap_reached"

@@ -81,8 +81,15 @@
 
   async function copyCode(): Promise<void> {
     if (!failedCode) return;
-    await navigator.clipboard.writeText(failedCode);
-    toast('错误码已复制。');
+    // 非安全来源或权限受限时 clipboard 不存在或会拒绝；必须给出失败反馈，
+    // 否则按钮看起来"没反应"，而成功提示也不会出现。
+    try {
+      if (!navigator.clipboard) throw new Error('clipboard unavailable');
+      await navigator.clipboard.writeText(failedCode);
+      toast('错误码已复制。');
+    } catch {
+      toast('复制失败：浏览器未授权剪贴板访问，请手动选中错误码复制。', 'danger');
+    }
   }
 
   function stateLabel(state: CheckState): string {

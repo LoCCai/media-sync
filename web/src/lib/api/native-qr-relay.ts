@@ -45,6 +45,7 @@ export class NativeQrRelayMonitor {
   private closed = false;
   private misses = 0;
   private lastShownAt: number | null = null;
+  private inFlight: AbortController | null = null;
   private readonly create: (blob: Blob) => string;
   private readonly revoke: (url: string) => void;
   private readonly now: () => number;
@@ -84,8 +85,10 @@ export class NativeQrRelayMonitor {
   async poll(): Promise<void> {
     if (this.closed) return;
     let response: ApiBlobResult;
+    const controller = new AbortController();
+    this.inFlight = controller;
     try {
-      response = await this.dependencies.readQr(new AbortController().signal);
+      response = await this.dependencies.readQr(controller.signal);
     } catch {
       this.misses += 1;
       if (this.misses >= this.guidanceAfterMisses) {
@@ -95,6 +98,8 @@ export class NativeQrRelayMonitor {
         this.publish({ state: 'waiting', hint: '暂时无法读取二维码，将继续重试（不会重新发起登录）。' });
       }
       return;
+    } finally {
+      if (this.inFlight === controller) this.inFlight = null;
     }
     if (this.closed) return;
     if (response.blob) {
@@ -128,6 +133,8 @@ export class NativeQrRelayMonitor {
 
   dispose(): void {
     this.closed = true;
+    this.inFlight?.abort();
+    this.inFlight = null;
     this.clearImage();
   }
 }

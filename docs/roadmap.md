@@ -8,6 +8,10 @@ Build a self-hosted service that can authenticate against all platforms supporte
 
 ## Phases
 
+Priority update (0088): [independent six-discipline code review](executions/0088-code-review/progress.md) is complete. It found that 0085/0086 were not deliverable as shipped despite green local suites, and fixed 26 verified defects across the durable creator chain, the ingestion boundary, security, the console and the operator contract. Two claims were rejected after re-verification.
+
+Next priority: the four findings this review deliberately deferred, each as its own execution that re-derives the pinned upstream facts before changing frozen 0076/0081/0083 behaviour — Douyin's 8-entry `bit_rate` cap silently disabling 0083's stream ranking, Kuaishou's missing image-CDN allowlist, XHS accepting plaintext `http`, and animated images passing as static on five platforms. After that, the operator canary (0087) remains the only gate between the code and a supported platform.
+
 Priority update (0087): [the operator gate](executions/0087-operator-canary/progress.md) is recorded. All seven creator platforms carry a durable creator-work chain (0074–0086). Every remaining item — a live bounded canary, real media bytes, zero-work replay and restart resume per platform — needs a Linux host, a real native login, a real platform request and real CDN bytes, so it is honestly `NOT_RUN` in the [qualification record](executions/0087-operator-canary/qualification.md). The project has no remaining code phase; what is left is operator execution.
 
 Next priority: an operator runs step 0087 per platform using the frozen [procedure](executions/0087-operator-canary/plan.md), and turns one qualification row at a time from `NOT_RUN` into `PASS` or `FAIL` with captured evidence.

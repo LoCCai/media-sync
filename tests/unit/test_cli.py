@@ -390,6 +390,28 @@ def test_db_init_output_redacts_url_user_password_and_query(
         get_settings.cache_clear()
 
 
+def test_known_database_revisions_match_every_packaged_migration() -> None:
+    """Every migration's real revision id must be in the CLI allowlist.
+
+    `_KNOWN_DATABASE_REVISIONS` decides whether `db status` may name an old
+    revision. Two entries were the *file* names of 0001/0002 rather than their
+    revision ids, so a database at either head reported `revision: null`.
+    """
+
+    import pathlib as _pathlib
+    import re as _re
+
+    versions = _pathlib.Path("src/media_sync/infrastructure/db/migrations/versions")
+    actual = {
+        _re.search(r'^revision: str = "([^"]+)"', path.read_text(encoding="utf-8"), _re.M).group(1)
+        for path in versions.glob("0*.py")
+    }
+
+    known = cli_module._KNOWN_DATABASE_REVISIONS
+    assert actual <= known, sorted(actual - known)
+    assert cli_module._EXPECTED_DATABASE_REVISION == "0020_zhihu_creator_answers"
+
+
 def test_db_status_reports_current_complete_schema_without_exposing_target(
     initialized_cli_database: str,
 ) -> None:
@@ -1368,6 +1390,9 @@ def test_pipeline_worker_cli_wires_bounded_runtime_and_fixed_output(
             xhs_delivery_policy: object,
             douyin_delivery_policy: object = None,
             kuaishou_delivery_policy: object = None,
+            weibo_delivery_policy: object = None,
+            tieba_delivery_policy: object = None,
+            zhihu_delivery_policy: object = None,
         ) -> None:
             assert callable(event_sink)
             captured.update(
@@ -1376,6 +1401,9 @@ def test_pipeline_worker_cli_wires_bounded_runtime_and_fixed_output(
                 retry_delay_seconds=retry_delay_seconds,
                 bili_delivery_policy=bili_delivery_policy,
                 xhs_delivery_policy=xhs_delivery_policy,
+                weibo_delivery_policy=weibo_delivery_policy,
+                tieba_delivery_policy=tieba_delivery_policy,
+                zhihu_delivery_policy=zhihu_delivery_policy,
             )
 
         async def run_bounded(

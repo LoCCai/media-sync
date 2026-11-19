@@ -73,7 +73,10 @@ def _checkout_module(name: str, root: Path) -> Any:
 def _declared_total(value: object) -> int | None:
     if value is None:
         return None
-    if type(value) is not int or value < 0:
+    # Accept only what the durable column can store (2**53-1, the same bound
+    # every other counter uses). An out-of-range server total is treated as a
+    # malformed page rather than allowed to poison the progress-row flush.
+    if type(value) is not int or not 0 <= value <= 2**53 - 1:
         raise _failure()
     return value
 

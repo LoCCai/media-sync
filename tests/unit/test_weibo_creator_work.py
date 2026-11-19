@@ -14,9 +14,11 @@ from media_sync.integrations.mediacrawler.weibo_creator_work import (
     WB_STALL_BLOCKED_CODE,
     WB_STALLED_UNIT_LIMIT,
     WeiboCreatorPage,
+    WeiboPageWitness,
     WeiboScanCoverage,
     WeiboScanState,
     WeiboScanUnit,
+    WeiboUnitSummary,
     WeiboWorkIdentity,
 )
 
@@ -120,7 +122,10 @@ def test_missing_total_ends_the_first_page_under_its_own_code() -> None:
 
     assert coverage.stop_reason == "empty_page_end"
     assert coverage.summary.declared_total is None
-    assert coverage.next_state.head_boundary is not None
+    # An empty first page must not establish a head boundary: an empty boundary
+    # reconciles equal to anything, which would let a rate-limited response read
+    # as a complete history.
+    assert coverage.next_state.head_boundary is None
 
 
 def test_page_tail_is_replayed_by_the_identical_since_id() -> None:
@@ -277,3 +282,19 @@ def test_empty_filtered_page_with_advanced_cursor_advances() -> None:
     assert coverage.next_state.since_id == "next"
     assert coverage.next_state.stalled_units == 0
     assert coverage.source_end_observed is False
+
+
+def test_declared_total_beyond_the_durable_bound_is_rejected() -> None:
+    """`cardlistInfo.total` is an unvalidated server integer.
+
+    The durable column only accepts 2**53-1, so the scan layer must refuse
+    anything larger instead of letting the progress-row flush fail inside the
+    pipeline transaction and turn a completed unit into an endless retry.
+    """
+
+    identity = _identity("8100000001")
+    with pytest.raises(ValueError):
+        WeiboPageWitness("0", "1", 2**53, (identity,))
+    with pytest.raises(ValueError):
+        WeiboUnitSummary("history", "unit_cap_reached", 1, 0, 0, 1, 1, True, 2**53, 1)
+    assert WeiboPageWitness("0", "1", 2**53 - 1, (identity,)).declared_total == 2**53 - 1

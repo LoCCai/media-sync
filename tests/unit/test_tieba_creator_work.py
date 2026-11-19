@@ -93,12 +93,52 @@ def test_server_declared_end_is_a_source_end_candidate() -> None:
 
 def test_empty_page_ends_with_its_own_code() -> None:
     unit = TiebaScanUnit(_state(), 20)
-    _drive(unit, _page(1, ()))
+    _drive(unit, _page(1, (), has_more=False))
 
     coverage = unit.coverage()
 
     assert coverage.stop_reason == "empty_page_end"
     assert coverage.next_state.page == 1
+
+
+def test_empty_page_that_promises_more_is_a_stall_not_an_end() -> None:
+    """`has_more=1` with no threads contradicts itself.
+
+    An anti-bot/rate-limit envelope still parses as `error_code=0` with
+    `has_more=1` and an empty list. Treating that as `empty_page_end` publishes
+    an empty head boundary, which then reconciles equal and moves the row into
+    incremental — permanently skipping the creator's whole backlog. It must
+    replay the same page and count the stall instead.
+    """
+
+    unit = TiebaScanUnit(_state(), 20)
+    _drive(unit, _page(1, (), has_more=True))
+
+    coverage = unit.coverage()
+
+    assert coverage.stop_reason == "unit_cap_reached"
+    assert coverage.source_end_observed is False
+    assert coverage.next_state.page == 1
+    assert coverage.next_state.head_boundary is None
+    assert coverage.next_state.stalled_units == 1
+
+
+def test_a_repeated_page_is_replayed_and_does_not_skip_threads() -> None:
+    """A stalled `pn` must not advance: advancing drops that page's threads."""
+
+    first = tuple(f"{9500000000 + index}" for index in range(20))
+    unit = TiebaScanUnit(_state(), 20)
+    _drive(unit, _page(1, first))
+    state = unit.coverage().next_state
+    assert state.page == 2
+
+    unit = TiebaScanUnit(state, 20)
+    _drive(unit, _page(2, first))
+    coverage = unit.coverage()
+
+    assert coverage.stop_reason == "unit_cap_reached"
+    assert coverage.next_state.page == 2
+    assert coverage.next_state.stalled_units == 1
 
 
 def test_page_tail_is_replayed_by_the_identical_page_number() -> None:
