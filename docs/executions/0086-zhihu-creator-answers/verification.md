@@ -13,7 +13,7 @@
 | Migration | `PASS` | `tests/integration/test_database.py` proves the migrated schema equals the metadata (30 domain tables) and downgrades cleanly; `tests/integration/test_packaged_migrations.py` proves the wheel ships `0020_zhihu_creator_answers` and reports it as head. |
 | Head-revision pins | `PASS` | Packaged migrations, database domain tables, CLI expected/known revisions and table counts (30), offline/scheduled pipeline revision assertions, CLI support bundle and API support bundle all advanced to `0020_zhihu_creator_answers`. |
 | Bridge/handler wiring | `PASS` | `tests/contract/test_mediacrawler_bridge.py`, `tests/integration/test_mediacrawler_scheduler_handler.py`, `tests/integration/test_pipeline_worker.py` and `tests/integration/test_scheduler_repository.py` pass with the seventh bounded contract installed. |
-| Full Python suite | `PASS` | `7307 passed, 63 skipped, 108 warnings in 1833.35s`. Skips are the documented Windows/POSIX symlink, POSIX-directory and PostgreSQL-URL branches. |
+| Full Python suite | `PASS` | `7308 passed, 62 skipped, 108 warnings in 1757.28s`. Skipped checks are the documented Windows/POSIX symlink, POSIX-directory and PostgreSQL-URL branches; the packaged-wheel artifact check now executes instead of skipping. |
 | Ruff lint / format | `PASS` | `ruff check src tests` → `All checks passed!`; `ruff format --check src tests` → all files formatted. |
 | Strict mypy | `PASS` | `mypy --strict src` → `Success: no issues found in 182 source files`. |
 | Docs / upstreams | `PASS` | `scripts/check_docs.py` → links OK; `scripts/check_upstreams.py` → `Upstreams OK (2 locked checkouts verified)`. |

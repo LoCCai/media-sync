@@ -13,7 +13,7 @@
 | 迁移 | `PASS` | `tests/integration/test_database.py` 证明迁移后的 schema 等于元数据（30 张域表）并可干净降级；`tests/integration/test_packaged_migrations.py` 证明 wheel 携带 `0020_zhihu_creator_answers` 并把它报告为 head。 |
 | 头修订钉定 | `PASS` | 打包迁移、数据库域表、CLI 预期/已知修订与表计数（30）、离线/调度管线修订断言、CLI 支持包与 API 支持包都推进到 `0020_zhihu_creator_answers`。 |
 | 桥接/handler 接线 | `PASS` | 安装第七个有界契约后，`tests/contract/test_mediacrawler_bridge.py`、`tests/integration/test_mediacrawler_scheduler_handler.py`、`tests/integration/test_pipeline_worker.py` 与 `tests/integration/test_scheduler_repository.py` 通过。 |
-| 完整 Python 套件 | `PASS` | `7307 passed, 63 skipped, 108 warnings in 1833.35s`。跳过项为已记录的 Windows/POSIX 符号链接、POSIX 目录与 PostgreSQL URL 分支。 |
+| 完整 Python 套件 | `PASS` | `7308 passed, 62 skipped, 108 warnings in 1757.28s`。跳过项为已记录的 Windows/POSIX 符号链接、POSIX 目录与 PostgreSQL URL 分支；打包 wheel 制品检查现已真正执行而非跳过。 |
 | Ruff lint / format | `PASS` | `ruff check src tests` → `All checks passed!`；`ruff format --check src tests` → 全部已格式化。 |
 | strict mypy | `PASS` | `mypy --strict src` → `Success: no issues found in 182 source files`。 |
 | 文档 / 上游 | `PASS` | `scripts/check_docs.py` → 链接 OK；`scripts/check_upstreams.py` → `Upstreams OK (2 locked checkouts verified)`。 |

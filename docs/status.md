@@ -10,7 +10,7 @@ What remains is **operator work, not code**. Every remaining row needs a Linux h
 
 The procedure itself is frozen in [`plan.md`](executions/0087-operator-canary/plan.md): prove image and migration identity, claim one native session, pause everything else, run one bounded single-author canary, download and publish real bytes, replay for zero work, restart once, then record.
 
-Final local gates for the last code delivery (0086): Python `7307 passed, 63 skipped`; Web `30 files / 843 tests`; Ruff lint/format, strict mypy over 182 source files, documentation and upstream checks pass. Deployment, every real login and every live request remain `NOT_RUN`.
+Final local gates for the last code delivery (0086): Python `7308 passed, 62 skipped`; Web `30 files / 843 tests`; Ruff lint/format, strict mypy over 182 source files, documentation and upstream checks pass. Deployment, every real login and every live request remain `NOT_RUN`.
 
 ## Previous: durable Zhihu creator-answer delivery (0086)
 
@@ -20,7 +20,7 @@ Zhihu's difference is the one that most needs a durable guard: pagination is an 
 
 Migration `0020_zhihu_creator_answers` adds `zhihu_subscription_progress` under the 0015–0019 constraint discipline. `zhihu_creator_capture.py` replaces only `get_all_anwser_by_creator`, cross-checks the extractor's `content_id` order against the raw ids, and keeps the 0033 gallery shapes. `zhihu_delivery_progress.py` advances state only from a closed pipeline receipt, and `ingest_zhihu_bounded` publishes page, cursor, Run and Content in one transaction.
 
-Final local gates: Python `7307 passed, 63 skipped`; Web `30 files / 843 tests`; Ruff lint/format, strict mypy over 182 source files, documentation and upstream checks pass. Deployment, real Zhihu login and any live request remain `NOT_RUN`.
+Final local gates: Python `7308 passed, 62 skipped`; Web `30 files / 843 tests`; Ruff lint/format, strict mypy over 182 source files, documentation and upstream checks pass. Deployment, real Zhihu login and any live request remain `NOT_RUN`.
 
 ## Previous: durable Tieba creator-work delivery (0085)
 
@@ -260,7 +260,7 @@ Under frozen plan `714c849`, safe console and startup preflight are implemented 
 | Dimension | State | Evidence / blocker |
 | --- | --- | --- |
 | Implementation (offline shapes) | 15+ frozen shapes across seven platforms | Executions 0013–0039 records |
-| Offline complete suite | The 0086 final local gates pass `7307 passed, 63 skipped, 108 warnings` for the complete Python suite and `30 files / 843 tests` for Web (0085's `7281 passed, 63 skipped` are superseded). Skips are recorded OS/PostgreSQL qualification branches| [0086 verification](executions/0086-zhihu-creator-answers/verification.md)| [0085 verification](executions/0085-tieba-creator-notes/verification.md)|
+| Offline complete suite | The 0087 local gates pass `7308 passed, 62 skipped, 108 warnings` for the complete Python suite and `30 files / 843 tests` for Web, including the packaged-wheel artifact check that now executes rather than skipping (0086's `7307 passed, 63 skipped` and 0085's `7281 passed, 63 skipped` are superseded). Skips are recorded OS/PostgreSQL qualification branches| [0087 verification](executions/0087-operator-canary/verification.md)| [0086 verification](executions/0086-zhihu-creator-answers/verification.md)|
 | API/console tests | The 0075 policy/API/CLI/auth union passes `40 passed, 2 skipped`; the two real PostgreSQL policy checks remain `NOT_RUN`. Synthetic Chrome proves Bilibili and XHS saves remain paused, platform scope stays isolated and browser/page/request error counts remain zero | [0075 verification](executions/0075-paused-subscription-policy-editor/verification.md) |
 | Static and distribution gates | 0075 Ruff lint/format over 406 files, Web Prettier, strict mypy over 156 source files, compileall, 62-package lock, both locked upstreams and wheel/sdist builds pass. Documentation links and `git diff --check` are rerun for closeout. The hardened 0072 production dependency audit remains zero; the full build graph retains eight development/build-only findings | [0075 verification](executions/0075-paused-subscription-policy-editor/verification.md) |
 | Pinned upstream WebUI dependency audits | Production `PASS` / full build graph `FAIL` (development-only residual) — the security-patched build copy reports 0 production vulnerabilities, while its full graph reports 8 entries: 6 high, 2 low, 0 moderate, 0 critical. Their packages are not copied into the final runtime image. The untouched raw upstream baseline's 11 entries (8 high, 1 moderate, 2 low) remain historical discovery evidence | [0072 verification](executions/0072-mediacrawler-webui-integration/verification.md) |

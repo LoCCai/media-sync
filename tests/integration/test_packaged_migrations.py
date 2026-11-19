@@ -176,6 +176,8 @@ def test_built_wheel_contains_and_runs_packaged_migrations(tmp_path: Path) -> No
         check=False,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
     )
     assert build.returncode == 0, build.stdout + build.stderr
     wheels = list(wheel_directory.glob("media_sync-*.whl"))
@@ -204,6 +206,8 @@ def test_built_wheel_contains_and_runs_packaged_migrations(tmp_path: Path) -> No
             "media_sync/infrastructure/db/migrations/versions/0015_xhs_creator_notes.py",
             "media_sync/infrastructure/db/migrations/versions/0016_douyin_creator_work.py",
             "media_sync/infrastructure/db/migrations/versions/0017_kuaishou_creator_work.py",
+            "media_sync/infrastructure/db/migrations/versions/0018_weibo_creator_notes.py",
+            "media_sync/infrastructure/db/migrations/versions/0019_tieba_creator_notes.py",
             "media_sync/infrastructure/db/migrations/versions/0020_zhihu_creator_answers.py",
         }
         assert required_resources <= wheel_names
@@ -251,6 +255,8 @@ finally:
         check=False,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
     )
     assert smoke.returncode == 0, smoke.stdout + smoke.stderr
 
