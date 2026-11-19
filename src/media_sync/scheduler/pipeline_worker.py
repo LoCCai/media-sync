@@ -38,6 +38,7 @@ from .weibo_delivery_progress import WeiboDeliveryProgressRepository
 from .weibo_scan_continuation import WeiboScanContinuationPolicy
 from .xhs_delivery_progress import XhsDeliveryProgressRepository
 from .xhs_scan_continuation import XhsScanContinuationPolicy
+from .zhihu_scan_continuation import ZhihuScanContinuationPolicy
 
 PIPELINE_RETRY_DELAY_SECONDS = 30
 _MAX_JOBS = 1_000
@@ -292,6 +293,7 @@ class PipelineSubscriptionWorker:
         kuaishou_delivery_policy: KuaishouScanContinuationPolicy | None = None,
         weibo_delivery_policy: WeiboScanContinuationPolicy | None = None,
         tieba_delivery_policy: TiebaScanContinuationPolicy | None = None,
+        zhihu_delivery_policy: ZhihuScanContinuationPolicy | None = None,
     ) -> None:
         if not callable(handler):
             raise TypeError("pipeline handler must be callable")
@@ -310,6 +312,7 @@ class PipelineSubscriptionWorker:
         self.kuaishou_delivery_policy = kuaishou_delivery_policy or KuaishouScanContinuationPolicy(delay_seconds=0)
         self.weibo_delivery_policy = weibo_delivery_policy or WeiboScanContinuationPolicy(delay_seconds=0)
         self.tieba_delivery_policy = tieba_delivery_policy or TiebaScanContinuationPolicy(delay_seconds=0)
+        self.zhihu_delivery_policy = zhihu_delivery_policy or ZhihuScanContinuationPolicy(delay_seconds=0)
 
     @staticmethod
     def _heartbeat_interval(value: float | None, *, lease_seconds: int) -> float:

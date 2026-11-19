@@ -8,9 +8,11 @@ Build a self-hosted service that can authenticate against all platforms supporte
 
 ## Phases
 
-Priority update (0085): [durable Tieba creator-work delivery](executions/0085-tieba-creator-notes/progress.md) is implemented and locally verified. Tieba creator threads now have a 1-based page-number durable unit whose server-declared `has_more_false` end is retained with its page witness and still only opens reconciliation; because the page number always increments, a repeated page identity is the only stall signal and blocks with `tieba_page_stalled`. This is deterministic local evidence, not live Tieba qualification.
+Priority update (0086): [durable Zhihu creator-answer delivery](executions/0086-zhihu-creator-answers/progress.md) is implemented and locally verified. Zhihu creator answers now have a durable unit over the integer `offset` chain whose server-declared `paging.is_end` end is retained with its page witness and still only opens reconciliation; because the offset is a page\*limit product, a shifted window is detected by page identity and blocks with `zhihu_window_shifted`. This completes the frozen 0084–0086 per-platform work; only the operator-run canary (0087) remains.
 
-Next priority: Zhihu (0086, integer `offset` + `paging.is_end`, where a shifted window can silently skip content), then the operator-run bounded canary per platform (0087) per the [0083 next delivery](executions/0083-douyin-media-profile/next-delivery.md).
+Next priority: [0083 next delivery](executions/0083-douyin-media-profile/next-delivery.md) step 0087 — the per-platform bounded canary an operator must run with a real login.
+
+Priority update (0085): [durable Tieba creator-work delivery](executions/0085-tieba-creator-notes/progress.md) is implemented and locally verified. Tieba creator threads now have a 1-based page-number durable unit whose server-declared `has_more_false` end is retained with its page witness and still only opens reconciliation; because the page number always increments, a repeated page identity is the only stall signal and blocks with `tieba_page_stalled`.
 
 Priority update (0084): [durable Weibo creator-note delivery](executions/0084-weibo-creator-notes/progress.md) is implemented and locally verified. Weibo creator notes now have a `since_id`-tracked durable unit whose arithmetic `cardlistInfo.total` end is retained only as an *inference* that opens reconciliation (together with the declared total, pages consumed and first-page witness), with page-tail retention, a stall guard, restricted ≠ source end, and backfill → reconciling → incremental advanced only by closed pipeline receipts. This is deterministic local evidence, not live Weibo qualification.
 

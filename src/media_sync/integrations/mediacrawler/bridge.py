@@ -50,6 +50,7 @@ from .subscription_policy import MAX_REQUEST_DELAY_SECONDS
 from .tieba_creator_work import TiebaScanState
 from .weibo_creator_work import WeiboScanState
 from .xhs_creator_notes import XhsScanState
+from .zhihu_creator_work import ZhihuScanState
 
 LEGACY_MANIFEST_SCHEMA_VERSION = 2
 MANIFEST_SCHEMA_VERSION = 3
@@ -130,6 +131,8 @@ class BridgeRequest:
     weibo_scan_cursor_before: str | None = field(default=None, repr=False)
     tieba_bounded_capture: bool = False
     tieba_scan_cursor_before: str | None = field(default=None, repr=False)
+    zhihu_bounded_capture: bool = False
+    zhihu_scan_cursor_before: str | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         if self.bili_scope is not None and (
@@ -266,6 +269,36 @@ class BridgeRequest:
             or not self.tieba_scan_cursor_before.strip()
         ):
             raise BridgeConfigurationError("bounded Tieba input cursor is invalid")
+        if type(self.zhihu_bounded_capture) is not bool or (
+            self.zhihu_bounded_capture
+            and (self.platform is not Platform.ZHIHU or self.intended_mode != MediaCrawlerRunMode.FORWARD)
+        ):
+            raise BridgeConfigurationError("bounded Zhihu capture requires a forward Zhihu request")
+        if (
+            len(
+                [
+                    flag
+                    for flag in (
+                        self.bili_bounded_capture,
+                        self.xhs_bounded_capture,
+                        self.douyin_bounded_capture,
+                        self.kuaishou_bounded_capture,
+                        self.weibo_bounded_capture,
+                        self.tieba_bounded_capture,
+                        self.zhihu_bounded_capture,
+                    )
+                    if flag
+                ]
+            )
+            > 1
+        ):
+            raise BridgeConfigurationError("one request cannot carry multiple bounded scan contracts")
+        if self.zhihu_scan_cursor_before is not None and (
+            not self.zhihu_bounded_capture
+            or type(self.zhihu_scan_cursor_before) is not str
+            or not self.zhihu_scan_cursor_before.strip()
+        ):
+            raise BridgeConfigurationError("bounded Zhihu input cursor is invalid")
         try:
             intended_mode = MediaCrawlerRunMode(self.intended_mode)
         except (TypeError, ValueError) as error:
@@ -358,6 +391,8 @@ class RunnerManifest:
     weibo_scan_input_cursor: str | None = field(default=None, repr=False)
     tieba_scan: TiebaScanState | None = field(default=None, repr=False)
     tieba_scan_input_cursor: str | None = field(default=None, repr=False)
+    zhihu_scan: ZhihuScanState | None = field(default=None, repr=False)
+    zhihu_scan_input_cursor: str | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         if self.bili_scan_input_cursor is not None and (
@@ -412,6 +447,7 @@ class RunnerManifest:
                 or self.kuaishou_scan is not None
                 or self.weibo_scan is not None
                 or self.tieba_scan is not None
+                or self.zhihu_scan is not None
             ):
                 raise BridgeConfigurationError("bounded XHS manifest scope is invalid")
             try:
@@ -449,6 +485,7 @@ class RunnerManifest:
                 or self.kuaishou_scan is not None
                 or self.weibo_scan is not None
                 or self.tieba_scan is not None
+                or self.zhihu_scan is not None
             ):
                 raise BridgeConfigurationError("bounded Douyin manifest scope is invalid")
             try:
@@ -486,6 +523,7 @@ class RunnerManifest:
                 or self.douyin_scan is not None
                 or self.weibo_scan is not None
                 or self.tieba_scan is not None
+                or self.zhihu_scan is not None
             ):
                 raise BridgeConfigurationError("bounded Kuaishou manifest scope is invalid")
             try:
@@ -581,6 +619,44 @@ class RunnerManifest:
                 raise BridgeConfigurationError("bounded Tieba manifest state is invalid") from None
         elif self.tieba_scan_input_cursor is not None:
             raise BridgeConfigurationError("Tieba cursor requires a bounded scan contract")
+        if self.zhihu_scan_input_cursor is not None and (
+            type(self.zhihu_scan_input_cursor) is not str or not self.zhihu_scan_input_cursor.strip()
+        ):
+            raise BridgeConfigurationError("bounded Zhihu manifest input cursor is invalid")
+        if self.zhihu_scan is not None:
+            if (
+                type(self.zhihu_scan) is not ZhihuScanState
+                or self.platform is not Platform.ZHIHU
+                or self.schema_version != MANIFEST_SCHEMA_VERSION
+                or self.intended_mode != MediaCrawlerRunMode.FORWARD
+                or self.bili_scan is not None
+                or self.xhs_scan is not None
+                or self.douyin_scan is not None
+                or self.kuaishou_scan is not None
+                or self.weibo_scan is not None
+                or self.tieba_scan is not None
+            ):
+                raise BridgeConfigurationError("bounded Zhihu manifest scope is invalid")
+            try:
+                self.zhihu_scan.require_binding(
+                    account_id=self.account_id,
+                    author_fingerprint_sha256=self.author_remote_id_fingerprint_sha256,
+                    creator_fingerprint_sha256=self.creator_fingerprint_sha256,
+                    upstream_sha=self.upstream_sha,
+                )
+                expected_zhihu = ZhihuScanState.for_cursor(
+                    self.zhihu_scan_input_cursor,
+                    account_id=self.account_id,
+                    author_fingerprint_sha256=self.author_remote_id_fingerprint_sha256,
+                    creator_fingerprint_sha256=self.creator_fingerprint_sha256,
+                    upstream_sha=self.upstream_sha,
+                )
+                if self.zhihu_scan != expected_zhihu:
+                    raise ValueError("scan input mismatch")
+            except ValueError:
+                raise BridgeConfigurationError("bounded Zhihu manifest state is invalid") from None
+        elif self.zhihu_scan_input_cursor is not None:
+            raise BridgeConfigurationError("Zhihu cursor requires a bounded scan contract")
         if type(self.schema_version) is not int or self.schema_version not in {
             LEGACY_MANIFEST_SCHEMA_VERSION,
             MANIFEST_SCHEMA_VERSION,
@@ -750,6 +826,12 @@ class RunnerManifest:
                 "input_cursor": self.tieba_scan_input_cursor,
                 "state": self.tieba_scan.to_cursor(),
             }
+        if self.zhihu_scan is not None:
+            payload["zhihu_scan"] = {
+                "schema_version": 1,
+                "input_cursor": self.zhihu_scan_input_cursor,
+                "state": self.zhihu_scan.to_cursor(),
+            }
         return payload
 
     @classmethod
@@ -823,6 +905,8 @@ class RunnerManifest:
             expected_keys = expected_keys | {"weibo_scan"}
         if schema_version == MANIFEST_SCHEMA_VERSION and "tieba_scan" in raw:
             expected_keys = expected_keys | {"tieba_scan"}
+        if schema_version == MANIFEST_SCHEMA_VERSION and "zhihu_scan" in raw:
+            expected_keys = expected_keys | {"zhihu_scan"}
         if set(raw) != expected_keys:
             raise BridgeConfigurationError("runner manifest contains unsupported fields")
 
@@ -1079,6 +1163,26 @@ class RunnerManifest:
             except ValueError:
                 raise BridgeConfigurationError("bounded Tieba manifest state is invalid") from None
             tieba_scan_input_cursor = scan_contract["input_cursor"]
+        zhihu_scan = None
+        zhihu_scan_input_cursor = None
+        if "zhihu_scan" in raw:
+            scan_contract = raw["zhihu_scan"]
+            if (
+                not isinstance(scan_contract, Mapping)
+                or set(scan_contract) != {"schema_version", "input_cursor", "state"}
+                or type(scan_contract.get("schema_version")) is not int
+                or scan_contract["schema_version"] != 1
+                or type(scan_contract.get("state")) is not str
+                or (
+                    scan_contract.get("input_cursor") is not None and type(scan_contract.get("input_cursor")) is not str
+                )
+            ):
+                raise BridgeConfigurationError("bounded Zhihu manifest contract is invalid")
+            try:
+                zhihu_scan = ZhihuScanState.from_cursor(scan_contract["state"])
+            except ValueError:
+                raise BridgeConfigurationError("bounded Zhihu manifest state is invalid") from None
+            zhihu_scan_input_cursor = scan_contract["input_cursor"]
         if bili_scan is None:
             require_full_history_acknowledgement(platform, allow_full_history)
         upstream_login_type(login_method)
@@ -1134,6 +1238,8 @@ class RunnerManifest:
             weibo_scan_input_cursor=weibo_scan_input_cursor,
             tieba_scan=tieba_scan,
             tieba_scan_input_cursor=tieba_scan_input_cursor,
+            zhihu_scan=zhihu_scan,
+            zhihu_scan_input_cursor=zhihu_scan_input_cursor,
         )
 
 
@@ -1404,6 +1510,18 @@ class MediaCrawlerBridge:
                 )
             except ValueError:
                 raise BridgeConfigurationError("bounded Tieba input state is invalid") from None
+        zhihu_scan = None
+        if request.zhihu_bounded_capture:
+            try:
+                zhihu_scan = ZhihuScanState.for_cursor(
+                    request.zhihu_scan_cursor_before,
+                    account_id=request.account_id,
+                    author_fingerprint_sha256=hashlib.sha256(request.author_remote_id.encode("utf-8")).hexdigest(),
+                    creator_fingerprint_sha256=creator_fingerprint,
+                    upstream_sha=checkout.commit,
+                )
+            except ValueError:
+                raise BridgeConfigurationError("bounded Zhihu input state is invalid") from None
 
         scheduler_job_id = request.scheduler_job_id
         execution_id = request.execution_id
@@ -1480,6 +1598,8 @@ class MediaCrawlerBridge:
             weibo_scan_input_cursor=request.weibo_scan_cursor_before,
             tieba_scan=tieba_scan,
             tieba_scan_input_cursor=request.tieba_scan_cursor_before,
+            zhihu_scan=zhihu_scan,
+            zhihu_scan_input_cursor=request.zhihu_scan_cursor_before,
         )
         environment, known_secrets = _child_environment(
             creator_reference,

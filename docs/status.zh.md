@@ -2,7 +2,17 @@
 
 # 项目统一状态（单一事实来源）
 
-## 最新：贴吧创作者主题耐久交付（0085）
+## 最新：知乎创作者回答耐久交付（0086）
+
+[执行 0086](executions/0086-zhihu-creator-answers/progress.zh.md)把同一条耐久创作者链扩展到知乎，每条规则都从钉定知乎源码重新推导。
+
+知乎的差异最需要耐久防护：分页是**整数 `offset`**，`limit` 由客户端选择，以 `offset += limit` 推进直到 `paging.is_end`。该 offset 是 page\*limit 的乘积，因此两次请求之间的一次插入或删除会整体位移窗口——下一页随后静默跳过或重复回答，而每个响应看起来仍然有效。因此 `zhihu_creator_work.py` 比较页身份元组；非空交集会重放同一 offset，并在有界次数的位移单元后以 `zhihu_window_shifted` 阻塞。服务端声明的 `is_end` 连同页见证保留、仍只开启对账，`empty_page_end` 独立成码，假值/畸形响应体、`DataFetchError`/`IPBlockError` 或传输失败一律 `access_restricted`，绝不是源末。
+
+迁移 `0020_zhihu_creator_answers` 在 0015–0019 约束纪律下新增 `zhihu_subscription_progress`。`zhihu_creator_capture.py` 只替换 `get_all_anwser_by_creator`，把 extractor 的 `content_id` 顺序与原始 id 交叉校验，并保留 0033 图库形状。`zhihu_delivery_progress.py` 只凭封闭管线回执推进状态，`ingest_zhihu_bounded` 在单个事务中发布页、游标、Run 与 Content。
+
+最终本地门禁：Python `7307 passed, 63 skipped`；Web `30 files / 843 tests`；Ruff lint/format、182 个源码文件的 strict mypy、文档与上游检查均通过。部署、真人知乎登录与任何真实请求仍为 `NOT_RUN`。
+
+## 上阶段：贴吧创作者主题耐久交付（0085）
 
 [执行 0085](executions/0085-tieba-creator-notes/progress.zh.md)把同一条耐久创作者链扩展到贴吧，每条规则都从钉定贴吧源码重新推导。
 
@@ -240,7 +250,7 @@ B站和微博资料已离线实现，其他五平台资料、抖音/快手/贴�
 | 维度 | 状态 | 证据 / 阻塞 |
 | --- | --- | --- |
 | 实现（离线形状） | 七平台 15+ 冻结形状 | 执行 0013–0039 记录 |
-| 离线完整套件 | 0085 最终本地门：Python 完整套件 `7281 passed, 63 skipped, 108 warnings`、Web `30 files / 843 tests`（0084 的 `7257 passed, 63 skipped` 已被取代）。跳过项均为明确记录的 OS/PostgreSQL 资格分支 | [0085 验证](executions/0085-tieba-creator-notes/verification.zh.md) | [0084 验证](executions/0084-weibo-creator-notes/verification.zh.md) |
+| 离线完整套件 | 0086 最终本地门：Python 完整套件 `7307 passed, 63 skipped, 108 warnings`、Web `30 files / 843 tests`（0085 的 `7281 passed, 63 skipped` 已被取代）。跳过项均为明确记录的 OS/PostgreSQL 资格分支 | [0086 验证](executions/0086-zhihu-creator-answers/verification.zh.md) | [0085 验证](executions/0085-tieba-creator-notes/verification.zh.md) |
 | API/控制台测试 | 0075 策略/API/CLI/鉴权联合为 `40 passed, 2 skipped`；两项真实 PostgreSQL 策略检查仍为 `NOT_RUN`。合成 Chrome 证明 B 站与 XHS 保存后仍暂停、平台 scope 保持隔离，浏览器/页面/请求错误数均为 0 | [0075 验证](executions/0075-paused-subscription-policy-editor/verification.zh.md) |
 | 静态与制品门 | 0075 对 406 个文件的 Ruff lint/format、Web Prettier、156 个源码文件 strict mypy、compileall、62 包锁文件、两个上游及 wheel/sdist 构建通过；收尾重跑文档链接与 `git diff --check`。0072 加固后的生产依赖审计继续为 0，全构建依赖图仍有 8 个仅开发/构建期发现 | [0075 验证](executions/0075-paused-subscription-policy-editor/verification.zh.md) |
 | 锁定上游 WebUI 依赖审计 | 生产 `PASS`／全构建依赖图 `FAIL`（仅开发依赖残余）——安全补丁后的构建副本生产漏洞为 0，全依赖图为 8 条：6 high、2 low、0 moderate、0 critical；对应 package 不会复制进最终运行镜像。未加固上游原始基线的 11 条（8 high、1 moderate、2 low）仅作为历史发现保留；版本化 checkout／lockfile 保持不变 | [0072 验证](executions/0072-mediacrawler-webui-integration/verification.zh.md) |

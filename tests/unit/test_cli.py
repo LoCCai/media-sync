@@ -353,7 +353,7 @@ def test_db_init_runs_packaged_migrations_idempotently(tmp_path: Path, monkeypat
             assert "alembic_version" in inspect(database.engine).get_table_names()
             with database.engine.connect() as connection:
                 version_num = connection.scalar(text("SELECT version_num FROM alembic_version"))
-                assert version_num == "0019_tieba_creator_notes"
+                assert version_num == "0020_zhihu_creator_answers"
         finally:
             database.dispose()
     finally:
@@ -402,18 +402,18 @@ def test_db_status_reports_current_complete_schema_without_exposing_target(
         "ok": True,
         "database_driver": "sqlite+pysqlite",
         "reachable": True,
-        "revision": "0019_tieba_creator_notes",
-        "expected_revision": "0019_tieba_creator_notes",
+        "revision": "0020_zhihu_creator_answers",
+        "expected_revision": "0020_zhihu_creator_answers",
         "revision_current": True,
-        "required_table_count": 29,
-        "present_table_count": 29,
+        "required_table_count": 30,
+        "present_table_count": 30,
         "missing_tables": [],
         "reason": None,
     }
     assert text_result.exit_code == 0
     assert "Database ready:" in text_result.output
-    assert "revision=0019_tieba_creator_notes" in text_result.output
-    assert "tables=29/29" in text_result.output
+    assert "revision=0020_zhihu_creator_answers" in text_result.output
+    assert "tables=30/30" in text_result.output
     for output in (json_result.output, text_result.output):
         assert initialized_cli_database not in output
         assert "cli.sqlite3" not in output
@@ -439,7 +439,7 @@ def test_db_status_uninitialized_is_nonzero_read_only_and_redacted(
         assert payload["revision"] is None
         assert payload["revision_current"] is False
         assert payload["present_table_count"] == 0
-        assert len(payload["missing_tables"]) == payload["required_table_count"] == 29
+        assert len(payload["missing_tables"]) == payload["required_table_count"] == 30
         assert payload["reason"] == "database file does not exist"
         assert "sentinel-secret" not in result.output
         assert "Traceback" not in result.output
@@ -491,7 +491,7 @@ def test_db_status_rejects_incomplete_required_table_set(
     payload = json.loads(result.output)
     assert payload["reachable"] is True
     assert payload["revision_current"] is True
-    assert payload["present_table_count"] == 28
+    assert payload["present_table_count"] == 29
     assert payload["missing_tables"] == ["export_records"]
     assert payload["reason"] == "database schema is incomplete"
     assert "Traceback" not in result.output

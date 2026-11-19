@@ -8,9 +8,11 @@
 
 ## 阶段
 
-优先级更新（0085）：[贴吧创作者主题耐久交付](executions/0085-tieba-creator-notes/progress.zh.md)已实现并通过离线验证。贴吧创作者主题现在有 1 起页码的耐久单元，服务端声明的 `has_more_false` 结束连同页见证保留、仍只开启对账；由于页码总是递增，重复页身份是唯一可用的停滞信号，并以 `tieba_page_stalled` 阻塞。这是确定性本地证据，不是真人贴吧资格。
+优先级更新（0086）：[知乎创作者回答耐久交付](executions/0086-zhihu-creator-answers/progress.zh.md)已实现并通过离线验证。知乎创作者回答现在有整数 `offset` 链上的耐久单元，服务端声明的 `paging.is_end` 结束连同页见证保留、仍只开启对账；由于 offset 是 page*limit 乘积，位移窗口由页身份检测并以 `zhihu_window_shifted` 阻塞。至此冻结的 0084–0086 逐平台工作全部完成，只剩操作者金丝雀（0087）。
 
-下一优先级：知乎（0086，整数 `offset` + `paging.is_end`，位移会静默跳过内容），随后按 [0083 下一交付](executions/0083-douyin-media-profile/next-delivery.zh.md)由操作者执行逐平台有界金丝雀（0087）。
+下一优先级：[0083 下一交付](executions/0083-douyin-media-profile/next-delivery.zh.md)第 0087 步——必须由操作者用真人登录执行逐平台有界金丝雀。
+
+优先级更新（0085）：[贴吧创作者主题耐久交付](executions/0085-tieba-creator-notes/progress.zh.md)已实现并通过离线验证。贴吧创作者主题现在有 1 起页码的耐久单元，服务端声明的 `has_more_false` 结束连同页见证保留、仍只开启对账；由于页码总是递增，重复页身份是唯一可用的停滞信号，并以 `tieba_page_stalled` 阻塞。
 
 优先级更新（0084）：[微博创作者笔记耐久交付](executions/0084-weibo-creator-notes/progress.zh.md)已实现并通过离线验证。微博创作者笔记现在有 `since_id` 追踪的耐久单元，`cardlistInfo.total` 的算术结束只作为开启对账的**推断**保留（连同声明的 total、已消耗页数与首页见证），页尾保留、停滞防护、受限≠源末，以及只有封闭管线回执才能推进的 backfill → reconciling → incremental。这是确定性本地证据，不是真人微博资格。
 

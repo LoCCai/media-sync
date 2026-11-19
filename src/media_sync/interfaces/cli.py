@@ -173,6 +173,7 @@ from media_sync.scheduler.kuaishou_scan_continuation import KuaishouScanContinua
 from media_sync.scheduler.policy import classify_failure
 from media_sync.scheduler.tieba_scan_continuation import TiebaScanContinuationPolicy
 from media_sync.scheduler.xhs_scan_continuation import XhsScanContinuationPolicy
+from media_sync.scheduler.zhihu_scan_continuation import ZhihuScanContinuationPolicy
 from media_sync.security import (
     InvalidSecretReferenceError,
     OperatorAuthConfigurationError,
@@ -211,7 +212,7 @@ app.add_typer(asset_app, name="asset")
 app.add_typer(emby_app, name="emby")
 app.add_typer(pipeline_app, name="pipeline")
 
-_EXPECTED_DATABASE_REVISION = "0019_tieba_creator_notes"
+_EXPECTED_DATABASE_REVISION = "0020_zhihu_creator_answers"
 _KNOWN_DATABASE_REVISIONS = frozenset(
     {
         "0001_initial_schema",
@@ -232,6 +233,7 @@ _KNOWN_DATABASE_REVISIONS = frozenset(
         "0016_douyin_creator_work",
         "0017_kuaishou_creator_work",
         "0018_weibo_creator_notes",
+        "0019_tieba_creator_notes",
         _EXPECTED_DATABASE_REVISION,
     }
 )
@@ -1055,6 +1057,10 @@ def _scheduler_runtime() -> Iterator[tuple[Database, DurableSchedulerService]]:
                 tieba_scan_continuation=TiebaScanContinuationPolicy.from_lock(
                     settings.mediacrawler_lock_path,
                     delay_seconds=settings.tieba_scan_continuation_delay_seconds,
+                ),
+                zhihu_scan_continuation=ZhihuScanContinuationPolicy.from_lock(
+                    settings.mediacrawler_lock_path,
+                    delay_seconds=settings.zhihu_scan_continuation_delay_seconds,
                 ),
             ),
         )
@@ -2267,6 +2273,10 @@ def scheduler_supervise(
                 tieba_scan_continuation=TiebaScanContinuationPolicy.from_lock(
                     settings.mediacrawler_lock_path,
                     delay_seconds=settings.tieba_scan_continuation_delay_seconds,
+                ),
+                zhihu_scan_continuation=ZhihuScanContinuationPolicy.from_lock(
+                    settings.mediacrawler_lock_path,
+                    delay_seconds=settings.zhihu_scan_continuation_delay_seconds,
                 ),
             ),
             subscription_worker=subscription_worker,

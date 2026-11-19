@@ -88,6 +88,7 @@ from media_sync.integrations.mediacrawler.subscription_policy import (
 from media_sync.integrations.mediacrawler.tieba_creator_work import TiebaScanCoverage
 from media_sync.integrations.mediacrawler.weibo_creator_work import WeiboScanCoverage
 from media_sync.integrations.mediacrawler.xhs_creator_notes import XhsScanCoverage
+from media_sync.integrations.mediacrawler.zhihu_creator_work import ZhihuScanCoverage
 from media_sync.scheduler.bili_delivery_progress import bili_policy_fingerprint
 from media_sync.scheduler.douyin_delivery_progress import DouyinDeliveryProgressRepository, douyin_policy_fingerprint
 from media_sync.scheduler.handlers import (
@@ -109,6 +110,10 @@ from media_sync.scheduler.weibo_delivery_progress import (
     weibo_policy_fingerprint,
 )
 from media_sync.scheduler.xhs_delivery_progress import XhsDeliveryProgressRepository, xhs_policy_fingerprint
+from media_sync.scheduler.zhihu_delivery_progress import (
+    ZhihuDeliveryProgressRepository,
+    zhihu_policy_fingerprint,
+)
 from media_sync.security import SecretError, SecretResolver, SecretValue
 
 _RUN_METADATA_SCHEMA_VERSION = 1
@@ -275,6 +280,20 @@ class _IngestionService(Protocol):
         crawl_revision_before: int | None = None,
         ownership_guard: Callable[[Session], None] | None = None,
         coverage: TiebaScanCoverage,
+    ) -> MediaCrawlerIngestionResult: ...
+
+    def ingest_zhihu_bounded(
+        self,
+        records: tuple[NormalizedMediaRecord, ...],
+        *,
+        subscription_id: str | UUID,
+        run_id: str | UUID,
+        expected_revision: int,
+        input_cursor: str | None,
+        next_cursor: str,
+        crawl_revision_before: int | None = None,
+        ownership_guard: Callable[[Session], None] | None = None,
+        coverage: ZhihuScanCoverage,
     ) -> MediaCrawlerIngestionResult: ...
 
     def ingest_weibo_bounded(
@@ -584,6 +603,8 @@ class MediaCrawlerScheduledHandler:
                 return weibo_policy_fingerprint(context.subscription_policy, context.max_items)
             if context.account.platform is Platform.TIEBA:
                 return tieba_policy_fingerprint(context.subscription_policy, context.max_items)
+            if context.account.platform is Platform.ZHIHU:
+                return zhihu_policy_fingerprint(context.subscription_policy, context.max_items)
             return None
         except ValueError:
             return None
@@ -774,6 +795,45 @@ class MediaCrawlerScheduledHandler:
             )
             if progress is None:
                 raise RepositoryError("scheduled Tieba progress is unavailable")
+            repository.ensure_creator_binding(
+                subscription,
+                upstream_sha=upstream_sha,
+                creator_fingerprint_sha256=creator_fingerprint,
+                now=self._now(),
+            )
+            self._guard(context, session)
+        return self._load_scope(context)
+
+    def _ensure_zhihu_creator_binding(
+        self,
+        context: SubscriptionJobContext,
+        creator_reference: str | SecretValue,
+    ) -> _ScopeSnapshot:
+        raw_reference = creator_reference.reveal() if isinstance(creator_reference, SecretValue) else creator_reference
+        normalized = normalize_creator_reference(Platform.ZHIHU, raw_reference)
+        creator_fingerprint = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+        upstream_sha = load_mediacrawler_lock(self.lock_path).commit
+        with self.database.session() as session:
+            self._guard(context, session)
+            subscription = SubscriptionRepository(session).require_active(str(context.subscription_id), lock=True)
+            if (
+                subscription.account_id != str(context.account.account_id)
+                or subscription.account.auth_revision != context.auth_revision
+                or subscription.schedule_revision != context.schedule_revision + 1
+                or subscription.policy != dict(context.subscription_policy)
+                or subscription.max_items != context.max_items
+            ):
+                raise RepositoryError("scheduled Zhihu scope changed")
+            repository = ZhihuDeliveryProgressRepository(session)
+            progress = repository.ensure_for_materialization(
+                subscription,
+                upstream_sha=upstream_sha,
+                schedule_revision=context.schedule_revision,
+                now=self._now(),
+                resume_blocked=True,
+            )
+            if progress is None:
+                raise RepositoryError("scheduled Zhihu progress is unavailable")
             repository.ensure_creator_binding(
                 subscription,
                 upstream_sha=upstream_sha,
@@ -1281,12 +1341,14 @@ class MediaCrawlerScheduledHandler:
         manifest_kuaishou_scan = getattr(manifest, "kuaishou_scan", None)
         manifest_weibo_scan = getattr(manifest, "weibo_scan", None)
         manifest_tieba_scan = getattr(manifest, "tieba_scan", None)
+        manifest_zhihu_scan = getattr(manifest, "zhihu_scan", None)
         output_bili_coverage = getattr(output, "bili_coverage", None)
         output_xhs_coverage = getattr(output, "xhs_coverage", None)
         output_douyin_coverage = getattr(output, "douyin_coverage", None)
         output_kuaishou_coverage = getattr(output, "kuaishou_coverage", None)
         output_weibo_coverage = getattr(output, "weibo_coverage", None)
         output_tieba_coverage = getattr(output, "tieba_coverage", None)
+        output_zhihu_coverage = getattr(output, "zhihu_coverage", None)
         bounded_manifest_scans = (
             manifest_bili_scan,
             manifest_xhs_scan,
@@ -1303,6 +1365,7 @@ class MediaCrawlerScheduledHandler:
             or (manifest_kuaishou_scan is None) != (output_kuaishou_coverage is None)
             or (manifest_weibo_scan is None) != (output_weibo_coverage is None)
             or (manifest_tieba_scan is None) != (output_tieba_coverage is None)
+            or (manifest_zhihu_scan is None) != (output_zhihu_coverage is None)
             or sum(scan is not None for scan in bounded_manifest_scans) > 1
         ):
             error_code = await self._cleanup_failure_code(attempt_paths, "output_security_failed")
@@ -1463,6 +1526,27 @@ class MediaCrawlerScheduledHandler:
                 coverage=output_tieba_coverage,
                 ownership_guard=guarded,
             )
+        elif manifest_zhihu_scan is not None and output_zhihu_coverage is not None:
+            try:
+                output_zhihu_coverage.validate(
+                    manifest_zhihu_scan,
+                    manifest.max_items,
+                    normalized_remote_ids=tuple(record.content.remote_id for record in output.records),
+                )
+            except ValueError:
+                return await self._fail_attempt(context, prepared, attempt_paths, "output_security_failed")
+            ingest_call = asyncio.to_thread(
+                service.ingest_zhihu_bounded,
+                output.records,
+                subscription_id=context.subscription_id,
+                run_id=prepared.run_id,
+                expected_revision=prepared.checkpoint_revision,
+                crawl_revision_before=manifest.checkpoint_revision_before,
+                input_cursor=manifest.zhihu_scan_input_cursor,
+                next_cursor=output_zhihu_coverage.next_state.to_cursor(),
+                coverage=output_zhihu_coverage,
+                ownership_guard=guarded,
+            )
         else:
             ingest_call = asyncio.to_thread(
                 service.ingest,
@@ -1501,6 +1585,7 @@ class MediaCrawlerScheduledHandler:
                 or output_kuaishou_coverage
                 or output_weibo_coverage
                 or output_tieba_coverage
+                or output_zhihu_coverage
             )
             if bounded_coverage is not None:
                 truth = self._read_ingestion_truth(
@@ -1818,6 +1903,13 @@ class MediaCrawlerScheduledHandler:
                 raise
             except Exception:
                 return SubscriptionHandlerResult.failure("configuration_invalid")
+        if context.account.platform is Platform.ZHIHU and policy.creator_secret_ref is not None:
+            try:
+                scope = self._ensure_zhihu_creator_binding(context, creator_reference)
+            except LeaseLostError:
+                raise
+            except Exception:
+                return SubscriptionHandlerResult.failure("configuration_invalid")
 
         recovery_rejected = False
         try:
@@ -1930,6 +2022,14 @@ class MediaCrawlerScheduledHandler:
             tieba_scan_cursor_before=(
                 prepared.cursor_before
                 if context.account.platform is Platform.TIEBA and policy.creator_secret_ref is not None
+                else None
+            ),
+            zhihu_bounded_capture=(
+                context.account.platform is Platform.ZHIHU and policy.creator_secret_ref is not None
+            ),
+            zhihu_scan_cursor_before=(
+                prepared.cursor_before
+                if context.account.platform is Platform.ZHIHU and policy.creator_secret_ref is not None
                 else None
             ),
         )

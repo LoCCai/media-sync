@@ -55,6 +55,8 @@ from .weibo_delivery_progress import WeiboDeliveryProgressRepository
 from .weibo_scan_continuation import WeiboScanContinuationPolicy
 from .xhs_delivery_progress import XhsDeliveryProgressRepository
 from .xhs_scan_continuation import XhsScanContinuationPolicy
+from .zhihu_delivery_progress import ZhihuDeliveryProgressRepository
+from .zhihu_scan_continuation import ZhihuScanContinuationPolicy
 
 SYNC_SUBSCRIPTION_JOB_TYPE = "sync.subscription"
 SCHEDULE_PAYLOAD_SCHEMA_VERSION = 1
@@ -438,6 +440,7 @@ class SchedulerRepository:
         kuaishou_scan_continuation: KuaishouScanContinuationPolicy | None = None,
         weibo_scan_continuation: WeiboScanContinuationPolicy | None = None,
         tieba_scan_continuation: TiebaScanContinuationPolicy | None = None,
+        zhihu_scan_continuation: ZhihuScanContinuationPolicy | None = None,
     ) -> None:
         self.session = session
         self.bili_scan_continuation = bili_scan_continuation or BiliScanContinuationPolicy()
@@ -446,6 +449,7 @@ class SchedulerRepository:
         self.kuaishou_scan_continuation = kuaishou_scan_continuation or KuaishouScanContinuationPolicy()
         self.weibo_scan_continuation = weibo_scan_continuation or WeiboScanContinuationPolicy()
         self.tieba_scan_continuation = tieba_scan_continuation or TiebaScanContinuationPolicy()
+        self.zhihu_scan_continuation = zhihu_scan_continuation or ZhihuScanContinuationPolicy()
 
     def _serialize_sqlite_writer(self) -> None:
         """Acquire SQLite's writer slot before making a read/decide/CAS choice."""
@@ -841,6 +845,13 @@ class SchedulerRepository:
             now=now,
             resume_blocked=resume_blocked or platform == "tieba",
         )
+        zhihu_progress = ZhihuDeliveryProgressRepository(self.session).ensure_for_materialization(
+            subscription,
+            upstream_sha=self.zhihu_scan_continuation.upstream_sha,
+            schedule_revision=schedule_revision,
+            now=now,
+            resume_blocked=resume_blocked or platform == "zhihu",
+        )
         if (
             sum(
                 flag is not None
@@ -851,13 +862,20 @@ class SchedulerRepository:
                     kuaishou_progress,
                     weibo_progress,
                     tieba_progress,
+                    zhihu_progress,
                 )
             )
             > 1
         ):
             raise SchedulerRepositoryError("multiple delivery progress contracts selected one subscription")
         progress = (
-            bili_progress or xhs_progress or douyin_progress or kuaishou_progress or weibo_progress or tieba_progress
+            bili_progress
+            or xhs_progress
+            or douyin_progress
+            or kuaishou_progress
+            or weibo_progress
+            or tieba_progress
+            or zhihu_progress
         )
         if progress is not None and progress.phase == "blocked":
             return None

@@ -1592,6 +1592,12 @@ async def _execute_child(
                 verified.root,
                 creator_max_items=manifest.max_items,
             )
+            if getattr(manifest, "zhihu_scan", None) is not None:
+                from media_sync.integrations.mediacrawler.zhihu_creator_capture import (
+                    install_zhihu_creator_capture_shim,
+                )
+
+                install_zhihu_creator_capture_shim(manifest)
         elif manifest.platform.value == "ks":
             from media_sync.integrations.mediacrawler.kuaishou_media import (
                 install_kuaishou_media_capture,

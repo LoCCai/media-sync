@@ -37,6 +37,8 @@ from .models import (
     TIEBA_DELIVERY_STOP_REASONS,
     WEIBO_DELIVERY_PHASES,
     WEIBO_DELIVERY_STOP_REASONS,
+    ZHIHU_DELIVERY_PHASES,
+    ZHIHU_DELIVERY_STOP_REASONS,
     Account,
     Asset,
     AssetRefreshSource,
@@ -66,6 +68,7 @@ from .models import (
     TiebaSubscriptionProgress,
     WeiboSubscriptionProgress,
     XhsSubscriptionProgress,
+    ZhihuSubscriptionProgress,
 )
 from .operation_repository import (
     OperationConflictError,
@@ -144,6 +147,8 @@ __all__ = [
     "TIEBA_DELIVERY_STOP_REASONS",
     "WEIBO_DELIVERY_PHASES",
     "WEIBO_DELIVERY_STOP_REASONS",
+    "ZHIHU_DELIVERY_PHASES",
+    "ZHIHU_DELIVERY_STOP_REASONS",
     "Account",
     "AccountLoginConflictError",
     "AccountRepository",
@@ -233,6 +238,7 @@ __all__ = [
     "UTCDateTime",
     "WeiboSubscriptionProgress",
     "XhsSubscriptionProgress",
+    "ZhihuSubscriptionProgress",
     "asset_fingerprints",
     "create_database_engine",
     "new_uuid",

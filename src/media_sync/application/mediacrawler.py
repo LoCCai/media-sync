@@ -55,6 +55,12 @@ from media_sync.integrations.mediacrawler.xhs_creator_notes import (
     XhsNoteIdentity,
     XhsScanCoverage,
 )
+from media_sync.integrations.mediacrawler.zhihu_creator_work import (
+    ZH_SCAN_COVERAGE_FILENAME,
+    ZH_SCAN_IDENTITY_FIELD,
+    ZhihuScanCoverage,
+    ZhihuWorkIdentity,
+)
 
 
 class MediaCrawlerOutputRejected(ValueError):
@@ -74,6 +80,7 @@ class NormalizedMediaCrawlerOutput:
     kuaishou_coverage: KuaishouScanCoverage | None = field(default=None, repr=False)
     weibo_coverage: WeiboScanCoverage | None = field(default=None, repr=False)
     tieba_coverage: TiebaScanCoverage | None = field(default=None, repr=False)
+    zhihu_coverage: ZhihuScanCoverage | None = field(default=None, repr=False)
 
 
 def validate_bili_record_keys(
@@ -197,6 +204,39 @@ def _douyin_content_identities(payload: bytes, *, creator_fingerprint_sha256: st
             )
         except (TypeError, ValueError):
             raise MediaCrawlerOutputRejected("bounded Douyin content identity is invalid") from None
+    return tuple(identities)
+
+
+def _zhihu_content_identities(
+    payload: bytes,
+    *,
+    creator_fingerprint_sha256: str,
+) -> tuple[ZhihuWorkIdentity, ...]:
+    identities: list[ZhihuWorkIdentity] = []
+    for line in payload.splitlines():
+        if not line.strip():
+            continue
+        raw = json.loads(line, object_pairs_hook=_closed_object)
+        identity = raw.get(ZH_SCAN_IDENTITY_FIELD) if isinstance(raw, Mapping) else None
+        if not isinstance(identity, Mapping) or set(identity) != {
+            "content_id",
+            "listing_sha256",
+            "creator_fingerprint_sha256",
+        }:
+            raise MediaCrawlerOutputRejected("bounded Zhihu content identity is missing")
+        if identity["creator_fingerprint_sha256"] != creator_fingerprint_sha256:
+            raise MediaCrawlerOutputRejected("bounded Zhihu creator reference differs")
+        if not isinstance(raw, Mapping) or str(raw.get("content_id")) != identity["content_id"]:
+            raise MediaCrawlerOutputRejected("bounded Zhihu answer identity differs")
+        try:
+            identities.append(
+                ZhihuWorkIdentity(
+                    content_id=identity["content_id"],
+                    listing_sha256=identity["listing_sha256"],
+                )
+            )
+        except (TypeError, ValueError):
+            raise MediaCrawlerOutputRejected("bounded Zhihu content identity is invalid") from None
     return tuple(identities)
 
 
@@ -329,12 +369,14 @@ def load_normalized_output(
     kuaishou_coverage = None
     weibo_coverage = None
     tieba_coverage = None
+    zhihu_coverage = None
     bili_identities: list[BiliIdentity] = []
     xhs_identities: list[XhsNoteIdentity] = []
     douyin_identities: list[DouyinWorkIdentity] = []
     kuaishou_identities: list[KuaishouWorkIdentity] = []
     weibo_identities: list[WeiboWorkIdentity] = []
     tieba_identities: list[TiebaWorkIdentity] = []
+    zhihu_identities: list[ZhihuWorkIdentity] = []
     dynamic_payloads: dict[str, BiliDynamicPayload] = {}
     for jsonl_file in snapshot.files:
         if PurePosixPath(jsonl_file.relative_path).name == "_media_sync_bili_coverage.jsonl":
@@ -391,6 +433,15 @@ def load_normalized_output(
                 raise MediaCrawlerOutputRejected("unexpected Tieba coverage sidecar")
             tieba_coverage = TiebaScanCoverage.from_json_line(jsonl_file.payload.decode("utf-8"))
             continue
+        if PurePosixPath(jsonl_file.relative_path).name == ZH_SCAN_COVERAGE_FILENAME:
+            if (
+                manifest.zhihu_scan is None
+                or jsonl_file.relative_path != ZH_SCAN_COVERAGE_FILENAME
+                or zhihu_coverage is not None
+            ):
+                raise MediaCrawlerOutputRejected("unexpected Zhihu coverage sidecar")
+            zhihu_coverage = ZhihuScanCoverage.from_json_line(jsonl_file.payload.decode("utf-8"))
+            continue
         if manifest.bili_scan is not None:
             upload_lines: list[bytes] = []
             for line in jsonl_file.payload.splitlines():
@@ -442,6 +493,13 @@ def load_normalized_output(
         if manifest.tieba_scan is not None:
             tieba_identities.extend(
                 _tieba_content_identities(
+                    jsonl_file.payload,
+                    creator_fingerprint_sha256=manifest.creator_fingerprint_sha256,
+                )
+            )
+        if manifest.zhihu_scan is not None:
+            zhihu_identities.extend(
+                _zhihu_content_identities(
                     jsonl_file.payload,
                     creator_fingerprint_sha256=manifest.creator_fingerprint_sha256,
                 )
@@ -694,6 +752,36 @@ def load_normalized_output(
                 or record.content.remote_id not in {identity.thread_id for identity in tieba_coverage.successful}
             ):
                 raise MediaCrawlerOutputRejected("bounded Tieba normalized identity differs")
+    if manifest.zhihu_scan is not None:
+        if zhihu_coverage is None:
+            raise MediaCrawlerOutputRejected("bounded Zhihu coverage is missing")
+        if (
+            hashlib.sha256(creator_remote_id.encode("utf-8")).hexdigest()
+            != manifest.author_remote_id_fingerprint_sha256
+        ):
+            raise MediaCrawlerOutputRejected("bounded Zhihu creator scope differs")
+        try:
+            zhihu_coverage.validate(
+                manifest.zhihu_scan,
+                manifest.max_items,
+                normalized_remote_ids=tuple(record.content.remote_id for record in records),
+            )
+        except ValueError:
+            raise MediaCrawlerOutputRejected("bounded Zhihu coverage and content differ") from None
+        if (
+            len(records) != records_seen
+            or len(zhihu_identities) != len(zhihu_coverage.successful)
+            or tuple(zhihu_identities) != zhihu_coverage.successful
+        ):
+            raise MediaCrawlerOutputRejected("bounded Zhihu coverage and content differ")
+        for record in records:
+            if (
+                record.content.platform is not Platform.ZHIHU
+                or record.content.remote_type != "content"
+                or record.author.remote_id != creator_remote_id
+                or record.content.remote_id not in {identity.content_id for identity in zhihu_coverage.successful}
+            ):
+                raise MediaCrawlerOutputRejected("bounded Zhihu normalized identity differs")
     fingerprint = hashlib.sha256(
         json.dumps(
             snapshot.receipt.as_payload(),
