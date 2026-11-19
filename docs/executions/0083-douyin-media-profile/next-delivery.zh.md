@@ -6,18 +6,32 @@
 
 **仅为计划。** 本文档不授权任何部署、平台请求或驻留进程重启。它记录顺序，以及未来执行必须自行重新推导的上游事实，使每一步都从证据开始，而不是从复制的模板开始。
 
+## 完成更新
+
+0084、0085、0086 三步现已**实现并通过离线验证**，只剩操作者金丝雀（0087）。每一步都以自己的编号记录收尾：
+
+| 步骤 | 执行 | 迁移 | 新增内容 |
+| --- | --- | --- | --- |
+| 0084 微博 | [0084 记录](../0084-weibo-creator-notes/progress.zh.md) | `0018_weibo_creator_notes` | `since_id` 耐久单元，`total_inferred_end` 保留为推断 |
+| 0085 贴吧 | [0085 记录](../0085-tieba-creator-notes/progress.zh.md) | `0019_tieba_creator_notes` | 1 起页码单元、服务端声明 `has_more_false`、重复页停滞防护 |
+| 0086 知乎 | [0086 记录](../0086-zhihu-creator-answers/progress.zh.md) | `0020_zhihu_creator_answers` | 整数 offset 单元、`paging.is_end`、窗口位移检测 |
+| 0087 金丝雀 | [0087 记录](../0087-operator-canary/qualification.zh.md) | — | 操作者流程与 `NOT_RUN` 资格表 |
+
 ## 项目实际位置
 
-四个平台现在携带同一条耐久创作者作品链，且各自从自己的钉定上游语义推导：
+七个平台现在携带同一条耐久创作者作品链，且各自从自己的钉定上游语义推导：
 
 | 平台 | 执行 | 游标 / 分页信号 | 停止原因 |
 | --- | --- | --- | --- |
-| B 站 | 0074 | 页码，每页 30 | 源末、单元上限、受限 |
-| 小红书 | 0076 | 不透明 `cursor` + `has_more` | 源末、空页停滞、受限、单元上限 |
+| B 站 | 0074 | 页码，每页 30 | `source_end`、`head_boundary`、`item_limit`、`list_limit`、`restarted` |
+| 小红书 | 0076 | 不透明 `cursor` + `has_more` | `has_more_false`、`empty_page_stalled`、`access_restricted`、`unit_cap_reached` |
 | 抖音 | 0080 | 不透明 `max_cursor` + 整数 `has_more`，每页 18 | `has_more_false`、`empty_page_stalled`、`access_restricted`、`unit_cap_reached` |
 | 快手 | 0081 | 回显 `pcursor` + 字符串哨兵 `no_more` | `no_more_echoed`、`empty_page_end`、`access_restricted`、`unit_cap_reached` |
+| 微博 | 0084 | `since_id` + 算术 `total` 推断 | `total_inferred_end`、`empty_page_end`、`access_restricted`、`unit_cap_reached` |
+| 贴吧 | 0085 | 1 起 `pn` + `rn=20` 的 `has_more` | `has_more_false`、`empty_page_end`、`access_restricted`、`unit_cap_reached` |
+| 知乎 | 0086 | 整数 `offset` + `paging.is_end` | `is_end`、`empty_page_end`、`access_restricted`、`unit_cap_reached` |
 
-微博、贴吧与知乎仍有媒体捕获、详情刷新与单次有界上限，但**没有耐久游标、没有交付进度表、没有按 Content 发布**。它们的创作者路径仍是产品最薄的一环：长历史无法续跑，部分运行对"已交付什么"没有耐久陈述。
+在任何平台自己的[资格行](../0087-operator-canary/qualification.zh.md)读到 `PASS` 之前，都不得称其已支持。
 
 ## 每个未来执行必须重新推导的上游事实
 

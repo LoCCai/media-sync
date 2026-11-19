@@ -8,9 +8,11 @@
 
 ## 阶段
 
-优先级更新（0086）：[知乎创作者回答耐久交付](executions/0086-zhihu-creator-answers/progress.zh.md)已实现并通过离线验证。知乎创作者回答现在有整数 `offset` 链上的耐久单元，服务端声明的 `paging.is_end` 结束连同页见证保留、仍只开启对账；由于 offset 是 page*limit 乘积，位移窗口由页身份检测并以 `zhihu_window_shifted` 阻塞。至此冻结的 0084–0086 逐平台工作全部完成，只剩操作者金丝雀（0087）。
+优先级更新（0087）：[操作者门](executions/0087-operator-canary/progress.zh.md)已记录。七个创作者平台都携带耐久创作者作品链（0074–0086）。每一项剩余工作——逐平台真人金丝雀、真实媒体字节、零工作重放与重启续跑——都需要 Linux 主机、真人原生登录、真实平台请求与真实 CDN 字节，因此在[资格记录](executions/0087-operator-canary/qualification.zh.md)中如实为 `NOT_RUN`。项目已无剩余代码阶段，剩下的只有操作者执行。
 
-下一优先级：[0083 下一交付](executions/0083-douyin-media-profile/next-delivery.zh.md)第 0087 步——必须由操作者用真人登录执行逐平台有界金丝雀。
+下一优先级：操作者按已冻结的[流程](executions/0087-operator-canary/plan.zh.md)逐平台执行 0087，并凭已捕获证据把资格行一次一行地从 `NOT_RUN` 变成 `PASS` 或 `FAIL`。
+
+优先级更新（0086）：[知乎创作者回答耐久交付](executions/0086-zhihu-creator-answers/progress.zh.md)已实现并通过离线验证。知乎创作者回答现在有整数 `offset` 链上的耐久单元，服务端声明的 `paging.is_end` 结束连同页见证保留、仍只开启对账；由于 offset 是 page*limit 乘积，位移窗口由页身份检测并以 `zhihu_window_shifted` 阻塞。
 
 优先级更新（0085）：[贴吧创作者主题耐久交付](executions/0085-tieba-creator-notes/progress.zh.md)已实现并通过离线验证。贴吧创作者主题现在有 1 起页码的耐久单元，服务端声明的 `has_more_false` 结束连同页见证保留、仍只开启对账；由于页码总是递增，重复页身份是唯一可用的停滞信号，并以 `tieba_page_stalled` 阻塞。
 

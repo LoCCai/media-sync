@@ -2,11 +2,11 @@
 
 # 项目工作日志
 
-当前交付：[0086 知乎创作者回答耐久交付](executions/0086-zhihu-creator-answers/progress.zh.md)。知乎创作者回答现在携带整数 `offset` 链上的耐久单元，服务端声明的 `paging.is_end` 结束连同页见证保留、仍只开启对账；由于 offset 是 page*limit 乘积，位移窗口由页身份检测并以 `zhihu_window_shifted` 阻塞。最终本地证据见 [0086 验证](executions/0086-zhihu-creator-answers/verification.zh.md)：Python `7307 passed, 63 skipped`；Web `30 files / 843 tests`；Ruff、strict mypy 与文档门通过。部署与全部真人平台行仍为 `NOT_RUN`。
+当前交付：[0087 逐平台操作者金丝雀流程](executions/0087-operator-canary/progress.zh.md)。七个创作者平台现在都携带耐久创作者作品链（0074 B 站、0076 小红书、0080 抖音、0081 快手、0084 微博、0085 贴吧、0086 知乎）。剩余工作需要 Linux 主机、真人原生登录、平台请求与真实 CDN 字节，因此每一行真人工作如实为 `NOT_RUN`；[资格记录](executions/0087-operator-canary/qualification.zh.md)是记录该事实并写明改变某行所需确切证据的唯一位置。最后一次代码交付的本地证据见 [0086 验证](executions/0086-zhihu-creator-answers/verification.zh.md)：Python `7307 passed, 63 skipped`；Web `30 files / 843 tests`；Ruff、strict mypy 与文档门通过。
 
-前序交付：[0085 贴吧创作者主题耐久交付](executions/0085-tieba-creator-notes/progress.zh.md)。贴吧创作者主题携带 1 起页码的耐久单元，服务端声明的 `has_more_false` 连同页见证保留、仍只开启对账。
+前序交付：[0086 知乎创作者回答耐久交付](executions/0086-zhihu-creator-answers/progress.zh.md)。知乎创作者回答携带整数 `offset` 链上的耐久单元，服务端声明的 `paging.is_end` 结束仍只开启对账，位移窗口由页身份检测。
 
-更早：[0084 微博创作者笔记耐久交付](executions/0084-weibo-creator-notes/progress.zh.md)。微博创作者笔记携带追踪 `since_id` 的耐久单元，`cardlistInfo.total` 的算术结束被记录为开启对账的推断而非完整性。
+更早：[0085 贴吧创作者主题耐久交付](executions/0085-tieba-creator-notes/progress.zh.md)。贴吧创作者主题携带 1 起页码的耐久单元，服务端声明的 `has_more_false` 连同页见证保留、仍只开启对账。
 
 更早：[0077 部署来源身份与 XHS 金丝雀预检](executions/0077-deployment-provenance-preflight/progress.zh.md)，实现提交为 `d6db86a`。镜像可以在封闭构建清单与 OCI 标签中记录一个精确 media-sync 源码 SHA。经认证的诊断页与 `doctor --deep` 会公开经过验证的来源身份、当前/预期 migration 及 B 站/XHS 续跑间隔，以便恢复工作前比较 API 与 supervisor 服务定义。后续遵循[部署交接](executions/0077-deployment-provenance-preflight/deployment-handoff.zh.md)；该收尾不会启动 XHS 或抖音工作。
 
@@ -40,6 +40,7 @@
 
 | ID | 里程碑 | 状态 | 提交 |
 | --- | --- | --- | --- |
+| 0087 | 逐平台操作者金丝雀 | 流程与资格记录完成；**每一行真人工作都是 `NOT_RUN`**。七步操作者流程，以及记录全部七个平台在真人金丝雀、真实媒体字节、零工作重放与重启续跑上均为 `NOT_RUN` 的唯一表格，并写明每一行读到 `PASS` 前所需的确切证据；未改动产品行为 | 文档与收尾为包含本记录的提交；[资格记录](executions/0087-operator-canary/qualification.zh.md) |
 | 0086 | 知乎创作者回答耐久交付 | 本地完成：迁移 `0020_zhihu_creator_answers`、整数 `offset` 链上的耐久单元与四个固定停止原因、按同一 offset 的页尾回放、以 `zhihu_window_shifted` 阻塞的位移窗口检测、把假值/畸形响应体判为 `access_restricted` 的子进程 shim，以及由封闭回执驱动的 backfill → reconciling → incremental；Python `7307 passed, 63 skipped` | 实现与收尾为包含本记录的提交；[验证](executions/0086-zhihu-creator-answers/verification.zh.md) |
 | 0085 | 贴吧创作者主题耐久交付 | 本地完成：迁移 `0019_tieba_creator_notes`、带页见证与四个固定停止原因的 1 起页码单元、页尾回放、重复身份停滞防护、把非零 `error_code` 判为 `access_restricted` 的子进程 shim，以及由封闭回执驱动的 backfill → reconciling → incremental；Python `7281 passed, 63 skipped` | 实现与收尾为包含本记录的提交；[验证](executions/0085-tieba-creator-notes/verification.zh.md) |
 | 0084 | 微博创作者笔记耐久交付 | 本地完成：迁移 `0018_weibo_creator_notes`、追踪 `since_id` 的单元与四个固定停止原因，其中 `cardlistInfo.total` 的算术结束只是开启对账的推断；页尾回放、停滞防护、过滤 `card_type == 9` 并把假值/缺失 `cards` 映射为 `access_restricted` 的子进程 shim，以及由封闭回执驱动的 backfill → reconciling → incremental；Python `7257 passed, 63 skipped` | 实现与收尾为包含本记录的提交；[验证](executions/0084-weibo-creator-notes/verification.zh.md) |

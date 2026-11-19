@@ -2,7 +2,17 @@
 
 # Unified project status (single source of truth)
 
-## Latest: durable Zhihu creator-answer delivery (0086)
+## Latest: the operator gate (0087)
+
+[Execution 0087](executions/0087-operator-canary/progress.md) closes the code work and fixes what remains. All seven creator platforms now carry a durable creator-work chain — Bilibili (`0014`), XHS (`0015`), Douyin (`0016`), Kuaishou (`0017`), Weibo (`0018`), Tieba (`0019`), Zhihu (`0020`) — each with its own cursor semantics, its own fixed stop reasons, page-tail replay, restricted ≠ source end, and per-Content publication gated on a closed pipeline receipt.
+
+What remains is **operator work, not code**. Every remaining row needs a Linux host, a real native login, a real platform request and real CDN bytes; this workstation cannot supply any of them. [`qualification.md`](executions/0087-operator-canary/qualification.md) is the single source that records `NOT_RUN` for the live canary, real media bytes, zero-work replay and restart resume on all seven platforms, together with the exact evidence each row needs before it may read `PASS`. No platform may be called supported before then.
+
+The procedure itself is frozen in [`plan.md`](executions/0087-operator-canary/plan.md): prove image and migration identity, claim one native session, pause everything else, run one bounded single-author canary, download and publish real bytes, replay for zero work, restart once, then record.
+
+Final local gates for the last code delivery (0086): Python `7307 passed, 63 skipped`; Web `30 files / 843 tests`; Ruff lint/format, strict mypy over 182 source files, documentation and upstream checks pass. Deployment, every real login and every live request remain `NOT_RUN`.
+
+## Previous: durable Zhihu creator-answer delivery (0086)
 
 [Execution 0086](executions/0086-zhihu-creator-answers/progress.md) extends the same durable creator chain to Zhihu, re-deriving every rule from the pinned Zhihu source.
 

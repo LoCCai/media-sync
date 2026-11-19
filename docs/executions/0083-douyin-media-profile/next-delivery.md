@@ -9,23 +9,35 @@ or a resident-process restart. It records the sequence and the upstream facts a
 future execution must re-derive, so each step starts from evidence rather than
 from a copied template.
 
+## Completion update
+
+Steps 0084, 0085 and 0086 are now **implemented and locally verified**; only the
+operator-run canary (0087) remains. Each closed with its own numbered record:
+
+| Step | Execution | Migration | What it added |
+| --- | --- | --- | --- |
+| 0084 Weibo | [0084 record](../0084-weibo-creator-notes/progress.md) | `0018_weibo_creator_notes` | `since_id` durable unit, `total_inferred_end` retained as an inference |
+| 0085 Tieba | [0085 record](../0085-tieba-creator-notes/progress.md) | `0019_tieba_creator_notes` | 1-based page-number unit, server-declared `has_more_false`, repeated-page stall guard |
+| 0086 Zhihu | [0086 record](../0086-zhihu-creator-answers/progress.md) | `0020_zhihu_creator_answers` | integer-offset unit, `paging.is_end`, window-shift detection |
+| 0087 canary | [0087 record](../0087-operator-canary/qualification.md) | — | the operator procedure and the `NOT_RUN` qualification table |
+
 ## Where the project actually stands
 
-Four platforms now carry the same durable creator-work chain, each derived from
+Seven platforms now carry the same durable creator-work chain, each derived from
 its own pinned upstream semantics:
 
 | Platform | Execution | Cursor / page signal | Stop reasons |
 | --- | --- | --- | --- |
-| Bilibili | 0074 | page number, 30 per page | source-end, unit cap, restricted |
-| XHS | 0076 | opaque `cursor` + `has_more` | source-end, empty-page stall, restricted, unit cap |
+| Bilibili | 0074 | page number, 30 per page | `source_end`, `head_boundary`, `item_limit`, `list_limit`, `restarted` |
+| XHS | 0076 | opaque `cursor` + `has_more` | `has_more_false`, `empty_page_stalled`, `access_restricted`, `unit_cap_reached` |
 | Douyin | 0080 | opaque `max_cursor` + integer `has_more`, 18 per page | `has_more_false`, `empty_page_stalled`, `access_restricted`, `unit_cap_reached` |
 | Kuaishou | 0081 | echoed `pcursor` + string sentinel `no_more` | `no_more_echoed`, `empty_page_end`, `access_restricted`, `unit_cap_reached` |
+| Weibo | 0084 | `since_id` + arithmetic `total` inference | `total_inferred_end`, `empty_page_end`, `access_restricted`, `unit_cap_reached` |
+| Tieba | 0085 | 1-based `pn` + `rn=20` `has_more` | `has_more_false`, `empty_page_end`, `access_restricted`, `unit_cap_reached` |
+| Zhihu | 0086 | integer `offset` + `paging.is_end` | `is_end`, `empty_page_end`, `access_restricted`, `unit_cap_reached` |
 
-Weibo, Tieba and Zhihu still have media capture, detail refresh and bounded
-per-run caps, but **no durable cursor, no delivery progress table and no
-per-Content publication**. Their creator paths remain the weakest link in the
-product: a long history cannot be resumed, and a partial run has no durable
-statement about what was already delivered.
+No platform may be called supported until its own [qualification
+row](../0087-operator-canary/qualification.md) reads `PASS`.
 
 ## Upstream facts each future execution must re-derive
 

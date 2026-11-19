@@ -8,9 +8,11 @@ Build a self-hosted service that can authenticate against all platforms supporte
 
 ## Phases
 
-Priority update (0086): [durable Zhihu creator-answer delivery](executions/0086-zhihu-creator-answers/progress.md) is implemented and locally verified. Zhihu creator answers now have a durable unit over the integer `offset` chain whose server-declared `paging.is_end` end is retained with its page witness and still only opens reconciliation; because the offset is a page\*limit product, a shifted window is detected by page identity and blocks with `zhihu_window_shifted`. This completes the frozen 0084–0086 per-platform work; only the operator-run canary (0087) remains.
+Priority update (0087): [the operator gate](executions/0087-operator-canary/progress.md) is recorded. All seven creator platforms carry a durable creator-work chain (0074–0086). Every remaining item — a live bounded canary, real media bytes, zero-work replay and restart resume per platform — needs a Linux host, a real native login, a real platform request and real CDN bytes, so it is honestly `NOT_RUN` in the [qualification record](executions/0087-operator-canary/qualification.md). The project has no remaining code phase; what is left is operator execution.
 
-Next priority: [0083 next delivery](executions/0083-douyin-media-profile/next-delivery.md) step 0087 — the per-platform bounded canary an operator must run with a real login.
+Next priority: an operator runs step 0087 per platform using the frozen [procedure](executions/0087-operator-canary/plan.md), and turns one qualification row at a time from `NOT_RUN` into `PASS` or `FAIL` with captured evidence.
+
+Priority update (0086): [durable Zhihu creator-answer delivery](executions/0086-zhihu-creator-answers/progress.md) is implemented and locally verified. Zhihu creator answers now have a durable unit over the integer `offset` chain whose server-declared `paging.is_end` end is retained with its page witness and still only opens reconciliation; because the offset is a page\*limit product, a shifted window is detected by page identity and blocks with `zhihu_window_shifted`.
 
 Priority update (0085): [durable Tieba creator-work delivery](executions/0085-tieba-creator-notes/progress.md) is implemented and locally verified. Tieba creator threads now have a 1-based page-number durable unit whose server-declared `has_more_false` end is retained with its page witness and still only opens reconciliation; because the page number always increments, a repeated page identity is the only stall signal and blocks with `tieba_page_stalled`.
 
