@@ -222,6 +222,76 @@ def test_media_url_gate_accepts_a_known_host() -> None:
     assert validate_douyin_media_url(_HIGH) == _HIGH
 
 
+def test_a_realistic_multi_codec_bit_rate_array_still_ranks() -> None:
+    """A real `aweme_detail` carries one entry per (quality x codec).
+
+    Four qualities x three codecs is twelve entries. With an 8-entry bound the
+    whole selection path was unreachable on such a payload and the shim silently
+    fell back to the pinned flattening, so 0083's ranking never engaged.
+    """
+
+    entries = []
+    for quality, (width, height) in enumerate([(720, 1280), (1080, 1920), (1440, 2560), (2160, 3840)]):
+        for codec, _name in enumerate(["h264", "h265", "av1"]):
+            tag = f"q{quality}c{codec}"
+            entries.append(
+                {
+                    "play_addr": {
+                        "url_list": [
+                            f"https://v3-web.douyinvod.com/{tag}-a.mp4?sign={tag}",
+                            f"https://v3-web.douyinvod.com/{tag}-b.mp4",
+                        ]
+                    },
+                    "width": width,
+                    "height": height,
+                    "bit_rate": 1_000 + quality * 500 + codec,
+                    "data_size": (quality + 1) * 1_000_000,
+                }
+            )
+
+    assert len(entries) == 12
+    selection = select_douyin_media({"aweme_id": "7525082444551310603", "video": {"bit_rate": entries}})
+
+    assert selection.rank is DouyinMediaRank.BIT_RATE
+    assert selection.width == 2160 and selection.height == 3840
+    assert selection.video_url is not None and "q3c2" in selection.video_url
+
+
+def test_a_comma_bearing_signed_url_is_refused_rather_than_silently_downgraded() -> None:
+    """The shim writes into comma-delimited fields its own reader splits on.
+
+    `apply_douyin_media_selection` stores the ranked URL into
+    `video_download_url`, and `_dy_url_list(..., allow_scalar_commas=False)`
+    returns `()` for any scalar containing a comma. Accepting such a URL here
+    therefore persisted it and then dropped it, turning a VIDEO work into an
+    asset-less TEXT row.
+    """
+
+    comma_url = "https://v3-web.douyinvod.com/high.mp4?signature=a,b"
+
+    with pytest.raises(DouyinMediaSelectionError) as error:
+        validate_douyin_media_url(comma_url)
+    assert str(error.value) == "douyin_media_url_invalid"
+
+    detail = {
+        "aweme_id": "7525082444551310604",
+        "video": {
+            "bit_rate": [
+                {
+                    "play_addr": {
+                        "url_list": [
+                            comma_url,
+                            "https://v3-web.douyinvod.com/high.mp4?signature=clean",
+                        ]
+                    }
+                }
+            ]
+        },
+    }
+    with pytest.raises(DouyinMediaSelectionError):
+        select_douyin_media(detail)
+
+
 def test_selection_application_only_rewrites_the_ranked_stream() -> None:
     flattened = {"aweme_id": "7525082444551310602", "video_download_url": _H264, "cover_url": ""}
     ranked = DouyinMediaSelection(rank=DouyinMediaRank.BIT_RATE, video_url=_HIGH)

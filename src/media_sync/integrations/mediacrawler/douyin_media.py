@@ -21,7 +21,11 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-DOUYIN_MAX_BIT_RATE_ENTRIES = 8
+# One declared stream per (quality x codec): a realistic `aweme_detail`
+# carries ~10-16 entries, so an 8-entry bound made the whole selection path
+# unreachable and silently fell back to the pinned flattening. 32 is the
+# observed realistic ceiling while still refusing an unbounded server array.
+DOUYIN_MAX_BIT_RATE_ENTRIES = 32
 DOUYIN_MEDIA_RANK_FIELD = "__media_sync_dy_media_rank_v1"
 DOUYIN_MEDIA_FIELD = "__media_sync_dy_media_v1"
 
@@ -112,6 +116,12 @@ def validate_douyin_media_url(value: object) -> str:
         or len(value) > _MAX_URL_CHARS
         or "\\" in value
         or "#" in value
+        # The normalizer's persisted Douyin media fields are comma-delimited
+        # (`_dy_url_list(..., allow_scalar_commas=False)`), so a comma here
+        # would be written by this shim and then silently dropped by its own
+        # reader, downgrading a VIDEO work to an asset-less TEXT row. Refuse it
+        # at selection time so the two halves of the shim agree.
+        or "," in value
         or any(character.isspace() for character in value)
         or any(ord(character) < 0x20 or ord(character) == 0x7F for character in value)
     ):

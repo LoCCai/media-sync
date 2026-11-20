@@ -2,7 +2,18 @@
 
 # Unified project status (single source of truth)
 
-## Latest: independent six-discipline code review (0088)
+## Latest: Douyin selection bounds (0089)
+
+[Execution 0089](executions/0089-douyin-selection-bounds/progress.md) closes the two Douyin findings that 0088 deferred. Both were cases where the feature existed, was tested, and never engaged in practice:
+
+- **The 8-entry `bit_rate` bound made 0083's ranking unreachable.** Upstream declares one `bit_rate[]` entry per (quality x codec), so a realistic `aweme_detail` carries 10-16. Every such payload raised `douyin_media_field_invalid`, the shim swallowed it, and the pinned flattening was used unchanged. The bound is now 32 and still fail-closed above it.
+- **The shim could write a URL its own reader discards.** `validate_douyin_media_url` accepted a comma, `apply_douyin_media_selection` persisted it into `video_download_url`, and `_dy_url_list(...)` then returned `()` for it, so a VIDEO work normalized to `kind=text` with zero assets. The comma is now refused at selection time; `_dy_url_list` was deliberately left alone because the note gallery and other media fields share it and a comma genuinely separates list members there.
+
+Three findings from 0088 remain open and are recorded rather than guessed: the Kuaishou image-CDN allowlist (no real hostname exists anywhere in the tree, so it needs one operator-captured URL), XHS plaintext `http` (0018 documented and tested HTTP/HTTPS, so tightening it changes a qualified capability), and animated images accepted as stills on the five platforms that do not gate extensions.
+
+Final local gates: Douyin unit file `26 passed`; Douyin/refresh/ingestion slices `212 passed`; Ruff lint and format and strict mypy over 182 source files green. Deployment, every real login and every live request remain `NOT_RUN`.
+
+## Previous: independent six-discipline code review (0088)
 
 [Execution 0088](executions/0088-code-review/progress.md) put the tree at `830b4d0` in front of six read-only reviewers with disjoint scopes and an explicit instruction not to trust the earlier closeouts. It found that 0085 and 0086 were **not deliverable as shipped**, despite green local suites:
 

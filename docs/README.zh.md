@@ -2,7 +2,9 @@
 
 # 项目工作日志
 
-当前交付：[0088 六方向独立代码审查](executions/0088-code-review/progress.zh.md)。六个只读审查者在不信任此前收尾结论的前提下审计了 `830b4d0`，发现 0085/0086 按已交付状态连一个有界单元都完不成：捕获 shim 在封印覆盖见证之前就中止、`NormalizedMediaCrawlerOutput` 丢弃两份新覆盖载荷、管线 worker 从不发布知乎进度、回执不携带 `source_run_id`，且九个服务构造点全部漏掉新的续跑策略。共修复 26 个缺陷，横跨创作者链、摄取边界、安全（含 `secure_delete` 未覆盖 SQLite WAL 旁文件）、控制台与操作者契约；两条审查结论经重新核实后被驳回，四条真实发现被刻意延后到各自的执行。最终本地门禁：Python `7331 passed, 62 skipped`；Web `846 passed`；Ruff、strict mypy、文档、上游与 `svelte-check` 全绿。部署与全部真人平台行仍为 `NOT_RUN`。
+当前交付：[0089 抖音选流边界](executions/0089-douyin-selection-bounds/progress.zh.md)。0088 延后的两条抖音发现已收䱲。0083 的选流排序现在真的会执行：现实的 `aweme_detail` 按每个画质与编码声明一项 `bit_rate[]`，因此旧的 8 项上限使每个真实载荷都抛 `douyin_media_field_invalid` 并静默回退到钉定扁平化。上限现为 32（超出仍 fail-closed），且 `validate_douyin_media_url` 拒绝逗号，因为 shim 写入的是它自己的读取器会按逗号拆分的字段。验证：抖音单元文件 `26 passed`、抖音/刷新/摄取子集 `212 passed`，Ruff 与 strict mypy 全绿。部署与全部真人行仍为 `NOT_RUN`。
+
+前序交付：[0088 六方向独立代码审查](executions/0088-code-review/progress.zh.md)。六个只读审查者在不信任此前收尾结论的前提下审计了 `830b4d0`，发现 0085/0086 按已交付状态连一个有界单元都完不成：捕获 shim 在封印覆盖见证之前就中止、`NormalizedMediaCrawlerOutput` 丢弃两份新覆盖载荷、管线 worker 从不发布知乎进度、回执不携带 `source_run_id`，且九个服务构造点全部漏掉新的续跑策略。共修复 26 个缺陷，横跨创作者链、摄取边界、安全（含 `secure_delete` 未覆盖 SQLite WAL 旁文件）、控制台与操作者契约；两条审查结论经重新核实后被驳回，四条真实发现被刻意延后到各自的执行。最终本地门禁：Python `7331 passed, 62 skipped`；Web `846 passed`；Ruff、strict mypy、文档、上游与 `svelte-check` 全绿。部署与全部真人平台行仍为 `NOT_RUN`。
 
 前序交付：[0087 逐平台操作者金丝雀流程](executions/0087-operator-canary/progress.zh.md)。七个创作者平台现在都携带耐久创作者作品链（0074 B 站、0076 小红书、0080 抖音、0081 快手、0084 微博、0085 贴吧、0086 知乎）。剩余工作需要 Linux 主机、真人原生登录、平台请求与真实 CDN 字节，因此每一行真人工作如实为 `NOT_RUN`；[资格记录](executions/0087-operator-canary/qualification.zh.md)是记录该事实并写明改变某行所需确切证据的唯一位置。最后一次代码交付的本地证据见 [0086 验证](executions/0086-zhihu-creator-answers/verification.zh.md)：Python `7308 passed, 62 skipped`；Web `30 files / 843 tests`；Ruff、strict mypy 与文档门通过。
 
@@ -42,6 +44,7 @@
 
 | ID | 里程碑 | 状态 | 提交 |
 | --- | --- | --- | --- |
+| 0089 | 抖音选流边界 | 本地完成：`bit_rate` 上限 8 改为 32，使 0083 的排序在真实的“画质×编码”载荷上执行；含逗号的签名 URL 现在在选流时就被拒绝，而不是先写入再被丢弃（那会把 VIDEO 作品降级为空资产的 TEXT 行）；两个回归测试，抖音单元文件 `26 passed`、子集 `212 passed` | 实现与收尾为包含本记录的提交；[验证](executions/0089-douyin-selection-bounds/verification.zh.md) |
 | 0088 | 六方向独立代码审查 | 本地完成：在微博/贴吧/知乎耐久链、摄取边界、`secure_delete`/WAL 与子进程环境、Svelte 控制台与操作者契约上修复 26 个已核实缺陷，每条都配“先失败”回归测试；两条结论核实后驳回，四条发现延后到独立执行；Python `7331 passed, 62 skipped` | 实现与收尾为包含本记录的提交；[验证](executions/0088-code-review/verification.zh.md) |
 | 0087 | 逐平台操作者金丝雀 | 流程与资格记录完成；**每一行真人工作都是 `NOT_RUN`**。七步操作者流程，以及记录全部七个平台在真人金丝雀、真实媒体字节、零工作重放与重启续跑上均为 `NOT_RUN` 的唯一表格，并写明每一行读到 `PASS` 前所需的确切证据；未改动产品行为 | 文档与收尾为包含本记录的提交；[资格记录](executions/0087-operator-canary/qualification.zh.md) |
 | 0086 | 知乎创作者回答耐久交付 | 本地完成：迁移 `0020_zhihu_creator_answers`、整数 `offset` 链上的耐久单元与四个固定停止原因、按同一 offset 的页尾回放、以 `zhihu_window_shifted` 阻塞的位移窗口检测、把假值/畸形响应体判为 `access_restricted` 的子进程 shim，以及由封闭回执驱动的 backfill → reconciling → incremental；Python `7308 passed, 62 skipped` | 实现与收尾为包含本记录的提交；[验证](executions/0086-zhihu-creator-answers/verification.zh.md) |

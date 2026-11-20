@@ -8,6 +8,10 @@ Build a self-hosted service that can authenticate against all platforms supporte
 
 ## Phases
 
+Priority update (0089): [Douyin selection bounds](executions/0089-douyin-selection-bounds/progress.md) closes two of the four findings 0088 deferred: 0083's stream ranking is reachable again (bound 8 to 32), and a comma-bearing signed URL can no longer be persisted and then discarded. The remaining three stay open with a recorded reason rather than a guess.
+
+Next priority: the three fully open findings each need their own execution and an operator input, not more code: Kuaishou's image-CDN allowlist needs one real hostname captured from a live atlas, XHS plaintext `http` needs a decision because 0018 qualified HTTP/HTTPS, and the animated-image gate needs its own execution because making it universal changes 0076/0081 media semantics. After those, the operator canary (0087) remains the only gate between the code and a supported platform.
+
 Priority update (0088): [independent six-discipline code review](executions/0088-code-review/progress.md) is complete. It found that 0085/0086 were not deliverable as shipped despite green local suites, and fixed 26 verified defects across the durable creator chain, the ingestion boundary, security, the console and the operator contract. Two claims were rejected after re-verification.
 
 Next priority: the four findings this review deliberately deferred, each as its own execution that re-derives the pinned upstream facts before changing frozen 0076/0081/0083 behaviour — Douyin's 8-entry `bit_rate` cap silently disabling 0083's stream ranking, Kuaishou's missing image-CDN allowlist, XHS accepting plaintext `http`, and animated images passing as static on five platforms. After that, the operator canary (0087) remains the only gate between the code and a supported platform.
