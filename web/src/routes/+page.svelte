@@ -212,26 +212,31 @@
     </div>
   {/if}
 
+  <!--
+    这几个数字取自下面那三个有界列表窗口，不是全量统计：账户/订阅是完整集合，
+    任务只取最近 12 条、资产最近 200 条、内容最近 50 条。标签必须写出窗口大小，
+    否则操作者会把"12"读成"队列里只剩 12 个"。
+  -->
   <section class="summary-grid" aria-label="关键统计">
     <div class="summary-item">
       <span class="summary-label">平台账户<CircleUserRound size={16} /></span>
       <strong class="summary-value">{!loaded ? '—' : accounts.length}</strong>
-      <span class="summary-hint">{authAccounts.length} 个已认证</span>
+      <span class="summary-hint">{authAccounts.length} 个已认证 · 全量</span>
     </div>
     <div class="summary-item">
       <span class="summary-label">创作者订阅<UsersRound size={16} /></span>
       <strong class="summary-value">{!loaded ? '—' : subscriptions.length}</strong>
-      <span class="summary-hint">{subscriptions.filter((item) => item.enabled).length} 个已启用</span>
+      <span class="summary-hint">{subscriptions.filter((item) => item.enabled).length} 个已启用 · 全量</span>
     </div>
     <div class="summary-item">
-      <span class="summary-label">待处理任务<Clock3 size={16} /></span>
+      <span class="summary-label">最近任务中的待处理<Clock3 size={16} /></span>
       <strong class="summary-value">{!loaded ? '—' : activeJobs.length}</strong>
-      <span class="summary-hint">{failedJobs.length} 个失败任务</span>
+      <span class="summary-hint">最近 {jobs.length} 条任务中的 {failedJobs.length} 个失败</span>
     </div>
     <div class="summary-item">
-      <span class="summary-label">已归档资产<Archive size={16} /></span>
+      <span class="summary-label">最近资产中的已归档<Archive size={16} /></span>
       <strong class="summary-value">{!loaded ? '—' : verifiedAssets.length}</strong>
-      <span class="summary-hint">共发现 {assets.length} 个资产</span>
+      <span class="summary-hint">最近 {assets.length} 个资产中的已归档数</span>
     </div>
   </section>
 

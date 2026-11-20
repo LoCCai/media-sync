@@ -141,6 +141,36 @@ export function operationIsMediaServerObservation(operation: Operation): boolean
   return operation.kind === 'media-server-scan' && operation.target?.type === 'author';
 }
 
+/**
+ * 结果单元格的定性标签。`safeOperationResult` 只保留白名单字段，因此非调度类操作
+ * 成功时既没有 `truthNotice`（那只用于调度 worker 状态）也没有可读文案，过去一律
+ * 显示"已有白名单摘要"——那种说法对空摘要同样成立，读起来像没结果。
+ */
+export function operationResultLabel(operation: Operation): string {
+  const result = safeOperationResult(operation);
+  if (!result) return operation.state === 'succeeded' ? '已完成（无摘要字段）' : '无结果摘要';
+  if (operation.kind === 'asset-download') {
+    const status = typeof result.status === 'string' ? result.status : null;
+    if (status === 'verified') return '资产已核验';
+    if (status === 'exported') return '资产已导出';
+    return status === null ? '下载已完成' : `下载结束（${status}）`;
+  }
+  if (operation.kind === 'emby-export') {
+    return result.already_exported === true ? '已导出（无新增）' : '已生成兼容目录';
+  }
+  if (operation.kind === 'account-login' || operation.kind === 'account-cookie-login') {
+    return typeof result.auth_status === 'string' ? `登录结果为 ${result.auth_status}` : '登录操作已结束';
+  }
+  if (operation.kind === 'creator-profile') return '创作者资料已更新';
+  if (operation.kind === 'media-server-probe') return '媒体服务器探测已结束';
+  if (operationIsMediaServerObservation(operation)) {
+    const matches = typeof result.match_count === 'number' ? result.match_count : null;
+    return matches === null ? '刷新与核验已结束' : `刷新与核验：匹配 ${matches} 项`;
+  }
+  if (typeof result.provider === 'string') return '媒体服务器操作已结束';
+  return '已完成（有摘要）';
+}
+
 export function operationDisplayLabel(operation: Operation): string {
   if (operation.kind !== 'media-server-scan') return operation.kind;
   return operationIsMediaServerObservation(operation) ? '媒体库刷新并核验' : '媒体库定向刷新（仅确认接受）';

@@ -1861,6 +1861,9 @@ def create_api_app(
             "xhs_scan_continuation_delay_seconds": resolved.xhs_scan_continuation_delay_seconds,
             "douyin_scan_continuation_delay_seconds": resolved.douyin_scan_continuation_delay_seconds,
             "kuaishou_scan_continuation_delay_seconds": resolved.kuaishou_scan_continuation_delay_seconds,
+            "weibo_scan_continuation_delay_seconds": resolved.weibo_scan_continuation_delay_seconds,
+            "tieba_scan_continuation_delay_seconds": resolved.tieba_scan_continuation_delay_seconds,
+            "zhihu_scan_continuation_delay_seconds": resolved.zhihu_scan_continuation_delay_seconds,
             "mediacrawler_python_executable": (
                 str(resolved.mediacrawler_python_executable)
                 if resolved.mediacrawler_python_executable is not None

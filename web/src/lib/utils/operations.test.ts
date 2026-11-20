@@ -20,6 +20,7 @@ import {
   operationMatches,
   operationProgressLabel,
   operationProgressPercent,
+  operationResultLabel,
   operationStreamConnected,
   operationStreamFailed,
   operationStreamStatusCopy,
@@ -421,5 +422,42 @@ describe('operation event safety and reconnect helpers', () => {
       failureCount: 0,
       pollDelayMs: 3_000
     });
+  });
+});
+
+describe('qualitative result labels', () => {
+  const base = {
+    id: '00000000-0000-0000-0000-0000000000a1',
+    kind: 'asset-download',
+    state: 'succeeded',
+    requested_at: '2026-10-20T12:00:00+00:00',
+    started_at: '2026-10-20T12:00:01+00:00',
+    finished_at: '2026-10-20T12:00:02+00:00',
+    error_code: null,
+    target: null,
+    progress: null
+  } as unknown as Operation;
+
+  it('names the asset-download outcome instead of a generic summary note', () => {
+    expect(operationResultLabel({ ...base, result: { status: 'verified' } })).toBe('资产已核验');
+    expect(operationResultLabel({ ...base, result: { status: 'exported' } })).toBe('资产已导出');
+    expect(operationResultLabel({ ...base, result: {} })).toBe('已完成（无摘要字段）');
+  });
+
+  it('distinguishes a re-export from a fresh one', () => {
+    const emby = { ...base, kind: 'emby-export' } as unknown as Operation;
+    expect(operationResultLabel({ ...emby, result: { already_exported: true } })).toBe('已导出（无新增）');
+    expect(operationResultLabel({ ...emby, result: { already_exported: false } })).toBe('已生成兼容目录');
+  });
+
+  it('reports the observed auth status for a login operation', () => {
+    const login = { ...base, kind: 'account-login' } as unknown as Operation;
+    expect(operationResultLabel({ ...login, result: { auth_status: 'authenticated' } })).toBe(
+      '登录结果为 authenticated'
+    );
+    // An empty result yields no safe projection at all, so the cell never renders
+    // it through the summary branch; the label says so rather than implying data.
+    expect(safeOperationResult({ ...login, result: {} } as Operation)).toBeNull();
+    expect(operationResultLabel({ ...login, result: {} } as Operation)).toBe('已完成（无摘要字段）');
   });
 });

@@ -2,7 +2,9 @@
 
 # 项目工作日志
 
-当前交付：[0089 抖音选流边界](executions/0089-douyin-selection-bounds/progress.zh.md)。0088 延后的两条抖音发现已收䱲。0083 的选流排序现在真的会执行：现实的 `aweme_detail` 按每个画质与编码声明一项 `bit_rate[]`，因此旧的 8 项上限使每个真实载荷都抛 `douyin_media_field_invalid` 并静默回退到钉定扁平化。上限现为 32（超出仍 fail-closed），且 `validate_douyin_media_url` 拒绝逗号，因为 shim 写入的是它自己的读取器会按逗号拆分的字段。验证：抖音单元文件 `26 passed`、抖音/刷新/摄取子集 `212 passed`，Ruff 与 strict mypy 全绿。部署与全部真人行仍为 `NOT_RUN`。
+当前交付：[0090 操作者界面缺口](executions/0090-operator-surface-gaps/progress.zh.md)。0088 记为 NIT/RISK 的三条发现已收拢。`/api/v1/settings` 与 `doctor --deep` 现在报告全部七个续跑延迟，微博/贴吧/知乎的节奏不一致终于可见——而它此前不可见，正是 0088 里"九个构造点漏掉策略"能一直存活的原因。概览 KPI 标签现在写明所读的有界窗口（`最近 12 条任务中的…`、`最近 200 个资产中的…`），并把两个确实完整的数组标为全量。非调度类操作行显示真实的结果标签，而不是固定的"已有白名单摘要"。Web `849 passed`；Ruff、strict mypy 与文档门全绿。部署与全部真人行仍为 `NOT_RUN`。
+
+前序交付：[0089 抖音选流边界](executions/0089-douyin-selection-bounds/progress.zh.md)。0088 延后的两条抖音发现已收拢。0083 的选流排序现在真的会执行：现实的 `aweme_detail` 按每个画质与编码声明一项 `bit_rate[]`，因此旧的 8 项上限使每个真实载荷都抛 `douyin_media_field_invalid` 并静默回退到钉定扁平化。上限现为 32（超出仍 fail-closed），且 `validate_douyin_media_url` 拒绝逗号，因为 shim 写入的是它自己的读取器会按逗号拆分的字段。验证：抖音单元文件 `26 passed`、抖音/刷新/摄取子集 `212 passed`，Ruff 与 strict mypy 全绿。部署与全部真人行仍为 `NOT_RUN`。
 
 前序交付：[0088 六方向独立代码审查](executions/0088-code-review/progress.zh.md)。六个只读审查者在不信任此前收尾结论的前提下审计了 `830b4d0`，发现 0085/0086 按已交付状态连一个有界单元都完不成：捕获 shim 在封印覆盖见证之前就中止、`NormalizedMediaCrawlerOutput` 丢弃两份新覆盖载荷、管线 worker 从不发布知乎进度、回执不携带 `source_run_id`，且九个服务构造点全部漏掉新的续跑策略。共修复 26 个缺陷，横跨创作者链、摄取边界、安全（含 `secure_delete` 未覆盖 SQLite WAL 旁文件）、控制台与操作者契约；两条审查结论经重新核实后被驳回，四条真实发现被刻意延后到各自的执行。最终本地门禁：Python `7331 passed, 62 skipped`；Web `846 passed`；Ruff、strict mypy、文档、上游与 `svelte-check` 全绿。部署与全部真人平台行仍为 `NOT_RUN`。
 
@@ -44,6 +46,7 @@
 
 | ID | 里程碑 | 状态 | 提交 |
 | --- | --- | --- | --- |
+| 0090 | 操作者界面缺口 | 本地完成：`/api/v1/settings` 与 `doctor --deep` 以及控制台 `Settings` 类型都暴露全部七个续跑延迟；概览 KPI 标注所读的有界窗口；非调度类操作行显示定性的结果标签而非固定文案；Web `849 passed` | 实现与收尾为包含本记录的提交；[验证](executions/0090-operator-surface-gaps/verification.zh.md) |
 | 0089 | 抖音选流边界 | 本地完成：`bit_rate` 上限 8 改为 32，使 0083 的排序在真实的“画质×编码”载荷上执行；含逗号的签名 URL 现在在选流时就被拒绝，而不是先写入再被丢弃（那会把 VIDEO 作品降级为空资产的 TEXT 行）；两个回归测试，抖音单元文件 `26 passed`、子集 `212 passed` | 实现与收尾为包含本记录的提交；[验证](executions/0089-douyin-selection-bounds/verification.zh.md) |
 | 0088 | 六方向独立代码审查 | 本地完成：在微博/贴吧/知乎耐久链、摄取边界、`secure_delete`/WAL 与子进程环境、Svelte 控制台与操作者契约上修复 26 个已核实缺陷，每条都配“先失败”回归测试；两条结论核实后驳回，四条发现延后到独立执行；Python `7331 passed, 62 skipped` | 实现与收尾为包含本记录的提交；[验证](executions/0088-code-review/verification.zh.md) |
 | 0087 | 逐平台操作者金丝雀 | 流程与资格记录完成；**每一行真人工作都是 `NOT_RUN`**。七步操作者流程，以及记录全部七个平台在真人金丝雀、真实媒体字节、零工作重放与重启续跑上均为 `NOT_RUN` 的唯一表格，并写明每一行读到 `PASS` 前所需的确切证据；未改动产品行为 | 文档与收尾为包含本记录的提交；[资格记录](executions/0087-operator-canary/qualification.zh.md) |

@@ -43,6 +43,10 @@ def test_health_ready_settings_and_console(tmp_path: Path, monkeypatch: pytest.M
     assert settings["api_bind"] == "127.0.0.1:8632"
     assert settings["bili_scan_continuation_delay_seconds"] == 300
     assert settings["xhs_scan_continuation_delay_seconds"] == 300
+    # An operator compares these with the supervisor's environment; a delay the
+    # API does not surface is how a missing continuation policy stays invisible.
+    for platform in ("douyin", "kuaishou", "weibo", "tieba", "zhihu"):
+        assert settings[f"{platform}_scan_continuation_delay_seconds"] == 300
     console = client.get("/")
     assert console.status_code == 200
     assert "media-sync" in console.text
@@ -90,11 +94,17 @@ def test_deep_readiness_reports_license_gate_without_exposing_paths(tmp_path: Pa
         "source_revision_status": "not_run",
         "facts": {},
     }
+    # Every bounded creator platform's pacing must be visible here: operators
+    # compare this with the supervisor's environment, and an invisible delay is
+    # how a missing policy wiring stays undetected until a run hangs.
     assert body["continuations"] == {
         "bili_delay_seconds": 300,
         "xhs_delay_seconds": 300,
         "douyin_delay_seconds": 300,
         "ks_delay_seconds": 300,
+        "weibo_delay_seconds": 300,
+        "tieba_delay_seconds": 300,
+        "zhihu_delay_seconds": 300,
     }
     assert body["security"] == {
         "status": "pass",

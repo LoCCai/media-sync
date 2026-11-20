@@ -73,6 +73,7 @@
     operationMatches,
     operationProgressLabel,
     operationProgressPercent,
+    operationResultLabel,
     operationStreamConnected,
     operationStreamFailed,
     operationStreamStatusCopy,
@@ -806,7 +807,8 @@
                       class:waiting-copy={truthNotice.tone === 'warning'}
                       class:success-copy={truthNotice.tone === 'success'}>{truthNotice.title}</span
                     >{:else if truthNotice}<span class="success-copy">{truthNotice.title}</span
-                    >{:else if safeResult}<span class="success-copy">已有白名单摘要</span>{:else}—{/if}</td
+                    >{:else if safeResult}<span class="success-copy">{operationResultLabel(operation)}</span
+                    >{:else}—{/if}</td
                 ><td class="actions operation-actions"
                   >{#if operationCanCancel(operation)}<button
                       class="button ghost danger-text small"

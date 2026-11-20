@@ -8,6 +8,10 @@ Build a self-hosted service that can authenticate against all platforms supporte
 
 ## Phases
 
+Priority update (0090): [operator surface gaps](executions/0090-operator-surface-gaps/progress.md) is complete. The three NIT/RISK findings from 0088 that made a real state invisible to the operator are closed: all seven continuation delays are exposed on both operator surfaces, the dashboard no longer presents a bounded window as a total, and non-scheduler operation rows name their outcome.
+
+Next priority: the three fully open findings still each need an operator input or their own execution — Kuaishou's image-CDN allowlist needs one real hostname captured from a live atlas, XHS plaintext `http` needs a decision because 0018 qualified HTTP/HTTPS, and the animated-image gate needs its own execution because making it universal changes 0076/0081 media semantics. After those, the operator canary (0087) remains the only gate between the code and a supported platform.
+
 Priority update (0089): [Douyin selection bounds](executions/0089-douyin-selection-bounds/progress.md) closes two of the four findings 0088 deferred: 0083's stream ranking is reachable again (bound 8 to 32), and a comma-bearing signed URL can no longer be persisted and then discarded. The remaining three stay open with a recorded reason rather than a guess.
 
 Next priority: the three fully open findings each need their own execution and an operator input, not more code: Kuaishou's image-CDN allowlist needs one real hostname captured from a live atlas, XHS plaintext `http` needs a decision because 0018 qualified HTTP/HTTPS, and the animated-image gate needs its own execution because making it universal changes 0076/0081 media semantics. After those, the operator canary (0087) remains the only gate between the code and a supported platform.

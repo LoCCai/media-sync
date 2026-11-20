@@ -2,7 +2,17 @@
 
 # Unified project status (single source of truth)
 
-## Latest: Douyin selection bounds (0089)
+## Latest: operator surface gaps (0090)
+
+[Execution 0090](executions/0090-operator-surface-gaps/progress.md) closes the three findings 0088 recorded as NIT/RISK. Each was about the deployment being harder to operate than the code was to write:
+
+- **Four platforms' continuation pacing was invisible.** `/api/v1/settings` and `doctor --deep` — the two surfaces an operator diffs against the supervisor's environment — listed only Bilibili, XHS, Douyin and Kuaishou. Weibo, Tieba and Zhihu were absent from both, so a mismatch had no place to appear. That is exactly how 0088's "nine of nine construction sites omitted the policies" stayed unnoticed. All seven delays are now reported by both surfaces and declared in the console's `Settings` type.
+- **The dashboard answered a different question than it appeared to.** KPI cards derived 待处理任务 from `jobs?limit=12` and 已归档资产 from `assets?limit=200`, so a 40-job queue showed 12 and a 5 000-asset library showed 173. The labels now name the window and mark the two genuinely complete arrays as 全量.
+- **Every non-scheduler operation row said 已有白名单摘要.** A verified download, a fresh export and a successful login all rendered the same phrase. `operationResultLabel` now derives a closed qualitative label from the existing whitelisted projection.
+
+Final local gates: Web `849 passed` (846 before, +3 label cases), `svelte-check` 0/0, Prettier clean, build succeeds; Ruff, `ruff format --check`, strict mypy over 182 files and documentation links all green. No platform behaviour, cursor, stop reason, migration or pinned upstream file was touched. Deployment, every real login and every live request remain `NOT_RUN`.
+
+## Previous: Douyin selection bounds (0089)
 
 [Execution 0089](executions/0089-douyin-selection-bounds/progress.md) closes the two Douyin findings that 0088 deferred. Both were cases where the feature existed, was tested, and never engaged in practice:
 
